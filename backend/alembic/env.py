@@ -14,9 +14,15 @@ from app.models import Base
 config = context.config
 
 # Interpret the config file for Python logging.
-# This line sets up loggers basically.
+# This line sets up loggers basically. ``disable_existing_loggers=False``
+# because ``fileConfig`` otherwise defaults to disabling every logger that
+# already exists at call time (a well-known stdlib logging gotcha) -- fatal
+# here since migrations run in-process, after app logging is configured
+# (tests apply migrations via ``alembic.command.upgrade`` against a live
+# app import; a real deployment's `alembic upgrade` CLI run is a separate
+# process, but there's no reason to disable app loggers even then).
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Full schema lives on app.models.Base.metadata (SPEC "Data model").
 target_metadata = Base.metadata

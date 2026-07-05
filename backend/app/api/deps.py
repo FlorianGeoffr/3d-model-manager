@@ -1,0 +1,83 @@
+"""FastAPI dependencies enforcing the single-session auth model (SPEC
+requirement 1). ``require_session`` is composed at *router* level in
+``app.api`` -- see that module's docstring -- rather than added to every
+protected endpoint individually.
+"""
+
+import uuid
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+
+from fastapi import Cookie, Depends, HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db import get_db
+from app.models import Session, User
+
+SESSION_COOKIE_NAME = "tdmm_session"
+SESSION_MAX_AGE = timedelta(days=30)
+
+# How stale ``last_seen_at`` must be before a request bothers writing a
+# fresh value -- avoids a DB write on every single authenticated request.
+LAST_SEEN_THROTTLE = timedelta(seconds=60)
+
+
+@dataclass(slots=True)
+class AuthContext:
+    """The authenticated user and the session row backing the request."""
+
+    user: User
+    session: Session
+
+
+def _unauthenticated() -> HTTPException:
+    """401 for any missing/invalid/expired session.
+
+    Deviation from the plan: the plan text says 403 here. 401 is the
+    semantically correct code for "not authenticated at all" (403 is for
+    "authenticated but not allowed"), and it's what the frontend task's
+    unauthenticated -> /login redirect is built around. See task-3 report.
+    """
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Not authenticated",
+        headers={"WWW-Authenticate": "Cookie"},
+    )
+
+
+async def require_session(
+    tdmm_session: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+    db: AsyncSession = Depends(get_db),
+) -> AuthContext:
+    """Resolve the ``tdmm_session`` cookie to a live session + user, or 401.
+
+    Also throttles ``last_seen_at`` bumps to at most once per
+    ``LAST_SEEN_THROTTLE`` so authenticated traffic doesn't cost a write per
+    request.
+    """
+    if tdmm_session is None:
+        raise _unauthenticated()
+    try:
+        token = uuid.UUID(tdmm_session)
+    except ValueError:
+        raise _unauthenticated() from None
+
+    row = (
+        await db.execute(
+            select(Session, User).join(User, User.id == Session.user_id).where(Session.id == token)
+        )
+    ).one_or_none()
+    if row is None:
+        raise _unauthenticated()
+    session, user = row
+
+    now = datetime.now(UTC)
+    if session.expires_at <= now:
+        raise _unauthenticated()
+
+    if now - session.last_seen_at > LAST_SEEN_THROTTLE:
+        session.last_seen_at = now
+        await db.commit()
+
+    return AuthContext(user=user, session=session)

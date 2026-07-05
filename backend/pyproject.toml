@@ -37,6 +37,12 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's own idiom is `param: X = Depends(...)` -- B008 otherwise flags
+# every dependency-injected endpoint parameter as a mutable-default footgun,
+# which it isn't here (FastAPI calls it fresh, it's not evaluated once).
+extend-immutable-calls = ["fastapi.Depends"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["."]

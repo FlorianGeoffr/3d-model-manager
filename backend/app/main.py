@@ -6,14 +6,19 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api import api_router
+from app.config import get_settings
 from app.db import get_sessionmaker
 from app.logging_config import configure_logging
+from app.services import spool
 from app.services.bootstrap import ensure_admin_user
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Run first-run bootstrap (SPEC requirement 1) once on startup."""
+    """Run first-run bootstrap (SPEC requirement 1) and create the upload
+    spool directory (Task 6) once on startup.
+    """
+    spool.ensure_spool_dir(get_settings())
     async with get_sessionmaker()() as session:
         await ensure_admin_user(session)
     yield

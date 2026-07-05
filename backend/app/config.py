@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     admin_username: str = "admin"
     admin_password: str | None = None
     cookie_secure: bool = False
+    # How often GET /api/events sends a `: ping` heartbeat comment while idle
+    # (Task 6). Overridable so tests don't have to wait a real 15s.
+    sse_heartbeat_interval_s: float = 15.0
 
 
 @lru_cache

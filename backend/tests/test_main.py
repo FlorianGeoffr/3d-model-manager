@@ -4,6 +4,8 @@ so a fresh deployment gets a usable admin login without any manual step.
 this file only proves ``app.main`` actually calls it on startup.
 """
 
+from pathlib import Path
+
 import httpx
 import pytest
 from sqlalchemy import func, select
@@ -22,7 +24,7 @@ def _clear_settings_cache():
 
 
 async def test_lifespan_bootstraps_admin_user(
-    migrated_db: str, monkeypatch: pytest.MonkeyPatch
+    migrated_db: str, monkeypatch: pytest.MonkeyPatch, data_dir: Path
 ) -> None:
     monkeypatch.setenv("TDMM_ADMIN_USERNAME", "admin")
     monkeypatch.setenv("TDMM_ADMIN_PASSWORD", "lifespan-startup-pw")
@@ -44,7 +46,7 @@ async def test_lifespan_bootstraps_admin_user(
 
 
 async def test_lifespan_bootstrap_is_idempotent_across_restarts(
-    migrated_db: str, monkeypatch: pytest.MonkeyPatch
+    migrated_db: str, monkeypatch: pytest.MonkeyPatch, data_dir: Path
 ) -> None:
     monkeypatch.setenv("TDMM_ADMIN_USERNAME", "admin")
     monkeypatch.setenv("TDMM_ADMIN_PASSWORD", "lifespan-startup-pw")

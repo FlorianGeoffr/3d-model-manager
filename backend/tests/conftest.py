@@ -19,6 +19,7 @@ from alembic.config import Config
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from testcontainers.postgres import PostgresContainer
+from testcontainers.redis import RedisContainer
 
 from alembic import command
 from app.config import get_settings
@@ -28,6 +29,7 @@ from app.models import Base, Blob, File, Model, Revision, User
 from app.models.enums import BlobFormat, BlobKind
 from app.security import hash_password
 from app.storage.local import LocalStorageBackend
+from app.tasks.base import get_sync_engine, get_sync_sessionmaker
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 
@@ -36,14 +38,17 @@ ADMIN_PASSWORD = "correct horse battery staple"
 
 
 def _reset_settings_and_engine_caches() -> None:
-    """``get_settings``/``get_engine``/``get_sessionmaker`` are ``lru_cache``d
-    process-wide singletons (see app.config, app.db). Tests that repoint
-    ``TDMM_DATABASE_URL`` must clear all three so a fresh engine is built
-    against the new URL.
+    """``get_settings``/``get_engine``/``get_sessionmaker`` (API async world)
+    and ``get_sync_engine``/``get_sync_sessionmaker`` (worker sync world, see
+    ``app.tasks.base``) are all ``lru_cache``d process-wide singletons. Tests
+    that repoint ``TDMM_DATABASE_URL``/``TDMM_REDIS_URL`` must clear all of
+    them so fresh engines are built against the new URLs.
     """
     get_settings.cache_clear()
     get_engine.cache_clear()
     get_sessionmaker.cache_clear()
+    get_sync_engine.cache_clear()
+    get_sync_sessionmaker.cache_clear()
 
 
 @pytest.fixture(scope="session")
@@ -56,6 +61,36 @@ def postgres_url() -> Iterator[str]:
         yield url
     del os.environ["TDMM_DATABASE_URL"]
     _reset_settings_and_engine_caches()
+
+
+@pytest.fixture(scope="session")
+def redis_url() -> Iterator[str]:
+    """Start one Redis container for the whole test session (Task 6: SSE +
+    Celery job-event publishing). fakeredis is deliberately not used -- the
+    M1 global constraints require real infra for integration tests.
+    """
+    with RedisContainer("redis:7-alpine") as container:
+        url = f"redis://{container.get_container_host_ip()}:{container.get_exposed_port(container.port)}/0"
+        os.environ["TDMM_REDIS_URL"] = url
+        _reset_settings_and_engine_caches()
+        yield url
+    del os.environ["TDMM_REDIS_URL"]
+    _reset_settings_and_engine_caches()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _celery_eager_mode() -> None:
+    """Run Celery tasks synchronously, in-process, for the whole test
+    session (Task 6 interface decision) -- no worker process, no broker
+    round trip; `.delay()`/`.apply_async()` just call the task body inline.
+    `task_eager_propagates=True` so a genuinely unexpected exception inside a
+    task surfaces as a normal test failure instead of only being recorded in
+    the job's `error` column.
+    """
+    from app.tasks.celery_app import celery_app
+
+    celery_app.conf.task_always_eager = True
+    celery_app.conf.task_eager_propagates = True
 
 
 @pytest.fixture(scope="session")
@@ -84,8 +119,8 @@ async def db_session(_truncate_all_tables: None) -> AsyncGenerator[AsyncSession,
 
 
 @pytest.fixture
-async def client(migrated_db: str) -> AsyncGenerator[httpx.AsyncClient, None]:
-    """An ASGI test client for the app, wired to the container DB."""
+async def client(migrated_db: str, redis_url: str) -> AsyncGenerator[httpx.AsyncClient, None]:
+    """An ASGI test client for the app, wired to the container DB + Redis."""
     app = create_app()
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
@@ -124,6 +159,19 @@ def backend(library_root: Path) -> LocalStorageBackend:
     use for this test (see ``library_root``).
     """
     return LocalStorageBackend(library_root)
+
+
+@pytest.fixture
+def data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """Point ``TDMM_DATA_DIR`` (spool root, Task 6) at a fresh tmp_path for
+    this test -- mirrors ``library_root`` above.
+    """
+    root = tmp_path / "data"
+    root.mkdir()
+    monkeypatch.setenv("TDMM_DATA_DIR", str(root))
+    get_settings.cache_clear()
+    yield root
+    get_settings.cache_clear()
 
 
 @pytest.fixture

@@ -1,0 +1,61 @@
+"""SSE event publishing (Global Constraints: Redis pub/sub channel
+``tdmm:events``, JSON event shape ``{"type": "job.updated", "job_id": ...,
+"job_type": ..., "state": ..., "subject_type": ..., "subject_id": ...}``).
+
+Two publish functions mirror the API(async)/worker(sync) split documented in
+``app.tasks.base``: ``publish_job_event`` for async API-side code (used
+directly by tests exercising the SSE endpoint; the jobs API itself doesn't
+currently need to publish), ``publish_job_event_sync`` for Celery task
+bodies (``app.services.jobs``'s ``mark_running``/``mark_done``/
+``mark_failed``, called from ``app.tasks.ingest``). Each publish opens a
+short-lived Redis connection rather than holding one open -- job events are
+infrequent, so the extra connect cost is not worth the added lifecycle
+complexity of a shared client, especially in Celery's prefork worker model.
+"""
+
+from __future__ import annotations
+
+import json
+import uuid
+
+import redis
+import redis.asyncio as aioredis
+
+CHANNEL = "tdmm:events"
+
+
+def job_event_payload(
+    *,
+    job_id: uuid.UUID | str,
+    job_type: str,
+    state: str,
+    subject_type: str | None,
+    subject_id: int | None,
+) -> dict[str, object]:
+    """Build the Global-Constraints-shaped event body for a job update."""
+    return {
+        "type": "job.updated",
+        "job_id": str(job_id),
+        "job_type": job_type,
+        "state": state,
+        "subject_type": subject_type,
+        "subject_id": subject_id,
+    }
+
+
+def publish_job_event_sync(redis_url: str, **kwargs: object) -> None:
+    """Publish from Celery task bodies (sync world; see ``app.tasks.base``)."""
+    client = redis.Redis.from_url(redis_url)
+    try:
+        client.publish(CHANNEL, json.dumps(job_event_payload(**kwargs)))
+    finally:
+        client.close()
+
+
+async def publish_job_event(redis_url: str, **kwargs: object) -> None:
+    """Publish from async API-side code."""
+    client = aioredis.Redis.from_url(redis_url)
+    try:
+        await client.publish(CHANNEL, json.dumps(job_event_payload(**kwargs)))
+    finally:
+        await client.aclose()

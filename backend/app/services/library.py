@@ -18,6 +18,7 @@ the scanner (SPEC M3 "Rescan/reconcile") -- not handled here.
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import PurePosixPath
 
 import anyio
 from fastapi import HTTPException, status
@@ -25,6 +26,7 @@ from sqlalchemy import func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.models.enums import BlobFormat, BlobKind
 from app.models.library import Blob, File, Model, Note, Revision, Tag, model_tags
 from app.schemas.library import (
     DiffEntry,
@@ -448,6 +450,107 @@ async def diff_revisions(db: AsyncSession, revision_a_id: int, revision_b_id: in
 
 
 # -- files --------------------------------------------------------------
+
+
+def _validate_rel_path(rel_path: str) -> None:
+    """Reject ``rel_path`` values that would produce an unsafe storage key.
+
+    ``rel_path`` is user input that gets embedded into the file's storage
+    key (``<slug>/<dir_name>/<rel_path>``). The storage backend would also
+    reject these keys (``LocalStorageBackend._resolve``), but only later,
+    inside the Celery task -- by which point a poisoned ``files`` row is
+    already committed. Mirror the backend's key rules up front instead:
+    no empty/dot paths, no backslashes, no absolute paths, no ``..``.
+    """
+    pure = PurePosixPath(rel_path)
+    if (
+        not rel_path
+        or "\\" in rel_path
+        or pure.is_absolute()
+        or pure.parts == ()
+        or ".." in pure.parts
+    ):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"unsafe rel_path: {rel_path!r}")
+
+
+async def validate_upload_target(
+    db: AsyncSession, *, model_id: int, revision_id: int, rel_path: str, replace: bool
+) -> tuple[Model, Revision]:
+    """Pre-flight checks for ``PUT /api/uploads``, run BEFORE the request
+    body is read (Task 6 interface decision: fail fast rather than making
+    the client upload bytes for a request that's going to 404/409 anyway).
+    """
+    _validate_rel_path(rel_path)
+    model = await get_model_by_id(db, model_id)
+    revision = await db.get(Revision, revision_id)
+    if revision is None or revision.model_id != model.id:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, f"revision {revision_id} not found on model {model_id}"
+        )
+    if model.current_revision_id != revision.id:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "uploads are only allowed on the model's current revision",
+        )
+    existing = await db.scalar(
+        select(File.id).where(File.revision_id == revision.id, File.rel_path == rel_path)
+    )
+    if existing is not None and not replace:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"rel_path {rel_path!r} already exists on this revision; pass replace=true",
+        )
+    return model, revision
+
+
+async def finalize_upload(
+    db: AsyncSession,
+    *,
+    model: Model,
+    revision: Revision,
+    rel_path: str,
+    blob_hash: str,
+    size: int,
+    kind: BlobKind,
+    format_: BlobFormat,
+    replace: bool,
+) -> File:
+    """Upsert the ``Blob`` by hash (dedupe) and create/replace the ``File``
+    row once the upload's bytes are fully spooled and hashed (Task 6
+    interface decision). The bytes themselves aren't on backend storage yet
+    -- ``verified_at`` stays NULL until ``store_to_backend`` (enqueued by the
+    caller right after this) succeeds. ``replace=True`` deletes the old
+    ``File`` row; ``storage_path`` is rel_path-derived so the new file's
+    backend write naturally overwrites the same object regardless of
+    content.
+    """
+    blob = await db.get(Blob, blob_hash)
+    if blob is None:
+        blob = Blob(hash=blob_hash, size=size, kind=kind, format=format_)
+        db.add(blob)
+        await db.flush()
+
+    if replace:
+        existing = (
+            await db.execute(
+                select(File).where(File.revision_id == revision.id, File.rel_path == rel_path)
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            await db.delete(existing)
+            await db.flush()
+
+    file = File(
+        revision_id=revision.id,
+        blob_hash=blob_hash,
+        rel_path=rel_path,
+        storage_path=layout.file_key(model.slug, revision.dir_name, rel_path),
+        verified_at=None,
+    )
+    db.add(file)
+    await db.commit()
+    await db.refresh(file)
+    return file
 
 
 async def delete_file(db: AsyncSession, backend: StorageBackend, file_id: int) -> None:

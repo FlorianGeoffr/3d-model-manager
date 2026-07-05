@@ -1,0 +1,76 @@
+"""``store_to_backend`` Celery task (SPEC "Processing pipeline", Task 6
+interface decisions): streams the upload's spool file onto the storage
+backend, verifies the blake3 hash the backend computed while writing
+matches the blob's hash, marks the file verified, and drops the spool file.
+
+Runs entirely in the worker's SYNC world -- see ``app.tasks.base`` for why
+this can't share the API's async engine.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+from datetime import UTC, datetime
+from pathlib import Path
+
+from app.config import get_settings
+from app.models import File
+from app.services import jobs
+from app.storage.registry import get_backend
+from app.tasks import base
+from app.tasks.celery_app import celery_app
+
+_CHUNK_SIZE = 1024 * 1024  # 1 MiB, matching StorageBackend.read's chunking.
+
+
+def _spool_chunks(path: Path) -> Iterator[bytes]:
+    with path.open("rb") as fh:
+        while True:
+            chunk = fh.read(_CHUNK_SIZE)
+            if not chunk:
+                break
+            yield chunk
+
+
+@celery_app.task
+def store_to_backend(job_id: str, file_id: int, spool_path: str) -> None:
+    with base.sync_session() as session:
+        jobs.mark_running(session, job_id)
+
+    settings = get_settings()
+    backend = get_backend(settings)
+    path = Path(spool_path)
+
+    try:
+        with base.sync_session() as session:
+            file = session.get(File, file_id)
+            if file is None:
+                raise LookupError(f"file {file_id} not found")
+            storage_path = file.storage_path
+            expected_hash = file.blob_hash
+
+        result = backend.write(storage_path, _spool_chunks(path))
+
+        if result.hash != expected_hash:
+            with base.sync_session() as session:
+                jobs.mark_failed(
+                    session,
+                    job_id,
+                    f"hash mismatch: expected {expected_hash}, got {result.hash}",
+                )
+            return  # Spool intentionally kept on disk for retry/debug.
+
+        with base.sync_session() as session:
+            file = session.get(File, file_id)
+            now = datetime.now(UTC)
+            file.mtime = now
+            file.verified_at = now
+            session.commit()
+            jobs.mark_done(session, job_id)
+
+        path.unlink(missing_ok=True)
+    except Exception as exc:
+        with base.sync_session() as session:
+            jobs.mark_failed(session, job_id, str(exc))
+        # Spool intentionally left on disk for retry/debug.
+        raise

@@ -16,6 +16,7 @@ dependencies = [
     "argon2-cffi",
     "python-slugify",
     "anyio",
+    "psycopg[binary]",
 ]
 
 [dependency-groups]
@@ -51,3 +52,10 @@ pythonpath = ["."]
 # reused across mismatched loops between test functions.
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
+filterwarnings = [
+    # testcontainers' own redis module trips this library-internal
+    # deprecation at import time (Task 6 adds the Redis container) --
+    # nothing we can fix from here, and the M1 gates require pristine
+    # pytest output.
+    "ignore:The @wait_container_is_ready decorator is deprecated:DeprecationWarning",
+]

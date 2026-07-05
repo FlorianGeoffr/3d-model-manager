@@ -14,6 +14,7 @@ import json
 
 from slugify import slugify
 
+from app.models.enums import BlobFormat, BlobKind
 from app.storage.base import StorageBackend
 
 # Sidecar filename, per SPEC "Path layout": `<slug>/.3dmm.json`.
@@ -62,3 +63,34 @@ def write_sidecar(backend: StorageBackend, model_id: int, slug: str, name: str) 
     """
     payload = json.dumps(sidecar_content(model_id, slug, name)).encode()
     backend.write(sidecar_key(slug), [payload])
+
+
+def infer_blob_kind_format(rel_path: str) -> tuple[BlobKind, BlobFormat]:
+    """Infer ``(kind, format)`` from an upload's ``rel_path`` extension
+    (SPEC ``blobs`` enums; Task 6 interface decision).
+
+    Sliced ``.gcode.3mf`` is matched BEFORE plain ``.3mf`` since it's a
+    double extension that would otherwise also match the ``.3mf`` check.
+    Matching is case-insensitive; anything unrecognized falls back to
+    ``other``/``other``.
+    """
+    lower = rel_path.lower()
+    if lower.endswith(".gcode.3mf"):
+        return BlobKind.SLICED, BlobFormat.GCODE_3MF
+    if lower.endswith(".3mf"):
+        return BlobKind.MESH, BlobFormat.THREEMF
+    if lower.endswith(".stl"):
+        return BlobKind.MESH, BlobFormat.STL
+    if lower.endswith(".obj"):
+        return BlobKind.MESH, BlobFormat.OBJ
+    if lower.endswith((".step", ".stp")):
+        return BlobKind.CAD, BlobFormat.STEP
+    if lower.endswith((".iges", ".igs")):
+        return BlobKind.CAD, BlobFormat.IGES
+    if lower.endswith(".gcode"):
+        return BlobKind.GCODE, BlobFormat.GCODE
+    if lower.endswith(".png"):
+        return BlobKind.IMAGE, BlobFormat.PNG
+    if lower.endswith((".jpg", ".jpeg")):
+        return BlobKind.IMAGE, BlobFormat.JPG
+    return BlobKind.OTHER, BlobFormat.OTHER

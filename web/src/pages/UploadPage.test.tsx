@@ -8,6 +8,7 @@ import {
 } from "@tanstack/react-router";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ReactNode } from "react";
 
 import type { ModelDetail, UploadResult } from "@/api/types";
 import { UploadPage } from "@/pages/UploadPage";
@@ -25,10 +26,44 @@ vi.mock("@/api/library", async (importOriginal) => {
   return {
     ...actual,
     useCreateModel: () => ({ mutateAsync: createModelMock }),
+    // "Existing model" mode: static search results + a network-free
+    // modelQueryOptions so TargetPicker's selectExisting can resolve either
+    // model without a backend. (fakeModel is a hoisted function declaration,
+    // so referencing it from this hoisted factory is safe.)
+    useModelSearchQuery: () => ({
+      data: {
+        items: [
+          { id: 1, slug: "model-a", name: "Model A" },
+          { id: 2, slug: "model-b", name: "Model B" },
+        ],
+      },
+    }),
+    modelQueryOptions: (slug: string) => ({
+      queryKey: ["test-model-detail", slug],
+      queryFn: async () =>
+        slug === "model-b"
+          ? fakeModel({
+              id: 2,
+              slug: "model-b",
+              name: "Model B",
+              current_revision: { ...fakeModel().current_revision!, id: 20, model_id: 2 },
+            })
+          : fakeModel({ id: 1, slug: "model-a", name: "Model A" }),
+    }),
   };
 });
 
 vi.mock("@/api/upload", () => ({ uploadFile: uploadFileMock }));
+
+// Radix's Popover never reaches the open state under jsdom (floating-ui
+// positioning + dismissable-layer focus handling both depend on real
+// browser behavior), and popover mechanics aren't what these tests
+// exercise -- render trigger and content inline unconditionally.
+vi.mock("@/components/ui/popover", () => ({
+  Popover: ({ children }: { children?: ReactNode }) => <>{children}</>,
+  PopoverTrigger: ({ children }: { children?: ReactNode }) => <>{children}</>,
+  PopoverContent: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+}));
 
 // UploadPage subscribes to the app-wide SSE connection via `useEvents`,
 // which normally requires an `EventsProvider` wrapping a real `EventSource`
@@ -150,5 +185,34 @@ describe("UploadPage", () => {
     await waitFor(() => expect(uploadFileMock).toHaveBeenCalledTimes(2));
     expect(createModelMock).toHaveBeenCalledTimes(2);
     expect(uploadFileMock.mock.calls[1][0]).toMatchObject({ modelId: 2 });
+  });
+
+  it("uploads to the newly picked existing model after switching targets between batches", async () => {
+    uploadFileMock.mockResolvedValueOnce(fakeUploadResult("job-1")).mockResolvedValueOnce(fakeUploadResult("job-2"));
+
+    const { container } = renderUploadPage();
+
+    fireEvent.click(await screen.findByRole("radio", { name: "Existing model" }));
+
+    // Pick Model A from the search results and upload batch 1 to it.
+    fireEvent.click(await screen.findByRole("button", { name: "Model A" }));
+    await waitFor(() => expect(screen.getByLabelText("Model")).toHaveValue("Model A"));
+    addFileToQueue(container, "a.stl");
+    fireEvent.click(screen.getByRole("button", { name: /^Upload/ }));
+    await waitFor(() => expect(uploadFileMock).toHaveBeenCalledTimes(1));
+    expect(uploadFileMock.mock.calls[0][0]).toMatchObject({ modelId: 1, revisionId: 10 });
+
+    // Switch the picker to Model B without touching the mode radio -- the
+    // cached target from batch 1 must be invalidated, or batch 2 silently
+    // lands on Model A while the UI claims otherwise.
+    fireEvent.click(screen.getByRole("button", { name: "Model B" }));
+    await waitFor(() => expect(screen.getByLabelText("Model")).toHaveValue("Model B"));
+    addFileToQueue(container, "b.stl");
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Upload/ })).not.toBeDisabled());
+    fireEvent.click(screen.getByRole("button", { name: /^Upload/ }));
+
+    await waitFor(() => expect(uploadFileMock).toHaveBeenCalledTimes(2));
+    expect(uploadFileMock.mock.calls[1][0]).toMatchObject({ modelId: 2, revisionId: 20 });
+    expect(createModelMock).not.toHaveBeenCalled();
   });
 });

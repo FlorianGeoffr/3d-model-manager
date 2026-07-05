@@ -429,13 +429,13 @@ async def test_upload_replace_while_existing_file_still_processing_is_409(
     assert count == 1  # the pending file's row was NOT deleted by the rejected replace
 
 
-async def test_upload_replace_of_settled_file_with_no_job_row_succeeds(
+async def test_upload_replace_of_failed_store_job_file_succeeds(
     authenticated_client: httpx.AsyncClient,
     db_session: AsyncSession,
     backend: LocalStorageBackend,
 ) -> None:
-    """A file whose store job permanently failed (or was superseded) also
-    has ``verified_at`` NULL, but with no queued/running job left to race --
+    """A file whose store job permanently failed also has ``verified_at``
+    NULL, but its latest job is settled (``failed``, not queued/running) --
     replacing it must still work, not get stuck 409ing forever.
     """
     created = await _create_model(authenticated_client, "Replace Failed Job Target")
@@ -454,6 +454,16 @@ async def test_upload_replace_of_settled_file_with_no_job_row_succeeds(
         verified_at=None,
     )
     db_session.add(failed_file)
+    await db_session.flush()
+    db_session.add(
+        Job(
+            type="store_to_backend",
+            subject_type="file",
+            subject_id=failed_file.id,
+            state=jobs_service.STATE_FAILED,
+            error="blob hash mismatch",
+        )
+    )
     await db_session.commit()
 
     response = await _upload(

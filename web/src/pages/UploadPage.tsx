@@ -80,6 +80,14 @@ export function UploadPage() {
     setResolvedTarget(null);
   }
 
+  function handleExistingTargetChange(target: ExistingTarget | null) {
+    setExistingTarget(target);
+    // Same rule as editing the new-model name: picking a different existing
+    // model must invalidate whatever target a previous batch resolved, or
+    // the next batch silently uploads to the stale one.
+    setResolvedTarget(null);
+  }
+
   function handleFileInputChange(event: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files ?? []).map((file) => ({
       file,
@@ -165,7 +173,7 @@ export function UploadPage() {
             newModelName={newModelName}
             onNewModelNameChange={handleNewModelNameChange}
             existingTarget={existingTarget}
-            onExistingTargetChange={setExistingTarget}
+            onExistingTargetChange={handleExistingTargetChange}
             disabled={isUploading}
           />
         </CardContent>

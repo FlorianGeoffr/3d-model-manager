@@ -13,6 +13,7 @@ web/dist/
 
 # App runtime
 data/
+library/
 *.env
 .env.*
 !.env.example

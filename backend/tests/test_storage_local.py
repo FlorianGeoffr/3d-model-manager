@@ -59,6 +59,24 @@ def test_read_missing_key_raises_immediately(backend: LocalStorageBackend) -> No
         backend.read("missing.bin")
 
 
+def test_write_produces_world_readable_file_not_mkstemp_default_0600(
+    backend: LocalStorageBackend,
+) -> None:
+    """Task 9 e2e finding: ``tempfile.mkstemp`` always creates its temp file
+    mode 0600 regardless of umask -- publishing that straight through via
+    ``os.replace`` left every library file readable only by the app's own
+    user, breaking host-side inspection of the (SPEC requirement 3)
+    "human-readable tree" through a bind mount running as a different uid
+    (e.g. the docker e2e run, reading container-written files as the host
+    user). ``write()`` must relax the mode back to a normal 0644 before
+    publishing.
+    """
+    backend.write("thing.stl", [b"payload"])
+
+    mode = (backend.root / "thing.stl").stat().st_mode & 0o777
+    assert mode == 0o644
+
+
 # -- write atomicity ----------------------------------------------------------
 
 
@@ -194,6 +212,25 @@ def test_copy_falls_back_to_shutil_when_ficlone_unsupported(
 def test_copy_missing_src_raises(backend: LocalStorageBackend) -> None:
     with pytest.raises(StorageKeyNotFound):
         backend.copy("missing.bin", "dst.bin")
+
+
+def test_copy_produces_world_readable_file_via_reflink_or_fallback(
+    backend: LocalStorageBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same fix as write()'s mkstemp-mode test above, applied to both of
+    copy()'s paths (see the comment in ``LocalStorageBackend.copy``).
+    """
+    backend.write("src.bin", [b"payload"])
+
+    backend.copy("src.bin", "dst-reflink.bin")
+    assert (backend.root / "dst-reflink.bin").stat().st_mode & 0o777 == 0o644
+
+    def _raise(*args: object, **kwargs: object) -> None:
+        raise OSError("FICLONE not supported on this filesystem")
+
+    monkeypatch.setattr(fcntl, "ioctl", _raise)
+    backend.copy("src.bin", "dst-fallback.bin")
+    assert (backend.root / "dst-fallback.bin").stat().st_mode & 0o777 == 0o644
 
 
 # -- durability (fsync before publish) ---------------------------------------

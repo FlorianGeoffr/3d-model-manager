@@ -111,6 +111,13 @@ class LocalStorageBackend:
         )
         tmp_path = Path(tmp_name)
         try:
+            # `mkstemp` always creates the temp file mode 0600, ignoring
+            # umask, regardless of what the destination should end up as
+            # (Task 9 e2e finding: library files are never secrets -- SPEC
+            # requirement 3 explicitly wants a "human-readable tree" a host
+            # operator can inspect/back up directly -- so relax this back to
+            # a normal 0644 before the atomic replace below publishes it).
+            os.fchmod(tmp_fd, 0o644)
             hasher = blake3()
             size = 0
             with os.fdopen(tmp_fd, "wb") as tmp_file:
@@ -197,6 +204,9 @@ class LocalStorageBackend:
         tmp_fd, tmp_name = tempfile.mkstemp(
             dir=dst_path.parent, prefix=f"{_TMP_PREFIX}{dst_path.name}.", suffix=".tmp"
         )
+        # See the matching comment in write(): mkstemp forces 0600 regardless
+        # of umask; relax it back to 0644 before this temp file is published.
+        os.fchmod(tmp_fd, 0o644)
         os.close(tmp_fd)
         tmp_path = Path(tmp_name)
         try:

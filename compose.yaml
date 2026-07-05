@@ -1,0 +1,79 @@
+# M1 stack: api + worker (one shared image, docker/Dockerfile) + db + redis.
+# `printerd` is M4 -- not added yet (SPEC "Architecture").
+#
+# Quickstart: `cp .env.example .env` then `docker compose up -d --build`.
+# See README "Quickstart" for the first-run admin password note.
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: tdmm:local
+    ports:
+      - "8080:8080"
+    environment:
+      TDMM_ROLE: api
+    env_file:
+      - .env
+    volumes:
+      - tdmm_data:/data
+      - ./library:/library
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request as u; u.urlopen('http://localhost:8080/api/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: tdmm:local
+    environment:
+      TDMM_ROLE: worker
+    env_file:
+      - .env
+    volumes:
+      - tdmm_data:/data
+      - ./library:/library
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      # Must match the credentials embedded in TDMM_DATABASE_URL in .env.
+      POSTGRES_USER: tdmm
+      POSTGRES_PASSWORD: tdmm
+      POSTGRES_DB: tdmm
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tdmm -d tdmm"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:
+  tdmm_data:

@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     # How often GET /api/events sends a `: ping` heartbeat comment while idle
     # (Task 6). Overridable so tests don't have to wait a real 15s.
     sse_heartbeat_interval_s: float = 15.0
+    # Directory the built frontend (`web/dist`) lives in, e.g. `/app/static`
+    # inside the Docker image (Task 9). `None` (the default) disables SPA
+    # serving entirely -- local dev runs the Vite dev server instead, which
+    # proxies `/api` to this backend (see README "Development").
+    static_dir: Path | None = None
 
 
 @lru_cache

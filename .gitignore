@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Node
+node_modules/
+web/dist/
+
+# App runtime
+data/
+*.env
+.env.*
+!.env.example
+
+# SDD scratch (progress ledger, briefs, reports)
+.superpowers/
+
+# Editors/OS
+.idea/
+.vscode/
+.DS_Store

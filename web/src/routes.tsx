@@ -6,6 +6,7 @@ import { AppShell } from "@/components/AppShell";
 import { ComingSoonPage } from "@/pages/ComingSoonPage";
 import { LibraryPage } from "@/pages/LibraryPage";
 import { LoginPage } from "@/pages/LoginPage";
+import { ModelDetailPage } from "@/pages/ModelDetailPage";
 import { UploadPage } from "@/pages/UploadPage";
 
 export interface RouterContext {
@@ -44,6 +45,12 @@ const libraryRoute = createRoute({
   component: LibraryPage,
 });
 
+const modelDetailRoute = createRoute({
+  getParentRoute: () => authenticatedRoute,
+  path: "/models/$slug",
+  component: ModelDetailPage,
+});
+
 const uploadRoute = createRoute({
   getParentRoute: () => authenticatedRoute,
   path: "/upload",
@@ -78,6 +85,7 @@ export const routeTree = rootRoute.addChildren([
   loginRoute,
   authenticatedRoute.addChildren([
     libraryRoute,
+    modelDetailRoute,
     uploadRoute,
     importRoute,
     printerRoute,

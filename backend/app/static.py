@@ -49,5 +49,22 @@ def mount_spa(app: FastAPI, static_dir: Path) -> None:
         # `../../etc/passwd`) before ever touching the filesystem outside
         # static_root.
         if candidate.is_relative_to(static_root) and candidate.is_file():
-            return FileResponse(candidate)
-        return FileResponse(index_file)
+            # index.html is the mutable entry point; always send no-cache so
+            # the browser checks for updates.
+            if candidate == index_file:
+                return FileResponse(
+                    candidate,
+                    headers={"Cache-Control": "no-cache"},
+                )
+            # Other static files (JS/CSS/images) have content-hashed filenames
+            # emitted by Vite, so they are immutable and safe to cache forever.
+            return FileResponse(
+                candidate,
+                headers={"Cache-Control": "public, max-age=31536000, immutable"},
+            )
+        # Fallback to index.html for client-side routing; must not be cached
+        # so the browser always gets fresh HTML to check for updates.
+        return FileResponse(
+            index_file,
+            headers={"Cache-Control": "no-cache"},
+        )

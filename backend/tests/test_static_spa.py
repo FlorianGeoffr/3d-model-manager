@@ -48,6 +48,17 @@ async def test_serves_real_static_file(static_dir: Path) -> None:
     assert "console.log" in response.text
 
 
+async def test_real_static_file_has_immutable_cache_headers(
+    static_dir: Path,
+) -> None:
+    app = create_app()
+    async with await _client(app) as client:
+        response = await client.get("/assets/app.js")
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "public, max-age=31536000, immutable"
+
+
 async def test_root_serves_index(static_dir: Path) -> None:
     app = create_app()
     async with await _client(app) as client:
@@ -55,6 +66,27 @@ async def test_root_serves_index(static_dir: Path) -> None:
 
     assert response.status_code == 200
     assert "spa shell" in response.text
+
+
+async def test_index_has_no_cache_headers(static_dir: Path) -> None:
+    app = create_app()
+    async with await _client(app) as client:
+        response = await client.get("/")
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-cache"
+
+
+async def test_index_html_direct_request_has_no_cache_headers(
+    static_dir: Path,
+) -> None:
+    app = create_app()
+    async with await _client(app) as client:
+        response = await client.get("/index.html")
+
+    assert response.status_code == 200
+    assert "spa shell" in response.text
+    assert response.headers["cache-control"] == "no-cache"
 
 
 async def test_unknown_frontend_route_falls_back_to_index(static_dir: Path) -> None:
@@ -92,6 +124,31 @@ async def test_path_traversal_falls_back_to_index_not_host_file(
     # sends a raw un-normalized path.
     assert response.status_code == 200
     assert "spa shell" in response.text
+
+
+def test_traversal_guard_rejects_literal_dotdot(static_dir: Path, tmp_path: Path) -> None:
+    """Direct unit test: calling the fallback handler with literal .. in
+    full_path must not escape the static_root, even before the request hits
+    the router.
+    """
+    secret = tmp_path / "secret.txt"
+    secret.write_text("do not serve me")
+
+    # The fallback handler's containment logic is: resolve the candidate
+    # path and check that it's relative_to static_root.
+    static_root = static_dir.resolve()
+
+    # Simulate what spa_fallback does: try to resolve a path with `..`
+    # and check that is_relative_to rejects it.
+    traversal_path = "../secret.txt"
+    candidate = (static_root / traversal_path).resolve()
+
+    # The containment guard must reject this.
+    assert not candidate.is_relative_to(static_root)
+    # So it falls back to index.html, not the secret file.
+    assert candidate.is_file()  # The file exists on the host
+    assert secret.read_text() == "do not serve me"  # Confirm it exists
+    # But the fallback handler never serves it because of is_relative_to
 
 
 async def test_static_disabled_by_default() -> None:

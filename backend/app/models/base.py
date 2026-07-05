@@ -31,6 +31,19 @@ class Base(DeclarativeBase):
         datetime: DateTime(timezone=True),
     }
 
+    # Inherited by every mapped subclass (SQLAlchemy reads `__mapper_args__`
+    # off the whole MRO). Without this, columns with a server-evaluated
+    # default/onupdate (`server_default=func.now()`, `onupdate=func.now()`)
+    # are left "expired" after INSERT/UPDATE instead of being populated from
+    # the statement's RETURNING clause -- fine within the same call that did
+    # the write, but a *later* plain attribute access (e.g. building a
+    # response schema right after `await session.commit()`) then triggers an
+    # implicit lazy reload. With an `AsyncSession`, that reload can't
+    # establish the greenlet context SQLAlchemy's async bridge needs and
+    # raises ``MissingGreenlet`` -- postgresql/asyncpg supports RETURNING
+    # fine, so there's no cost to always populating eagerly.
+    __mapper_args__ = {"eager_defaults": True}  # noqa: RUF012
+
 
 def str_enum[E: StrEnum](enum_cls: type[E], name: str) -> SAEnum:
     """Build a ``sa.Enum`` column type backed by a Python ``StrEnum``.

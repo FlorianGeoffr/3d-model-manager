@@ -8,9 +8,11 @@ itself.
 """
 
 import os
-from collections.abc import AsyncGenerator, Iterator
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 
+import blake3
 import httpx
 import pytest
 from alembic.config import Config
@@ -22,9 +24,15 @@ from alembic import command
 from app.config import get_settings
 from app.db import get_engine, get_sessionmaker
 from app.main import create_app
-from app.models import Base
+from app.models import Base, Blob, File, Model, Revision, User
+from app.models.enums import BlobFormat, BlobKind
+from app.security import hash_password
+from app.storage.local import LocalStorageBackend
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
+
+ADMIN_USERNAME = "admin"
+ADMIN_PASSWORD = "correct horse battery staple"
 
 
 def _reset_settings_and_engine_caches() -> None:
@@ -82,3 +90,104 @@ async def client(migrated_db: str) -> AsyncGenerator[httpx.AsyncClient, None]:
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
+
+
+# ---------------------------------------------------------------------------
+# Library-domain fixtures (Task 5): a real local storage backend rooted at a
+# tmp_path, plus auth/seeding helpers shared by the models/revisions/
+# tags/notes test modules.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def library_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """Point ``TDMM_LIBRARY_ROOT`` at a fresh tmp_path for this test.
+
+    ``app.storage.registry.get_backend`` reads ``get_settings()`` fresh on
+    every call (it's not baked into the app at ``create_app()`` time), so
+    setting the env var and clearing the settings cache before the test body
+    issues any HTTP request is sufficient -- fixture instantiation always
+    completes before the test function body runs, regardless of the order
+    ``client``/``library_root`` appear in a test's parameter list.
+    """
+    root = tmp_path / "library"
+    root.mkdir()
+    monkeypatch.setenv("TDMM_LIBRARY_ROOT", str(root))
+    get_settings.cache_clear()
+    yield root
+    get_settings.cache_clear()
+
+
+@pytest.fixture
+def backend(library_root: Path) -> LocalStorageBackend:
+    """A ``LocalStorageBackend`` on the same root the app is configured to
+    use for this test (see ``library_root``).
+    """
+    return LocalStorageBackend(library_root)
+
+
+@pytest.fixture
+async def admin_user(db_session: AsyncSession) -> User:
+    user = User(username=ADMIN_USERNAME, password_hash=hash_password(ADMIN_PASSWORD))
+    db_session.add(user)
+    await db_session.commit()
+    await db_session.refresh(user)
+    return user
+
+
+@pytest.fixture
+async def authenticated_client(client: httpx.AsyncClient, admin_user: User) -> httpx.AsyncClient:
+    """The ``client`` fixture, already logged in as the seeded admin user.
+
+    httpx's ``AsyncClient`` keeps a cookie jar, so every subsequent request
+    on the same client instance carries the session cookie automatically.
+    """
+    response = await client.post(
+        "/api/auth/login", json={"username": ADMIN_USERNAME, "password": ADMIN_PASSWORD}
+    )
+    assert response.status_code == 204
+    return client
+
+
+@pytest.fixture
+def seed_file(
+    db_session: AsyncSession, backend: LocalStorageBackend
+) -> Callable[..., Awaitable[File]]:
+    """Factory to plant a file directly (writing bytes via the backend +
+    inserting Blob/File rows) without going through the upload endpoint
+    (Task 6). Task 5's interface decision calls for exactly this: tests seed
+    revision contents by hand.
+    """
+
+    async def _seed(
+        model: Model,
+        revision: Revision,
+        rel_path: str,
+        content: bytes,
+        *,
+        blob_format: BlobFormat = BlobFormat.STL,
+        blob_kind: BlobKind = BlobKind.MESH,
+    ) -> File:
+        digest = blake3.blake3(content).hexdigest()
+        storage_path = f"{model.slug}/{revision.dir_name}/{rel_path}"
+        backend.write(storage_path, [content])
+
+        blob = await db_session.get(Blob, digest)
+        if blob is None:
+            blob = Blob(hash=digest, size=len(content), kind=blob_kind, format=blob_format)
+            db_session.add(blob)
+            await db_session.flush()
+
+        file = File(
+            revision_id=revision.id,
+            blob_hash=digest,
+            rel_path=rel_path,
+            storage_path=storage_path,
+            verified_at=datetime.now(UTC),
+        )
+        db_session.add(file)
+        await db_session.commit()
+        await db_session.refresh(file)
+        return file
+
+    return _seed

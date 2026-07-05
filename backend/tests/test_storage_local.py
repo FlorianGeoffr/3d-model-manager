@@ -130,6 +130,13 @@ def test_delete_missing_key_raises(backend: LocalStorageBackend) -> None:
         backend.delete("missing.bin")
 
 
+def test_delete_directory_key_raises_storage_error(backend: LocalStorageBackend) -> None:
+    backend.mkdirs("sub")
+
+    with pytest.raises(StorageError):
+        backend.delete("sub")
+
+
 # -- move -----------------------------------------------------------------
 
 
@@ -189,6 +196,73 @@ def test_copy_missing_src_raises(backend: LocalStorageBackend) -> None:
         backend.copy("missing.bin", "dst.bin")
 
 
+# -- durability (fsync before publish) ---------------------------------------
+
+
+def test_write_fsyncs_temp_file_before_replace(
+    backend: LocalStorageBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_fsync = os.fsync
+    fsynced_fds: list[int] = []
+
+    def spy_fsync(fd: int) -> None:
+        fsynced_fds.append(fd)
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", spy_fsync)
+
+    backend.write("f.bin", [b"payload"])
+
+    assert fsynced_fds, "write() must fsync the temp file before os.replace"
+    assert b"".join(backend.read("f.bin")) == b"payload"
+
+
+def test_copy_reflink_path_fsyncs_temp_file_before_replace(
+    backend: LocalStorageBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend.write("src.bin", [b"x"])
+    real_fsync = os.fsync
+    fsynced_fds: list[int] = []
+
+    def spy_fsync(fd: int) -> None:
+        fsynced_fds.append(fd)
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", spy_fsync)
+    # Force the reflink branch to report success regardless of host filesystem.
+    monkeypatch.setattr(fcntl, "ioctl", lambda *args, **kwargs: None)
+
+    backend.copy("src.bin", "dst.bin")
+
+    assert fsynced_fds, "copy()'s reflink branch must fsync before os.replace"
+    assert backend.exists("dst.bin") is True
+
+
+def test_copy_fallback_path_fsyncs_temp_file_before_replace(
+    backend: LocalStorageBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = os.urandom(4096)
+    backend.write("src.bin", [payload])
+    real_fsync = os.fsync
+    fsynced_fds: list[int] = []
+
+    def spy_fsync(fd: int) -> None:
+        fsynced_fds.append(fd)
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", spy_fsync)
+
+    def _raise(*args: object, **kwargs: object) -> None:
+        raise OSError("FICLONE not supported on this filesystem")
+
+    monkeypatch.setattr(fcntl, "ioctl", _raise)
+
+    backend.copy("src.bin", "dst.bin")
+
+    assert fsynced_fds, "copy()'s shutil fallback branch must fsync before os.replace"
+    assert b"".join(backend.read("dst.bin")) == payload
+
+
 # -- walk -----------------------------------------------------------------
 
 
@@ -239,6 +313,17 @@ def test_walk_ignores_directories_as_entries(backend: LocalStorageBackend) -> No
     assert "sub" not in keys
 
 
+def test_walk_filters_out_staging_temp_files(backend: LocalStorageBackend) -> None:
+    # Simulates a walk racing an in-flight write()/copy(), or a staging temp
+    # file left behind by a crash before cleanup ran.
+    backend.write("sub/real.bin", [b"data"])
+    (backend.root / "sub" / ".tdmm-tmp-xyz").write_bytes(b"leftover")
+
+    keys = [e.key for e in backend.walk()]
+
+    assert keys == ["sub/real.bin"]
+
+
 # -- mkdirs -----------------------------------------------------------------
 
 
@@ -266,11 +351,26 @@ def test_mkdirs_is_idempotent(backend: LocalStorageBackend) -> None:
         "a/../../escape.bin",
         "a\\b.bin",
         "",
+        ".",
     ],
 )
 def test_write_rejects_unsafe_keys(backend: LocalStorageBackend, bad_key: str) -> None:
     with pytest.raises(StorageError):
         backend.write(bad_key, [b"x"])
+
+
+def test_stat_rejects_dot_key(backend: LocalStorageBackend) -> None:
+    # PurePosixPath(".").parts == (), which used to resolve straight to
+    # `root` -- a directory, not a file.
+    with pytest.raises(StorageError):
+        backend.stat(".")
+
+
+def test_copy_rejects_dot_key_as_destination(backend: LocalStorageBackend) -> None:
+    backend.write("a.bin", [b"x"])
+
+    with pytest.raises(StorageError):
+        backend.copy("a.bin", ".")
 
 
 def test_read_rejects_traversal_key(backend: LocalStorageBackend) -> None:

@@ -102,7 +102,12 @@ class StorageBackend(Protocol):
 
         Recurses into subdirectories; yields files only (never directories).
         Keys are always POSIX-style, relative to the backend root. Order is
-        deterministic (sorted) so callers can rely on stable output.
+        deterministic -- entries within each directory are sorted by name,
+        depth-first -- so callers can rely on stable, repeatable output, but
+        this is *not* a total lexicographic ordering over full keys (e.g. a
+        file directly in a directory sorts before that directory's
+        subdirectories are descended into, regardless of the subdirectory's
+        name relative to the file's).
         """
         ...
 

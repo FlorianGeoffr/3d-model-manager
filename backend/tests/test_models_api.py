@@ -279,3 +279,83 @@ async def test_gallery_invalid_cursor_is_400(authenticated_client: httpx.AsyncCl
     response = await authenticated_client.get("/api/models?cursor=not-valid-base64!!!")
 
     assert response.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# patch: cover_blob_hash validation
+# ---------------------------------------------------------------------------
+
+
+async def test_patch_model_with_unknown_cover_blob_hash_is_422(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    created = await _create_model(authenticated_client, "Test Model")
+
+    # 64-character hex string (valid blake3 hash length) but non-existent blob
+    bogus_hash = "a" * 64
+
+    response = await authenticated_client.patch(
+        f"/api/models/{created['slug']}", json={"cover_blob_hash": bogus_hash}
+    )
+
+    assert response.status_code == 422
+    detail = response.json()
+    assert detail["detail"] == "unknown cover_blob_hash"
+
+
+async def test_patch_model_with_valid_cover_blob_hash_persists(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    created = await _create_model(authenticated_client, "Coverable Model")
+
+    # Get model and revision from DB
+    model = await db_session.get(Model, created["id"])
+    revision = await db_session.get(Revision, model.current_revision_id)
+
+    # Seed a file (creates blob + file)
+    file = await seed_file(model, revision, "cover.stl", b"solid cover-data")
+
+    # Now patch with this blob hash as cover
+    response = await authenticated_client.patch(
+        f"/api/models/{created['slug']}", json={"cover_blob_hash": file.blob_hash}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cover_blob_hash"] == file.blob_hash
+
+    # Verify it persisted in DB
+    await db_session.refresh(model)
+    assert model.cover_blob_hash == file.blob_hash
+
+
+async def test_patch_model_clearing_cover_blob_hash_with_null(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    created = await _create_model(authenticated_client, "Cover Clearable Model")
+
+    # Get model and revision from DB
+    model = await db_session.get(Model, created["id"])
+    revision = await db_session.get(Revision, model.current_revision_id)
+
+    # Seed a file and set it as cover
+    file = await seed_file(model, revision, "cover.stl", b"solid cover-data")
+    model.cover_blob_hash = file.blob_hash
+    await db_session.commit()
+
+    # Clear the cover by setting to null
+    response = await authenticated_client.patch(
+        f"/api/models/{created['slug']}", json={"cover_blob_hash": None}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cover_blob_hash"] is None
+
+    # Verify it persisted in DB
+    await db_session.refresh(model)
+    assert model.cover_blob_hash is None

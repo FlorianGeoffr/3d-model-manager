@@ -107,7 +107,18 @@ async def patch_model(db: AsyncSession, model: Model, changes: dict[str, object]
     """Apply ``changes`` (already ``exclude_unset``-filtered by the caller).
 
     ``name`` never touches ``slug``/on-disk directories in M1 (Task 5 brief).
+    Pre-validates ``cover_blob_hash`` if provided: must exist in blobs table.
     """
+    # Pre-validate cover_blob_hash before applying changes
+    if "cover_blob_hash" in changes:
+        new_hash = changes["cover_blob_hash"]
+        if new_hash is not None:  # None clears the cover; only validate non-None values
+            blob = await db.get(Blob, new_hash)
+            if blob is None:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_CONTENT, detail="unknown cover_blob_hash"
+                )
+
     for field in ("name", "description", "cover_blob_hash"):
         if field in changes:
             setattr(model, field, changes[field])

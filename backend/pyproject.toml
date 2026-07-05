@@ -40,3 +40,8 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["."]
+# One event loop for the whole session so the session-scoped Postgres
+# testcontainer engine/pool (see tests/conftest.py) isn't torn down and
+# reused across mismatched loops between test functions.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
+import anyio
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
@@ -33,9 +34,18 @@ async def _event_stream(redis_url: str, heartbeat_interval: float) -> AsyncItera
                 data = data.decode()
             yield f"data: {data}\n\n".encode()
     finally:
-        await pubsub.unsubscribe(CHANNEL)
-        await pubsub.aclose()
-        await client.aclose()
+        # Client disconnect closes this generator from inside an already-
+        # cancelled scope (Starlette cancels the request task, which throws
+        # into wherever the generator was suspended -- here, the
+        # `get_message` await above). Without shielding, the FIRST await
+        # below raises `CancelledError` immediately, skipping
+        # `pubsub.aclose()`/`client.aclose()` entirely and leaking the Redis
+        # connection. Shield just these cleanup awaits so they run to
+        # completion regardless of the outer cancellation.
+        with anyio.CancelScope(shield=True):
+            await pubsub.unsubscribe(CHANNEL)
+            await pubsub.aclose()
+            await client.aclose()
 
 
 @router.get("/events")

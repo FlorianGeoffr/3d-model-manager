@@ -3,6 +3,12 @@ interface decisions): streams the upload's spool file onto the storage
 backend, verifies the blake3 hash the backend computed while writing
 matches the blob's hash, marks the file verified, and drops the spool file.
 
+Before marking anything verified, it also re-checks that the ``File`` row is
+still there and still points at the blob it started with -- a belt-and-
+suspenders guard alongside ``app.services.library``'s own 409s for the case
+where a ``replace=true`` re-upload deleted/repointed the row while this
+job's ``backend.write`` was in flight.
+
 Runs entirely in the worker's SYNC world -- see ``app.tasks.base`` for why
 this can't share the API's async engine.
 """
@@ -71,6 +77,23 @@ def store_to_backend(job_id: str, file_id: int, spool_path: str) -> None:
 
         with base.sync_session() as session:
             file = session.get(File, file_id)
+            if file is None or file.blob_hash != expected_hash:
+                # This file's row was superseded while `backend.write` above
+                # was running: a `replace=true` re-upload for the same
+                # rel_path deleted this row (new id, own job) and/or a
+                # different upload repointed a row at a new blob before we
+                # got here. The bytes we just wrote may already be stale, so
+                # marking anything verified now would let a losing write
+                # silently win the race. There's also nothing left for this
+                # job to usefully retry -- the row it was writing for is gone
+                # or has moved on -- so `failed` (not `done`) is the correct
+                # terminal state; the spool file is deliberately left on disk
+                # (same as the hash-mismatch path above) in case a human
+                # wants to inspect it.
+                jobs.mark_failed(
+                    session, job_id, "file was superseded by a replacement upload; store aborted"
+                )
+                return
             now = datetime.now(UTC)
             file.mtime = now
             file.verified_at = now

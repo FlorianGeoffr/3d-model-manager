@@ -71,6 +71,15 @@ export function UploadPage() {
     setQueue((prev) => prev.filter((item) => item.id !== id));
   }
 
+  function handleNewModelNameChange(name: string) {
+    setNewModelName(name);
+    // The name the user is now typing no longer describes whatever model a
+    // previous batch resolved/created -- editing it after that point must
+    // start a fresh model on the next upload, not silently keep appending
+    // to the old one.
+    setResolvedTarget(null);
+  }
+
   function handleFileInputChange(event: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files ?? []).map((file) => ({
       file,
@@ -91,22 +100,28 @@ export function UploadPage() {
   const pendingCount = queue.filter((item) => item.status === "pending").length;
 
   async function handleStartUpload() {
-    let target: ResolvedTarget;
-    if (mode === "new") {
-      let model: ModelDetail;
-      try {
-        model = await createModel.mutateAsync({ name: newModelName.trim() });
-      } catch {
-        // Global MutationCache.onError toast already surfaced the failure.
-        return;
+    // Reuse the target resolved by a previous batch instead of re-resolving
+    // it: in "new" mode that previously meant calling `createModel` again on
+    // every subsequent batch, silently creating "name-2", "name-3", ...
+    // instead of adding more files to the model the first batch created.
+    let target = resolvedTarget;
+    if (!target) {
+      if (mode === "new") {
+        let model: ModelDetail;
+        try {
+          model = await createModel.mutateAsync({ name: newModelName.trim() });
+        } catch {
+          // Global MutationCache.onError toast already surfaced the failure.
+          return;
+        }
+        if (!model.current_revision) return;
+        target = { modelId: model.id, revisionId: model.current_revision.id, slug: model.slug, name: model.name };
+      } else {
+        if (!existingTarget) return;
+        target = existingTarget;
       }
-      if (!model.current_revision) return;
-      target = { modelId: model.id, revisionId: model.current_revision.id, slug: model.slug, name: model.name };
-    } else {
-      if (!existingTarget) return;
-      target = existingTarget;
+      setResolvedTarget(target);
     }
-    setResolvedTarget(target);
     setIsUploading(true);
 
     for (const item of queue) {
@@ -148,7 +163,7 @@ export function UploadPage() {
               setResolvedTarget(null);
             }}
             newModelName={newModelName}
-            onNewModelNameChange={setNewModelName}
+            onNewModelNameChange={handleNewModelNameChange}
             existingTarget={existingTarget}
             onExistingTargetChange={setExistingTarget}
             disabled={isUploading}

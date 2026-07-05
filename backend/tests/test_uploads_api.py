@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Blob, File, Job, Model, Revision
 from app.models.enums import BlobFormat, BlobKind
+from app.services import jobs as jobs_service
 from app.services import library
 from app.storage.local import LocalStorageBackend
 
@@ -368,6 +369,107 @@ async def test_upload_gcode_3mf_double_extension_infers_sliced(
     file_out = next(f for f in detail.json()["files"] if f["rel_path"] == "print.gcode.3mf")
     assert file_out["kind"] == "sliced"
     assert file_out["format"] == "gcode_3mf"
+
+
+async def test_upload_replace_while_existing_file_still_processing_is_409(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """A ``replace=true`` upload targeting a file whose OWN store job hasn't
+    settled yet (``verified_at`` NULL, job queued/running) must be rejected
+    rather than deleting that row and dispatching a second
+    ``store_to_backend`` job for the same ``rel_path`` -- the two jobs'
+    ``backend.write``s would otherwise race each other's ``os.replace``,
+    publishing whichever lands last regardless of which job the DB calls
+    "verified".
+    """
+    created = await _create_model(authenticated_client, "Replace While Pending Target")
+    revision_id = created["current_revision"]["id"]
+    revision = await db_session.get(Revision, revision_id)
+    model = await db_session.get(Model, created["id"])
+
+    pending_hash = blake3.blake3(b"still-uploading-bytes").hexdigest()
+    db_session.add(Blob(hash=pending_hash, size=21, kind=BlobKind.MESH, format=BlobFormat.STL))
+    await db_session.flush()
+    pending_file = File(
+        revision_id=revision.id,
+        blob_hash=pending_hash,
+        rel_path="a.stl",
+        storage_path=f"{model.slug}/{revision.dir_name}/a.stl",
+        verified_at=None,
+    )
+    db_session.add(pending_file)
+    await db_session.flush()
+    await jobs_service.create_job(
+        db_session,
+        id=uuid.uuid4(),
+        type="store_to_backend",
+        subject_type="file",
+        subject_id=pending_file.id,
+    )
+    await db_session.commit()
+
+    response = await _upload(
+        authenticated_client,
+        model_id=created["id"],
+        revision_id=revision_id,
+        rel_path="a.stl",
+        content=b"new-bytes",
+        replace=True,
+    )
+
+    assert response.status_code == 409
+    assert "processing" in response.json()["detail"]
+    db_session.expire_all()
+    count = await db_session.scalar(
+        select(func.count())
+        .select_from(File)
+        .where(File.revision_id == revision_id, File.rel_path == "a.stl")
+    )
+    assert count == 1  # the pending file's row was NOT deleted by the rejected replace
+
+
+async def test_upload_replace_of_settled_file_with_no_job_row_succeeds(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    backend: LocalStorageBackend,
+) -> None:
+    """A file whose store job permanently failed (or was superseded) also
+    has ``verified_at`` NULL, but with no queued/running job left to race --
+    replacing it must still work, not get stuck 409ing forever.
+    """
+    created = await _create_model(authenticated_client, "Replace Failed Job Target")
+    revision_id = created["current_revision"]["id"]
+    revision = await db_session.get(Revision, revision_id)
+    model = await db_session.get(Model, created["id"])
+
+    failed_hash = blake3.blake3(b"never-made-it-bytes").hexdigest()
+    db_session.add(Blob(hash=failed_hash, size=19, kind=BlobKind.MESH, format=BlobFormat.STL))
+    await db_session.flush()
+    failed_file = File(
+        revision_id=revision.id,
+        blob_hash=failed_hash,
+        rel_path="a.stl",
+        storage_path=f"{model.slug}/{revision.dir_name}/a.stl",
+        verified_at=None,
+    )
+    db_session.add(failed_file)
+    await db_session.commit()
+
+    response = await _upload(
+        authenticated_client,
+        model_id=created["id"],
+        revision_id=revision_id,
+        rel_path="a.stl",
+        content=b"replacement-bytes",
+        replace=True,
+    )
+
+    assert response.status_code == 201, response.text
+    assert (
+        b"".join(backend.read("replace-failed-job-target/rev-001_initial/a.stl"))
+        == b"replacement-bytes"
+    )
 
 
 async def test_upload_job_id_equals_uuid_used_for_spool(

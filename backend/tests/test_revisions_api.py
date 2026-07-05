@@ -3,14 +3,19 @@ current-revision-only mutability rule (Task 5 brief + SPEC "Storage
 layer" -> "New revision", "Data model" -> "Revision diff").
 """
 
+import uuid
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 
+import blake3
 import httpx
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import File, Model, Revision
+from app.models import Blob, File, Model, Revision
+from app.models.enums import BlobFormat, BlobKind
+from app.services import jobs as jobs_service
 from app.storage.local import LocalStorageBackend
 
 pytestmark = pytest.mark.usefixtures("library_root")
@@ -28,6 +33,39 @@ async def _load_model_and_current_revision(
     model = await db_session.get(Model, model_id)
     revision = await db_session.get(Revision, model.current_revision_id)
     return model, revision
+
+
+async def _seed_pending_file(
+    db_session: AsyncSession, model: Model, revision: Revision, rel_path: str, content: bytes
+) -> File:
+    """Plant a ``File`` row whose store job hasn't settled yet (``verified_at``
+    NULL, a live ``queued`` job) WITHOUT writing any bytes through the
+    backend -- the DB-visible half of an upload whose ``store_to_backend``
+    run is still in flight.
+    """
+    digest = blake3.blake3(content).hexdigest()
+    blob = Blob(hash=digest, size=len(content), kind=BlobKind.MESH, format=BlobFormat.STL)
+    db_session.add(blob)
+    await db_session.flush()
+    file = File(
+        revision_id=revision.id,
+        blob_hash=digest,
+        rel_path=rel_path,
+        storage_path=f"{model.slug}/{revision.dir_name}/{rel_path}",
+        verified_at=None,
+    )
+    db_session.add(file)
+    await db_session.flush()
+    await jobs_service.create_job(
+        db_session,
+        id=uuid.uuid4(),
+        type="store_to_backend",
+        subject_type="file",
+        subject_id=file.id,
+    )
+    await db_session.commit()
+    await db_session.refresh(file)
+    return file
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +101,29 @@ async def test_create_revision_snapshot_copies_all_files_on_disk(
     assert b"".join(backend.read("snapshot-test/rev-002_rev/nested/sub.stl")) == b"stl-bytes-two"
     # Original revision's files are untouched.
     assert b"".join(backend.read("snapshot-test/rev-001_initial/part.stl")) == b"stl-bytes-one"
+
+
+async def test_create_revision_with_unsettled_current_file_is_409_before_touching_disk(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    library_root: Path,
+) -> None:
+    """``backend.copy()`` on a file whose store job hasn't settled yet would
+    raise ``StorageKeyNotFound`` (the source object may not exist on disk
+    yet) -- after the new revision directory (and however many files had
+    already been copied) were left behind as storage debris. The pre-check
+    must reject the whole snapshot up front, before any of that happens.
+    """
+    created = await _create_model(authenticated_client, "Snapshot Pending Test")
+    model, rev1 = await _load_model_and_current_revision(db_session, created["id"])
+    await _seed_pending_file(db_session, model, rev1, "pending.stl", b"still-uploading-bytes")
+
+    response = await authenticated_client.post(f"/api/models/{created['id']}/revisions", json={})
+
+    assert response.status_code == 409
+    revisions = await authenticated_client.get(f"/api/models/{created['id']}/revisions")
+    assert [r["number"] for r in revisions.json()] == [1]
+    assert not (library_root / model.slug / "rev-002_rev").exists()
 
 
 async def test_create_revision_name_slugifies_into_dir_name(
@@ -303,3 +364,49 @@ async def test_delete_unknown_file_is_404(authenticated_client: httpx.AsyncClien
     response = await authenticated_client.delete("/api/files/999999")
 
     assert response.status_code == 404
+
+
+async def test_delete_file_still_processing_is_409(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """Deleting a row whose store job is still in flight would race
+    ``store_to_backend``'s own write -- reject rather than remove a row the
+    ingest task might still be about to touch.
+    """
+    created = await _create_model(authenticated_client, "Delete While Pending Test")
+    model, rev1 = await _load_model_and_current_revision(db_session, created["id"])
+    pending_file = await _seed_pending_file(
+        db_session, model, rev1, "pending.stl", b"still-uploading"
+    )
+    file_id = pending_file.id
+
+    response = await authenticated_client.delete(f"/api/files/{file_id}")
+
+    assert response.status_code == 409
+    db_session.expire_all()
+    assert await db_session.get(File, file_id) is not None
+
+
+async def test_delete_file_missing_from_backend_still_removes_row(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    backend: LocalStorageBackend,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    """``backend.delete`` raising ``StorageKeyNotFound`` (the object is
+    already gone -- a previous delete that crashed mid-way, a manual disk
+    edit, ...) must not permanently block deleting the row: the DB row is
+    what "should this file exist" actually means here.
+    """
+    created = await _create_model(authenticated_client, "Delete Missing Backend Object Test")
+    model, rev1 = await _load_model_and_current_revision(db_session, created["id"])
+    file = await seed_file(model, rev1, "gone.stl", b"will-be-removed-out-of-band")
+    file_id = file.id
+    backend.delete(file.storage_path)
+
+    response = await authenticated_client.delete(f"/api/files/{file_id}")
+
+    assert response.status_code == 204
+    db_session.expire_all()
+    assert await db_session.get(File, file_id) is None

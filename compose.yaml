@@ -65,6 +65,12 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    # `depends_on` only gates the initial `up` ordering, not what happens
+    # after a host reboot: without an explicit restart policy, `db`/`redis`
+    # don't come back on their own, but `api`/`worker` do (they have
+    # `restart: unless-stopped`) and then crash-loop against a Postgres/Redis
+    # that's simply never there.
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
@@ -73,6 +79,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
 
 volumes:
   pgdata:

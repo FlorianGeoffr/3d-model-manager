@@ -18,6 +18,7 @@ from app.models.enums import BlobFormat, BlobKind
 from app.services import events, spool
 from app.services import jobs as jobs_service
 from app.storage.local import LocalStorageBackend
+from app.tasks import base
 from app.tasks.ingest import store_to_backend
 
 pytestmark = pytest.mark.usefixtures("library_root", "data_dir")
@@ -101,6 +102,130 @@ async def test_store_to_backend_hash_mismatch_marks_job_failed_and_keeps_spool(
     assert "hash mismatch" in job.error
     assert file.verified_at is None
     assert Path(path_str).exists()
+
+
+async def _seed_matching_job(db_session, *, slug: str, content: bytes) -> tuple[str, int, str]:
+    """Like ``_seed_mismatched_job`` above, but the file's ``blob_hash``
+    correctly matches the spool content, so ``store_to_backend`` passes its
+    hash-verification and reaches the post-write existence/blob-hash check
+    (the belt-and-suspenders guard against a replace-upload race).
+    """
+    model = Model(slug=slug, name=slug)
+    db_session.add(model)
+    await db_session.flush()
+    revision = Revision(model_id=model.id, number=1, name="initial", dir_name="rev-001_initial")
+    db_session.add(revision)
+    await db_session.flush()
+    model.current_revision_id = revision.id
+
+    digest = blake3.blake3(content).hexdigest()
+    blob = Blob(hash=digest, size=len(content), kind=BlobKind.MESH, format=BlobFormat.STL)
+    db_session.add(blob)
+    await db_session.flush()
+
+    storage_path = f"{model.slug}/{revision.dir_name}/part.stl"
+    file = File(
+        revision_id=revision.id,
+        blob_hash=digest,
+        rel_path="part.stl",
+        storage_path=storage_path,
+        verified_at=None,
+    )
+    db_session.add(file)
+    await db_session.commit()
+    await db_session.refresh(file)
+
+    settings = get_settings()
+    spool.ensure_spool_dir(settings)
+    token = uuid.uuid4()
+    path = spool.spool_path(settings, token)
+    path.write_bytes(content)
+
+    job = await jobs_service.create_job(
+        db_session, id=token, type="store_to_backend", subject_type="file", subject_id=file.id
+    )
+    return str(job.id), file.id, str(path)
+
+
+async def test_store_to_backend_file_deleted_mid_write_marks_job_failed_as_superseded(
+    db_session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``replace=true`` re-upload can delete this job's ``File`` row (and
+    dispatch its own job) while ``backend.write`` is still running here.
+    Marking this job ``done``/verified afterward would let this write's
+    (possibly stale) bytes silently win regardless of which job the DB
+    considers current -- the post-write check must catch the row being gone
+    and fail cleanly instead.
+    """
+    content = b"soon-to-be-superseded-bytes"
+    job_id, file_id, path_str = await _seed_matching_job(
+        db_session, slug="supersede-delete-test", content=content
+    )
+
+    original_write = LocalStorageBackend.write
+
+    def write_then_delete_row(self, key, chunks):
+        result = original_write(self, key, chunks)
+        # Simulate a concurrent replace=true re-upload winning the race
+        # while the write above was in flight: it deletes this File row.
+        with base.sync_session() as sync_session:
+            row = sync_session.get(File, file_id)
+            sync_session.delete(row)
+            sync_session.commit()
+        return result
+
+    monkeypatch.setattr(LocalStorageBackend, "write", write_then_delete_row)
+
+    store_to_backend(job_id, file_id, path_str)
+
+    job = await jobs_service.get_job_or_404(db_session, uuid.UUID(job_id))
+    await db_session.refresh(job)
+    assert job.state == "failed"
+    assert "superseded" in job.error
+    assert Path(path_str).exists()  # spool kept on disk, same as the hash-mismatch path
+    assert await db_session.get(File, file_id) is None
+
+
+async def test_store_to_backend_file_repointed_mid_write_marks_job_failed_as_superseded(
+    db_session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same race, but the row survives and is instead repointed at a
+    different blob (rather than deleted) before this job's write finishes --
+    the row-still-exists check alone wouldn't catch this; the blob_hash
+    comparison is what does.
+    """
+    content = b"soon-to-be-repointed-bytes"
+    job_id, file_id, path_str = await _seed_matching_job(
+        db_session, slug="supersede-repoint-test", content=content
+    )
+    other_hash = blake3.blake3(b"a-completely-different-blob").hexdigest()
+
+    original_write = LocalStorageBackend.write
+
+    def write_then_repoint_row(self, key, chunks):
+        result = original_write(self, key, chunks)
+        with base.sync_session() as sync_session:
+            sync_session.add(
+                Blob(hash=other_hash, size=28, kind=BlobKind.MESH, format=BlobFormat.STL)
+            )
+            sync_session.flush()
+            row = sync_session.get(File, file_id)
+            row.blob_hash = other_hash
+            sync_session.commit()
+        return result
+
+    monkeypatch.setattr(LocalStorageBackend, "write", write_then_repoint_row)
+
+    store_to_backend(job_id, file_id, path_str)
+
+    job = await jobs_service.get_job_or_404(db_session, uuid.UUID(job_id))
+    await db_session.refresh(job)
+    assert job.state == "failed"
+    assert "superseded" in job.error
+    file = await db_session.get(File, file_id)
+    await db_session.refresh(file)
+    assert file.verified_at is None
+    assert file.blob_hash == other_hash  # left untouched by the aborted store
 
 
 async def test_store_to_backend_mark_running_failure_ends_job_failed(

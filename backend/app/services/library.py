@@ -17,6 +17,7 @@ the scanner (SPEC M3 "Rescan/reconcile") -- not handled here.
 
 from __future__ import annotations
 
+import contextlib
 from datetime import datetime
 from pathlib import PurePosixPath
 
@@ -29,6 +30,7 @@ from sqlalchemy.orm import selectinload
 
 from app.models.enums import BlobFormat, BlobKind
 from app.models.library import Blob, File, Model, Note, Revision, Tag, model_tags
+from app.models.system import Job
 from app.schemas.library import (
     DiffEntry,
     DiffEntrySide,
@@ -41,9 +43,11 @@ from app.schemas.library import (
     RevisionSummary,
     TagOut,
 )
+from app.services import jobs as jobs_service
 from app.services import layout
 from app.services.cursor import decode_cursor, encode_cursor
 from app.storage.base import StorageBackend
+from app.storage.errors import StorageKeyNotFound
 
 _SORT_COLUMNS = {"updated_at": Model.updated_at, "name": Model.name}
 
@@ -370,12 +374,6 @@ async def create_revision(
     next_number = (max_number or 0) + 1
     dir_name = layout.revision_dir_name(next_number, name)
 
-    new_revision = Revision(
-        model_id=model.id, number=next_number, name=name, note=note, dir_name=dir_name
-    )
-    db.add(new_revision)
-    await db.flush()
-
     old_files: list[File] = []
     if model.current_revision_id is not None:
         old_files = list(
@@ -383,6 +381,25 @@ async def create_revision(
                 await db.execute(select(File).where(File.revision_id == model.current_revision_id))
             ).scalars()
         )
+
+    # Pre-check BEFORE creating the new revision row or touching disk:
+    # `backend.copy()` on a file whose store job hasn't settled raises
+    # `StorageKeyNotFound` (the source object may not exist yet), which would
+    # otherwise surface as a raw 500 after the new revision directory and
+    # however many files had already been copied were left behind as storage
+    # debris. Fail the whole snapshot up front instead.
+    for old_file in old_files:
+        if await _file_store_pending(db, old_file):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "files in the current revision are still processing; retry once stored",
+            )
+
+    new_revision = Revision(
+        model_id=model.id, number=next_number, name=name, note=note, dir_name=dir_name
+    )
+    db.add(new_revision)
+    await db.flush()
 
     def _snapshot_copy() -> None:
         backend.mkdirs(layout.revision_dir_key(model.slug, dir_name))
@@ -474,6 +491,31 @@ def _validate_rel_path(rel_path: str) -> None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"unsafe rel_path: {rel_path!r}")
 
 
+async def _file_store_pending(db: AsyncSession, file: File) -> bool:
+    """Whether ``file``'s ``store_to_backend`` job hasn't settled yet -- i.e.
+    its bytes on the storage backend could still change out from under a
+    caller. Shared by every operation that touches a file's on-backend bytes
+    off the back of a DB read (upload-replace, delete, revision-snapshot
+    copy) so they all tell the same 409 story instead of three slightly
+    different ones.
+
+    ``verified_at IS NULL`` alone isn't a safe signal: it also stays NULL
+    forever after a job permanently fails (e.g. hash mismatch) or is
+    superseded, and neither of those has a live job left to race. Only NULL
+    ``verified_at`` *combined with* the file's most recent job still being
+    queued/running means "something may still write to this key".
+    """
+    if file.verified_at is not None:
+        return False
+    latest_state = await db.scalar(
+        select(Job.state)
+        .where(Job.subject_type == "file", Job.subject_id == file.id)
+        .order_by(Job.created_at.desc())
+        .limit(1)
+    )
+    return latest_state in (jobs_service.STATE_QUEUED, jobs_service.STATE_RUNNING)
+
+
 async def validate_upload_target(
     db: AsyncSession, *, model_id: int, revision_id: int, rel_path: str, replace: bool
 ) -> tuple[Model, Revision]:
@@ -554,6 +596,18 @@ async def finalize_upload(
             )
         ).scalar_one_or_none()
         if existing is not None:
+            if await _file_store_pending(db, existing):
+                # The file being replaced hasn't finished its own store job
+                # yet: deleting its row now and dispatching a new job for the
+                # same rel_path lets the two jobs' `backend.write`s race each
+                # other on disk, with whichever `os.replace` lands last
+                # winning regardless of which job the DB says is "verified".
+                # Reject outright instead -- the client can retry once the
+                # in-flight job settles.
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    f"rel_path {rel_path!r} is still processing; retry once stored",
+                )
             await db.delete(existing)
             await db.flush()
 
@@ -601,8 +655,20 @@ async def delete_file(db: AsyncSession, backend: StorageBackend, file_id: int) -
             status.HTTP_409_CONFLICT,
             "file belongs to a revision that is not the model's current revision",
         )
+    if await _file_store_pending(db, file):
+        # Deleting a row whose store job is still in flight would race
+        # `store_to_backend`'s own writes -- reject rather than remove a row
+        # the ingest task might still be about to touch.
+        raise HTTPException(status.HTTP_409_CONFLICT, "file is still processing; retry once stored")
 
-    await anyio.to_thread.run_sync(backend.delete, file.storage_path)
+    # Already absent from the backend (e.g. the write never landed, or a
+    # previous delete attempt crashed after removing the object but before
+    # this commit) is tolerated, not an error: treating it as one would
+    # permanently block deleting a `files` row whose object doesn't exist.
+    # The DB row is what "should this file exist" actually means here, so a
+    # missing backend object is just as good as a successful delete.
+    with contextlib.suppress(StorageKeyNotFound):
+        await anyio.to_thread.run_sync(backend.delete, file.storage_path)
     await db.delete(file)
     await db.commit()
 

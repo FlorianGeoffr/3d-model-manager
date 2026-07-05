@@ -102,12 +102,19 @@ class StorageBackend(Protocol):
 
         Recurses into subdirectories; yields files only (never directories).
         Keys are always POSIX-style, relative to the backend root. Order is
-        deterministic -- entries within each directory are sorted by name,
-        depth-first -- so callers can rely on stable, repeatable output, but
-        this is *not* a total lexicographic ordering over full keys (e.g. a
-        file directly in a directory sorts before that directory's
-        subdirectories are descended into, regardless of the subdirectory's
-        name relative to the file's).
+        deterministic -- within each directory, entries (files and
+        subdirectories alike) are visited in ascending order of their own
+        bare name, and a subdirectory's entire subtree is yielded,
+        depth-first, at the point its name falls in that order -- so callers
+        can rely on stable, repeatable output. This is *not* a total
+        lexicographic ordering over full keys: a directory's bare name sorts
+        without the trailing path separator it contributes to its children's
+        keys, so e.g. a file ``"ab.bin"`` can land on either side of sibling
+        directory ``"ab"``'s contents depending on the two names, even though
+        comparing the full keys ``"ab.bin"`` and ``"ab/child.bin"`` character
+        by character would always put ``"ab.bin"`` first (``.`` sorts before
+        ``/``). Implementers must match "sort each directory's entries by
+        bare name, recurse depth-first", not "sort all yielded full keys".
         """
         ...
 

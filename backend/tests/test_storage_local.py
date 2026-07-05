@@ -396,6 +396,32 @@ def test_write_rejects_unsafe_keys(backend: LocalStorageBackend, bad_key: str) -
         backend.write(bad_key, [b"x"])
 
 
+@pytest.mark.parametrize(
+    "bad_key",
+    [
+        ".tdmm-tmp-evil.bin",
+        "sub/.tdmm-tmp-evil.bin",
+        ".tdmm-tmp-evil-dir/inside.bin",
+        "sub/.tdmm-tmp-evil-dir/inside.bin",
+    ],
+)
+def test_write_rejects_reserved_tmp_prefix_component(
+    backend: LocalStorageBackend, bad_key: str
+) -> None:
+    """The ``.tdmm-tmp-`` namespace is reserved for write()/copy()'s own
+    staging files (which ``walk()`` filters out) -- a user-writable key
+    inside it would be invisible to ``walk()`` and look like a missing file
+    to the M3 scanner even though it's sitting right there on disk.
+    """
+    with pytest.raises(StorageError):
+        backend.write(bad_key, [b"x"])
+
+
+def test_mkdirs_rejects_reserved_tmp_prefix_component(backend: LocalStorageBackend) -> None:
+    with pytest.raises(StorageError):
+        backend.mkdirs("sub/.tdmm-tmp-evil-dir")
+
+
 def test_stat_rejects_dot_key(backend: LocalStorageBackend) -> None:
     # PurePosixPath(".").parts == (), which used to resolve straight to
     # `root` -- a directory, not a file.

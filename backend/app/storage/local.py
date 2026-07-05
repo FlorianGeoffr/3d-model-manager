@@ -69,8 +69,9 @@ class LocalStorageBackend:
 
         Rejects (``StorageError``) absolute keys, ``..`` segments, empty or
         current-directory keys (``""``/``"."``, which would otherwise resolve
-        to ``root`` itself), and backslashes, then verifies the resolved path
-        -- following any symlinks -- actually stays under ``root`` (symlink
+        to ``root`` itself), backslashes, and any component in the
+        ``.tdmm-tmp-`` staging namespace, then verifies the resolved path --
+        following any symlinks -- actually stays under ``root`` (symlink
         escape).
         """
         if not key:
@@ -88,6 +89,16 @@ class LocalStorageBackend:
             raise StorageError(f"storage key must not resolve to the storage root: {key!r}")
         if ".." in pure.parts:
             raise StorageError(f"storage key must not contain '..': {key!r}")
+        if any(part.startswith(_TMP_PREFIX) for part in pure.parts):
+            # Reserve the whole `.tdmm-tmp-*` namespace for write()/copy()'s
+            # own staging files, at any path depth. `walk()` filters this
+            # prefix out on the way back, so a user-writable key inside it
+            # would be a file the scanner (SPEC M3) can never see -- looking
+            # like storage that's missing/untracked even though it's sitting
+            # right there on disk.
+            raise StorageError(
+                f"storage key must not use the reserved '{_TMP_PREFIX}' prefix: {key!r}"
+            )
 
         candidate = (self.root / pure).resolve()
         if candidate != self.root and self.root not in candidate.parents:

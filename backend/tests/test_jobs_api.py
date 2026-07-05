@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from pathlib import Path
 
@@ -14,8 +15,8 @@ import pytest
 from app.config import get_settings
 from app.models import Blob, File, Model, Revision
 from app.models.enums import BlobFormat, BlobKind
+from app.services import events, spool
 from app.services import jobs as jobs_service
-from app.services import spool
 from app.storage.local import LocalStorageBackend
 from app.tasks.ingest import store_to_backend
 
@@ -100,6 +101,81 @@ async def test_store_to_backend_hash_mismatch_marks_job_failed_and_keeps_spool(
     assert "hash mismatch" in job.error
     assert file.verified_at is None
     assert Path(path_str).exists()
+
+
+async def test_store_to_backend_mark_running_failure_ends_job_failed(
+    db_session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``mark_running`` (state commit + Redis publish) used to run OUTSIDE
+    the task's try/except (Task 6 review finding): a transient failure there
+    (e.g. the Redis publish) left the job stuck in queued/running forever
+    with no retry path -- ``retry_job`` only accepts ``failed`` jobs. Moving
+    it inside the try routes the failure through the normal mark_failed
+    path instead.
+    """
+    job_id, file_id, path_str = await _seed_mismatched_job(db_session)
+
+    calls = {"n": 0}
+    original_publish = events.publish_job_event_sync
+
+    def flaky_publish(redis_url, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ConnectionError("simulated redis publish failure")
+        return original_publish(redis_url, **kwargs)
+
+    monkeypatch.setattr(events, "publish_job_event_sync", flaky_publish)
+
+    with pytest.raises(ConnectionError, match="simulated redis publish failure"):
+        store_to_backend(job_id, file_id, path_str)
+
+    job = await jobs_service.get_job_or_404(db_session, uuid.UUID(job_id))
+    await db_session.refresh(job)
+
+    assert job.state == "failed"
+    assert "simulated redis publish failure" in job.error
+    # mark_running's publish raised; mark_failed's own publish (2nd call)
+    # went through fine, proving the failure path itself still works.
+    assert calls["n"] == 2
+
+
+async def test_store_to_backend_spool_cleanup_failure_does_not_flip_done_job_to_failed(
+    authenticated_client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    data_dir,
+) -> None:
+    """A spool-cleanup failure AFTER a successful store must not overwrite
+    the already-committed ``done`` job/file state back to ``failed`` (Task 6
+    review finding) -- cleanup is best-effort disk hygiene, not part of the
+    task's correctness contract.
+    """
+
+    def flaky_unlink(self, *args, **kwargs):
+        raise OSError("simulated spool cleanup failure")
+
+    monkeypatch.setattr(Path, "unlink", flaky_unlink)
+
+    created = await _create_model(authenticated_client, "Cleanup Failure Target")
+    revision_id = created["current_revision"]["id"]
+
+    with caplog.at_level(logging.WARNING, logger="app.tasks.ingest"):
+        upload = await _upload(
+            authenticated_client, model_id=created["id"], revision_id=revision_id
+        )
+
+    assert upload.status_code == 201, upload.text
+    job_id = upload.json()["job_id"]
+
+    jobs_resp = await authenticated_client.get("/api/jobs")
+    job = next(j for j in jobs_resp.json() if j["id"] == job_id)
+    assert job["state"] == "done"
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("failed to remove spool file" in r.getMessage() for r in warnings)
+
+    # The unlink failed, so the spool file must still be on disk.
+    assert (data_dir / "spool" / job_id).exists()
 
 
 async def test_list_jobs_filters_by_state(

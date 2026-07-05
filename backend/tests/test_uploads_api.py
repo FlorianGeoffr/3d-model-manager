@@ -12,9 +12,13 @@ import uuid
 import blake3
 import httpx
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Blob, File, Job
+from app.models import Blob, File, Job, Model, Revision
+from app.models.enums import BlobFormat, BlobKind
+from app.services import library
 from app.storage.local import LocalStorageBackend
 
 pytestmark = pytest.mark.usefixtures("library_root", "data_dir")
@@ -249,6 +253,100 @@ async def test_upload_unsafe_rel_path_is_400(
     )
 
     assert response.status_code == 400
+
+
+async def test_upload_finalize_file_race_maps_integrity_error_to_409(
+    authenticated_client: httpx.AsyncClient, db_session
+) -> None:
+    """Two concurrent uploads to the same (revision_id, rel_path) can both
+    pass ``validate_upload_target``'s pre-flight existence check before
+    either commits. Simulate the loser by inserting the "winning" File row
+    directly (bypassing ``validate_upload_target`` entirely) and then
+    calling ``finalize_upload`` for the "losing" upload -- the
+    ``files`` UniqueConstraint violation must surface as 409, not an
+    unhandled IntegrityError / 500 (Task 6 review finding).
+    """
+    created = await _create_model(authenticated_client, "File Race Target")
+    revision_id = created["current_revision"]["id"]
+    revision = await db_session.get(Revision, revision_id)
+    model = await db_session.get(Model, created["id"])
+
+    winner_hash = blake3.blake3(b"winner-bytes").hexdigest()
+    db_session.add(Blob(hash=winner_hash, size=12, kind=BlobKind.MESH, format=BlobFormat.STL))
+    await db_session.flush()
+    db_session.add(
+        File(
+            revision_id=revision.id,
+            blob_hash=winner_hash,
+            rel_path="race.stl",
+            storage_path=f"{model.slug}/{revision.dir_name}/race.stl",
+            verified_at=None,
+        )
+    )
+    await db_session.commit()
+
+    loser_hash = blake3.blake3(b"loser-bytes").hexdigest()
+    with pytest.raises(HTTPException) as exc_info:
+        await library.finalize_upload(
+            db_session,
+            model=model,
+            revision=revision,
+            rel_path="race.stl",
+            blob_hash=loser_hash,
+            size=11,
+            kind=BlobKind.MESH,
+            format_=BlobFormat.STL,
+            replace=False,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert "already exists" in exc_info.value.detail
+
+
+async def test_upload_finalize_blob_race_maps_integrity_error_to_409(
+    authenticated_client: httpx.AsyncClient, db_session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Analogous race for the ``blobs`` PK (Task 6 review finding): a
+    concurrent upload of identical content can insert+commit the same blob
+    row between our lookup miss and our flush. Genuine concurrent sessions
+    would race on timing to reproduce this, so pin it deterministically
+    instead: force ``finalize_upload``'s own lookup to miss against an
+    already-committed blob row, so its flush hits a genuine IntegrityError,
+    and assert that maps to 409 rather than propagating as a 500.
+    """
+    created = await _create_model(authenticated_client, "Blob Race Target")
+    revision_id = created["current_revision"]["id"]
+    revision = await db_session.get(Revision, revision_id)
+    model = await db_session.get(Model, created["id"])
+
+    content_hash = blake3.blake3(b"shared-content").hexdigest()
+    db_session.add(Blob(hash=content_hash, size=14, kind=BlobKind.MESH, format=BlobFormat.STL))
+    await db_session.commit()
+
+    original_get = AsyncSession.get
+
+    async def _miss_once(self, entity, ident, *args, **kwargs):
+        if entity is Blob and ident == content_hash:
+            return None
+        return await original_get(self, entity, ident, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncSession, "get", _miss_once)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await library.finalize_upload(
+            db_session,
+            model=model,
+            revision=revision,
+            rel_path="other.stl",
+            blob_hash=content_hash,
+            size=14,
+            kind=BlobKind.MESH,
+            format_=BlobFormat.STL,
+            replace=False,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert "concurrently" in exc_info.value.detail
 
 
 async def test_upload_gcode_3mf_double_extension_infers_sliced(

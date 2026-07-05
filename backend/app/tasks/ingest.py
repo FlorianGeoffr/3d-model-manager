@@ -9,6 +9,7 @@ this can't share the API's async engine.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,6 +20,8 @@ from app.services import jobs
 from app.storage.registry import get_backend
 from app.tasks import base
 from app.tasks.celery_app import celery_app
+
+logger = logging.getLogger(__name__)
 
 _CHUNK_SIZE = 1024 * 1024  # 1 MiB, matching StorageBackend.read's chunking.
 
@@ -34,14 +37,20 @@ def _spool_chunks(path: Path) -> Iterator[bytes]:
 
 @celery_app.task
 def store_to_backend(job_id: str, file_id: int, spool_path: str) -> None:
-    with base.sync_session() as session:
-        jobs.mark_running(session, job_id)
-
     settings = get_settings()
     backend = get_backend(settings)
     path = Path(spool_path)
 
     try:
+        # ``mark_running`` (state commit + Redis publish) lives INSIDE this
+        # try (Task 6 review finding): it used to run before the try block,
+        # so a transient failure here (e.g. the events publish) left the job
+        # stuck in queued/running forever with no retry path -- ``retry_job``
+        # only accepts ``failed`` jobs. Routing it through the same
+        # except-clause below gives it the normal mark_failed/retry path.
+        with base.sync_session() as session:
+            jobs.mark_running(session, job_id)
+
         with base.sync_session() as session:
             file = session.get(File, file_id)
             if file is None:
@@ -67,10 +76,21 @@ def store_to_backend(job_id: str, file_id: int, spool_path: str) -> None:
             file.verified_at = now
             session.commit()
             jobs.mark_done(session, job_id)
-
-        path.unlink(missing_ok=True)
     except Exception as exc:
         with base.sync_session() as session:
             jobs.mark_failed(session, job_id, str(exc))
         # Spool intentionally left on disk for retry/debug.
         raise
+
+    # Cleanup is best-effort and isolated in its own try/except (Task 6
+    # review finding): it used to sit inside the try above, so a failure
+    # here (e.g. the spool file vanishing out-of-band) would be caught by
+    # the `except Exception` and overwrite the already-committed `done`
+    # job/file state back to `failed`, leaving retry semantics incoherent
+    # (retry would re-run a job whose file is already verified). A stray
+    # spool file left behind after a successful store is just disk space,
+    # not a correctness problem, so this only logs.
+    try:
+        path.unlink(missing_ok=True)
+    except Exception:
+        logger.warning("failed to remove spool file %s after successful store", path, exc_info=True)

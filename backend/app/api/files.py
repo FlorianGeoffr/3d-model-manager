@@ -18,6 +18,7 @@ from app.db import get_db
 from app.models import Blob, File
 from app.services import library
 from app.storage.base import StorageBackend
+from app.storage.errors import StorageKeyNotFound
 from app.storage.registry import get_backend
 
 router = APIRouter(prefix="/files", tags=["files"])
@@ -59,7 +60,13 @@ async def download_file(
 
     blob = await db.get(Blob, file.blob_hash)
     filename = PurePosixPath(file.rel_path).name
-    iterator = await anyio.to_thread.run_sync(backend.read, file.storage_path)
+    try:
+        iterator = await anyio.to_thread.run_sync(backend.read, file.storage_path)
+    except StorageKeyNotFound as exc:
+        # `verified_at` says the backend write succeeded, but the object is
+        # gone now -- removed out-of-band (e.g. manual disk edit, a scanner
+        # cleanup). That's a 404, not the 409 "still processing" above.
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "file missing from storage") from exc
 
     return StreamingResponse(
         iterate_in_threadpool(iterator),

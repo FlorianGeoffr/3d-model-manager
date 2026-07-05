@@ -10,6 +10,7 @@ import pytest
 
 from app.models import Blob, File, Model, Revision
 from app.models.enums import BlobFormat, BlobKind
+from app.storage.local import LocalStorageBackend
 
 pytestmark = pytest.mark.usefixtures("library_root", "data_dir")
 
@@ -98,5 +99,29 @@ async def test_download_unstored_file_is_409(
 
 async def test_download_unknown_file_is_404(authenticated_client: httpx.AsyncClient) -> None:
     response = await authenticated_client.get("/api/files/999999/download")
+
+    assert response.status_code == 404
+
+
+async def test_download_missing_backend_object_is_404(
+    authenticated_client: httpx.AsyncClient,
+    db_session,
+    backend: LocalStorageBackend,
+    seed_file,
+) -> None:
+    """``verified_at`` says the backend write succeeded, but if the object
+    is later removed out-of-band (manual disk edit, scanner cleanup, ...),
+    ``backend.read`` raises ``StorageKeyNotFound`` -- that must surface as
+    404, not an unhandled 500 (Task 6 review finding).
+    """
+    created = await _create_model(authenticated_client, "Missing Object Target")
+    revision_id = created["current_revision"]["id"]
+    model = await db_session.get(Model, created["id"])
+    revision = await db_session.get(Revision, revision_id)
+
+    file = await seed_file(model, revision, "gone.stl", b"will-be-deleted")
+    backend.delete(file.storage_path)
+
+    response = await authenticated_client.get(f"/api/files/{file.id}/download")
 
     assert response.status_code == 404

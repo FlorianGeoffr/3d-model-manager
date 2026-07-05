@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import uuid
 
+import anyio
 from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -101,7 +102,7 @@ async def retry_job(db: AsyncSession, settings: Settings, job_id: uuid.UUID) -> 
         raise HTTPException(status.HTTP_409_CONFLICT, f"job {job_id} is not in a failed state")
 
     path = spool_service.spool_path(settings, job.id)
-    if not path.exists():
+    if not await anyio.to_thread.run_sync(path.exists):
         raise HTTPException(status.HTTP_409_CONFLICT, "spool file no longer exists; cannot retry")
 
     # Commit the "queued" transition BEFORE dispatching: in eager test mode

@@ -23,6 +23,7 @@ from pathlib import PurePosixPath
 import anyio
 from fastapi import HTTPException, status
 from sqlalchemy import func, or_, select, tuple_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -528,7 +529,23 @@ async def finalize_upload(
     if blob is None:
         blob = Blob(hash=blob_hash, size=size, kind=kind, format=format_)
         db.add(blob)
-        await db.flush()
+        try:
+            await db.flush()
+        except IntegrityError:
+            # Lost a race with a concurrent upload of the SAME content: the
+            # other request's insert of this blob's PK committed in between
+            # our `db.get` miss and this flush (Task 6 review finding). The
+            # simpler of the two fixes considered (retry the lookup vs. map
+            # to a clear 409) -- retrying would need its own error handling
+            # for yet another concurrent delete/insert, for a benign,
+            # rare-in-practice race. 409 is honest: the client's upload
+            # didn't land as a new blob, but the caller can safely just
+            # retry the whole upload.
+            await db.rollback()
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"blob {blob_hash!r} is being uploaded concurrently; retry",
+            ) from None
 
     if replace:
         existing = (
@@ -548,7 +565,22 @@ async def finalize_upload(
         verified_at=None,
     )
     db.add(file)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # Lost a race with a concurrent upload to the same (revision_id,
+        # rel_path): `validate_upload_target`'s pre-flight check ran before
+        # the request body was read, so two concurrent uploads can both pass
+        # it and then both reach here (Task 6 review finding). The
+        # UniqueConstraint on `files` is the actual source of truth; the
+        # loser gets the same 409 detail the pre-flight check would have
+        # raised had it lost the race instead of winning it, rather than an
+        # unhandled IntegrityError surfacing as a 500.
+        await db.rollback()
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"rel_path {rel_path!r} already exists on this revision; pass replace=true",
+        ) from None
     await db.refresh(file)
     return file
 

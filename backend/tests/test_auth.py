@@ -173,6 +173,15 @@ async def test_expired_session_is_rejected(
     assert response.status_code == 401
 
 
+async def test_unknown_session_uuid_returns_401(
+    client: httpx.AsyncClient,
+) -> None:
+    client.cookies.set("tdmm_session", str(uuid.uuid4()))
+    response = await client.get("/api/auth/me")
+
+    assert response.status_code == 401
+
+
 # ---------------------------------------------------------------------------
 # logout
 # ---------------------------------------------------------------------------
@@ -207,16 +216,21 @@ async def test_last_seen_at_is_not_updated_within_throttle_window(
     client: httpx.AsyncClient, admin_user: User, db_session: AsyncSession
 ) -> None:
     now = datetime.now(UTC)
-    session = Session(user_id=admin_user.id, expires_at=now + timedelta(days=30), last_seen_at=now)
+    seeded_last_seen = now - timedelta(seconds=30)
+    session = Session(
+        user_id=admin_user.id, expires_at=now + timedelta(days=30), last_seen_at=seeded_last_seen
+    )
     db_session.add(session)
     await db_session.commit()
+    await db_session.refresh(session)
+    stored_last_seen = session.last_seen_at
 
     client.cookies.set("tdmm_session", str(session.id))
     response = await client.get("/api/auth/me")
     assert response.status_code == 200
 
     await db_session.refresh(session)
-    assert abs((session.last_seen_at - now).total_seconds()) < 5
+    assert session.last_seen_at == stored_last_seen
 
 
 async def test_last_seen_at_updates_after_throttle_window(

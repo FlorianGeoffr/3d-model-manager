@@ -47,11 +47,24 @@ export function FilesTab({ model }: { model: ModelDetail }) {
             </TableCell>
             <TableCell>
               <div className="flex justify-end gap-1">
-                <Button asChild variant="ghost" size="icon-sm" aria-label={`Download ${file.rel_path}`}>
-                  <a href={`/api/files/${file.id}/download`}>
+                {file.verified_at ? (
+                  <Button asChild variant="ghost" size="icon-sm" aria-label={`Download ${file.rel_path}`}>
+                    <a href={`/api/files/${file.id}/download`}>
+                      <DownloadIcon className="size-4" />
+                    </a>
+                  </Button>
+                ) : (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    disabled
+                    aria-label={`Download ${file.rel_path}`}
+                    title="Still processing — download will be available once verified"
+                  >
                     <DownloadIcon className="size-4" />
-                  </a>
-                </Button>
+                  </Button>
+                )}
                 <ConfirmDialog
                   trigger={
                     <Button type="button" variant="ghost" size="icon-sm" aria-label={`Delete ${file.rel_path}`}>

@@ -1,8 +1,18 @@
 import { useState } from "react";
+import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 
-import { useCreateRevision, useRevisionDiff, useRevisions } from "@/api/library";
+import {
+  useCreateRevision,
+  useCreateRevisionNote,
+  useDeleteRevisionNote,
+  usePatchRevisionNote,
+  useRevisionDetail,
+  useRevisionDiff,
+  useRevisions,
+} from "@/api/library";
 import { ApiError } from "@/api/client";
 import { DiffView } from "@/components/model-detail/DiffView";
+import { NoteItem } from "@/components/model-detail/NoteItem";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -116,6 +126,81 @@ function NewRevisionDialog({ model }: { model: ModelDetail }) {
   );
 }
 
+/** Expandable per-revision notes section (SPEC "Data model": notes attach to
+ * models *and* revisions). `RevisionSummary` (the history list) doesn't
+ * carry notes, so this fetches `RevisionDetail` itself — eagerly, so the
+ * "Notes (N)" count is accurate before the user expands anything. */
+function RevisionNotes({ revision, modelId }: { revision: RevisionSummary; modelId: number }) {
+  const [expanded, setExpanded] = useState(false);
+  const [draft, setDraft] = useState("");
+  const revisionDetail = useRevisionDetail(revision.id);
+  const createNote = useCreateRevisionNote(revision.id);
+  const patchNote = usePatchRevisionNote(revision.id);
+  const deleteNote = useDeleteRevisionNote(revision.id);
+
+  const notes = revisionDetail.data?.notes ?? [];
+  const label = revisionDetail.data ? `Notes (${notes.length})` : "Notes";
+
+  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const body = draft.trim();
+    if (!body) return;
+    createNote.mutate(
+      { model_id: modelId, revision_id: revision.id, body },
+      { onSuccess: () => setDraft("") },
+    );
+  }
+
+  return (
+    <div className="mt-2">
+      <button
+        type="button"
+        className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground hover:underline"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((prev) => !prev)}
+      >
+        {expanded ? <ChevronDownIcon className="size-3.5" /> : <ChevronRightIcon className="size-3.5" />}
+        {label}
+      </button>
+
+      {expanded ? (
+        <div className="mt-2 space-y-3 border-l border-border pl-3">
+          <form onSubmit={handleSubmit} className="space-y-2">
+            <Textarea
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              placeholder="Write a note for this revision… (markdown supported)"
+              rows={2}
+              aria-label={`New note for revision ${revision.number}`}
+            />
+            <Button type="submit" size="sm" disabled={createNote.isPending || draft.trim().length === 0}>
+              Add note
+            </Button>
+          </form>
+
+          {revisionDetail.isLoading ? (
+            <p className="text-xs text-muted-foreground">Loading notes…</p>
+          ) : notes.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No notes yet.</p>
+          ) : (
+            <ul className="space-y-3">
+              {notes.map((note) => (
+                <NoteItem
+                  key={note.id}
+                  note={note}
+                  isSaving={patchNote.isPending}
+                  onSave={(body, onSuccess) => patchNote.mutate({ id: note.id, body }, { onSuccess })}
+                  onDelete={() => deleteNote.mutate(note.id)}
+                />
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function RevisionsTab({ model }: { model: ModelDetail }) {
   const revisionsQuery = useRevisions(model.id);
   const revisions = revisionsQuery.data ?? [];
@@ -143,6 +228,7 @@ export function RevisionsTab({ model }: { model: ModelDetail }) {
             <p className="text-xs text-muted-foreground">
               {formatDateTime(revision.created_at)} · {revision.file_count} files
             </p>
+            <RevisionNotes revision={revision} modelId={model.id} />
           </li>
         ))}
       </ol>

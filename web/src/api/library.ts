@@ -12,6 +12,7 @@ import type {
   ModelDetail,
   ModelPatch,
   NoteCreate,
+  NoteOut,
   RevisionCreate,
   RevisionDetail,
   RevisionSummary,
@@ -153,6 +154,49 @@ export function useRevisionDiff(aId: number | undefined, bId: number | undefined
     queryKey: ["diff", aId, bId] as const,
     queryFn: () => api.get<DiffResponse>(`/revisions/${aId}/diff/${bId}`),
     enabled: aId !== undefined && bId !== undefined,
+  });
+}
+
+/** `GET /revisions/{id}` — the only endpoint that returns a revision's own
+ * notes (`RevisionSummary`, used for the history list, doesn't carry them). */
+export function revisionDetailQueryOptions(revisionId: number) {
+  return queryOptions({
+    queryKey: ["revisions", "detail", revisionId] as const,
+    queryFn: () => api.get<RevisionDetail>(`/revisions/${revisionId}`),
+  });
+}
+
+export function useRevisionDetail(revisionId: number) {
+  return useQuery(revisionDetailQueryOptions(revisionId));
+}
+
+/** Per-revision note mutations — same `/notes` endpoints as the model-level
+ * hooks below, but invalidating the revision detail query (which is where
+ * a revision's notes actually live) instead of the model query. */
+export function useCreateRevisionNote(revisionId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: NoteCreate) => api.post<NoteOut>(`/notes`, payload),
+    onSuccess: () =>
+      void queryClient.invalidateQueries({ queryKey: revisionDetailQueryOptions(revisionId).queryKey }),
+  });
+}
+
+export function usePatchRevisionNote(revisionId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: number; body: string }) => api.patch<NoteOut>(`/notes/${id}`, { body }),
+    onSuccess: () =>
+      void queryClient.invalidateQueries({ queryKey: revisionDetailQueryOptions(revisionId).queryKey }),
+  });
+}
+
+export function useDeleteRevisionNote(revisionId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => api.delete<void>(`/notes/${id}`),
+    onSuccess: () =>
+      void queryClient.invalidateQueries({ queryKey: revisionDetailQueryOptions(revisionId).queryKey }),
   });
 }
 

@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { resolveDroppedFiles, type DroppedFile } from "@/lib/droppedFiles";
 import { useEvents } from "@/hooks/useEvents";
+import type { ModelDetail } from "@/api/types";
 
 interface ResolvedTarget {
   modelId: number;
@@ -92,7 +93,13 @@ export function UploadPage() {
   async function handleStartUpload() {
     let target: ResolvedTarget;
     if (mode === "new") {
-      const model = await createModel.mutateAsync({ name: newModelName.trim() });
+      let model: ModelDetail;
+      try {
+        model = await createModel.mutateAsync({ name: newModelName.trim() });
+      } catch {
+        // Global MutationCache.onError toast already surfaced the failure.
+        return;
+      }
       if (!model.current_revision) return;
       target = { modelId: model.id, revisionId: model.current_revision.id, slug: model.slug, name: model.name };
     } else {

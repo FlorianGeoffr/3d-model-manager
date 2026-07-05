@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router";
 import { PlusIcon, SearchIcon } from "lucide-react";
 
 import { useModelsQuery, useTags } from "@/api/library";
+import { ApiError } from "@/api/client";
 import { ModelCard } from "@/components/gallery/ModelCard";
 import { NewModelDialog } from "@/components/gallery/NewModelDialog";
 import { Badge } from "@/components/ui/badge";
@@ -128,6 +129,22 @@ export function LibraryPage() {
               <Skeleton key={index} className="aspect-[3/4] w-full rounded-xl" />
             ))}
           </div>
+        ) : modelsQuery.isError ? (
+          <Card className="mx-auto mt-12 max-w-md">
+            <CardHeader className="items-center text-center">
+              <CardTitle>Couldn&apos;t load models</CardTitle>
+              <CardDescription>
+                {modelsQuery.error instanceof ApiError
+                  ? modelsQuery.error.detail
+                  : "Something went wrong loading the gallery."}
+              </CardDescription>
+            </CardHeader>
+            <div className="flex justify-center pb-4">
+              <Button type="button" onClick={() => void modelsQuery.refetch()}>
+                Retry
+              </Button>
+            </div>
+          </Card>
         ) : isEmpty ? (
           <Card className="mx-auto mt-12 max-w-md">
             <CardHeader className="items-center text-center">

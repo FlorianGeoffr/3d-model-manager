@@ -98,7 +98,7 @@ SPEC: "Upload flow", "Processing pipeline" (jobs table + store_to_backend only �
 
 SPEC: "Frontend" (stack pins). In `web/`:
 
-- Scaffold: `npm create vite@latest` (react-ts), React 19.2, TS strict; Tailwind 4 via `@tailwindcss/vite` + `@import "tailwindcss"` in `src/index.css`; shadcn: `npx shadcn@latest init -b radix` (pin the flag) + add `button card input dialog dropdown-menu badge tabs textarea sonner skeleton`; TanStack Router (code-based routes in `src/routes.tsx`) + TanStack Query 5 with a `src/api/client.ts` fetch wrapper (base `/api`, credentials include, JSON errors typed `{detail}`; 403 → redirect to /login).
+- Scaffold: `npm create vite@latest` (react-ts), React 19.2, TS strict; Tailwind 4 via `@tailwindcss/vite` + `@import "tailwindcss"` in `src/index.css`; shadcn: `npx shadcn@latest init -b radix` (pin the flag) + add `button card input dialog dropdown-menu badge tabs textarea sonner skeleton`; TanStack Router (code-based routes in `src/routes.tsx`) + TanStack Query 5 with a `src/api/client.ts` fetch wrapper (base `/api`, credentials include, JSON errors typed `{detail}`; 401 → redirect to /login — auth returns 401 + `WWW-Authenticate: Cookie`, an authorized deviation from the original 403).
 - Vite dev proxy: `/api` → `http://localhost:8080`.
 - App shell: sidebar nav (Library, Upload, Import, Printer, Jobs, Settings — unstubbed ones render "coming in M2+" placeholders), dark/light via `prefers-color-scheme` + toggle persisting to localStorage (class strategy on `<html>`).
 - `/login` page → `POST /auth/login`; auth guard redirects unauthenticated; `GET /auth/me` bootstraps.

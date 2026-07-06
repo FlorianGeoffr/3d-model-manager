@@ -47,12 +47,52 @@ export interface ModelSummary {
   file_count: number;
   formats: BlobFormat[];
   cover: string | null;
+  print_time_s: number | null;
+  has_sliced: boolean;
 }
 
 export interface GalleryPage {
   items: ModelSummary[];
   next_cursor: string | null;
 }
+
+// -- blob metadata / plates (backend/app/schemas/library.py, Task 7) -------
+
+export interface PlateFilamentOut {
+  type: string | null;
+  color: string | null;
+  used_m: number | null;
+  used_g: number | null;
+}
+
+export interface PlateOut {
+  index: number;
+  prediction_s: number | null;
+  weight_g: number | null;
+  thumbnail_available: boolean;
+  filaments: PlateFilamentOut[];
+}
+
+export interface BlobMetaOut {
+  triangle_count: number | null;
+  dims_mm: number[] | null;
+  volume_cm3: number | null;
+  surface_area_cm2: number | null;
+  is_watertight: boolean | null;
+  print_time_s: number | null;
+  filament_g: number | null;
+  filament_m: number | null;
+  filament_types: string[] | null;
+  layer_height: number | null;
+  nozzle: number | null;
+  printer_model: string | null;
+  plate_count: number | null;
+  plates: PlateOut[] | null;
+}
+
+// `null` means the blob's format never produces a GLB at all, distinct from
+// a GLB-format blob that simply hasn't been converted yet ("pending").
+export type GlbStatus = "ok" | "pending" | "failed" | "unsupported";
 
 // -- files / notes ----------------------------------------------------------
 
@@ -67,6 +107,10 @@ export interface FileOut {
   kind: BlobKind;
   mtime: string | null;
   verified_at: string | null;
+  meta: BlobMetaOut | null;
+  thumb_ready: boolean;
+  glb_status: GlbStatus | null;
+  glb_preview_ready: boolean;
 }
 
 export interface NoteCreate {

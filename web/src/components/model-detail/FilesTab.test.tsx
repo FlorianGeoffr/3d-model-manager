@@ -16,6 +16,10 @@ const VERIFIED_FILE: FileOut = {
   kind: "mesh",
   mtime: "2026-06-01T12:00:00Z",
   verified_at: "2026-06-01T12:00:05Z",
+  meta: null,
+  thumb_ready: false,
+  glb_status: null,
+  glb_preview_ready: false,
 };
 
 const PROCESSING_FILE: FileOut = {

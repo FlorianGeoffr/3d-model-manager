@@ -49,7 +49,7 @@ export function ModelDetailPage() {
           <FilesTab model={model} />
         </TabsContent>
         <TabsContent value="viewer">
-          <ViewerTab />
+          <ViewerTab model={model} />
         </TabsContent>
         <TabsContent value="revisions">
           <RevisionsTab model={model} />

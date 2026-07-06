@@ -16,6 +16,8 @@ const MODEL: ModelSummary = {
   file_count: 3,
   formats: ["stl", "3mf"],
   cover: null,
+  print_time_s: null,
+  has_sliced: false,
 };
 
 function renderCard(model: ModelSummary) {

@@ -228,17 +228,24 @@ async def test_store_to_backend_file_repointed_mid_write_marks_job_failed_as_sup
     assert file.blob_hash == other_hash  # left untouched by the aborted store
 
 
-async def test_store_to_backend_mark_running_failure_ends_job_failed(
-    db_session, monkeypatch: pytest.MonkeyPatch
+async def test_publish_failure_during_mark_running_does_not_fail_job(
+    db_session, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """``mark_running`` (state commit + Redis publish) used to run OUTSIDE
-    the task's try/except (Task 6 review finding): a transient failure there
-    (e.g. the Redis publish) left the job stuck in queued/running forever
-    with no retry path -- ``retry_job`` only accepts ``failed`` jobs. Moving
-    it inside the try routes the failure through the normal mark_failed
-    path instead.
+    """``_publish`` is best-effort (Task 2 review finding): a Redis blip
+    during ``mark_running``'s publish must not turn a job that otherwise
+    completes successfully into a ``failed`` one. This supersedes/inverts
+    this test's prior incarnation
+    (``test_store_to_backend_mark_running_failure_ends_job_failed``), whose
+    premise -- that a publish failure should fail the job -- is exactly the
+    bug being fixed here: the old ``_publish`` let the exception propagate
+    out of ``mark_running``, straight through ``store_to_backend``'s outer
+    ``except Exception``, which stomped the job to ``failed`` even though
+    nothing about the actual store operation failed.
     """
-    job_id, file_id, path_str = await _seed_mismatched_job(db_session)
+    content = b"publish-blip-bytes"
+    job_id, file_id, path_str = await _seed_matching_job(
+        db_session, slug="publish-blip-test", content=content
+    )
 
     calls = {"n": 0}
     original_publish = events.publish_job_event_sync
@@ -251,17 +258,21 @@ async def test_store_to_backend_mark_running_failure_ends_job_failed(
 
     monkeypatch.setattr(events, "publish_job_event_sync", flaky_publish)
 
-    with pytest.raises(ConnectionError, match="simulated redis publish failure"):
+    with caplog.at_level(logging.WARNING, logger="app.services.jobs"):
         store_to_backend(job_id, file_id, path_str)
 
     job = await jobs_service.get_job_or_404(db_session, uuid.UUID(job_id))
     await db_session.refresh(job)
+    file = await db_session.get(File, file_id)
+    await db_session.refresh(file)
 
-    assert job.state == "failed"
-    assert "simulated redis publish failure" in job.error
-    # mark_running's publish raised; mark_failed's own publish (2nd call)
-    # went through fine, proving the failure path itself still works.
+    assert job.state == "done"
+    assert file.verified_at is not None
+    # mark_running's publish raised (swallowed); mark_done's own publish
+    # (2nd call) went through fine.
     assert calls["n"] == 2
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("event publish failed for job" in r.getMessage() for r in warnings)
 
 
 async def test_store_to_backend_spool_cleanup_failure_does_not_flip_done_job_to_failed(

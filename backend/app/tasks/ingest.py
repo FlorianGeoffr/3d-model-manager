@@ -24,7 +24,7 @@ from app.config import get_settings
 from app.models import File
 from app.services import jobs
 from app.storage.registry import get_backend
-from app.tasks import base
+from app.tasks import base, pipeline
 from app.tasks.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -99,6 +99,12 @@ def store_to_backend(job_id: str, file_id: int, spool_path: str) -> None:
             file.verified_at = now
             session.commit()
             jobs.mark_done(session, job_id)
+            # Kick off this blob's processing pipeline (Task 2). A blob
+            # shared by more than one File (dedup) can have this called once
+            # per File that uploads it -- harmless, since each pipeline step
+            # checks whether its derivative output is already `ok` before
+            # doing any work and marks itself done as a no-op skip if so.
+            pipeline.start_pipeline_sync(session, blob_hash=expected_hash, file_id=file_id)
     except Exception as exc:
         with base.sync_session() as session:
             jobs.mark_failed(session, job_id, str(exc))

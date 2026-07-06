@@ -6,8 +6,9 @@ so a worker that dies mid-task redelivers the message rather than losing it.
 Queue ``io`` carries M1's ``store_to_backend`` plus everything else under
 ``app.tasks``; ``cpu`` (memory-recycled worker pool, per SPEC "Architecture")
 is routed by name ahead of time for the CPU-heavy extraction/render tasks
-``app.tasks.pipeline`` adds starting Task 2 -- that module doesn't exist yet
-at this commit, so nothing dispatches to ``cpu`` in practice until then.
+``app.tasks.pipeline`` registers -- Task 2 adds the driver/runner but no real
+step bodies yet, so nothing dispatches to ``cpu`` in practice until Tasks 3-6
+land.
 
 Worker entrypoint: ``celery -A app.tasks.celery_app worker``.
 
@@ -39,5 +40,5 @@ celery_app.conf.update(
         "app.tasks.pipeline.*": {"queue": "cpu"},
         "app.tasks.*": {"queue": "io"},
     },
-    imports=("app.tasks.ingest",),
+    imports=("app.tasks.ingest", "app.tasks.pipeline"),
 )

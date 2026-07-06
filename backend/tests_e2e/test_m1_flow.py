@@ -3,7 +3,7 @@ diff -> download -> restart story against a REAL, running docker compose
 stack over plain HTTP. Not part of the normal `uv run pytest` suite -- see
 the `e2e` marker + `-m 'not e2e'` in backend/pyproject.toml's addopts.
 
-Run via `scripts/e2e-m1.sh`, which builds/starts the compose stack, waits
+Run via `scripts/e2e.sh`, which builds/starts the compose stack, waits
 for health, runs this file with `-m e2e`, then tears the stack down.
 
 Deliberately dependency-light: plain sync `httpx.Client` + stdlib +
@@ -72,7 +72,7 @@ def _admin_password() -> str:
     password = os.environ.get("TDMM_ADMIN_PASSWORD")
     if not password:
         pytest.fail(
-            "TDMM_ADMIN_PASSWORD must be set for the e2e run (scripts/e2e-m1.sh sets a "
+            "TDMM_ADMIN_PASSWORD must be set for the e2e run (scripts/e2e.sh sets a "
             "fixed one in .env so this test can log in with a known password)"
         )
     return password

@@ -1,32 +1,33 @@
-# React + TypeScript + Vite
+# 3D Model Manager — web
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+React 19 + TypeScript + Vite frontend for the 3D Model Manager. Talks to the
+FastAPI backend under `/api/...` (session-cookie auth) and renders the
+processing pipeline's GLB output with React Three Fiber.
 
-Currently, two official plugins are available:
+- **Routing/data**: TanStack Router + TanStack Query
+- **UI**: Tailwind 4 + shadcn/Radix components, `lucide-react` icons
+- **Viewer**: `@react-three/fiber` + `@react-three/drei`, rendering the
+  meshopt-compressed GLB served by `GET /api/blobs/{hash}/glb`
+- **Realtime**: job/event updates over `GET /api/events` (SSE)
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Development
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```sh
+npm install
+npm run dev
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+Vite's dev server proxies `/api` to `http://localhost:8080` (see
+`vite.config.ts`) — run the backend alongside it (`cd ../backend && uv run
+uvicorn app.main:app --reload --port 8080`, plus Postgres/Redis/a Celery
+worker; see the repo root README's "Development" section), or point it at a
+running `docker compose` stack.
+
+```sh
+npm run build   # tsc -b + vite build, output to web/dist
+npm run lint    # oxlint
+npm run test    # vitest run
+```
+
+`web/dist` is what the Docker image copies into the api container and serves
+as the SPA (see `docker/Dockerfile`, `app/static.py`).

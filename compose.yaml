@@ -1,5 +1,13 @@
-# M1 stack: api + worker (one shared image, docker/Dockerfile) + db + redis.
-# `printerd` is M4 -- not added yet (SPEC "Architecture").
+# api + worker-io + worker-cpu (one shared image, docker/Dockerfile) + db +
+# redis. `printerd` is M4 -- not added yet (SPEC "Architecture").
+#
+# Worker split (SPEC "Architecture"; M2 Task 10): `worker-io` runs
+# `store_to_backend` and everything else that isn't a pipeline step;
+# `worker-cpu` runs the CPU-heavy extraction/convert/render pipeline steps
+# (`app.tasks.pipeline.*`, routed there by `celery_app.py`'s `task_routes`)
+# with a memory-recycled process pool -- OCCT (STEP/IGES) and f3d can leak
+# or balloon memory per-task, so each cpu worker child is recycled after 16
+# tasks OR 1.5 GiB RSS, whichever comes first.
 #
 # Quickstart: `cp .env.example .env` then `docker compose up -d --build`.
 # See README "Quickstart" for the first-run admin password note.
@@ -32,13 +40,15 @@ services:
       start_period: 15s
     restart: unless-stopped
 
-  worker:
+  worker-io:
     build:
       context: .
       dockerfile: docker/Dockerfile
     image: tdmm:local
     environment:
       TDMM_ROLE: worker
+      TDMM_QUEUES: io
+      TDMM_CONCURRENCY: 2
     env_file:
       - .env
     volumes:
@@ -49,6 +59,42 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.tasks.celery_app inspect ping -t 10 -d celery@$$HOSTNAME"]
+      interval: 30s
+      start_period: 30s
+      retries: 3
+    restart: unless-stopped
+
+  worker-cpu:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: tdmm:local
+    environment:
+      TDMM_ROLE: worker
+      TDMM_QUEUES: cpu
+      # No TDMM_CONCURRENCY override here -- Celery defaults to one process
+      # per CPU core, which is what CPU-bound extraction/convert/render work
+      # wants. Recycled per-child (task count AND RSS) to contain OCCT/f3d
+      # memory growth (SPEC "Architecture").
+      TDMM_MAX_TASKS_PER_CHILD: 16
+      TDMM_MAX_MEMORY_PER_CHILD_KB: 1572864
+    env_file:
+      - .env
+    volumes:
+      - tdmm_data:/data
+      - ./library:/library
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.tasks.celery_app inspect ping -t 10 -d celery@$$HOSTNAME"]
+      interval: 30s
+      start_period: 30s
+      retries: 3
     restart: unless-stopped
 
   db:

@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# M1 acceptance gate (Task 9): builds and starts the full docker compose
-# stack, waits for the api to become healthy, drives the complete
-# upload/revision/diff/download/restart flow through the real HTTP API
-# (backend/tests_e2e/test_m1_flow.py), then tears the stack down.
+# M1+M2 acceptance gate (Task 9, renamed/generalized by Task 10): builds and
+# starts the full docker compose stack, waits for the api to become healthy,
+# then runs every test under backend/tests_e2e/ against the real HTTP API --
+# currently the M1 upload/revision/diff/download/restart flow
+# (test_m1_flow.py) and the M2 processing-pipeline flow
+# (test_m2_pipeline.py) -- then tears the stack down.
 #
-# Usage: scripts/e2e-m1.sh [--keep-volumes]
+# Usage: scripts/e2e.sh [--keep-volumes]
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -74,5 +76,5 @@ until curl -fsS "${HEALTH_URL}" >/dev/null 2>&1; do
 done
 echo "==> api is healthy."
 
-echo "==> Running the M1 e2e flow..."
+echo "==> Running the e2e flow (backend/tests_e2e/)..."
 TDMM_E2E_BASE_URL="${BASE_URL}" uv run --project backend pytest backend/tests_e2e -q -m e2e

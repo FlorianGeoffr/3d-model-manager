@@ -17,6 +17,13 @@ dependencies = [
     "python-slugify",
     "anyio",
     "psycopg[binary]",
+    "trimesh[easy]",
+    "lib3mf",
+    "cascadio",
+    "cadquery-ocp",
+    "f3d",
+    "pillow",
+    "numpy",
 ]
 
 [dependency-groups]

@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     data_dir: Path = Path("./data")
     library_root: Path = Path("./library")
-    secret_key: str = "dev-insecure"
+    secret_key: str = "dev-insecure"  # reserved for future signed tokens; unused in M1/M2
     admin_username: str = "admin"
     admin_password: str | None = None
     cookie_secure: bool = False
@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     # serving entirely -- local dev runs the Vite dev server instead, which
     # proxies `/api` to this backend (see README "Development").
     static_dir: Path | None = None
+    # Path/name of the gltfpack executable (M2 "Processing pipeline":
+    # `optimize_glb`/browser meshopt compression). Defaults to whatever
+    # `gltfpack` resolves to on PATH (see tests/conftest.py, which prepends
+    # the npm-installed WASM shim's bin dir for local dev/CI).
+    gltfpack_path: str = "gltfpack"
 
 
 @lru_cache

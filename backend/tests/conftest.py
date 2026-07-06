@@ -30,11 +30,24 @@ from app.models.enums import BlobFormat, BlobKind
 from app.security import hash_password
 from app.storage.local import LocalStorageBackend
 from app.tasks.base import get_sync_engine, get_sync_sessionmaker
+from tests import corpus as corpus_module
+from tests.corpus import CorpusPaths
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "correct horse battery staple"
+
+# gltfpack WASM shim (M2 Task 1: scripts/fetch-gltfpack.sh; consumed starting
+# Task 5's optimize_glb step). Prepending its bin dir to PATH once here, at
+# module import time (conftest.py is imported exactly once per test
+# session), lets `Settings.gltfpack_path`'s default of plain `"gltfpack"`
+# resolve via normal PATH lookup -- mirroring how it resolves in the Docker
+# image, where gltfpack is source-built straight onto PATH. A no-op until
+# `scripts/fetch-gltfpack.sh` has been run at least once.
+_GLTFPACK_BIN_DIR = BACKEND_DIR / ".tools" / "node_modules" / ".bin"
+if _GLTFPACK_BIN_DIR.is_dir():
+    os.environ["PATH"] = f"{_GLTFPACK_BIN_DIR}{os.pathsep}{os.environ.get('PATH', '')}"
 
 
 def _reset_settings_and_engine_caches() -> None:
@@ -239,3 +252,48 @@ def seed_file(
         return file
 
     return _seed
+
+
+# ---------------------------------------------------------------------------
+# Processing-pipeline fixtures (M2 Task 1): a real on-disk copy of every
+# ``tests.corpus`` builder, written once for the whole session.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def corpus(tmp_path_factory: pytest.TempPathFactory) -> CorpusPaths:
+    """Write every ``tests.corpus`` fixture to disk once per session (all
+    builders are deterministic and pure, so sharing one copy across every
+    test that needs it is safe)."""
+    root = tmp_path_factory.mktemp("corpus")
+
+    box_stl = root / "box.stl"
+    box_stl.write_bytes(corpus_module.box_stl())
+    box_obj = root / "box.obj"
+    box_obj.write_bytes(corpus_module.box_obj())
+    box_3mf_generic = root / "box_generic.3mf"
+    box_3mf_generic.write_bytes(corpus_module.box_3mf_generic())
+    box_3mf_bambu = root / "box_bambu.3mf"
+    box_3mf_bambu.write_bytes(corpus_module.box_3mf_bambu())
+    sliced_gcode_3mf = root / "sliced.gcode.3mf"
+    sliced_gcode_3mf.write_bytes(corpus_module.sliced_gcode_3mf())
+    bambu_gcode = root / "plate_1.gcode"
+    bambu_gcode.write_bytes(corpus_module.bambu_gcode())
+    box_step = root / "box.step"
+    corpus_module.box_step(box_step)
+    box_iges = root / "box.iges"
+    corpus_module.box_iges(box_iges)
+    red_png = root / "red.png"
+    red_png.write_bytes(corpus_module.red_png())
+
+    return CorpusPaths(
+        box_stl=box_stl,
+        box_obj=box_obj,
+        box_3mf_generic=box_3mf_generic,
+        box_3mf_bambu=box_3mf_bambu,
+        sliced_gcode_3mf=sliced_gcode_3mf,
+        bambu_gcode=bambu_gcode,
+        box_step=box_step,
+        box_iges=box_iges,
+        red_png=red_png,
+    )

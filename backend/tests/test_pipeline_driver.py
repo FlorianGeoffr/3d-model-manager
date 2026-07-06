@@ -161,15 +161,20 @@ async def _upload_stl(
     )
 
 
-async def test_upload_dispatches_single_step_runs_it_and_calls_completed_hook(
+async def test_upload_dispatches_single_step_runs_it_and_calls_assembly_trigger(
     authenticated_client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Task 6 replaces the no-op ``pipeline_completed_hook`` with
+    ``maybe_enqueue_assembly_sync`` as ``run_step``'s "last step" callback --
+    same call site, same "called once the format's step chain is exhausted"
+    contract, just a real name/signature (keyword-only ``blob_hash``) now.
+    """
     monkeypatch.setattr(pipeline, "PIPELINE_STEPS", {BlobFormat.STL: ("test_step",)})
     hook_calls: list[str] = []
     monkeypatch.setattr(
         pipeline,
-        "pipeline_completed_hook",
-        lambda session, blob_hash: hook_calls.append(blob_hash),
+        "maybe_enqueue_assembly_sync",
+        lambda session, *, blob_hash: hook_calls.append(blob_hash),
     )
 
     created = await _create_model(authenticated_client, "Pipeline Driver Target")
@@ -239,21 +244,25 @@ async def test_skip_outcome_still_enqueues_next_step(
     assert _step_2_state["calls"] == [blob_hash]
 
 
-async def test_unregistered_step_is_a_no_op_stub(
+async def test_full_stl_pipeline_runs_every_registered_step_to_done(
     authenticated_client: httpx.AsyncClient, corpus: CorpusPaths
 ) -> None:
     """PIPELINE_STEPS ships the real Global-Constraints table before every
-    step has a registered body -- uploading a real STL must not blow up
-    dispatching a step name with no matching ``STEP_TASKS`` entry (Accept:
-    "uploading any file still works end-to-end ... (empty or stubbed)
-    pipeline dispatch"). Tasks 3 and 5 register ``extract_metadata``,
-    ``convert_to_glb``, and ``optimize_glb`` for real, so this now asserts
-    the STILL-unregistered NEXT step (``render_thumb``, Task 6) rather than
-    ``convert_to_glb`` -- real STL bytes (not the module's default garbage
-    content) so the whole chain actually succeeds and reaches that next step
-    at all.
+    step has a registered body -- this test used to assert that uploading a
+    real STL doesn't blow up dispatching a step name with no matching
+    ``STEP_TASKS`` entry (Accept: "uploading any file still works end-to-end
+    ... (empty or stubbed) pipeline dispatch"), checking that the
+    STILL-unregistered next step had no job row at all. Task 6 registers
+    ``render_thumb`` -- the last unregistered step for ``stl`` -- so there's
+    no more stub step left to prove a no-op for; this now asserts the
+    OPPOSITE: the full chain runs every ``PIPELINE_STEPS[stl]`` step to
+    ``done``, and the job-row type set is exactly that chain plus the
+    upload's own ingest job plus the ONE ``render_assembly_thumb`` job Task
+    6's assembly trigger fires once ``render_thumb`` (the last step) finishes
+    for this (single-file) revision -- not "no more unregistered steps show
+    up", but "every step, including the new trigger, actually runs".
     """
-    created = await _create_model(authenticated_client, "Unregistered Step Target")
+    created = await _create_model(authenticated_client, "Full STL Pipeline Target")
     revision_id = created["current_revision"]["id"]
 
     upload = await _upload_stl(
@@ -266,11 +275,16 @@ async def test_unregistered_step_is_a_no_op_stub(
     assert upload.status_code == 201, upload.text
     jobs_resp = await authenticated_client.get("/api/jobs")
     jobs_list = jobs_resp.json()
-    for step in ("extract_metadata", "convert_to_glb", "optimize_glb"):
+    for step in PIPELINE_STEPS[BlobFormat.STL]:
         step_job = next(j for j in jobs_list if j["type"] == step)
         assert step_job["state"] == "done", (step, step_job)
+
     job_types = {j["type"] for j in jobs_list}
-    assert "render_thumb" not in job_types  # no job row for a still-unregistered step
+    assert job_types == {
+        "store_to_backend",
+        "render_assembly_thumb",
+        *PIPELINE_STEPS[BlobFormat.STL],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -351,13 +365,13 @@ async def test_retry_pipeline_step_failing_again_ends_failed_not_queued(
 async def test_retry_unknown_pipeline_job_type_is_409(
     authenticated_client: httpx.AsyncClient, db_session
 ) -> None:
-    """A job ``type`` that's neither ``store_to_backend`` nor a name in
-    ``PIPELINE_STEPS`` (e.g. ``render_assembly_thumb``, before Task 6
-    registers it) falls through to the same "unknown job type" 409 as any
-    other unrecognized type.
+    """A job ``type`` that's neither ``store_to_backend``, a name in
+    ``PIPELINE_STEPS``, nor ``render_assembly_thumb`` (Task 6's own
+    dedicated branch, covered separately in ``test_assembly_thumbs.py``)
+    falls through to the generic "unknown job type" 409.
     """
     job = Job(
-        type="render_assembly_thumb",
+        type="totally_unrecognized_job_type",
         subject_type="revision",
         subject_id=1,
         state="failed",

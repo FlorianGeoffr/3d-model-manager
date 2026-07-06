@@ -425,6 +425,19 @@ async def create_revision(
 
     model.current_revision_id = new_revision.id
     await db.commit()
+
+    # Local import: app.tasks.pipeline imports app.services.jobs (for the
+    # mark_*/create_job_sync helpers), so importing it back at module level
+    # here would risk a circular import -- same reasoning as
+    # `app.services.jobs`'s own local imports of `app.tasks.pipeline`/
+    # `app.tasks.ingest`. Every blob in the snapshot is already converted (it
+    # was copied from the previous, presumably-processed revision), or the
+    # readiness check just declines -- either way this can't fail the
+    # request (Task 6 interface decision: best-effort).
+    from app.tasks.pipeline import maybe_enqueue_assembly_async
+
+    await maybe_enqueue_assembly_async(db, revision_id=new_revision.id)
+
     return await get_revision_or_404(db, new_revision.id)
 
 
@@ -669,8 +682,16 @@ async def delete_file(db: AsyncSession, backend: StorageBackend, file_id: int) -
     # missing backend object is just as good as a successful delete.
     with contextlib.suppress(StorageKeyNotFound):
         await anyio.to_thread.run_sync(backend.delete, file.storage_path)
+    revision_id = revision.id
     await db.delete(file)
     await db.commit()
+
+    # Local import: breaks the same import cycle as `create_revision`'s call
+    # above (see that comment). The revision's composition just changed --
+    # re-check whether it's now ready for an assembly render.
+    from app.tasks.pipeline import maybe_enqueue_assembly_async
+
+    await maybe_enqueue_assembly_async(db, revision_id=revision_id)
 
 
 # -- tags -------------------------------------------------------------

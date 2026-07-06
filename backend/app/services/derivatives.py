@@ -31,7 +31,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import Settings
-from app.models import Derivative, File
+from app.models import AssemblyThumb, Derivative, File
 from app.models.enums import DerivativeKind, DerivativeStatus
 from app.storage.base import StorageBackend
 
@@ -153,6 +153,50 @@ def mark_derivative(
     deriv.local_path = local_path
     deriv.tool = tool
     deriv.error = error
+    session.commit()
+
+
+def upsert_assembly_thumb(session: Session, revision_id: int) -> AssemblyThumb:
+    """Get-or-create the ``assembly_thumbs`` row for ``revision_id``,
+    resetting it back to ``pending``/``error=None`` -- the per-revision
+    mirror of ``upsert_derivative`` above (single row per revision instead of
+    per ``(blob_hash, kind)``, since ``render_assembly_thumb`` "always
+    re-renders": there's no idempotent-skip case that needs a prior terminal
+    state left alone).
+    """
+    thumb = session.get(AssemblyThumb, revision_id)
+    if thumb is None:
+        thumb = AssemblyThumb(revision_id=revision_id, status=DerivativeStatus.PENDING)
+        session.add(thumb)
+    else:
+        thumb.status = DerivativeStatus.PENDING
+        thumb.error = None
+    session.commit()
+    session.refresh(thumb)
+    return thumb
+
+
+def mark_assembly_thumb(
+    session: Session,
+    revision_id: int,
+    *,
+    status: DerivativeStatus,
+    local_path: str | None = None,
+    error: str | None = None,
+) -> None:
+    """Set an assembly thumbnail's terminal fields after a render attempt
+    and commit -- the per-revision mirror of ``mark_derivative`` above.
+    Get-or-creates defensively (rather than assuming ``upsert_assembly_thumb``
+    already ran) so a failure this function needs to record can never itself
+    raise ``AttributeError`` on a missing row.
+    """
+    thumb = session.get(AssemblyThumb, revision_id)
+    if thumb is None:
+        thumb = AssemblyThumb(revision_id=revision_id)
+        session.add(thumb)
+    thumb.status = status
+    thumb.local_path = local_path
+    thumb.error = error
     session.commit()
 
 

@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session as SyncSession
 
 from app.config import Settings, get_settings
-from app.models import File, Job
+from app.models import File, Job, Revision
 from app.services import events
 from app.services import spool as spool_service
 
@@ -98,9 +98,10 @@ async def retry_job(db: AsyncSession, settings: Settings, job_id: uuid.UUID) -> 
     """Re-dispatch a ``failed`` job, generalized (Task 2) over a small
     dispatch table keyed by ``job.type``: ``store_to_backend`` re-sends its
     still-spooled bytes; any name in ``app.tasks.pipeline.PIPELINE_STEPS``
-    re-runs that step against its subject file's current blob. Anything else
-    -- including ``render_assembly_thumb`` before Task 6 registers it -- 409s
-    as an unknown job type. 409 if the job isn't ``failed`` to begin with.
+    re-runs that step against its subject file's current blob;
+    ``render_assembly_thumb`` (Task 6) re-runs against its subject revision.
+    Anything else 409s as an unknown job type. 409 if the job isn't
+    ``failed`` to begin with.
     """
     job = await get_job_or_404(db, job_id)
     if job.state != STATE_FAILED:
@@ -108,6 +109,9 @@ async def retry_job(db: AsyncSession, settings: Settings, job_id: uuid.UUID) -> 
 
     if job.type == "store_to_backend":
         return await _retry_store_to_backend(db, settings, job)
+
+    if job.type == "render_assembly_thumb":
+        return await _retry_render_assembly_thumb(db, job)
 
     # Local import: app.tasks.pipeline imports app.services.jobs (for the
     # mark_*/create_job_sync helpers), so importing it back at module level
@@ -119,10 +123,6 @@ async def retry_job(db: AsyncSession, settings: Settings, job_id: uuid.UUID) -> 
     if job.type in pipeline_step_names:
         return await _retry_pipeline_step(db, job, STEP_TASKS[job.type])
 
-    # "render_assembly_thumb" (Task 6) isn't in PIPELINE_STEPS/STEP_TASKS yet
-    # -- like any other type this function doesn't recognize, it falls
-    # through to here as "unknown job type" until Task 6 adds its own branch
-    # (subject_id resolves to a revision id there, not a file id).
     raise HTTPException(status.HTTP_409_CONFLICT, "unknown job type")
 
 
@@ -210,6 +210,35 @@ async def _retry_pipeline_step(db: AsyncSession, job: Job, task: Task) -> Job:
         db,
         job,
         lambda: task.apply_async(args=[str(job.id), file.blob_hash], task_id=str(job.id)),
+    )
+
+
+async def _retry_render_assembly_thumb(db: AsyncSession, job: Job) -> Job:
+    """Re-run a ``render_assembly_thumb`` job (Task 6) against its subject
+    REVISION -- 409 if that revision no longer exists. Unlike
+    ``_retry_pipeline_step``, ``subject_id`` is a revision id, not a file id.
+    """
+    revision = await db.get(Revision, job.subject_id)
+    if revision is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "subject revision no longer exists")
+
+    job.state = STATE_QUEUED
+    job.error = None
+    await db.commit()
+    await db.refresh(job)
+
+    # Local import: app.tasks.pipeline imports app.services.jobs (for the
+    # mark_*/create_job_sync helpers), so importing it back at module level
+    # here would be a circular import -- same reasoning as the pipeline-step
+    # import above.
+    from app.tasks.pipeline import render_assembly_thumb
+
+    return await _dispatch(
+        db,
+        job,
+        lambda: render_assembly_thumb.apply_async(
+            args=[str(job.id), revision.id], task_id=str(job.id)
+        ),
     )
 
 

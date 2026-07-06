@@ -48,13 +48,14 @@ from typing import Literal
 
 import trimesh
 from celery import Task
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session as SyncSession
 
 from app.config import Settings, get_settings
-from app.models import Blob, BlobMeta, Derivative, Job
+from app.models import Blob, BlobMeta, Derivative, File, Job
 from app.models.enums import BlobFormat, DerivativeKind, DerivativeStatus
-from app.pipeline import convert, meshload, slicedmeta, thumbs
+from app.pipeline import convert, meshload, render, slicedmeta, thumbs
 from app.services import derivatives, jobs
 from app.storage.base import StorageBackend
 from app.storage.registry import get_backend
@@ -92,6 +93,12 @@ STEP_TASKS: dict[str, Task] = {}
 # failure. Tests monkeypatch the delays to zeros.
 TRANSIENT_ERRORS: tuple[type[BaseException], ...] = (OSError, ConnectionError)
 TRANSIENT_RETRY_DELAYS: tuple[float, ...] = (1.0, 4.0, 16.0)
+
+# Formats that produce a `glb` derivative (Global Constraints "Pipeline
+# shape" table): shared by `extract_metadata`'s CAD-vs-native-mesh branch
+# below and `maybe_enqueue_assembly_sync`'s readiness check.
+_MESH_FORMATS = (BlobFormat.STL, BlobFormat.OBJ, BlobFormat.THREEMF)
+_CAD_FORMATS = (BlobFormat.STEP, BlobFormat.IGES)
 
 
 class UnsupportedBlobError(Exception):
@@ -143,22 +150,19 @@ def next_step(fmt: BlobFormat, after: str | None) -> str | None:
     return steps[index + 1] if index + 1 < len(steps) else None
 
 
-def enqueue_step_sync(session: SyncSession, *, step: str, blob_hash: str, file_id: int) -> None:
-    """Create a queued ``jobs`` row for ``step`` and dispatch its Celery
-    task -- a no-op if ``step`` has no registered task yet (see module
-    docstring). Best-effort: a dispatch failure (including, under eager-mode
-    tests, the dispatched step re-raising its own failure) is logged and
-    absorbed here rather than propagated -- see module docstring for why.
+def _dispatch_best_effort_sync(
+    session: SyncSession, job: Job, dispatch: Callable[[], object]
+) -> None:
+    """Run ``dispatch()`` (an ``apply_async`` call), absorbing any exception
+    it raises rather than propagating it. Shared by ``enqueue_step_sync`` and
+    ``maybe_enqueue_assembly_sync`` below -- both dispatch from deep inside
+    ``run_step``'s tail, right after some OTHER, unrelated job's row was just
+    committed to a terminal state, so a dispatch failure for the NEXT thing
+    must never bubble up and retroactively flip that back to failed (see the
+    module docstring's "Dispatch failures" section).
     """
-    task = STEP_TASKS.get(step)
-    if task is None:
-        return
-
-    job = jobs.create_job_sync(
-        session, id=uuid.uuid4(), type=step, subject_type="file", subject_id=file_id
-    )
     try:
-        task.apply_async(args=[str(job.id), blob_hash], task_id=str(job.id))
+        dispatch()
     except Exception as exc:
         session.refresh(job)
         if job.state == jobs.STATE_QUEUED:
@@ -167,16 +171,33 @@ def enqueue_step_sync(session: SyncSession, *, step: str, blob_hash: str, file_i
             # not strand `queued` forever.
             jobs.mark_failed(session, str(job.id), f"dispatch failed: {exc}")
         else:
-            # Eager-mode test run: the step's own body already drove its job
-            # to a terminal state (failed, typically) through run_step's own
+            # Eager-mode test run: the task's own body already drove its job
+            # to a terminal state (failed, typically) through its own
             # exception handling before re-raising here. That's the correct,
             # final word on ITS row -- nothing to do.
             logger.warning(
-                "pipeline step %s (job %s) raised during dispatch; its own terminal state stands",
-                step,
+                "job %s (type %s) raised during dispatch; its own terminal state stands",
                 job.id,
+                job.type,
                 exc_info=True,
             )
+
+
+def enqueue_step_sync(session: SyncSession, *, step: str, blob_hash: str, file_id: int) -> None:
+    """Create a queued ``jobs`` row for ``step`` and dispatch its Celery
+    task -- a no-op if ``step`` has no registered task yet (see module
+    docstring). Best-effort dispatch (see ``_dispatch_best_effort_sync``).
+    """
+    task = STEP_TASKS.get(step)
+    if task is None:
+        return
+
+    job = jobs.create_job_sync(
+        session, id=uuid.uuid4(), type=step, subject_type="file", subject_id=file_id
+    )
+    _dispatch_best_effort_sync(
+        session, job, lambda: task.apply_async(args=[str(job.id), blob_hash], task_id=str(job.id))
+    )
 
 
 def start_pipeline_sync(session: SyncSession, *, blob_hash: str, file_id: int) -> None:
@@ -191,10 +212,150 @@ def start_pipeline_sync(session: SyncSession, *, blob_hash: str, file_id: int) -
         enqueue_step_sync(session, step=step, blob_hash=blob_hash, file_id=file_id)
 
 
-def pipeline_completed_hook(session: SyncSession, blob_hash: str) -> None:
-    """Called once a blob has run its last pipeline step. No-op in Task 2;
-    Task 6 replaces this with the per-revision assembly-thumb trigger.
+# Global Constraints "Pipeline shape": the formats whose glb derivative
+# `render_assembly_thumb`'s readiness check waits on -- everything else
+# (gcode/gcode_3mf/png/jpg/other) never produces a `glb` at all, so it's
+# simply excluded from the "every mesh/cad blob is ok" count rather than
+# blocking the assembly render forever.
+_ASSEMBLY_RELEVANT_FORMATS = _MESH_FORMATS + _CAD_FORMATS
+
+
+def _revision_mesh_cad_blob_hashes_stmt(revision_id: int):
+    """Distinct mesh/cad-format blob hashes for the files in ``revision_id``
+    -- the set ``render_assembly_thumb``'s readiness check requires an ``ok``
+    ``glb`` derivative for. Shared statement builder: the sync/async
+    readiness checks below only differ in how they execute it.
     """
+    return (
+        select(File.blob_hash)
+        .join(Blob, Blob.hash == File.blob_hash)
+        .where(File.revision_id == revision_id, Blob.format.in_(_ASSEMBLY_RELEVANT_FORMATS))
+        .distinct()
+    )
+
+
+def _ok_glb_count_stmt(blob_hashes: list[str]):
+    return select(func.count(Derivative.id)).where(
+        Derivative.blob_hash.in_(blob_hashes),
+        Derivative.kind == DerivativeKind.GLB,
+        Derivative.status == DerivativeStatus.OK,
+    )
+
+
+def _in_flight_assembly_job_stmt(revision_id: int):
+    return select(Job.id).where(
+        Job.type == "render_assembly_thumb",
+        Job.subject_type == "revision",
+        Job.subject_id == revision_id,
+        Job.state.in_((jobs.STATE_QUEUED, jobs.STATE_RUNNING)),
+    )
+
+
+def _revision_assembly_ready(session: SyncSession, revision_id: int) -> bool:
+    """Whether every mesh/cad-format blob among ``revision_id``'s files has
+    an ``ok`` ``glb`` derivative -- vacuously true when the revision has no
+    mesh/cad content at all (``render_assembly_thumb`` itself then renders
+    zero geometry and settles on ``unsupported``, per the interface -- that's
+    still a valid, intentional outcome to trigger, not a reason to withhold
+    the job).
+    """
+    blob_hashes = list(session.execute(_revision_mesh_cad_blob_hashes_stmt(revision_id)).scalars())
+    if not blob_hashes:
+        return True
+    ok_count = session.scalar(_ok_glb_count_stmt(blob_hashes))
+    return ok_count == len(blob_hashes)
+
+
+async def _revision_assembly_ready_async(db: AsyncSession, revision_id: int) -> bool:
+    """Async twin of ``_revision_assembly_ready`` for the API-side trigger."""
+    blob_hashes = list(
+        (await db.execute(_revision_mesh_cad_blob_hashes_stmt(revision_id))).scalars()
+    )
+    if not blob_hashes:
+        return True
+    ok_count = await db.scalar(_ok_glb_count_stmt(blob_hashes))
+    return ok_count == len(blob_hashes)
+
+
+def _assembly_job_in_flight(session: SyncSession, revision_id: int) -> bool:
+    return session.scalar(_in_flight_assembly_job_stmt(revision_id).limit(1)) is not None
+
+
+async def _assembly_job_in_flight_async(db: AsyncSession, revision_id: int) -> bool:
+    return await db.scalar(_in_flight_assembly_job_stmt(revision_id).limit(1)) is not None
+
+
+def maybe_enqueue_assembly_sync(session: SyncSession, *, blob_hash: str) -> None:
+    """Replaces Task 2's no-op ``pipeline_completed_hook`` (SPEC pipeline row
+    6): for every DISTINCT revision containing a file of ``blob_hash``, fire
+    off ``render_assembly_thumb`` if the revision is ready (see
+    ``_revision_assembly_ready``) and doesn't already have one queued/running
+    (``_assembly_job_in_flight``). Called from ``run_step``'s tail once a
+    blob finishes its OWN last pipeline step -- a blob shared by more than
+    one revision can trigger more than one assembly job here, one per
+    revision, which is correct: each revision's assembly composition is
+    independent.
+    """
+    revision_ids = session.execute(
+        select(File.revision_id).where(File.blob_hash == blob_hash).distinct()
+    ).scalars()
+    for revision_id in revision_ids:
+        if _revision_assembly_ready(session, revision_id) and not _assembly_job_in_flight(
+            session, revision_id
+        ):
+            job = jobs.create_job_sync(
+                session,
+                id=uuid.uuid4(),
+                type="render_assembly_thumb",
+                subject_type="revision",
+                subject_id=revision_id,
+            )
+            _dispatch_best_effort_sync(
+                session,
+                job,
+                lambda job=job, revision_id=revision_id: render_assembly_thumb.apply_async(
+                    args=[str(job.id), revision_id], task_id=str(job.id)
+                ),
+            )
+
+
+async def maybe_enqueue_assembly_async(db: AsyncSession, *, revision_id: int) -> None:
+    """Async twin of ``maybe_enqueue_assembly_sync``, for the API-side
+    triggers (``services.library.create_revision``/``delete_file``) that
+    already know which revision changed rather than which blob finished.
+    Dispatch failures are absorbed the same way (best-effort) rather than
+    propagated: the caller here is always right after its OWN, unrelated
+    change (a new revision, a file deletion) already committed successfully
+    -- a problem enqueueing the assembly render must never turn that into a
+    500.
+    """
+    if not await _revision_assembly_ready_async(db, revision_id):
+        return
+    if await _assembly_job_in_flight_async(db, revision_id):
+        return
+    job = await jobs.create_job(
+        db,
+        id=uuid.uuid4(),
+        type="render_assembly_thumb",
+        subject_type="revision",
+        subject_id=revision_id,
+    )
+    try:
+        render_assembly_thumb.apply_async(args=[str(job.id), revision_id], task_id=str(job.id))
+    except Exception as exc:
+        await db.refresh(job)
+        if job.state == jobs.STATE_QUEUED:
+            job.state = jobs.STATE_FAILED
+            job.error = f"dispatch failed: {exc}"
+            await db.commit()
+        else:
+            logger.warning(
+                "render_assembly_thumb dispatch for revision %s (job %s) raised; its own"
+                " terminal state stands",
+                revision_id,
+                job.id,
+                exc_info=True,
+            )
 
 
 def run_step(job_id: str, blob_hash: str, step: str, fn: StepFn) -> None:
@@ -203,7 +364,7 @@ def run_step(job_id: str, blob_hash: str, step: str, fn: StepFn) -> None:
     blob, calls ``fn`` (retrying transient I/O errors per
     ``TRANSIENT_ERRORS``/``TRANSIENT_RETRY_DELAYS``), marks the job done, and
     either enqueues the next step for this format or -- on the last step --
-    calls ``pipeline_completed_hook``. Any non-transient exception from
+    calls ``maybe_enqueue_assembly_sync``. Any non-transient exception from
     ``fn`` (after transient retries are exhausted too) marks the job
     ``failed`` and re-raises; ``UnsupportedBlobError`` instead maps to the
     ``"unsupported"`` outcome and proceeds normally.
@@ -256,7 +417,7 @@ def run_step(job_id: str, blob_hash: str, step: str, fn: StepFn) -> None:
             if nxt is not None:
                 enqueue_step_sync(session, step=nxt, blob_hash=blob_hash, file_id=job.subject_id)
             else:
-                pipeline_completed_hook(session, blob_hash)
+                maybe_enqueue_assembly_sync(session, blob_hash=blob_hash)
     except Exception as exc:
         with base.sync_session() as session:
             jobs.mark_failed(session, job_id, str(exc))
@@ -269,9 +430,6 @@ def run_step(job_id: str, blob_hash: str, step: str, fn: StepFn) -> None:
 # mesh stats read back off the already-converted GLB derivative for
 # step/iges.
 # ---------------------------------------------------------------------------
-
-_MESH_FORMATS = (BlobFormat.STL, BlobFormat.OBJ, BlobFormat.THREEMF)
-_CAD_FORMATS = (BlobFormat.STEP, BlobFormat.IGES)
 
 
 def _mesh_blob_meta(blob_hash: str, mesh: trimesh.Trimesh, tool: str) -> BlobMeta:
@@ -443,11 +601,16 @@ def _publish_plate_thumb(data: bytes, settings: Settings, blob_hash: str, index:
     derivatives.publish_bytes(data, derivatives.plate_thumb_path(settings, blob_hash, index))
 
 
-def _publish_embedded_thumbs(
-    session: SyncSession, settings: Settings, blob_hash: str, image_bytes: bytes
+def _publish_image_thumbs(
+    session: SyncSession, settings: Settings, blob_hash: str, src: Path | bytes, tool: str
 ) -> None:
-    """Build+publish the thumb_1024/thumb_256 derivatives from one embedded
-    preview image (``tool="embedded"``). A corrupted embedded PNG is a
+    """Build+publish the thumb_1024/thumb_256 derivatives from any single
+    source image that's already a plain, already-framed picture -- an
+    embedded 3mf/gcode_3mf preview PNG (``tool="embedded"``), a raw png/jpg
+    blob (``tool="pillow"``), or ``render_thumb``'s own 1024 f3d render being
+    downscaled to 256 (``tool="f3d"``; Global Constraints: one f3d render
+    only, this second call to ``make_thumbs_from_image`` just resizes the
+    PNG it already produced). A corrupted/unreadable source is a
     deterministic parse failure (Global Constraints "Failure semantics":
     derivative row ``failed`` with ``error``/``tool``, AND the job itself
     fails) -- ``thumbs.make_thumbs_from_image`` already turns Pillow's own
@@ -457,20 +620,20 @@ def _publish_embedded_thumbs(
     deriv_1024 = derivatives.upsert_derivative(session, blob_hash, DerivativeKind.THUMB_1024)
     deriv_256 = derivatives.upsert_derivative(session, blob_hash, DerivativeKind.THUMB_256)
     try:
-        p1024, p256 = thumbs.make_thumbs_from_image(image_bytes, settings, blob_hash)
+        p1024, p256 = thumbs.make_thumbs_from_image(src, settings, blob_hash)
     except Exception as exc:
         derivatives.mark_derivative(
-            session, deriv_1024, status=DerivativeStatus.FAILED, tool="embedded", error=str(exc)
+            session, deriv_1024, status=DerivativeStatus.FAILED, tool=tool, error=str(exc)
         )
         derivatives.mark_derivative(
-            session, deriv_256, status=DerivativeStatus.FAILED, tool="embedded", error=str(exc)
+            session, deriv_256, status=DerivativeStatus.FAILED, tool=tool, error=str(exc)
         )
         raise
     derivatives.mark_derivative(
-        session, deriv_1024, status=DerivativeStatus.OK, local_path=str(p1024), tool="embedded"
+        session, deriv_1024, status=DerivativeStatus.OK, local_path=str(p1024), tool=tool
     )
     derivatives.mark_derivative(
-        session, deriv_256, status=DerivativeStatus.OK, local_path=str(p256), tool="embedded"
+        session, deriv_256, status=DerivativeStatus.OK, local_path=str(p256), tool=tool
     )
 
 
@@ -507,7 +670,7 @@ def _extract_embedded_thumbs_step(
     if source_bytes is None:
         return "done"
 
-    _publish_embedded_thumbs(session, settings, blob.hash, source_bytes)
+    _publish_image_thumbs(session, settings, blob.hash, source_bytes, "embedded")
     return "done"
 
 
@@ -684,3 +847,160 @@ def _optimize_glb_step(
 @pipeline_step("optimize_glb")
 def optimize_glb(job_id: str, blob_hash: str) -> None:
     run_step(job_id, blob_hash, "optimize_glb", _optimize_glb_step)
+
+
+# ---------------------------------------------------------------------------
+# render_thumb (Task 6; SPEC pipeline rows 5-6; RESEARCH §4): mesh/cad blobs
+# rasterize their already-converted, raw `glb` derivative via f3d at 1024
+# then reuse `_publish_image_thumbs` (one f3d render only) to downscale to
+# 256; png/jpg blobs go straight to `_publish_image_thumbs` on the original
+# bytes.
+# ---------------------------------------------------------------------------
+
+_IMAGE_FORMATS = (BlobFormat.PNG, BlobFormat.JPG)
+
+
+def _render_mesh_thumb(session: SyncSession, settings: Settings, blob: Blob) -> None:
+    """Render the ok `glb` derivative via f3d, then hand the resulting PNG
+    to `_publish_image_thumbs` for the 1024/256 derivative bookkeeping.
+
+    Both thumb derivative rows are upserted BEFORE attempting the render
+    (mirroring `_extract_embedded_thumbs_step`'s pattern) so a render
+    failure -- not just a `make_thumbs_from_image` failure -- still leaves
+    Global Constraints "Failure semantics" satisfied: `failed` rows with
+    `error`/`tool`, not just a failed job with no row at all.
+    """
+    deriv_1024 = derivatives.upsert_derivative(session, blob.hash, DerivativeKind.THUMB_1024)
+    deriv_256 = derivatives.upsert_derivative(session, blob.hash, DerivativeKind.THUMB_256)
+    glb_path = derivatives.derivative_path(settings, blob.hash, DerivativeKind.GLB)
+    with tempfile.TemporaryDirectory(prefix="tdmm-pipe-") as tmp:
+        rendered_png = Path(tmp) / "render.png"
+        try:
+            render.render_glb_png(glb_path, rendered_png, size=1024)
+        except Exception as exc:
+            derivatives.mark_derivative(
+                session, deriv_1024, status=DerivativeStatus.FAILED, tool="f3d", error=str(exc)
+            )
+            derivatives.mark_derivative(
+                session, deriv_256, status=DerivativeStatus.FAILED, tool="f3d", error=str(exc)
+            )
+            raise
+        _publish_image_thumbs(session, settings, blob.hash, rendered_png, "f3d")
+
+
+def _render_thumb_step(
+    session: SyncSession, settings: Settings, backend: StorageBackend, blob: Blob
+) -> StepOutcome:
+    """``render_thumb``'s ``StepFn``: skip outright once both thumb
+    derivatives are already ``ok`` -- covers the `3mf` case where
+    `extract_embedded_thumbs` already served a thumbnail from the slicer's
+    own embedded preview and there's nothing left for this step to do.
+    """
+    if _thumbs_already_ok(session, blob.hash):
+        return "skipped"
+
+    if blob.format in _IMAGE_FORMATS:
+        with tempfile.TemporaryDirectory(prefix="tdmm-pipe-") as tmp:
+            path = derivatives.fetch_blob_to_temp(
+                session, backend, blob.hash, Path(tmp), f".{blob.format.value}"
+            )
+            _publish_image_thumbs(session, settings, blob.hash, path, "pillow")
+        return "done"
+
+    glb_deriv = _glb_derivative(session, blob.hash)
+    if glb_deriv is None or glb_deriv.status != DerivativeStatus.OK:
+        raise RuntimeError("glb missing")
+    _render_mesh_thumb(session, settings, blob)
+    return "done"
+
+
+@pipeline_step("render_thumb")
+def render_thumb(job_id: str, blob_hash: str) -> None:
+    run_step(job_id, blob_hash, "render_thumb", _render_thumb_step)
+
+
+# ---------------------------------------------------------------------------
+# render_assembly_thumb (Task 6; SPEC pipeline row 6): NOT a `@pipeline_step`
+# -- its subject is a REVISION, not a file/blob, so it manages its own job
+# transitions the same way `app.tasks.ingest.store_to_backend` does, rather
+# than going through `run_step`. Triggered by `maybe_enqueue_assembly_sync`/
+# `maybe_enqueue_assembly_async` above whenever a revision's mesh/cad content
+# becomes fully converted; always re-renders (the revision's file
+# composition may have changed since the last run) rather than skipping on
+# an existing `ok` `assembly_thumbs` row.
+# ---------------------------------------------------------------------------
+
+
+def _revision_glb_paths(session: SyncSession, settings: Settings, revision_id: int) -> list[Path]:
+    """Ok `glb` derivative paths for every file in `revision_id`, in
+    `rel_path` order -- gcode/image files (no `glb` at all) and any mesh/cad
+    file whose conversion hasn't finished or failed are silently excluded,
+    not a reason to fail the whole assembly render (a partial assembly is
+    still more useful than none; `maybe_enqueue_assembly_sync`'s readiness
+    check is what keeps this from firing on an obviously-incomplete
+    revision in the first place).
+    """
+    blob_hashes = session.execute(
+        select(File.blob_hash)
+        .join(Derivative, Derivative.blob_hash == File.blob_hash)
+        .where(
+            File.revision_id == revision_id,
+            Derivative.kind == DerivativeKind.GLB,
+            Derivative.status == DerivativeStatus.OK,
+        )
+        .order_by(File.rel_path)
+    ).scalars()
+    return [
+        derivatives.derivative_path(settings, blob_hash, DerivativeKind.GLB)
+        for blob_hash in blob_hashes
+    ]
+
+
+@celery_app.task(name="app.tasks.pipeline.render_assembly_thumb")
+def render_assembly_thumb(job_id: str, revision_id: int) -> None:
+    settings = get_settings()
+    try:
+        with base.sync_session() as session:
+            jobs.mark_running(session, job_id)
+            derivatives.upsert_assembly_thumb(session, revision_id)
+            glb_paths = _revision_glb_paths(session, settings, revision_id)
+
+        if not glb_paths:
+            with base.sync_session() as session:
+                derivatives.mark_assembly_thumb(
+                    session, revision_id, status=DerivativeStatus.UNSUPPORTED
+                )
+                jobs.mark_done(session, job_id)
+            return
+
+        scene = trimesh.Scene()
+        for glb_path in glb_paths:
+            scene.add_geometry(trimesh.load(glb_path))
+
+        dest = derivatives.assembly_thumb_path(settings, revision_id)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=".tdmm-assembly-", suffix=".png")
+        os.close(fd)
+        tmp_png = Path(tmp_name)
+        try:
+            with tempfile.TemporaryDirectory(prefix="tdmm-assembly-") as tmp:
+                merged_glb = Path(tmp) / "merged.glb"
+                scene.export(merged_glb, file_type="glb")
+                render.render_glb_png(merged_glb, tmp_png, size=1024)
+        except BaseException:
+            tmp_png.unlink(missing_ok=True)
+            raise
+        derivatives.publish_file(tmp_png, dest)
+
+        with base.sync_session() as session:
+            derivatives.mark_assembly_thumb(
+                session, revision_id, status=DerivativeStatus.OK, local_path=str(dest)
+            )
+            jobs.mark_done(session, job_id)
+    except Exception as exc:
+        with base.sync_session() as session:
+            derivatives.mark_assembly_thumb(
+                session, revision_id, status=DerivativeStatus.FAILED, error=str(exc)
+            )
+            jobs.mark_failed(session, job_id, str(exc))
+        raise

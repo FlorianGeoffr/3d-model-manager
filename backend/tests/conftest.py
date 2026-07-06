@@ -275,6 +275,8 @@ def corpus(tmp_path_factory: pytest.TempPathFactory) -> CorpusPaths:
     box_3mf_generic.write_bytes(corpus_module.box_3mf_generic())
     box_3mf_bambu = root / "box_bambu.3mf"
     box_3mf_bambu.write_bytes(corpus_module.box_3mf_bambu())
+    box_3mf_bambu_with_thumb = root / "box_bambu_with_thumb.3mf"
+    box_3mf_bambu_with_thumb.write_bytes(corpus_module.box_3mf_bambu_with_thumb())
     sliced_gcode_3mf = root / "sliced.gcode.3mf"
     sliced_gcode_3mf.write_bytes(corpus_module.sliced_gcode_3mf())
     bambu_gcode = root / "plate_1.gcode"
@@ -291,6 +293,7 @@ def corpus(tmp_path_factory: pytest.TempPathFactory) -> CorpusPaths:
         box_obj=box_obj,
         box_3mf_generic=box_3mf_generic,
         box_3mf_bambu=box_3mf_bambu,
+        box_3mf_bambu_with_thumb=box_3mf_bambu_with_thumb,
         sliced_gcode_3mf=sliced_gcode_3mf,
         bambu_gcode=bambu_gcode,
         box_step=box_step,

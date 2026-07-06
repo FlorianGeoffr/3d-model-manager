@@ -145,13 +145,11 @@ def box_3mf_generic() -> bytes:
     )
 
 
-def box_3mf_bambu() -> bytes:
-    """A hand-built Production-Extension 3MF, shaped like Bambu Studio's
-    project files: the root ``3D/3dmodel.model`` has an empty
-    ``<resources/>`` and NO inline mesh -- its ``<build>`` item points at a
-    separate part (``3D/Objects/object_1.model``, holding the actual cube)
-    via the Production Extension's ``p:path`` attribute, with a matching
-    relationship declared in ``3D/_rels/3dmodel.model.rels``.
+def _box_3mf_bambu_members(extra: dict[str, str | bytes] | None = None) -> dict[str, str | bytes]:
+    """Shared zip member dict for the Production-Extension Bambu-shaped 3MF
+    fixtures below (``box_3mf_bambu``/``box_3mf_bambu_with_thumb``): identical
+    geometry layout, optionally merged with extra (e.g. ``Metadata/*``)
+    members.
     """
     root_model_xml = (
         '<?xml version="1.0" encoding="UTF-8"?>'
@@ -181,14 +179,54 @@ def box_3mf_bambu() -> bytes:
         'Target="/3D/Objects/object_1.model"/>'
         "</Relationships>"
     )
+    members: dict[str, str | bytes] = {
+        "[Content_Types].xml": _CONTENT_TYPES_XML,
+        "_rels/.rels": _ROOT_RELS_XML,
+        "3D/3dmodel.model": root_model_xml,
+        "3D/_rels/3dmodel.model.rels": object_rels_xml,
+        "3D/Objects/object_1.model": object_model_xml,
+    }
+    if extra:
+        members.update(extra)
+    return members
+
+
+def box_3mf_bambu() -> bytes:
+    """A hand-built Production-Extension 3MF, shaped like Bambu Studio's
+    project files: the root ``3D/3dmodel.model`` has an empty
+    ``<resources/>`` and NO inline mesh -- its ``<build>`` item points at a
+    separate part (``3D/Objects/object_1.model``, holding the actual cube)
+    via the Production Extension's ``p:path`` attribute, with a matching
+    relationship declared in ``3D/_rels/3dmodel.model.rels``. No ``Metadata/``
+    entries at all -- the "no embedded thumbnail" case.
+    """
+    return _write_zip(_box_3mf_bambu_members())
+
+
+def box_3mf_bambu_with_thumb() -> bytes:
+    """Same Production-Extension geometry as ``box_3mf_bambu``, plus a
+    ``Metadata/plate_1.png`` embedded thumbnail and the
+    ``Metadata/model_settings.config`` entry pointing at it -- a project
+    ``3mf`` (unlike ``sliced_gcode_3mf``, no ``slice_info.config``/gcode at
+    all) that still ships exactly the per-plate thumbnail reference
+    ``extract_embedded_thumbs``' "first found thumbnail" branch resolves.
+    """
+    model_settings_xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        "<config>"
+        "<plate>"
+        '<metadata key="plater_id" value="1"/>'
+        '<metadata key="thumbnail_file" value="Metadata/plate_1.png"/>'
+        "</plate>"
+        "</config>"
+    )
     return _write_zip(
-        {
-            "[Content_Types].xml": _CONTENT_TYPES_XML,
-            "_rels/.rels": _ROOT_RELS_XML,
-            "3D/3dmodel.model": root_model_xml,
-            "3D/_rels/3dmodel.model.rels": object_rels_xml,
-            "3D/Objects/object_1.model": object_model_xml,
-        }
+        _box_3mf_bambu_members(
+            {
+                "Metadata/model_settings.config": model_settings_xml,
+                "Metadata/plate_1.png": _solid_png(32, (0, 255, 0)),
+            }
+        )
     )
 
 
@@ -339,6 +377,7 @@ class CorpusPaths:
     box_obj: Path
     box_3mf_generic: Path
     box_3mf_bambu: Path
+    box_3mf_bambu_with_thumb: Path
     sliced_gcode_3mf: Path
     bambu_gcode: Path
     box_step: Path

@@ -36,9 +36,11 @@ what the caller (a human clicking retry) needs to see.
 from __future__ import annotations
 
 import logging
+import os
 import tempfile
 import time
 import uuid
+import zipfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
@@ -51,7 +53,7 @@ from sqlalchemy.orm import Session as SyncSession
 from app.config import Settings, get_settings
 from app.models import Blob, BlobMeta, Derivative, Job
 from app.models.enums import BlobFormat, DerivativeKind, DerivativeStatus
-from app.pipeline import meshload, slicedmeta
+from app.pipeline import meshload, slicedmeta, thumbs
 from app.services import derivatives, jobs
 from app.storage.base import StorageBackend
 from app.storage.registry import get_backend
@@ -373,3 +375,151 @@ def _extract_metadata_step(
 @pipeline_step("extract_metadata")
 def extract_metadata(job_id: str, blob_hash: str) -> None:
     run_step(job_id, blob_hash, "extract_metadata", _extract_metadata_step)
+
+
+# ---------------------------------------------------------------------------
+# extract_embedded_thumbs (Task 4; SPEC pipeline row 2; RESEARCH §3/§4:
+# assimp can't parse Bambu 3MF, so this step -- reading the slicer's own
+# embedded preview PNG(s) -- is the only thumbnail source for `3mf`/
+# `gcode_3mf` until a mesh render exists; `gcode_3mf` never reaches
+# convert_to_glb/render_thumb at all (Global Constraints "Pipeline shape").
+# ---------------------------------------------------------------------------
+
+# The one hardcoded guess this step is allowed to make when
+# `model_settings.config` doesn't resolve a thumbnail at all (missing,
+# unparseable, or every `thumbnail_file` entry points at a member that isn't
+# actually in the zip) -- SPEC pipeline row 2: "fallback probe
+# Metadata/plate_1.png -- never assume beyond that".
+_FALLBACK_THUMBNAIL_MEMBER = "Metadata/plate_1.png"
+_PLATE_ONE_INDEX = 1
+
+
+def _resolve_plate_thumbnails(zf: zipfile.ZipFile) -> list[tuple[int, str]]:
+    """Per-plate ``(index, zip member name)`` pairs for every plate whose
+    ``model_settings.config`` ``thumbnail_file`` entry resolves to a member
+    actually present in the zip, ascending by index (empty if
+    `model_settings.config` is missing/unparseable/has no plates at all).
+    Falls back to a single ``(1, _FALLBACK_THUMBNAIL_MEMBER)`` entry when
+    that resolves nothing but the fixed fallback path exists anyway.
+    """
+    names = set(zf.namelist())
+    model_settings = slicedmeta.read_zip_member(zf, slicedmeta.MODEL_SETTINGS_PATH)
+    plate_files = slicedmeta.parse_model_settings(model_settings)
+
+    resolved = sorted(
+        (index, thumb)
+        for index, info in plate_files.items()
+        if (thumb := info.get("thumbnail_file")) and thumb in names
+    )
+    if resolved:
+        return resolved
+    if _FALLBACK_THUMBNAIL_MEMBER in names:
+        return [(_PLATE_ONE_INDEX, _FALLBACK_THUMBNAIL_MEMBER)]
+    return []
+
+
+def _thumbs_already_ok(session: SyncSession, blob_hash: str) -> bool:
+    """Global Constraints "Pipeline jobs": idempotent -- both thumb
+    derivatives already ``ok`` means this step has nothing left to do.
+    """
+    ok_kinds = set(
+        session.execute(
+            select(Derivative.kind).where(
+                Derivative.blob_hash == blob_hash,
+                Derivative.kind.in_((DerivativeKind.THUMB_1024, DerivativeKind.THUMB_256)),
+                Derivative.status == DerivativeStatus.OK,
+            )
+        ).scalars()
+    )
+    return ok_kinds == {DerivativeKind.THUMB_1024, DerivativeKind.THUMB_256}
+
+
+def _publish_plate_thumb(data: bytes, settings: Settings, blob_hash: str, index: int) -> None:
+    """Copy one plate's embedded PNG bytes verbatim to its rowless
+    ``plate_thumb_path`` -- no decoding/validation (Bambu's known
+    blank-when-headless PNGs are accepted as-is), just an atomic publish.
+    """
+    dest = derivatives.plate_thumb_path(settings, blob_hash, index)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=".tdmm-plate-", suffix=".png")
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    derivatives.publish_file(tmp_path, dest)
+
+
+def _publish_embedded_thumbs(
+    session: SyncSession, settings: Settings, blob_hash: str, image_bytes: bytes
+) -> None:
+    """Build+publish the thumb_1024/thumb_256 derivatives from one embedded
+    preview image (``tool="embedded"``). A corrupted embedded PNG is a
+    deterministic parse failure (Global Constraints "Failure semantics":
+    derivative row ``failed`` with ``error``/``tool``, AND the job itself
+    fails) -- ``thumbs.make_thumbs_from_image`` already turns Pillow's own
+    ``OSError``-subclass decode failures into a plain ``ValueError`` so
+    ``run_step`` never mistakes this for transient I/O.
+    """
+    deriv_1024 = derivatives.upsert_derivative(session, blob_hash, DerivativeKind.THUMB_1024)
+    deriv_256 = derivatives.upsert_derivative(session, blob_hash, DerivativeKind.THUMB_256)
+    try:
+        p1024, p256 = thumbs.make_thumbs_from_image(image_bytes, settings, blob_hash)
+    except Exception as exc:
+        derivatives.mark_derivative(
+            session, deriv_1024, status=DerivativeStatus.FAILED, tool="embedded", error=str(exc)
+        )
+        derivatives.mark_derivative(
+            session, deriv_256, status=DerivativeStatus.FAILED, tool="embedded", error=str(exc)
+        )
+        raise
+    derivatives.mark_derivative(
+        session, deriv_1024, status=DerivativeStatus.OK, local_path=str(p1024), tool="embedded"
+    )
+    derivatives.mark_derivative(
+        session, deriv_256, status=DerivativeStatus.OK, local_path=str(p256), tool="embedded"
+    )
+
+
+def _extract_embedded_thumbs_step(
+    session: SyncSession, settings: Settings, backend: StorageBackend, blob: Blob
+) -> StepOutcome:
+    """``extract_embedded_thumbs``'s ``StepFn``: resolve embedded preview
+    PNG(s) out of the 3mf/gcode_3mf zip via ``model_settings.config`` (or the
+    fixed fallback probe), then branch on format -- ``gcode_3mf`` extracts
+    every resolved plate to its own rowless ``plate_thumb_path`` and, if
+    plate 1 was among them, also builds the thumb derivatives from it;
+    plain ``3mf`` project files only ever build the thumb derivatives, from
+    the first (lowest-index) resolved plate. No resolvable thumbnail at all
+    is not a failure -- ``render_thumb`` (Task 6) will rasterize a mesh
+    later, so a sliced blob simply has no thumb until then (SPEC pipeline
+    row 2).
+    """
+    if _thumbs_already_ok(session, blob.hash):
+        return "skipped"
+
+    with tempfile.TemporaryDirectory(prefix="tdmm-pipe-") as tmp:
+        path = derivatives.fetch_blob_to_temp(session, backend, blob.hash, Path(tmp), ".3mf")
+        with zipfile.ZipFile(path) as zf:
+            plates = _resolve_plate_thumbnails(zf)
+            plate_bytes = {index: zf.read(member) for index, member in plates}
+
+    if blob.format is BlobFormat.GCODE_3MF:
+        for index, data in plate_bytes.items():
+            _publish_plate_thumb(data, settings, blob.hash, index)
+        source_bytes = plate_bytes.get(_PLATE_ONE_INDEX)
+    else:
+        source_bytes = next(iter(plate_bytes.values()), None)
+
+    if source_bytes is None:
+        return "done"
+
+    _publish_embedded_thumbs(session, settings, blob.hash, source_bytes)
+    return "done"
+
+
+@pipeline_step("extract_embedded_thumbs")
+def extract_embedded_thumbs(job_id: str, blob_hash: str) -> None:
+    run_step(job_id, blob_hash, "extract_embedded_thumbs", _extract_embedded_thumbs_step)

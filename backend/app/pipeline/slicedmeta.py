@@ -91,7 +91,12 @@ def _parse_duration_s(text: str | None) -> int | None:
     return days * 86400 + hours * 3600 + minutes * 60 + seconds
 
 
-def _read_zip_member(zf: zipfile.ZipFile, name: str) -> bytes | None:
+def read_zip_member(zf: zipfile.ZipFile, name: str) -> bytes | None:
+    """``zf.read(name)``, or ``None`` if ``name`` isn't present -- shared by
+    every zip-embedded-metadata reader in this module (and, for
+    ``model_settings.config``, by ``app.pipeline.thumbs``'s embedded-thumbnail
+    resolution).
+    """
     try:
         return zf.read(name)
     except KeyError:
@@ -139,9 +144,17 @@ def _parse_slice_info(data: bytes | None) -> list[dict]:
     return plates
 
 
-def _parse_model_settings(data: bytes | None) -> dict[int, dict[str, str | None]]:
+def parse_model_settings(data: bytes | None) -> dict[int, dict[str, str | None]]:
     """Parse ``model_settings.config``'s per-plate ``plater_id`` ->
-    ``{gcode_file, thumbnail_file}`` mapping."""
+    ``{gcode_file, thumbnail_file}`` mapping.
+
+    Public (unlike this module's other parse helpers) because
+    ``app.pipeline.thumbs``' ``extract_embedded_thumbs`` step reuses it
+    directly to resolve per-plate thumbnail paths, independent of
+    ``slice_info.config`` (which a plain, unsliced project ``3mf`` never
+    has) -- see ``parse_gcode_3mf`` below for the sliced ``gcode_3mf`` case
+    that joins this same mapping against ``slice_info.config``'s plates.
+    """
     if data is None:
         return {}
     try:
@@ -172,12 +185,12 @@ def parse_gcode_3mf(path: Path) -> SlicedMeta:
     more ``None``/empty fields rather than raising.
     """
     with zipfile.ZipFile(path) as zf:
-        slice_info = _read_zip_member(zf, SLICE_INFO_PATH)
-        project_settings_raw = _read_zip_member(zf, PROJECT_SETTINGS_PATH)
-        model_settings = _read_zip_member(zf, MODEL_SETTINGS_PATH)
+        slice_info = read_zip_member(zf, SLICE_INFO_PATH)
+        project_settings_raw = read_zip_member(zf, PROJECT_SETTINGS_PATH)
+        model_settings = read_zip_member(zf, MODEL_SETTINGS_PATH)
 
     plate_infos = _parse_slice_info(slice_info)
-    plate_files = _parse_model_settings(model_settings)
+    plate_files = parse_model_settings(model_settings)
 
     project_settings: dict = {}
     if project_settings_raw is not None:

@@ -238,6 +238,65 @@ async def test_optimize_glb_below_threshold_generates_no_preview(
     assert preview is None
 
 
+async def test_optimize_glb_retries_failed_preview_lod_once_glb_web_already_exists(
+    db_session: AsyncSession,
+    backend: LocalStorageBackend,
+    seed_file,
+    corpus: CorpusPaths,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Important #2 regression (whole-branch review): ``glb_web`` publishing
+    and the ``-si 0.5`` preview pass can fail independently within the same
+    run (gltfpack ``-cc`` succeeds, the later preview pass then fails) --
+    before the fix, the skip check fired on ``web_path.exists()`` alone, so a
+    manual retry returned "skipped" without ever looking at the still-``failed``
+    ``glb_preview`` row. This seeds exactly that stuck state directly (rather
+    than by injecting a mid-run gltfpack failure) and asserts a retry
+    regenerates the preview LOD without touching the already-published
+    ``glb_web`` file.
+    """
+    monkeypatch.setattr(pipeline, "PREVIEW_TRIANGLE_THRESHOLD", 10)
+    settings = get_settings()
+    blob_hash = await _seed_blob_with_ok_glb(db_session, seed_file, corpus)
+    db_session.add(BlobMeta(blob_hash=blob_hash, triangle_count=12))
+    await db_session.commit()
+
+    web_path = derivatives.glb_web_path(settings, blob_hash)
+    web_path.parent.mkdir(parents=True, exist_ok=True)
+    web_path.write_bytes(b"glTF-already-published-web-bytes")
+    written_at = web_path.read_bytes()
+
+    db_session.add(
+        Derivative(
+            blob_hash=blob_hash,
+            kind=DerivativeKind.GLB_PREVIEW,
+            status=DerivativeStatus.FAILED,
+            tool="gltfpack -si 0.5",
+            error="boom: previous run's preview pass failed",
+        )
+    )
+    await db_session.commit()
+
+    with sync_session() as session:
+        blob = session.get(Blob, blob_hash)
+        outcome = pipeline._optimize_glb_step(session, settings, backend, blob)
+
+    assert outcome == "done"
+    # glb_web is untouched -- the fix must not redo the (already-succeeded)
+    # `-cc` compression just because the preview LOD needed a retry.
+    assert web_path.read_bytes() == written_at
+
+    with sync_session() as session:
+        preview_deriv = session.execute(
+            select(Derivative).where(
+                Derivative.blob_hash == blob_hash, Derivative.kind == DerivativeKind.GLB_PREVIEW
+            )
+        ).scalar_one()
+    assert preview_deriv.status == DerivativeStatus.OK
+    assert preview_deriv.error is None
+    assert Path(preview_deriv.local_path).read_bytes()[:4] == _GLB_MAGIC
+
+
 async def test_optimize_glb_missing_binary_fails_job_with_clear_message(
     db_session: AsyncSession,
     seed_file,

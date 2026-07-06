@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
@@ -141,6 +141,128 @@ async def test_upsert_creates_then_resets_and_mark_persists(db_session: AsyncSes
     assert row.local_path == "/data/derivatives/01/23/x.glb"
     assert row.tool == "cascadio"
     assert row.error is None
+
+
+# -- shared-blob concurrency (whole-branch review, Important #3) -----------
+
+
+async def test_upsert_derivative_does_not_reset_ok_row_to_pending(db_session: AsyncSession) -> None:
+    """An ``ok`` row is TERMINAL for its ``(blob_hash, kind)``: content-
+    addressed output can't change, so a later ``upsert_derivative`` call (a
+    second file sharing this blob running the same step) must return the
+    already-``ok`` row as-is rather than resetting it back to ``pending`` out
+    from under whatever's currently reading/serving it.
+    """
+    db_session.add(Blob(hash=BLOB_HASH, size=1, kind=BlobKind.MESH, format=BlobFormat.STL))
+    await db_session.commit()
+
+    with sync_session() as session:
+        deriv = derivatives.upsert_derivative(session, BLOB_HASH, DerivativeKind.GLB)
+        derivatives.mark_derivative(
+            session, deriv, status=DerivativeStatus.OK, local_path="/good.glb", tool="cascadio"
+        )
+
+    with sync_session() as session:
+        again = derivatives.upsert_derivative(session, BLOB_HASH, DerivativeKind.GLB)
+
+    assert again.status == DerivativeStatus.OK
+    assert again.local_path == "/good.glb"
+    assert again.tool == "cascadio"
+    assert again.error is None
+
+
+async def test_upsert_derivative_survives_lost_insert_race(db_session: AsyncSession) -> None:
+    """Two workers running the same step for two files sharing a blob can
+    both miss the SELECT (no row yet) and both attempt the INSERT; the
+    loser's ``UNIQUE(blob_hash, kind)`` violation must be caught, rolled
+    back, and resolved by re-selecting the winner's row -- not surfaced as a
+    raw, uncaught ``IntegrityError`` failing the loser's job.
+
+    Simulated by monkeypatching this session's own ``add`` so that, exactly
+    when ``upsert_derivative`` adds its new (about to lose) row, a SEPARATE
+    session wins the race first: it inserts and commits the SAME
+    ``(blob_hash, kind)`` row, so this session's own ``commit()`` genuinely
+    raises ``IntegrityError`` against real Postgres.
+    """
+    db_session.add(Blob(hash=BLOB_HASH, size=1, kind=BlobKind.MESH, format=BlobFormat.STL))
+    await db_session.commit()
+
+    with sync_session() as session:
+        original_add = session.add
+
+        def _add_then_let_other_session_win_the_race(instance, *args, **kwargs):
+            with sync_session() as other:
+                other.add(
+                    Derivative(
+                        blob_hash=BLOB_HASH,
+                        kind=DerivativeKind.GLB,
+                        status=DerivativeStatus.PENDING,
+                        local_path="/winner.glb",
+                        tool="cascadio",
+                    )
+                )
+                other.commit()
+            original_add(instance, *args, **kwargs)
+
+        session.add = _add_then_let_other_session_win_the_race
+
+        deriv = derivatives.upsert_derivative(session, BLOB_HASH, DerivativeKind.GLB)
+
+    # The row upsert_derivative hands back is the OTHER session's winning
+    # insert, re-SELECTed after this session's own commit lost the race.
+    assert deriv.local_path == "/winner.glb"
+    assert deriv.tool == "cascadio"
+
+    with sync_session() as session:
+        count = session.scalar(
+            select(func.count()).select_from(Derivative).where(Derivative.blob_hash == BLOB_HASH)
+        )
+    assert count == 1
+
+
+async def test_mark_derivative_refuses_to_downgrade_ok_row_marked_by_concurrent_run(
+    db_session: AsyncSession,
+) -> None:
+    """The "late-failure stomp" corner: run B calls ``upsert_derivative``
+    first and holds a ``pending`` row in its own session -- exactly what two
+    workers racing the SAME ``(blob_hash, kind)`` job for a shared blob would
+    both do. Run A, in a wholly separate session, then wins: it does the
+    work and marks the row ``ok``. When run B later fails nondeterministically
+    and tries to stomp the row with ``failed`` using its own (now-stale)
+    handle, ``mark_derivative`` must re-check the row's current state and
+    refuse the downgrade rather than overwriting A's good, published result.
+    """
+    db_session.add(Blob(hash=BLOB_HASH, size=1, kind=BlobKind.MESH, format=BlobFormat.STL))
+    await db_session.commit()
+
+    with sync_session() as session_b:
+        deriv_b = derivatives.upsert_derivative(session_b, BLOB_HASH, DerivativeKind.GLB)
+        assert deriv_b.status == DerivativeStatus.PENDING
+
+        with sync_session() as session_a:
+            deriv_a = derivatives.upsert_derivative(session_a, BLOB_HASH, DerivativeKind.GLB)
+            derivatives.mark_derivative(
+                session_a,
+                deriv_a,
+                status=DerivativeStatus.OK,
+                local_path="/good.glb",
+                tool="cascadio",
+            )
+
+        derivatives.mark_derivative(
+            session_b, deriv_b, status=DerivativeStatus.FAILED, error="boom: run B lost the race"
+        )
+
+    with sync_session() as session:
+        final = session.execute(
+            select(Derivative).where(
+                Derivative.blob_hash == BLOB_HASH, Derivative.kind == DerivativeKind.GLB
+            )
+        ).scalar_one()
+    assert final.status == DerivativeStatus.OK
+    assert final.local_path == "/good.glb"
+    assert final.tool == "cascadio"
+    assert final.error is None
 
 
 # -- fetch_blob_to_temp ----------------------------------------------------

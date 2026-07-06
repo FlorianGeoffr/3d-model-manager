@@ -151,6 +151,34 @@ def test_parse_gcode_3mf_extracts_bambu_ground_truth(corpus: CorpusPaths) -> Non
     ]
 
 
+def test_parse_gcode_3mf_missing_plate_index_falls_back_to_document_position(
+    corpus: CorpusPaths,
+) -> None:
+    """Important #1 regression (whole-branch review): a plate whose
+    ``slice_info.config`` entry has no ``index`` metadata at all (a slightly
+    different slicer version, per the module's own tolerant-of-absence
+    design) must still come back with a usable ``int`` index -- falling back
+    to its 1-based position in document order -- rather than ``None``, which
+    would 500 the model/revision detail endpoint one layer up
+    (``PlateOut.index`` is a non-optional ``int``; see
+    ``test_pipeline_metadata_endpoint.py``-style coverage below for the
+    end-to-end proof).
+    """
+    sliced = slicedmeta.parse_gcode_3mf(corpus.sliced_gcode_3mf_missing_index)
+
+    assert sliced.plate_count == 2
+    assert [p["index"] for p in sliced.plates] == [1, 2]
+    # The index-less plate's other fields still parse normally, and its
+    # gcode/thumbnail files still resolve via `model_settings.config`'s
+    # `plater_id`-keyed mapping -- confirming the positional fallback (2)
+    # happens to line up with this fixture's `plater_id`, exactly as a real
+    # Bambu Studio export (plates emitted in plater order) would.
+    assert sliced.plates[1]["prediction_s"] == 1800
+    assert sliced.plates[1]["weight_g"] == pytest.approx(7.5)
+    assert sliced.plates[1]["gcode_file"] == "Metadata/plate_2.gcode"
+    assert sliced.plates[1]["thumbnail_file"] == "Metadata/plate_2.png"
+
+
 def test_parse_gcode_3mf_tolerant_of_missing_sources(tmp_path: Path) -> None:
     """None of the three source files existing must not raise -- an export
     from an unrecognized tool just yields an all-empty ``SlicedMeta``.
@@ -565,3 +593,40 @@ async def test_upload_stl_creates_blob_meta_row_second_identical_upload_skips(
         )
     assert meta_count == 1
     assert call_count["n"] == 2
+
+
+async def test_upload_gcode_3mf_missing_plate_index_detail_endpoint_200s(
+    authenticated_client: httpx.AsyncClient,
+    corpus: CorpusPaths,
+) -> None:
+    """Important #1 regression, end-to-end: before the fix, the index-less
+    plate's ``BlobMeta.raw["plates"]`` entry carried ``{"index": None, ...}``,
+    which ``PlateOut.from_raw`` (a non-optional ``index: int``) turned into a
+    Pydantic ``ValidationError`` -- a 500 on every subsequent
+    ``GET /api/revisions/{id}`` for this file, permanently (the bad row is
+    already in the DB; ``extract_metadata`` skips on re-run). With the fix,
+    metadata extraction succeeds, the detail endpoint 200s, and both plates
+    render with their (now always-int) positional indices.
+    """
+    content = corpus.sliced_gcode_3mf_missing_index.read_bytes()
+    created = await _create_model(authenticated_client, "Sliced Missing-Index Target")
+    revision_id = created["current_revision"]["id"]
+
+    upload = await authenticated_client.put(
+        "/api/uploads",
+        params={
+            "model_id": created["id"],
+            "revision_id": revision_id,
+            "rel_path": "print.gcode.3mf",
+        },
+        content=content,
+    )
+    assert upload.status_code == 201, upload.text
+
+    detail = await authenticated_client.get(f"/api/revisions/{revision_id}")
+    assert detail.status_code == 200, detail.text
+
+    file_out = next(f for f in detail.json()["files"] if f["rel_path"] == "print.gcode.3mf")
+    assert file_out["meta"] is not None
+    plates = file_out["meta"]["plates"]
+    assert [p["index"] for p in plates] == [1, 2]

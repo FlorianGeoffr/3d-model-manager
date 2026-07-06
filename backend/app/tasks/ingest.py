@@ -101,9 +101,16 @@ def store_to_backend(job_id: str, file_id: int, spool_path: str) -> None:
             jobs.mark_done(session, job_id)
             # Kick off this blob's processing pipeline (Task 2). A blob
             # shared by more than one File (dedup) can have this called once
-            # per File that uploads it -- harmless, since each pipeline step
-            # checks whether its derivative output is already `ok` before
-            # doing any work and marks itself done as a no-op skip if so.
+            # per File that uploads it -- self-healing via retry rather than
+            # strictly harmless (whole-branch review, Important #3): two
+            # concurrent runs for the same (blob_hash, kind) can still race
+            # each other (get-or-create INSERT race; a losing run's late
+            # failure landing after a winner's `ok`), but `upsert_derivative`/
+            # `mark_derivative` (app.services.derivatives) now survive the
+            # former and refuse to downgrade the latter, and each pipeline
+            # step still checks whether its derivative output is already `ok`
+            # before doing any work, marking itself done as a no-op skip if
+            # so.
             pipeline.start_pipeline_sync(session, blob_hash=expected_hash, file_id=file_id)
     except Exception as exc:
         with base.sync_session() as session:

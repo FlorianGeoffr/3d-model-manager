@@ -23,17 +23,21 @@ dependency at all and are usable from either world.
 
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 from pathlib import Path
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.models import AssemblyThumb, Derivative, File
 from app.models.enums import DerivativeKind, DerivativeStatus
 from app.storage.base import StorageBackend
+
+logger = logging.getLogger(__name__)
 
 SUFFIXES: dict[DerivativeKind, str] = {
     DerivativeKind.THUMB_256: "thumb_256.png",
@@ -123,17 +127,44 @@ def upsert_derivative(session: Session, blob_hash: str, kind: DerivativeKind) ->
 
     Re-running a step (manual retry, or a later revision sharing this blob)
     resets an existing row back to ``pending``/``error=None`` before the step
-    redoes the work, so a previous run's terminal state can't linger.
+    redoes the work, so a previous run's terminal state can't linger --
+    UNLESS the row is already ``ok`` (whole-branch review, Important #3):
+    content-addressed output can't change for a given ``(blob_hash, kind)``,
+    so an ``ok`` row is TERMINAL and is returned as-is. The calling step's own
+    skip-if-ok check then short-circuits before doing any work, instead of
+    this function itself resetting good, already-published output back to
+    ``pending`` out from under a concurrent reader.
+
+    Two workers racing the same ``(blob_hash, kind)`` INSERT (two files
+    sharing a blob, each finishing their prior step near-simultaneously) can
+    both miss the SELECT above and both attempt to INSERT; the loser's
+    ``UNIQUE(blob_hash, kind)`` violation is caught here, rolled back, and
+    re-SELECTed -- returning the winner's row either way, rather than
+    surfacing a raw ``IntegrityError`` to the loser's job.
     """
     deriv = session.execute(
         select(Derivative).where(Derivative.blob_hash == blob_hash, Derivative.kind == kind)
     ).scalar_one_or_none()
+
     if deriv is None:
         deriv = Derivative(blob_hash=blob_hash, kind=kind, status=DerivativeStatus.PENDING)
         session.add(deriv)
-    else:
-        deriv.status = DerivativeStatus.PENDING
-        deriv.error = None
+        try:
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+            deriv = session.execute(
+                select(Derivative).where(Derivative.blob_hash == blob_hash, Derivative.kind == kind)
+            ).scalar_one()
+        else:
+            session.refresh(deriv)
+        return deriv
+
+    if deriv.status == DerivativeStatus.OK:
+        return deriv
+
+    deriv.status = DerivativeStatus.PENDING
+    deriv.error = None
     session.commit()
     session.refresh(deriv)
     return deriv
@@ -148,7 +179,30 @@ def mark_derivative(
     tool: str | None = None,
     error: str | None = None,
 ) -> None:
-    """Set a derivative's terminal fields after a step attempt and commit."""
+    """Set a derivative's terminal fields after a step attempt and commit.
+
+    Refuses to downgrade an already-``ok`` row to anything else
+    (whole-branch review, Important #3's "late-failure stomp"): a second run
+    for the same shared blob that loses the race to finish first can still
+    reach this call after the winner already published good output and
+    marked the row ``ok`` -- overwriting it with ``failed``/``pending`` would
+    make ``optimize_glb``/``render_thumb``'s "glb missing" checks lie about a
+    status whose file is actually fine. Re-fetches the row's CURRENT state
+    rather than trusting the possibly-stale ``deriv`` passed in, since another
+    session may have committed the ``ok`` transition after this step's own
+    ``upsert_derivative`` call returned. Upgrading ``failed`` -> ``ok`` (the
+    whole point of a manual retry) is unaffected.
+    """
+    session.refresh(deriv)
+    if deriv.status == DerivativeStatus.OK and status != DerivativeStatus.OK:
+        logger.info(
+            "mark_derivative: refusing to downgrade ok -> %s for blob_hash=%s kind=%s (self-healing"
+            " race: a concurrent run already published good output for this shared blob)",
+            status.value,
+            deriv.blob_hash,
+            deriv.kind.value,
+        )
+        return
     deriv.status = status
     deriv.local_path = local_path
     deriv.tool = tool

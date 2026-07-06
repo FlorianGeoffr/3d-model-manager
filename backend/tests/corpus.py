@@ -332,6 +332,82 @@ def sliced_gcode_3mf() -> bytes:
     )
 
 
+def sliced_gcode_3mf_missing_index() -> bytes:
+    """Same 2-plate shape as ``sliced_gcode_3mf``, except the SECOND plate's
+    ``slice_info.config`` entry has no ``index`` metadata key at all (Important
+    #1 regression fixture) -- an export from a slightly different slicer
+    version, per the module's own "tolerant of absence" design
+    (``app.pipeline.slicedmeta``). The first plate keeps its real ``index="1"``
+    (matching its document position) precisely so the fixture can tell a
+    document-position fallback apart from a naively-hardcoded one: only the
+    second, index-less plate's fallback (position 2) is the thing under test.
+    """
+    slice_info_xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        "<config>"
+        "<header>"
+        '<header_item key="X-BBL-Client-Type" value="slicer"/>'
+        '<header_item key="X-BBL-Client-Version" value="02.00.00.00"/>'
+        "</header>"
+        "<plate>"
+        '<metadata key="index" value="1"/>'
+        '<metadata key="printer_model_id" value="C11"/>'
+        '<metadata key="nozzle_diameters" value="0.4"/>'
+        '<metadata key="prediction" value="3600"/>'
+        '<metadata key="weight" value="12.50"/>'
+        '<filament id="1" type="PLA" color="#FF0000" used_m="4.82" used_g="12.50"/>'
+        "</plate>"
+        "<plate>"
+        '<metadata key="printer_model_id" value="C11"/>'
+        '<metadata key="nozzle_diameters" value="0.4"/>'
+        '<metadata key="prediction" value="1800"/>'
+        '<metadata key="weight" value="7.50"/>'
+        '<filament id="1" type="PETG" color="#0000FF" used_m="2.41" used_g="7.50"/>'
+        "</plate>"
+        "</config>"
+    )
+    project_settings_json = (
+        '{"printer_model": "Bambu Lab A1 mini", "printer_variant": "0.4", '
+        '"layer_height": "0.2", "filament_type": ["PLA", "PETG"]}'
+    )
+    model_settings_xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        "<config>"
+        "<plate>"
+        '<metadata key="plater_id" value="1"/>'
+        '<metadata key="gcode_file" value="Metadata/plate_1.gcode"/>'
+        '<metadata key="thumbnail_file" value="Metadata/plate_1.png"/>'
+        "</plate>"
+        "<plate>"
+        '<metadata key="plater_id" value="2"/>'
+        '<metadata key="gcode_file" value="Metadata/plate_2.gcode"/>'
+        '<metadata key="thumbnail_file" value="Metadata/plate_2.png"/>'
+        "</plate>"
+        "</config>"
+    )
+    stub_model_xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<model unit="millimeter" xml:lang="en-US" '
+        'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
+        "<resources/>"
+        "<build/>"
+        "</model>"
+    )
+    return _write_zip(
+        {
+            "[Content_Types].xml": _CONTENT_TYPES_XML,
+            "_rels/.rels": _ROOT_RELS_XML,
+            "3D/3dmodel.model": stub_model_xml,
+            "Metadata/slice_info.config": slice_info_xml,
+            "Metadata/project_settings.config": project_settings_json,
+            "Metadata/model_settings.config": model_settings_xml,
+            "Metadata/plate_1.png": _solid_png(32, (255, 0, 0)),
+            "Metadata/plate_2.png": _solid_png(32, (0, 0, 255)),
+            "Metadata/plate_1.gcode": bambu_gcode(),
+        }
+    )
+
+
 # -- CAD formats ----------------------------------------------------------
 
 
@@ -379,6 +455,7 @@ class CorpusPaths:
     box_3mf_bambu: Path
     box_3mf_bambu_with_thumb: Path
     sliced_gcode_3mf: Path
+    sliced_gcode_3mf_missing_index: Path
     bambu_gcode: Path
     box_step: Path
     box_iges: Path

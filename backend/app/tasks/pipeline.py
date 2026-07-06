@@ -802,43 +802,71 @@ def _generate_preview_lod(
     )
 
 
+def _glb_preview_derivative(session: SyncSession, blob_hash: str) -> Derivative | None:
+    return session.execute(
+        select(Derivative).where(
+            Derivative.blob_hash == blob_hash, Derivative.kind == DerivativeKind.GLB_PREVIEW
+        )
+    ).scalar_one_or_none()
+
+
+def _preview_lod_needed(session: SyncSession, blob_hash: str) -> bool:
+    meta = session.get(BlobMeta, blob_hash)
+    return (
+        meta is not None
+        and bool(meta.triangle_count)
+        and meta.triangle_count > PREVIEW_TRIANGLE_THRESHOLD
+    )
+
+
 def _optimize_glb_step(
     session: SyncSession, settings: Settings, backend: StorageBackend, blob: Blob
 ) -> StepOutcome:
-    """``optimize_glb``'s ``StepFn``: skip once the `glb_web` file already
-    exists (Global Constraints "Pipeline jobs": idempotent) -- otherwise
-    the ok `glb` derivative is a hard prerequisite (a broken pipeline order
-    is a bug, not a retriable condition, hence the plain ``RuntimeError``
-    rather than a derivative failure -- there's no derivative row to fail for
-    the rowless `glb_web` output anyway).
+    """``optimize_glb``'s ``StepFn``: the ok `glb` derivative is a hard
+    prerequisite (a broken pipeline order is a bug, not a retriable
+    condition, hence the plain ``RuntimeError`` rather than a derivative
+    failure -- there's no derivative row to fail for the rowless `glb_web`
+    output anyway).
+
+    Idempotent per-ARTIFACT, not behind a single skip gate (Important #2
+    fix): `glb_web` and the `glb_preview` LOD are each checked and
+    (re)produced independently. The step used to skip outright once
+    `glb_web` existed, which made a failed preview LOD -- gltfpack `-cc`
+    can succeed and publish `glb_web` in the same run where the later `-si
+    0.5` pass then fails -- permanently unrecoverable via retry: the skip
+    check fired before ever looking at the preview branch. Now a retry
+    regenerates only what's actually missing/not-ok; an already-published
+    `glb_web` is never redundantly recompressed.
     """
     glb_deriv = _glb_derivative(session, blob.hash)
     if glb_deriv is None or glb_deriv.status != DerivativeStatus.OK:
         raise RuntimeError("glb missing")
 
     web_path = derivatives.glb_web_path(settings, blob.hash)
-    if web_path.exists():
-        return "skipped"
-
     raw_glb = derivatives.derivative_path(settings, blob.hash, DerivativeKind.GLB)
 
-    web_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=web_path.parent, prefix=".tdmm-glbweb-", suffix=".glb")
-    os.close(fd)
-    tmp_path = Path(tmp_name)
-    try:
-        _run_gltfpack(settings, ["-i", str(raw_glb), "-o", str(tmp_path), "-cc"])
-    except BaseException:
-        tmp_path.unlink(missing_ok=True)
-        raise
-    derivatives.publish_file(tmp_path, web_path)
+    preview_needed = _preview_lod_needed(session, blob.hash)
+    preview_deriv = _glb_preview_derivative(session, blob.hash)
+    preview_satisfied = not preview_needed or (
+        preview_deriv is not None and preview_deriv.status == DerivativeStatus.OK
+    )
 
-    meta = session.get(BlobMeta, blob.hash)
-    if (
-        meta is not None
-        and meta.triangle_count
-        and meta.triangle_count > PREVIEW_TRIANGLE_THRESHOLD
-    ):
+    if web_path.exists() and preview_satisfied:
+        return "skipped"
+
+    if not web_path.exists():
+        web_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(dir=web_path.parent, prefix=".tdmm-glbweb-", suffix=".glb")
+        os.close(fd)
+        tmp_path = Path(tmp_name)
+        try:
+            _run_gltfpack(settings, ["-i", str(raw_glb), "-o", str(tmp_path), "-cc"])
+        except BaseException:
+            tmp_path.unlink(missing_ok=True)
+            raise
+        derivatives.publish_file(tmp_path, web_path)
+
+    if preview_needed and not preview_satisfied:
         _generate_preview_lod(session, settings, blob.hash, raw_glb)
 
     return "done"

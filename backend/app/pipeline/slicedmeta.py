@@ -113,7 +113,16 @@ def _plate_metadata(plate_el: ET.Element) -> dict[str, str | None]:
 
 def _parse_slice_info(data: bytes | None) -> list[dict]:
     """Parse ``slice_info.config``'s per-plate ``<metadata>``/``<filament>``
-    elements, in document order (not re-sorted by index)."""
+    elements, in document order (not re-sorted by index).
+
+    A plate whose ``index`` metadata is absent/unparseable falls back to its
+    1-based position in document order (Important #1 fix): ``PlateOut.index``
+    (``app.schemas.library``) is a non-optional ``int`` -- keeping the schema
+    strict rather than loosening it to ``int | None`` -- so this parser must
+    never hand back a plate with no usable index at all. Plates are otherwise
+    unaddressable anyway (plate thumbs/gcode are keyed by index), so document
+    position is the only meaningful fallback.
+    """
     if data is None:
         return []
     try:
@@ -122,7 +131,7 @@ def _parse_slice_info(data: bytes | None) -> list[dict]:
         return []
 
     plates = []
-    for plate_el in root.findall("plate"):
+    for position, plate_el in enumerate(root.findall("plate"), start=1):
         meta = _plate_metadata(plate_el)
         filaments = [
             {
@@ -133,9 +142,10 @@ def _parse_slice_info(data: bytes | None) -> list[dict]:
             }
             for filament_el in plate_el.findall("filament")
         ]
+        index = _parse_int(meta.get("index"))
         plates.append(
             {
-                "index": _parse_int(meta.get("index")),
+                "index": index if index is not None else position,
                 "prediction_s": _parse_int(meta.get("prediction")),
                 "weight_g": _parse_float(meta.get("weight")),
                 "filaments": filaments,

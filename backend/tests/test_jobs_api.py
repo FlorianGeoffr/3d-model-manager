@@ -251,6 +251,14 @@ async def test_publish_failure_during_mark_running_does_not_fail_job(
     original_publish = events.publish_job_event_sync
 
     def flaky_publish(redis_url, **kwargs):
+        # Task 3: a successful store now dispatches (eager) `extract_metadata`
+        # for this blob, which publishes its own `job.updated` events through
+        # this same monkeypatched function. `content` above isn't a real STL,
+        # so that step's own job fails -- irrelevant to this test, which only
+        # cares about the STORE job's two publishes (mark_running/mark_done),
+        # hence filtering by job_id rather than a raw call count.
+        if kwargs.get("job_id") != uuid.UUID(job_id):
+            return original_publish(redis_url, **kwargs)
         calls["n"] += 1
         if calls["n"] == 1:
             raise ConnectionError("simulated redis publish failure")

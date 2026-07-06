@@ -36,18 +36,23 @@ what the caller (a human clicking retry) needs to see.
 from __future__ import annotations
 
 import logging
+import tempfile
 import time
 import uuid
 from collections.abc import Callable
+from pathlib import Path
 from typing import Literal
 
+import trimesh
 from celery import Task
+from sqlalchemy import select
 from sqlalchemy.orm import Session as SyncSession
 
 from app.config import Settings, get_settings
-from app.models import Blob, Job
-from app.models.enums import BlobFormat
-from app.services import jobs
+from app.models import Blob, BlobMeta, Derivative, Job
+from app.models.enums import BlobFormat, DerivativeKind, DerivativeStatus
+from app.pipeline import meshload, slicedmeta
+from app.services import derivatives, jobs
 from app.storage.base import StorageBackend
 from app.storage.registry import get_backend
 from app.tasks import base
@@ -253,3 +258,118 @@ def run_step(job_id: str, blob_hash: str, step: str, fn: StepFn) -> None:
         with base.sync_session() as session:
             jobs.mark_failed(session, job_id, str(exc))
         raise
+
+
+# ---------------------------------------------------------------------------
+# extract_metadata (Task 3; SPEC pipeline row 1; RESEARCH §1/§3): mesh stats
+# for stl/obj/3mf, sliced-file/gcode-header fields for gcode_3mf/gcode, and
+# mesh stats read back off the already-converted GLB derivative for
+# step/iges.
+# ---------------------------------------------------------------------------
+
+_MESH_FORMATS = (BlobFormat.STL, BlobFormat.OBJ, BlobFormat.THREEMF)
+_CAD_FORMATS = (BlobFormat.STEP, BlobFormat.IGES)
+
+
+def _mesh_blob_meta(blob_hash: str, mesh: trimesh.Trimesh, tool: str) -> BlobMeta:
+    """Build the ``BlobMeta`` row for a loaded mesh -- shared by the native
+    stl/obj/3mf branch and the CAD (GLB-derived) branch below, which compute
+    the same stats off differently-sourced ``trimesh.Trimesh`` objects.
+    """
+    return BlobMeta(
+        blob_hash=blob_hash,
+        triangle_count=len(mesh.faces),
+        dims_mm=[float(x) for x in mesh.extents],
+        volume_cm3=(mesh.volume / 1000) if mesh.is_watertight else None,
+        surface_area_cm2=mesh.area / 100,
+        is_watertight=bool(mesh.is_watertight),
+        raw={"tool": tool},
+    )
+
+
+def _sliced_blob_meta(blob_hash: str, sliced: slicedmeta.SlicedMeta) -> BlobMeta:
+    return BlobMeta(
+        blob_hash=blob_hash,
+        print_time_s=sliced.print_time_s,
+        filament_g=sliced.filament_g,
+        filament_m=sliced.filament_m,
+        filament_types=sliced.filament_types,
+        layer_height=sliced.layer_height,
+        nozzle=sliced.nozzle,
+        printer_model=sliced.printer_model,
+        plate_count=sliced.plate_count,
+        raw={"plates": sliced.plates, "tool": "zipfile"},
+    )
+
+
+def _gcode_blob_meta(blob_hash: str, header: slicedmeta.GcodeMeta) -> BlobMeta:
+    return BlobMeta(
+        blob_hash=blob_hash,
+        print_time_s=header.print_time_s,
+        filament_g=header.filament_g,
+        filament_m=header.filament_m,
+        raw={"header": header.raw, "tool": "gcode-header"},
+    )
+
+
+def _cad_blob_meta(session: SyncSession, settings: Settings, blob: Blob) -> BlobMeta:
+    """step/iges: read mesh stats off the already-converted GLB derivative
+    (Global Constraints "Pipeline shape": ``convert_to_glb`` runs before
+    ``extract_metadata`` for CAD formats specifically so OCCT only
+    tessellates once) rather than re-tessellating the original CAD file.
+    """
+    glb = session.execute(
+        select(Derivative).where(
+            Derivative.blob_hash == blob.hash, Derivative.kind == DerivativeKind.GLB
+        )
+    ).scalar_one_or_none()
+    if glb is None or glb.status != DerivativeStatus.OK:
+        raise RuntimeError("glb derivative not ready; pipeline order broken")
+
+    glb_path = derivatives.derivative_path(settings, blob.hash, DerivativeKind.GLB)
+    mesh = meshload.to_single_mesh(trimesh.load(glb_path))
+    return _mesh_blob_meta(blob.hash, mesh, "glb-derived")
+
+
+def _extract_metadata_step(
+    session: SyncSession, settings: Settings, backend: StorageBackend, blob: Blob
+) -> StepOutcome:
+    """``extract_metadata``'s ``StepFn``: skip if a ``BlobMeta`` row already
+    exists for this blob (Global Constraints "Pipeline jobs": steps are
+    idempotent), otherwise branch on ``blob.format`` and upsert one.
+    """
+    if session.get(BlobMeta, blob.hash) is not None:
+        return "skipped"
+
+    fmt = blob.format
+    if fmt in _MESH_FORMATS:
+        with tempfile.TemporaryDirectory(prefix="tdmm-pipe-") as tmp:
+            path = derivatives.fetch_blob_to_temp(
+                session, backend, blob.hash, Path(tmp), f".{fmt.value}"
+            )
+            mesh, tool = meshload.load_mesh(path, fmt)
+        meta = _mesh_blob_meta(blob.hash, mesh, tool)
+    elif fmt is BlobFormat.GCODE_3MF:
+        with tempfile.TemporaryDirectory(prefix="tdmm-pipe-") as tmp:
+            path = derivatives.fetch_blob_to_temp(session, backend, blob.hash, Path(tmp), ".3mf")
+            meta = _sliced_blob_meta(blob.hash, slicedmeta.parse_gcode_3mf(path))
+    elif fmt is BlobFormat.GCODE:
+        with tempfile.TemporaryDirectory(prefix="tdmm-pipe-") as tmp:
+            path = derivatives.fetch_blob_to_temp(session, backend, blob.hash, Path(tmp), ".gcode")
+            meta = _gcode_blob_meta(blob.hash, slicedmeta.parse_gcode_header(path))
+    elif fmt in _CAD_FORMATS:
+        meta = _cad_blob_meta(session, settings, blob)
+    else:
+        # png/jpg/other never route extract_metadata here at all (Global
+        # Constraints "Pipeline shape" table has no extract_metadata entry
+        # for them) -- defensive only.
+        raise UnsupportedBlobError(f"extract_metadata: unsupported format {fmt}")
+
+    session.merge(meta)
+    session.commit()
+    return "done"
+
+
+@pipeline_step("extract_metadata")
+def extract_metadata(job_id: str, blob_hash: str) -> None:
+    run_step(job_id, blob_hash, "extract_metadata", _extract_metadata_step)

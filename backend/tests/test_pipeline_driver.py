@@ -22,6 +22,7 @@ from app.models import File, Job
 from app.models.enums import BlobFormat
 from app.tasks import pipeline
 from app.tasks.pipeline import PIPELINE_STEPS, next_step, pipeline_step, run_step
+from tests.corpus import CorpusPaths
 
 pytestmark = pytest.mark.usefixtures("library_root", "data_dir")
 
@@ -147,12 +148,16 @@ async def _create_model(client: httpx.AsyncClient, name: str) -> dict:
 
 
 async def _upload_stl(
-    client: httpx.AsyncClient, *, model_id: int, revision_id: int
+    client: httpx.AsyncClient,
+    *,
+    model_id: int,
+    revision_id: int,
+    content: bytes = b"some-real-pipeline-bytes",
 ) -> httpx.Response:
     return await client.put(
         "/api/uploads",
         params={"model_id": model_id, "revision_id": revision_id, "rel_path": "part.stl"},
-        content=b"some-real-pipeline-bytes",
+        content=content,
     )
 
 
@@ -235,25 +240,35 @@ async def test_skip_outcome_still_enqueues_next_step(
 
 
 async def test_unregistered_step_is_a_no_op_stub(
-    authenticated_client: httpx.AsyncClient,
+    authenticated_client: httpx.AsyncClient, corpus: CorpusPaths
 ) -> None:
-    """PIPELINE_STEPS ships the real Global-Constraints table before Tasks
-    3-6 register any real step bodies -- uploading a real STL must not blow
-    up dispatching a step name with no matching ``STEP_TASKS`` entry (Accept:
+    """PIPELINE_STEPS ships the real Global-Constraints table before every
+    step has a registered body -- uploading a real STL must not blow up
+    dispatching a step name with no matching ``STEP_TASKS`` entry (Accept:
     "uploading any file still works end-to-end ... (empty or stubbed)
-    pipeline dispatch").
+    pipeline dispatch"). Task 3 registers ``extract_metadata`` for real, so
+    this now asserts the STILL-unregistered NEXT step (``convert_to_glb``,
+    Task 4) rather than ``extract_metadata`` itself -- real STL bytes (not
+    the module's default garbage content) so extraction actually succeeds
+    and the chain reaches that next step at all.
     """
     created = await _create_model(authenticated_client, "Unregistered Step Target")
     revision_id = created["current_revision"]["id"]
 
     upload = await _upload_stl(
-        authenticated_client, model_id=created["id"], revision_id=revision_id
+        authenticated_client,
+        model_id=created["id"],
+        revision_id=revision_id,
+        content=corpus.box_stl.read_bytes(),
     )
 
     assert upload.status_code == 201, upload.text
     jobs_resp = await authenticated_client.get("/api/jobs")
-    job_types = {j["type"] for j in jobs_resp.json()}
-    assert "extract_metadata" not in job_types  # no job row for an unregistered step
+    jobs_list = jobs_resp.json()
+    extract_metadata_job = next(j for j in jobs_list if j["type"] == "extract_metadata")
+    assert extract_metadata_job["state"] == "done"
+    job_types = {j["type"] for j in jobs_list}
+    assert "convert_to_glb" not in job_types  # no job row for a still-unregistered step
 
 
 # ---------------------------------------------------------------------------

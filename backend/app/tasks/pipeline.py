@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 import tempfile
 import time
 import uuid
@@ -53,7 +54,7 @@ from sqlalchemy.orm import Session as SyncSession
 from app.config import Settings, get_settings
 from app.models import Blob, BlobMeta, Derivative, Job
 from app.models.enums import BlobFormat, DerivativeKind, DerivativeStatus
-from app.pipeline import meshload, slicedmeta, thumbs
+from app.pipeline import convert, meshload, slicedmeta, thumbs
 from app.services import derivatives, jobs
 from app.storage.base import StorageBackend
 from app.storage.registry import get_backend
@@ -439,17 +440,7 @@ def _publish_plate_thumb(data: bytes, settings: Settings, blob_hash: str, index:
     ``plate_thumb_path`` -- no decoding/validation (Bambu's known
     blank-when-headless PNGs are accepted as-is), just an atomic publish.
     """
-    dest = derivatives.plate_thumb_path(settings, blob_hash, index)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=".tdmm-plate-", suffix=".png")
-    tmp_path = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(data)
-    except BaseException:
-        tmp_path.unlink(missing_ok=True)
-        raise
-    derivatives.publish_file(tmp_path, dest)
+    derivatives.publish_bytes(data, derivatives.plate_thumb_path(settings, blob_hash, index))
 
 
 def _publish_embedded_thumbs(
@@ -523,3 +514,173 @@ def _extract_embedded_thumbs_step(
 @pipeline_step("extract_embedded_thumbs")
 def extract_embedded_thumbs(job_id: str, blob_hash: str) -> None:
     run_step(job_id, blob_hash, "extract_embedded_thumbs", _extract_embedded_thumbs_step)
+
+
+# ---------------------------------------------------------------------------
+# convert_to_glb (Task 5; SPEC pipeline row 3; RESEARCH §2): per-format
+# conversion to the raw, uncompressed `glb` derivative -- the one GLB
+# artifact f3d/trimesh/OCCT ever read back (Global Constraints "Two GLB
+# artifacts per blob"; ``optimize_glb`` below produces the meshopt-compressed
+# browser artifacts separately, never touching this row). The actual
+# trimesh/lib3mf/cascadio/OCP conversion work lives in
+# ``app.pipeline.convert``/``app.pipeline.cad``; this step is just the
+# derivative/job bookkeeping around it, matching ``extract_metadata``'s shape.
+# ---------------------------------------------------------------------------
+
+
+def _glb_derivative(session: SyncSession, blob_hash: str) -> Derivative | None:
+    return session.execute(
+        select(Derivative).where(
+            Derivative.blob_hash == blob_hash, Derivative.kind == DerivativeKind.GLB
+        )
+    ).scalar_one_or_none()
+
+
+def _convert_to_glb_step(
+    session: SyncSession, settings: Settings, backend: StorageBackend, blob: Blob
+) -> StepOutcome:
+    """``convert_to_glb``'s ``StepFn``: skip if the ``glb`` derivative is
+    already ``ok`` (Global Constraints "Pipeline jobs": idempotent), otherwise
+    convert into a temp file staged in the derivative's own parent directory
+    (so the final ``publish_file`` rename never crosses a filesystem
+    boundary -- ``convert.convert_to_glb_file``'s trimesh/cascadio/OCP calls
+    write to that path directly, unlike the in-memory-bytes steps that use
+    ``derivatives.publish_bytes``) and publishes it.
+    """
+    existing = _glb_derivative(session, blob.hash)
+    if existing is not None and existing.status == DerivativeStatus.OK:
+        return "skipped"
+
+    deriv = derivatives.upsert_derivative(session, blob.hash, DerivativeKind.GLB)
+    dest = derivatives.derivative_path(settings, blob.hash, DerivativeKind.GLB)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=".tdmm-glb-", suffix=".glb")
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        with tempfile.TemporaryDirectory(prefix="tdmm-pipe-") as tmp:
+            src = derivatives.fetch_blob_to_temp(
+                session, backend, blob.hash, Path(tmp), f".{blob.format.value}"
+            )
+            tool = convert.convert_to_glb_file(src, blob.format, tmp_path)
+    except Exception as exc:
+        tmp_path.unlink(missing_ok=True)
+        derivatives.mark_derivative(session, deriv, status=DerivativeStatus.FAILED, error=str(exc))
+        raise
+    derivatives.publish_file(tmp_path, dest)
+    derivatives.mark_derivative(
+        session, deriv, status=DerivativeStatus.OK, local_path=str(dest), tool=tool
+    )
+    return "done"
+
+
+@pipeline_step("convert_to_glb")
+def convert_to_glb(job_id: str, blob_hash: str) -> None:
+    run_step(job_id, blob_hash, "convert_to_glb", _convert_to_glb_step)
+
+
+# ---------------------------------------------------------------------------
+# optimize_glb (Task 5; SPEC pipeline row 4; RESEARCH §5): gltfpack `-cc`
+# meshopt-compresses the ok `glb` derivative into the rowless, browser-only
+# `glb_web` file (Global Constraints "Two GLB artifacts per blob" -- the raw
+# `glb` derivative this reads is NEVER rewritten), plus a `-si 0.5` decimated
+# LOD (`glb_preview` DERIVATIVE row, unlike `glb_web`) once the blob's own
+# triangle count clears ``PREVIEW_TRIANGLE_THRESHOLD``.
+# ---------------------------------------------------------------------------
+
+# SPEC pipeline row 4 / RESEARCH §5: LOD threshold above which a decimated
+# `-si 0.5` preview is also generated. Single reference for this module and
+# the Task 8 frontend mirror.
+PREVIEW_TRIANGLE_THRESHOLD = 1_500_000
+
+
+def _run_gltfpack(settings: Settings, args: list[str]) -> None:
+    """Invoke gltfpack, turning its two failure modes into clear,
+    deterministic exceptions. A missing binary raises ``FileNotFoundError``
+    (an ``OSError`` subclass) -- deliberately NOT let through as-is, since
+    ``run_step``'s ``TRANSIENT_ERRORS`` retry loop treats any bare
+    ``OSError`` as transient, which would waste the whole retry budget
+    re-running a binary that will never exist before finally surfacing the
+    wrong (generic) error anyway.
+    """
+    try:
+        result = subprocess.run(
+            [settings.gltfpack_path, *args], capture_output=True, timeout=300, text=True
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "gltfpack not found -- run scripts/fetch-gltfpack.sh (dev) / check image (docker)"
+        ) from exc
+    if result.returncode != 0:
+        stderr_tail = (result.stderr or "").strip()[-2000:]
+        raise RuntimeError(f"gltfpack failed (exit {result.returncode}): {stderr_tail}")
+
+
+def _generate_preview_lod(
+    session: SyncSession, settings: Settings, blob_hash: str, raw_glb: Path
+) -> None:
+    deriv = derivatives.upsert_derivative(session, blob_hash, DerivativeKind.GLB_PREVIEW)
+    dest = derivatives.derivative_path(settings, blob_hash, DerivativeKind.GLB_PREVIEW)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=".tdmm-glbpreview-", suffix=".glb")
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        _run_gltfpack(settings, ["-i", str(raw_glb), "-o", str(tmp_path), "-si", "0.5", "-cc"])
+    except Exception as exc:
+        tmp_path.unlink(missing_ok=True)
+        derivatives.mark_derivative(
+            session, deriv, status=DerivativeStatus.FAILED, tool="gltfpack -si 0.5", error=str(exc)
+        )
+        raise
+    derivatives.publish_file(tmp_path, dest)
+    derivatives.mark_derivative(
+        session, deriv, status=DerivativeStatus.OK, local_path=str(dest), tool="gltfpack -si 0.5"
+    )
+
+
+def _optimize_glb_step(
+    session: SyncSession, settings: Settings, backend: StorageBackend, blob: Blob
+) -> StepOutcome:
+    """``optimize_glb``'s ``StepFn``: skip once the `glb_web` file already
+    exists (Global Constraints "Pipeline jobs": idempotent) -- otherwise
+    the ok `glb` derivative is a hard prerequisite (a broken pipeline order
+    is a bug, not a retriable condition, hence the plain ``RuntimeError``
+    rather than a derivative failure -- there's no derivative row to fail for
+    the rowless `glb_web` output anyway).
+    """
+    glb_deriv = _glb_derivative(session, blob.hash)
+    if glb_deriv is None or glb_deriv.status != DerivativeStatus.OK:
+        raise RuntimeError("glb missing")
+
+    web_path = derivatives.glb_web_path(settings, blob.hash)
+    if web_path.exists():
+        return "skipped"
+
+    raw_glb = derivatives.derivative_path(settings, blob.hash, DerivativeKind.GLB)
+
+    web_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=web_path.parent, prefix=".tdmm-glbweb-", suffix=".glb")
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        _run_gltfpack(settings, ["-i", str(raw_glb), "-o", str(tmp_path), "-cc"])
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    derivatives.publish_file(tmp_path, web_path)
+
+    meta = session.get(BlobMeta, blob.hash)
+    if (
+        meta is not None
+        and meta.triangle_count
+        and meta.triangle_count > PREVIEW_TRIANGLE_THRESHOLD
+    ):
+        _generate_preview_lod(session, settings, blob.hash, raw_glb)
+
+    return "done"
+
+
+@pipeline_step("optimize_glb")
+def optimize_glb(job_id: str, blob_hash: str) -> None:
+    run_step(job_id, blob_hash, "optimize_glb", _optimize_glb_step)

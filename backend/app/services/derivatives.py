@@ -24,6 +24,7 @@ dependency at all and are usable from either world.
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 
 from sqlalchemy import select
@@ -92,6 +93,29 @@ def publish_file(tmp: Path, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     os.replace(tmp, dest)
     os.chmod(dest, 0o644)
+
+
+def publish_bytes(data: bytes, dest: Path) -> None:
+    """Stage ``data`` as a temp file in ``dest``'s own parent directory --
+    guaranteeing the same filesystem as the final path, so ``publish_file``'s
+    ``os.replace`` is never asked to cross a mount boundary -- then publish
+    it. Shared by every step that already holds the final bytes in memory
+    (embedded/rendered thumbnails, plate PNGs); a step whose own external
+    tool writes its output straight to a path (``convert_to_glb``'s
+    trimesh/cascadio/OCP, ``optimize_glb``'s gltfpack subprocess) stages its
+    own ``tempfile.mkstemp`` directly instead, since there's no in-memory
+    bytes blob to hand off here.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=".tdmm-pub-", suffix=dest.suffix)
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    publish_file(tmp_path, dest)
 
 
 def upsert_derivative(session: Session, blob_hash: str, kind: DerivativeKind) -> Derivative:

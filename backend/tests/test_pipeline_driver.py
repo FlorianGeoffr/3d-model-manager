@@ -246,11 +246,12 @@ async def test_unregistered_step_is_a_no_op_stub(
     step has a registered body -- uploading a real STL must not blow up
     dispatching a step name with no matching ``STEP_TASKS`` entry (Accept:
     "uploading any file still works end-to-end ... (empty or stubbed)
-    pipeline dispatch"). Task 3 registers ``extract_metadata`` for real, so
-    this now asserts the STILL-unregistered NEXT step (``convert_to_glb``,
-    Task 4) rather than ``extract_metadata`` itself -- real STL bytes (not
-    the module's default garbage content) so extraction actually succeeds
-    and the chain reaches that next step at all.
+    pipeline dispatch"). Tasks 3 and 5 register ``extract_metadata``,
+    ``convert_to_glb``, and ``optimize_glb`` for real, so this now asserts
+    the STILL-unregistered NEXT step (``render_thumb``, Task 6) rather than
+    ``convert_to_glb`` -- real STL bytes (not the module's default garbage
+    content) so the whole chain actually succeeds and reaches that next step
+    at all.
     """
     created = await _create_model(authenticated_client, "Unregistered Step Target")
     revision_id = created["current_revision"]["id"]
@@ -265,10 +266,11 @@ async def test_unregistered_step_is_a_no_op_stub(
     assert upload.status_code == 201, upload.text
     jobs_resp = await authenticated_client.get("/api/jobs")
     jobs_list = jobs_resp.json()
-    extract_metadata_job = next(j for j in jobs_list if j["type"] == "extract_metadata")
-    assert extract_metadata_job["state"] == "done"
+    for step in ("extract_metadata", "convert_to_glb", "optimize_glb"):
+        step_job = next(j for j in jobs_list if j["type"] == step)
+        assert step_job["state"] == "done", (step, step_job)
     job_types = {j["type"] for j in jobs_list}
-    assert "convert_to_glb" not in job_types  # no job row for a still-unregistered step
+    assert "render_thumb" not in job_types  # no job row for a still-unregistered step
 
 
 # ---------------------------------------------------------------------------

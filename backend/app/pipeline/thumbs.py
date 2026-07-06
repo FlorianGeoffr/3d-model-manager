@@ -11,8 +11,6 @@ mesh renders and raw png/jpg blobs.
 from __future__ import annotations
 
 import io
-import os
-import tempfile
 from pathlib import Path
 
 from PIL import Image, UnidentifiedImageError
@@ -63,23 +61,14 @@ def _publish_thumb(image: Image.Image, size: int, dest: Path) -> Path:
     """Resize a copy of ``image`` to fit within ``size`` x ``size`` --
     ``Image.thumbnail`` preserves aspect ratio and only ever shrinks, so a
     source already smaller than ``size`` is left at its own resolution --
-    and publish it atomically to ``dest`` (temp file staged in ``dest``'s own
-    directory, then ``derivatives.publish_file``, matching the derivative
-    store's "same dir" atomicity rule).
+    and publish it atomically to ``dest`` via ``derivatives.publish_bytes``.
     """
     resized = image.copy()
     resized.thumbnail((size, size), Image.Resampling.LANCZOS)
 
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=".tdmm-thumb-", suffix=".png")
-    tmp_path = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            resized.save(fh, format="PNG")
-    except BaseException:
-        tmp_path.unlink(missing_ok=True)
-        raise
-    derivatives.publish_file(tmp_path, dest)
+    buf = io.BytesIO()
+    resized.save(buf, format="PNG")
+    derivatives.publish_bytes(buf.getvalue(), dest)
     return dest
 
 

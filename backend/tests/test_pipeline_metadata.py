@@ -525,6 +525,10 @@ async def test_upload_stl_creates_blob_meta_row_second_identical_upload_skips(
         call_count["n"] += 1
         return real_load_mesh(path, fmt)
 
+    # Both `extract_metadata` and (Task 5) `convert_to_glb` call through this
+    # same `app.pipeline.meshload` module object, so patching it here counts
+    # calls from either step -- a real STL upload's first pass through the
+    # full chain calls it exactly twice (once per step), not once.
     monkeypatch.setattr(pipeline.meshload, "load_mesh", _counting_load_mesh)
 
     created = await _create_model(authenticated_client, "Metadata Upload Target")
@@ -542,11 +546,11 @@ async def test_upload_stl_creates_blob_meta_row_second_identical_upload_skips(
         meta = session.get(BlobMeta, blob_hash)
     assert meta is not None
     assert meta.triangle_count == 12
-    assert call_count["n"] == 1
+    assert call_count["n"] == 2
 
     # A second upload of byte-identical content dedups at the blob level
-    # (new File row, same blob_hash) -- its own extract_metadata run must
-    # skip rather than re-parsing.
+    # (new File row, same blob_hash) -- its own extract_metadata AND
+    # convert_to_glb runs must both skip rather than re-parsing/re-converting.
     second = await authenticated_client.put(
         "/api/uploads",
         params={"model_id": created["id"], "revision_id": revision_id, "rel_path": "part2.stl"},
@@ -560,4 +564,4 @@ async def test_upload_stl_creates_blob_meta_row_second_identical_upload_skips(
             select(func.count()).select_from(BlobMeta).where(BlobMeta.blob_hash == blob_hash)
         )
     assert meta_count == 1
-    assert call_count["n"] == 1
+    assert call_count["n"] == 2

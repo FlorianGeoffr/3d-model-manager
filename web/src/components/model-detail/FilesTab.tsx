@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { DownloadIcon, Trash2Icon } from "lucide-react";
 
 import { useDeleteFile } from "@/api/library";
@@ -6,8 +7,59 @@ import { CopyableHash } from "@/components/model-detail/CopyableHash";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { formatDateTime, humanizeBytes } from "@/lib/format";
-import type { ModelDetail } from "@/api/types";
+import { formatDateTime, humanizeBytes, humanizeDuration } from "@/lib/format";
+import { formatIcon } from "@/lib/formatMeta";
+import type { BlobMetaOut, FileOut, ModelDetail } from "@/api/types";
+
+/** `{triangle_count} tris · {dims_mm joined ×} mm · {volume_cm3} cm³`, skipping
+ * any part whose source value is null (Task 9 brief). */
+function meshMetaLine(meta: BlobMetaOut): string | null {
+  const parts: string[] = [];
+  if (meta.triangle_count !== null) parts.push(`${meta.triangle_count} tris`);
+  if (meta.dims_mm !== null) parts.push(`${meta.dims_mm.map((d) => d.toFixed(1)).join(" × ")} mm`);
+  if (meta.volume_cm3 !== null) parts.push(`${meta.volume_cm3.toFixed(1)} cm³`);
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+/** `{plate_count} plates · {humanizeDuration(print_time_s)} · {filament_g} g`,
+ * skipping any part whose source value is null (Task 9 brief). */
+function slicedMetaLine(meta: BlobMetaOut): string | null {
+  const parts: string[] = [];
+  if (meta.plate_count !== null) parts.push(`${meta.plate_count} plates`);
+  if (meta.print_time_s !== null) parts.push(humanizeDuration(meta.print_time_s));
+  if (meta.filament_g !== null) parts.push(`${Math.round(meta.filament_g)} g`);
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+function fileMetaLine(file: FileOut): string | null {
+  if (!file.meta) return null;
+  if (file.kind === "mesh" || file.kind === "cad") return meshMetaLine(file.meta);
+  if (file.kind === "sliced") return slicedMetaLine(file.meta);
+  return null;
+}
+
+function FileThumb({ file }: { file: FileOut }) {
+  const [errored, setErrored] = useState(false);
+  const Icon = formatIcon(file.format);
+
+  if (file.thumb_ready && !errored) {
+    return (
+      <img
+        src={`/api/blobs/${file.blob_hash}/thumb?size=256`}
+        alt={file.rel_path}
+        loading="lazy"
+        className="size-10 rounded object-cover"
+        onError={() => setErrored(true)}
+      />
+    );
+  }
+
+  return (
+    <div className="flex size-10 items-center justify-center rounded bg-muted text-muted-foreground">
+      <Icon className="size-5" />
+    </div>
+  );
+}
 
 export function FilesTab({ model }: { model: ModelDetail }) {
   const deleteFile = useDeleteFile(model.slug);
@@ -21,6 +73,9 @@ export function FilesTab({ model }: { model: ModelDetail }) {
     <Table>
       <TableHeader>
         <TableRow>
+          <TableHead className="w-14">
+            <span className="sr-only">Thumbnail</span>
+          </TableHead>
           <TableHead>Path</TableHead>
           <TableHead>Size</TableHead>
           <TableHead>Hash</TableHead>
@@ -30,57 +85,70 @@ export function FilesTab({ model }: { model: ModelDetail }) {
         </TableRow>
       </TableHeader>
       <TableBody>
-        {files.map((file) => (
-          <TableRow key={file.id}>
-            <TableCell className="max-w-64 truncate font-mono text-xs" title={file.rel_path}>
-              {file.rel_path}
-            </TableCell>
-            <TableCell>{humanizeBytes(file.size)}</TableCell>
-            <TableCell>
-              <CopyableHash hash={file.blob_hash} />
-            </TableCell>
-            <TableCell>{formatDateTime(file.mtime)}</TableCell>
-            <TableCell>
-              <Badge variant={file.verified_at ? "secondary" : "outline"}>
-                {file.verified_at ? "stored" : "processing"}
-              </Badge>
-            </TableCell>
-            <TableCell>
-              <div className="flex justify-end gap-1">
-                {file.verified_at ? (
-                  <Button asChild variant="ghost" size="icon-sm" aria-label={`Download ${file.rel_path}`}>
-                    <a href={`/api/files/${file.id}/download`}>
-                      <DownloadIcon className="size-4" />
-                    </a>
-                  </Button>
-                ) : (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-sm"
-                    disabled
-                    aria-label={`Download ${file.rel_path}`}
-                    title="Still processing — download will be available once verified"
-                  >
-                    <DownloadIcon className="size-4" />
-                  </Button>
-                )}
-                <ConfirmDialog
-                  trigger={
-                    <Button type="button" variant="ghost" size="icon-sm" aria-label={`Delete ${file.rel_path}`}>
-                      <Trash2Icon className="size-4" />
+        {files.map((file) => {
+          const metaLine = fileMetaLine(file);
+          return (
+            <TableRow key={file.id}>
+              <TableCell>
+                <FileThumb file={file} />
+              </TableCell>
+              <TableCell className="max-w-64 font-mono text-xs">
+                <div className="truncate" title={file.rel_path}>
+                  {file.rel_path}
+                </div>
+                {metaLine ? (
+                  <div className="truncate font-sans text-[11px] font-normal text-muted-foreground" title={metaLine}>
+                    {metaLine}
+                  </div>
+                ) : null}
+              </TableCell>
+              <TableCell>{humanizeBytes(file.size)}</TableCell>
+              <TableCell>
+                <CopyableHash hash={file.blob_hash} />
+              </TableCell>
+              <TableCell>{formatDateTime(file.mtime)}</TableCell>
+              <TableCell>
+                <Badge variant={file.verified_at ? "secondary" : "outline"}>
+                  {file.verified_at ? "stored" : "processing"}
+                </Badge>
+              </TableCell>
+              <TableCell>
+                <div className="flex justify-end gap-1">
+                  {file.verified_at ? (
+                    <Button asChild variant="ghost" size="icon-sm" aria-label={`Download ${file.rel_path}`}>
+                      <a href={`/api/files/${file.id}/download`}>
+                        <DownloadIcon className="size-4" />
+                      </a>
                     </Button>
-                  }
-                  title={`Delete ${file.rel_path}?`}
-                  description="This removes the file from the current revision."
-                  confirmLabel="Delete"
-                  destructive
-                  onConfirm={() => deleteFile.mutate(file.id)}
-                />
-              </div>
-            </TableCell>
-          </TableRow>
-        ))}
+                  ) : (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      disabled
+                      aria-label={`Download ${file.rel_path}`}
+                      title="Still processing — download will be available once verified"
+                    >
+                      <DownloadIcon className="size-4" />
+                    </Button>
+                  )}
+                  <ConfirmDialog
+                    trigger={
+                      <Button type="button" variant="ghost" size="icon-sm" aria-label={`Delete ${file.rel_path}`}>
+                        <Trash2Icon className="size-4" />
+                      </Button>
+                    }
+                    title={`Delete ${file.rel_path}?`}
+                    description="This removes the file from the current revision."
+                    confirmLabel="Delete"
+                    destructive
+                    onConfirm={() => deleteFile.mutate(file.id)}
+                  />
+                </div>
+              </TableCell>
+            </TableRow>
+          );
+        })}
       </TableBody>
     </Table>
   );

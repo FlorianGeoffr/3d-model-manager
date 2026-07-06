@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
+import { ClockIcon } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { FORMAT_LABELS, formatIcon } from "@/lib/formatMeta";
-import { formatDate } from "@/lib/format";
+import { formatDate, humanizeDuration } from "@/lib/format";
 import type { ModelSummary } from "@/api/types";
 
 const VISIBLE_TAGS = 3;
@@ -22,7 +23,6 @@ export function ModelCard({ model }: { model: ModelSummary }) {
       <Card className="h-full gap-3 overflow-hidden transition-shadow hover:shadow-md">
         <div className="flex aspect-square items-center justify-center bg-muted">
           {showCover ? (
-            // M2 will point this at a real thumbnail endpoint; fallback below handles the null/error case.
             <img
               src={model.cover ?? undefined}
               alt={model.name}
@@ -57,6 +57,16 @@ export function ModelCard({ model }: { model: ModelSummary }) {
               </Badge>
             ))}
           </div>
+          {(model.has_sliced || model.print_time_s !== null) && (
+            <div className="flex flex-wrap gap-1" data-testid="status-badges">
+              {model.has_sliced && <Badge variant="secondary">Sliced</Badge>}
+              {model.print_time_s !== null && (
+                <Badge variant="outline">
+                  <ClockIcon className="size-3" /> {humanizeDuration(model.print_time_s)}
+                </Badge>
+              )}
+            </div>
+          )}
           <p className="text-xs text-muted-foreground">Updated {formatDate(model.updated_at)}</p>
         </CardContent>
       </Card>

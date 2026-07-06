@@ -12,6 +12,7 @@ import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/ca
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useDebouncedValue } from "@/lib/format";
@@ -28,16 +29,24 @@ export function LibraryPage() {
   const debouncedSearch = useDebouncedValue(searchInput, 300);
   const [activeTag, setActiveTag] = useState<string | undefined>(undefined);
   // The backend's `format` filter accepts a single value (SPEC "API
-  // surface"), so the checkbox list behaves as a single-select toggle even
-  // though it renders as checkboxes per the Task 8 decision.
+  // surface") -- a `RadioGroup` (with an "All" item to clear it) is the
+  // honest single-select control, replacing the earlier checkbox list that
+  // merely behaved like one (Task 9 backlog fold).
   const [activeFormat, setActiveFormat] = useState<BlobFormat | undefined>(undefined);
+  const [slicedOnly, setSlicedOnly] = useState(false);
   const [sort, setSort] = useState<string>("-updated_at");
 
   const tagsQuery = useTags();
 
   const filters = useMemo(
-    () => ({ q: debouncedSearch || undefined, tag: activeTag, format: activeFormat, sort }),
-    [debouncedSearch, activeTag, activeFormat, sort],
+    () => ({
+      q: debouncedSearch || undefined,
+      tag: activeTag,
+      format: activeFormat,
+      has_sliced: slicedOnly || undefined,
+      sort,
+    }),
+    [debouncedSearch, activeTag, activeFormat, slicedOnly, sort],
   );
 
   const modelsQuery = useModelsQuery(filters);
@@ -75,17 +84,31 @@ export function LibraryPage() {
         </div>
         <div>
           <h2 className="mb-2 text-sm font-semibold text-foreground">Formats</h2>
-          <div className="flex flex-col gap-2">
+          <RadioGroup
+            value={activeFormat ?? "all"}
+            onValueChange={(value) => setActiveFormat(value === "all" ? undefined : (value as BlobFormat))}
+          >
+            <Label className="flex items-center gap-2 text-sm font-normal">
+              <RadioGroupItem value="all" />
+              All
+            </Label>
             {BLOB_FORMATS.map((format) => (
               <Label key={format} className="flex items-center gap-2 text-sm font-normal">
-                <Checkbox
-                  checked={activeFormat === format}
-                  onCheckedChange={(checked) => setActiveFormat(checked ? format : undefined)}
-                />
+                <RadioGroupItem value={format} />
                 {FORMAT_LABELS[format]}
               </Label>
             ))}
-          </div>
+          </RadioGroup>
+        </div>
+        <div>
+          <h2 className="mb-2 text-sm font-semibold text-foreground">Sliced</h2>
+          <Label className="flex items-center gap-2 text-sm font-normal">
+            <Checkbox
+              checked={slicedOnly}
+              onCheckedChange={(checked) => setSlicedOnly(checked === true)}
+            />
+            Sliced only
+          </Label>
         </div>
       </aside>
 

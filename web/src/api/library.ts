@@ -23,6 +23,7 @@ export interface GalleryFilters {
   q?: string;
   tag?: string;
   format?: string;
+  has_sliced?: boolean;
   sort: string;
 }
 
@@ -33,6 +34,7 @@ function buildModelsUrl(filters: Partial<GalleryFilters>, cursor?: string, limit
   if (filters.q) params.set("q", filters.q);
   if (filters.tag) params.set("tag", filters.tag);
   if (filters.format) params.set("format", filters.format);
+  if (filters.has_sliced) params.set("has_sliced", "true");
   if (filters.sort) params.set("sort", filters.sort);
   params.set("limit", String(limit));
   if (cursor) params.set("cursor", cursor);

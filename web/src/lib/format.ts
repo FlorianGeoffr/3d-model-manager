@@ -44,6 +44,16 @@ export function formatDate(iso: string | null | undefined): string {
   return dateOnlyFormatter.format(date);
 }
 
+/** Humanize a duration in seconds, e.g. `5400` -> `"1h 30m"`, `2700` ->
+ * `"45m"`, anything under a minute -> `"<1m"`. */
+export function humanizeDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 60) return "<1m";
+  const totalMinutes = Math.round(seconds / 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+}
+
 /** Debounce a fast-changing value; returns the value after `delayMs` of quiet. */
 export function useDebouncedValue<T>(value: T, delayMs: number): T {
   const [debounced, setDebounced] = useState(value);

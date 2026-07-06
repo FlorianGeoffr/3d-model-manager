@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { FilesTab } from "@/components/model-detail/FilesTab";
@@ -88,5 +88,116 @@ describe("FilesTab", () => {
     expect(downloadButton).toHaveAttribute("title", expect.stringMatching(/processing/i));
 
     expect(screen.getByText("processing")).toBeInTheDocument();
+  });
+
+  it("renders a thumbnail image when the file's thumb is ready", () => {
+    renderFilesTab([{ ...VERIFIED_FILE, thumb_ready: true }]);
+
+    const thumb = screen.getByRole("img");
+    expect(thumb).toHaveAttribute("src", `/api/blobs/${VERIFIED_FILE.blob_hash}/thumb?size=256`);
+  });
+
+  it("falls back to a format icon when the thumb isn't ready, and again after an image load error", () => {
+    const { container } = renderFilesTab([{ ...VERIFIED_FILE, thumb_ready: true }]);
+
+    const thumb = screen.getByRole("img");
+    fireEvent.error(thumb);
+
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
+    expect(container.querySelector("svg")).toBeInTheDocument();
+  });
+
+  it("renders a format icon (no image) when the file has no thumb at all", () => {
+    renderFilesTab([{ ...VERIFIED_FILE, thumb_ready: false }]);
+
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
+  });
+
+  it("shows a mesh meta line with tris, dims, and volume, skipping null parts", () => {
+    renderFilesTab([
+      {
+        ...VERIFIED_FILE,
+        kind: "mesh",
+        meta: {
+          triangle_count: 1234,
+          dims_mm: [10, 20.25, 30],
+          volume_cm3: 5.5,
+          surface_area_cm2: null,
+          is_watertight: true,
+          print_time_s: null,
+          filament_g: null,
+          filament_m: null,
+          filament_types: null,
+          layer_height: null,
+          nozzle: null,
+          printer_model: null,
+          plate_count: null,
+          plates: null,
+        },
+      },
+    ]);
+
+    expect(screen.getByText("1234 tris · 10.0 × 20.3 × 30.0 mm · 5.5 cm³")).toBeInTheDocument();
+  });
+
+  it("shows a mesh meta line with only the parts that have data", () => {
+    renderFilesTab([
+      {
+        ...VERIFIED_FILE,
+        kind: "cad",
+        meta: {
+          triangle_count: null,
+          dims_mm: null,
+          volume_cm3: 12,
+          surface_area_cm2: null,
+          is_watertight: null,
+          print_time_s: null,
+          filament_g: null,
+          filament_m: null,
+          filament_types: null,
+          layer_height: null,
+          nozzle: null,
+          printer_model: null,
+          plate_count: null,
+          plates: null,
+        },
+      },
+    ]);
+
+    expect(screen.getByText("12.0 cm³")).toBeInTheDocument();
+  });
+
+  it("shows a sliced meta line with plate count, print time, and filament weight", () => {
+    renderFilesTab([
+      {
+        ...VERIFIED_FILE,
+        format: "gcode_3mf",
+        kind: "sliced",
+        meta: {
+          triangle_count: null,
+          dims_mm: null,
+          volume_cm3: null,
+          surface_area_cm2: null,
+          is_watertight: null,
+          print_time_s: 5400,
+          filament_g: 42.4,
+          filament_m: null,
+          filament_types: null,
+          layer_height: 0.2,
+          nozzle: 0.4,
+          printer_model: "A1 mini",
+          plate_count: 2,
+          plates: null,
+        },
+      },
+    ]);
+
+    expect(screen.getByText("2 plates · 1h 30m · 42 g")).toBeInTheDocument();
+  });
+
+  it("shows no meta line when the file has no metadata yet", () => {
+    renderFilesTab([{ ...VERIFIED_FILE, meta: null }]);
+
+    expect(screen.queryByTitle(/tris|plates/)).not.toBeInTheDocument();
   });
 });

@@ -9,6 +9,7 @@
 import { createContext, useContext, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
+import { api } from "@/api/client";
 import type { JobUpdatedEvent } from "@/api/types";
 
 type Listener = (event: JobUpdatedEvent) => void;
@@ -20,9 +21,15 @@ interface EventsContextValue {
 
 const EventsContext = createContext<EventsContextValue | null>(null);
 
+// Minimum time between session probes triggered by `onerror` (below) --
+// a real network blip can fire `onerror` repeatedly as the browser retries
+// the connection, and there's no reason to hammer `/auth/me` for each one.
+const ERROR_PROBE_THROTTLE_MS = 5000;
+
 export function EventsProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const listenersRef = useRef(new Set<Listener>());
+  const lastErrorProbeRef = useRef(0);
 
   useEffect(() => {
     const source = new EventSource("/api/events");
@@ -42,6 +49,20 @@ export function EventsProvider({ children }: { children: ReactNode }) {
       }
 
       for (const listener of listenersRef.current) listener(parsed);
+    };
+
+    source.onerror = () => {
+      // The browser retries a dropped `EventSource` connection forever and
+      // silently -- `onerror` carries no status code, so an expired session
+      // (the backend 401ing the reconnect) looks identical to a transient
+      // network blip. Probing an authenticated endpoint directly is the
+      // only way to tell: `api.get`'s 401 handler (client.ts) redirects to
+      // /login itself, which is what actually ends the infinite reconnect
+      // loop for a real expired session.
+      const now = Date.now();
+      if (now - lastErrorProbeRef.current < ERROR_PROBE_THROTTLE_MS) return;
+      lastErrorProbeRef.current = now;
+      void api.get("/auth/me").catch(() => {});
     };
 
     return () => source.close();

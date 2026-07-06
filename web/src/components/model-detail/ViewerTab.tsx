@@ -4,6 +4,7 @@ import { LoaderCircleIcon } from "lucide-react";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { PlatePanel } from "@/components/model-detail/PlatePanel";
 import { glbUrl, pickViewerFiles } from "@/components/viewer/viewable";
 import type { FileOut, ModelDetail } from "@/api/types";
 
@@ -32,15 +33,8 @@ function PlaceholderCard({
 }
 
 function FilePreview({ file }: { file: FileOut }) {
-  // Task 9 replaces exactly this branch with `<PlatePanel file={file} />` —
-  // keep the sliced-file special case isolated to this one `if`.
   if (file.kind === "sliced") {
-    return (
-      <PlaceholderCard
-        title="Sliced file — plate details panel"
-        description="Task 9 replaces this card with per-plate time, weight, and filament details."
-      />
-    );
+    return <PlatePanel file={file} />;
   }
 
   if (file.format === "gcode") {

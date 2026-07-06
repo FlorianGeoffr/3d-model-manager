@@ -44,6 +44,20 @@ function renderLibraryPage() {
   );
 }
 
+function mockGalleryOk() {
+  getMock.mockImplementation((path: string) => {
+    if (path.startsWith("/models")) return Promise.resolve({ items: [], next_cursor: null });
+    return Promise.resolve([]);
+  });
+}
+
+function lastModelsCall(): string {
+  const calls = getMock.mock.calls.filter((call: unknown[]) => (call[0] as string).startsWith("/models"));
+  const last = calls.at(-1);
+  if (!last) throw new Error("no /models call recorded");
+  return last[0] as string;
+}
+
 describe("LibraryPage", () => {
   it("renders an error card with a retry button when the gallery fetch fails, not the empty state", async () => {
     getMock.mockImplementation((path: string) => {
@@ -64,5 +78,42 @@ describe("LibraryPage", () => {
       const callsAfterRetry = getMock.mock.calls.filter((call: unknown[]) => (call[0] as string).startsWith("/models")).length;
       expect(callsAfterRetry).toBeGreaterThan(callsBeforeRetry);
     });
+  });
+
+  it("filters by a single format via the honest radio group, clearing back to All", async () => {
+    mockGalleryOk();
+    renderLibraryPage();
+    await screen.findByText("No models yet");
+
+    fireEvent.click(screen.getByRole("radio", { name: "STL" }));
+    await waitFor(() => expect(lastModelsCall()).toContain("format=stl"));
+
+    fireEvent.click(screen.getByRole("radio", { name: "All" }));
+    await waitFor(() => expect(lastModelsCall()).not.toContain("format="));
+  });
+
+  it("only lets one format be active at a time (radio semantics, not independent checkboxes)", async () => {
+    mockGalleryOk();
+    renderLibraryPage();
+    await screen.findByText("No models yet");
+
+    fireEvent.click(screen.getByRole("radio", { name: "STL" }));
+    await waitFor(() => expect(lastModelsCall()).toContain("format=stl"));
+
+    fireEvent.click(screen.getByRole("radio", { name: "3MF" }));
+    await waitFor(() => expect(lastModelsCall()).toContain("format=3mf"));
+    expect(lastModelsCall()).not.toContain("format=stl");
+  });
+
+  it("adds has_sliced=true to the gallery query when 'Sliced only' is checked", async () => {
+    mockGalleryOk();
+    renderLibraryPage();
+    await screen.findByText("No models yet");
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Sliced only" }));
+    await waitFor(() => expect(lastModelsCall()).toContain("has_sliced=true"));
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Sliced only" }));
+    await waitFor(() => expect(lastModelsCall()).not.toContain("has_sliced"));
   });
 });

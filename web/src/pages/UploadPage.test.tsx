@@ -10,15 +10,19 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 
-import type { ModelDetail, UploadResult } from "@/api/types";
+import type { JobUpdatedEvent, ModelDetail, UploadResult } from "@/api/types";
 import { UploadPage } from "@/pages/UploadPage";
 
 // `vi.mock` factories are hoisted above the module's own top-level bindings
 // (same pattern as LibraryPage.test.tsx), so the fakes have to be created
 // through `vi.hoisted`.
-const { createModelMock, uploadFileMock } = vi.hoisted(() => ({
+const { createModelMock, uploadFileMock, eventsListener } = vi.hoisted(() => ({
   createModelMock: vi.fn(),
   uploadFileMock: vi.fn(),
+  // Holds the callback UploadPage's `useEvents().subscribe(...)` registers,
+  // so tests can fire a `job.updated` event directly instead of the no-op
+  // stub silently discarding it (needed for the SSE race regression test).
+  eventsListener: { current: null as ((event: JobUpdatedEvent) => void) | null },
 }));
 
 vi.mock("@/api/library", async (importOriginal) => {
@@ -67,10 +71,17 @@ vi.mock("@/components/ui/popover", () => ({
 
 // UploadPage subscribes to the app-wide SSE connection via `useEvents`,
 // which normally requires an `EventsProvider` wrapping a real `EventSource`
-// (unavailable in jsdom) -- stub it out since these tests don't exercise
-// job-update events.
+// (unavailable in jsdom) -- stub it out, capturing the registered listener
+// so the race regression test can fire events directly.
 vi.mock("@/hooks/useEvents", () => ({
-  useEvents: () => ({ subscribe: () => () => {} }),
+  useEvents: () => ({
+    subscribe: (listener: (event: JobUpdatedEvent) => void) => {
+      eventsListener.current = listener;
+      return () => {
+        eventsListener.current = null;
+      };
+    },
+  }),
 }));
 
 function renderUploadPage() {
@@ -136,6 +147,7 @@ describe("UploadPage", () => {
   beforeEach(() => {
     createModelMock.mockReset();
     uploadFileMock.mockReset();
+    eventsListener.current = null;
   });
 
   it("reuses the resolved target model for a second upload batch instead of creating a duplicate", async () => {
@@ -214,5 +226,40 @@ describe("UploadPage", () => {
     await waitFor(() => expect(uploadFileMock).toHaveBeenCalledTimes(2));
     expect(uploadFileMock.mock.calls[1][0]).toMatchObject({ modelId: 2, revisionId: 20 });
     expect(createModelMock).not.toHaveBeenCalled();
+  });
+
+  it("still ends up 'stored' when the terminal SSE event arrives before the upload's PUT response resolves", async () => {
+    createModelMock.mockResolvedValue(fakeModel());
+    let resolveUpload: (result: UploadResult) => void = () => {};
+    uploadFileMock.mockReturnValueOnce(
+      new Promise<UploadResult>((resolve) => {
+        resolveUpload = resolve;
+      }),
+    );
+
+    const { container } = renderUploadPage();
+
+    fireEvent.change(await screen.findByLabelText("Model name"), { target: { value: "My Model" } });
+    addFileToQueue(container, "a.stl");
+    fireEvent.click(screen.getByRole("button", { name: /^Upload/ }));
+
+    await waitFor(() => expect(uploadFileMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(eventsListener.current).not.toBeNull());
+
+    // The job.updated "done" event races ahead of (and arrives before) the
+    // PUT response that would otherwise attach `jobId` to this queue item --
+    // the fix must still land on "stored" once the response finally resolves.
+    eventsListener.current?.({
+      type: "job.updated",
+      job_id: "job-1",
+      job_type: "convert_to_glb",
+      state: "done",
+      subject_type: "file",
+      subject_id: 1,
+    });
+
+    resolveUpload(fakeUploadResult("job-1"));
+
+    await waitFor(() => expect(screen.getByText("Stored")).toBeInTheDocument());
   });
 });

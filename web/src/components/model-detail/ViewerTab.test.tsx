@@ -8,11 +8,16 @@ import type { FileOut, ModelDetail } from "@/api/types";
 // `ModelViewer` is a `React.lazy` chunk that mounts an R3F `<Canvas>`, which
 // jsdom can't run (no WebGL) -- stub it so ViewerTab's branching logic can
 // be exercised without ever touching three.js.
-const { modelViewerMock } = vi.hoisted(() => ({
+const { modelViewerMock, platePanelMock } = vi.hoisted(() => ({
   modelViewerMock: vi.fn(({ url }: { url: string }) => <div data-testid="model-viewer">{url}</div>),
+  // `PlatePanel` has its own dedicated test suite (PlatePanel.test.tsx) --
+  // stub it here so this file only asserts that ViewerTab wires it in for
+  // sliced files, not its internals.
+  platePanelMock: vi.fn(({ file }: { file: FileOut }) => <div data-testid="plate-panel">{file.rel_path}</div>),
 }));
 
 vi.mock("@/components/viewer/ModelViewer", () => ({ default: modelViewerMock }));
+vi.mock("@/components/model-detail/PlatePanel", () => ({ PlatePanel: platePanelMock }));
 
 // Radix's Select never reaches an interactive open state under jsdom (same
 // floating-ui/dismissable-layer limitation as Popover -- see the inline
@@ -92,6 +97,7 @@ function fakeModel(files: FileOut[]): ModelDetail {
 describe("ViewerTab", () => {
   beforeEach(() => {
     modelViewerMock.mockClear();
+    platePanelMock.mockClear();
   });
 
   it("shows a placeholder when there are no previewable files", () => {
@@ -124,10 +130,10 @@ describe("ViewerTab", () => {
     expect(screen.getByText("No 3D preview")).toBeInTheDocument();
   });
 
-  it("shows the sliced-file placeholder (Task 9 replaces this exact branch with the plate panel)", () => {
+  it("renders the plate panel for a sliced file", () => {
     const file = fakeFile({ format: "gcode_3mf", kind: "sliced", glb_status: null });
     render(<ViewerTab model={fakeModel([file])} />);
-    expect(screen.getByText("Sliced file — plate details panel")).toBeInTheDocument();
+    expect(screen.getByTestId("plate-panel")).toHaveTextContent(file.rel_path);
   });
 
   it("shows the no-preview placeholder for plain gcode", () => {

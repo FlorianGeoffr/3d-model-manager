@@ -44,9 +44,19 @@ export function UploadPage() {
   const createModel = useCreateModel();
   const queryClient = useQueryClient();
   const events = useEvents();
+  // The upload's PUT response (carrying `jobId`) and its `job.updated` SSE
+  // event race independently: the pipeline can finish (and publish its
+  // terminal event) before the PUT even resolves. Recording every terminal
+  // event here means the jobId lookup below survives regardless of which
+  // one lands first, instead of silently dropping an event that arrived for
+  // a jobId no queue item had yet.
+  const seenTerminal = useRef(new Map<string, "done" | "failed">());
 
   useEffect(() => {
     return events.subscribe((event) => {
+      if (event.state === "done" || event.state === "failed") {
+        seenTerminal.current.set(event.job_id, event.state);
+      }
       setQueue((prev) =>
         prev.map((item) => {
           if (item.jobId !== event.job_id) return item;
@@ -144,6 +154,12 @@ export function UploadPage() {
           },
         );
         updateItem(item.id, { status: "processing", progress: 100, jobId: result.job_id });
+        const terminal = seenTerminal.current.get(result.job_id);
+        if (terminal === "done") {
+          updateItem(item.id, { status: "stored" });
+        } else if (terminal === "failed") {
+          updateItem(item.id, { status: "failed", error: "Processing failed" });
+        }
       } catch (error) {
         updateItem(item.id, {
           status: "failed",

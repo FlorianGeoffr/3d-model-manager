@@ -68,4 +68,27 @@ describe("ModelCard", () => {
     expect(screen.getByText("dragon")).toBeInTheDocument();
     expect(screen.queryByText(/^\+\d+$/)).not.toBeInTheDocument();
   });
+
+  it("shows a Sliced badge and humanized print time when both are set", async () => {
+    renderCard({ ...MODEL, has_sliced: true, print_time_s: 5400 });
+
+    const statusBadges = within(await screen.findByTestId("status-badges"));
+    expect(statusBadges.getByText("Sliced")).toBeInTheDocument();
+    expect(statusBadges.getByText("1h 30m")).toBeInTheDocument();
+  });
+
+  it("shows only the print-time badge when the model isn't sliced", async () => {
+    renderCard({ ...MODEL, has_sliced: false, print_time_s: 2700 });
+
+    const statusBadges = within(await screen.findByTestId("status-badges"));
+    expect(statusBadges.queryByText("Sliced")).not.toBeInTheDocument();
+    expect(statusBadges.getByText("45m")).toBeInTheDocument();
+  });
+
+  it("renders no status badges when the model has no sliced file and no print time", async () => {
+    renderCard(MODEL);
+
+    expect(await screen.findByText("Articulated Dragon")).toBeInTheDocument();
+    expect(screen.queryByTestId("status-badges")).not.toBeInTheDocument();
+  });
 });

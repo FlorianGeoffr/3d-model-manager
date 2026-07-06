@@ -5,8 +5,9 @@ surface", Task 5 brief). ``*.from_model`` classmethods map loaded ORM rows
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import BaseModel, StringConstraints
 
@@ -14,6 +15,7 @@ from app.models.enums import BlobFormat, BlobKind
 
 if TYPE_CHECKING:
     from app.models.library import File, Note
+    from app.models.processing import BlobMeta
 
 # Empty/whitespace-only strings 422 (stripped before the min_length check),
 # per Task 5's "empty-name model -> 422" interface decision.
@@ -40,7 +42,9 @@ class ModelPatch(BaseModel):
 
 
 class ModelSummary(BaseModel):
-    """Gallery list item (Task 5 interface decision)."""
+    """Gallery list item (Task 5 interface decision; Task 7 adds
+    ``print_time_s``/``has_sliced`` and makes ``cover`` a real URL).
+    """
 
     id: int
     slug: str
@@ -52,11 +56,106 @@ class ModelSummary(BaseModel):
     file_count: int
     formats: list[BlobFormat]
     cover: str | None = None
+    print_time_s: int | None = None
+    has_sliced: bool = False
 
 
 class GalleryPage(BaseModel):
     items: list[ModelSummary]
     next_cursor: str | None
+
+
+# -- blob metadata / plates (Task 7) --------------------------------------
+
+# Mirrors DerivativeStatus's value vocabulary (Task 7 brief): `None` means
+# the blob's format never produces a GLB at all, distinct from a GLB-format
+# blob that simply hasn't been converted yet ("pending").
+GlbStatus = Literal["ok", "pending", "failed", "unsupported"]
+
+
+class PlateFilamentOut(BaseModel):
+    type: str | None
+    color: str | None
+    used_m: float | None
+    used_g: float | None
+
+    @classmethod
+    def from_raw(cls, raw: dict) -> PlateFilamentOut:
+        return cls(
+            type=raw.get("type"),
+            color=raw.get("color"),
+            used_m=raw.get("used_m"),
+            used_g=raw.get("used_g"),
+        )
+
+
+class PlateOut(BaseModel):
+    index: int
+    prediction_s: int | None
+    weight_g: float | None
+    thumbnail_available: bool
+    filaments: list[PlateFilamentOut]
+
+    @classmethod
+    def from_raw(cls, raw: dict, *, thumbnail_available: bool) -> PlateOut:
+        return cls(
+            index=raw["index"],
+            prediction_s=raw.get("prediction_s"),
+            weight_g=raw.get("weight_g"),
+            thumbnail_available=thumbnail_available,
+            filaments=[PlateFilamentOut.from_raw(f) for f in raw.get("filaments") or []],
+        )
+
+
+class BlobMetaOut(BaseModel):
+    triangle_count: int | None
+    dims_mm: list[float] | None
+    volume_cm3: float | None
+    surface_area_cm2: float | None
+    is_watertight: bool | None
+    print_time_s: int | None
+    filament_g: float | None
+    filament_m: float | None
+    filament_types: list[str] | None
+    layer_height: float | None
+    nozzle: float | None
+    printer_model: str | None
+    plate_count: int | None
+    plates: list[PlateOut] | None
+
+    @classmethod
+    def from_model(cls, meta: BlobMeta, plates: list[PlateOut] | None) -> BlobMetaOut:
+        return cls(
+            triangle_count=meta.triangle_count,
+            dims_mm=meta.dims_mm,
+            volume_cm3=meta.volume_cm3,
+            surface_area_cm2=meta.surface_area_cm2,
+            is_watertight=meta.is_watertight,
+            print_time_s=meta.print_time_s,
+            filament_g=meta.filament_g,
+            filament_m=meta.filament_m,
+            filament_types=meta.filament_types,
+            layer_height=meta.layer_height,
+            nozzle=meta.nozzle,
+            printer_model=meta.printer_model,
+            plate_count=meta.plate_count,
+            plates=plates,
+        )
+
+
+@dataclass(slots=True)
+class FileEnrichment:
+    """Per-blob enrichment for ``FileOut`` (Task 7 interface decision):
+    ``FileOut.from_model`` itself has no DB/filesystem access, so the service
+    layer (``app.services.library``) computes this ahead of time -- batching
+    any filesystem existence checks (plate thumbnails) into one
+    ``anyio.to_thread.run_sync`` call per response -- and threads it in.
+    """
+
+    meta: BlobMetaOut | None
+    thumb_ready: bool
+    glb_status: GlbStatus | None
+    glb_preview_ready: bool
 
 
 # -- files / notes --------------------------------------------------------
@@ -73,9 +172,13 @@ class FileOut(BaseModel):
     kind: BlobKind
     mtime: datetime | None
     verified_at: datetime | None
+    meta: BlobMetaOut | None = None
+    thumb_ready: bool = False
+    glb_status: GlbStatus | None = None
+    glb_preview_ready: bool = False
 
     @classmethod
-    def from_model(cls, file: File) -> FileOut:
+    def from_model(cls, file: File, enrichment: FileEnrichment | None = None) -> FileOut:
         return cls(
             id=file.id,
             revision_id=file.revision_id,
@@ -87,6 +190,10 @@ class FileOut(BaseModel):
             kind=file.blob.kind,
             mtime=file.mtime,
             verified_at=file.verified_at,
+            meta=enrichment.meta if enrichment else None,
+            thumb_ready=enrichment.thumb_ready if enrichment else False,
+            glb_status=enrichment.glb_status if enrichment else None,
+            glb_preview_ready=enrichment.glb_preview_ready if enrichment else False,
         )
 
 

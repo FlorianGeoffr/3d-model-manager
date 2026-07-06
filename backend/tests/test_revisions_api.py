@@ -192,6 +192,16 @@ async def test_get_revision_detail(
     assert body["files"][0]["rel_path"] == "a.stl"
     assert body["files"][0]["size"] == 3
 
+    # FileOut enrichment (Task 7): no BlobMeta/Derivative rows exist for this
+    # seeded file at all, so everything reports its "nothing has run yet"
+    # default -- `glb_status` is "pending" (not None) because stl IS a
+    # GLB-producing format, just with no derivative row yet.
+    file_out = body["files"][0]
+    assert file_out["meta"] is None
+    assert file_out["thumb_ready"] is False
+    assert file_out["glb_status"] == "pending"
+    assert file_out["glb_preview_ready"] is False
+
 
 async def test_get_revision_unknown_id_is_404(authenticated_client: httpx.AsyncClient) -> None:
     response = await authenticated_client.get("/api/revisions/999999")

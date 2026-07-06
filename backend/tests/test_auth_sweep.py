@@ -41,6 +41,8 @@ _PATH_PARAM_VALUES = {
     "note_id": "1",
     "name": "placeholder-tag",
     "job_id": str(uuid.uuid4()),
+    "blob_hash": "a" * 64,
+    "index": "1",
 }
 
 

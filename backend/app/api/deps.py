@@ -12,8 +12,11 @@ from fastapi import Cookie, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import Settings, get_settings
 from app.db import get_db
 from app.models import Session, User
+from app.storage.base import StorageBackend
+from app.storage.registry import get_backend
 
 SESSION_COOKIE_NAME = "tdmm_session"
 SESSION_MAX_AGE = timedelta(days=30)
@@ -81,3 +84,13 @@ async def require_session(
         await db.commit()
 
     return AuthContext(user=user, session=session)
+
+
+def get_storage_backend(settings: Settings = Depends(get_settings)) -> StorageBackend:
+    """Shared FastAPI dependency wrapping ``storage.registry.get_backend``
+    (Task 7 backlog fold): three routers (``models``/``files``/``revisions``)
+    each carried an identical private ``_backend()`` copy of this one-liner;
+    consolidated here so a future storage-backend change has one call site to
+    update instead of three.
+    """
+    return get_backend(settings)

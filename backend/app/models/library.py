@@ -5,6 +5,7 @@ PK); ``files`` are a path within a revision snapshot pointing at a blob.
 """
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     CHAR,
@@ -26,6 +27,13 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, str_enum
 from app.models.enums import BlobFormat, BlobKind
+
+if TYPE_CHECKING:
+    # Only for static analysis / the `Mapped[...]` string annotations below
+    # -- `Blob.meta`/`Blob.derivatives` resolve these by class name via
+    # SQLAlchemy's registry at mapper-configure time (both modules are
+    # imported together via `app.models`), not via this import.
+    from app.models.processing import BlobMeta, Derivative
 
 # Pure many-to-many join table (SPEC: ``model_tags(model_id, tag_id)``) --
 # no extra columns, so a plain Core Table (used via ``relationship(secondary=...)``)
@@ -152,6 +160,13 @@ class Blob(Base):
     kind: Mapped[BlobKind] = mapped_column(str_enum(BlobKind, "blob_kind"), nullable=False)
     format: Mapped[BlobFormat] = mapped_column(str_enum(BlobFormat, "blob_format"), nullable=False)
     first_seen_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+
+    # No column changes -- these are relationships only (Task 7 brief), read
+    # via `selectinload` by the detail/file-enrichment queries in
+    # `app.services.library` to compute `FileOut`'s meta/thumb_ready/
+    # glb_status/glb_preview_ready fields without a query per file.
+    meta: Mapped["BlobMeta | None"] = relationship()
+    derivatives: Mapped[list["Derivative"]] = relationship()
 
 
 class File(Base):

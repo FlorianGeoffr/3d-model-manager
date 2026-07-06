@@ -11,7 +11,7 @@ per-endpoint copy-paste. Later tasks add their routers to
 
 from fastapi import APIRouter, Depends
 
-from app.api import auth, events, files, jobs, models, notes, revisions, tags, uploads
+from app.api import auth, blobs, events, files, jobs, models, notes, revisions, tags, uploads
 from app.api.deps import require_session
 from app.api.health import router as health_router
 
@@ -22,6 +22,7 @@ api_router.include_router(auth.public_router)
 protected_router = APIRouter(dependencies=[Depends(require_session)])
 protected_router.include_router(auth.protected_router)
 protected_router.include_router(models.router)
+protected_router.include_router(blobs.router)
 protected_router.include_router(revisions.router)
 protected_router.include_router(files.router)
 protected_router.include_router(tags.router)

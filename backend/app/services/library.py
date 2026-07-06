@@ -18,8 +18,11 @@ the scanner (SPEC M3 "Rescan/reconcile") -- not handled here.
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import PurePosixPath
+from typing import Literal
 
 import anyio
 from fastapi import HTTPException, status
@@ -28,28 +31,116 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.enums import BlobFormat, BlobKind
+from app.config import Settings
+from app.models.enums import BlobFormat, BlobKind, DerivativeKind, DerivativeStatus
 from app.models.library import Blob, File, Model, Note, Revision, Tag, model_tags
+from app.models.processing import AssemblyThumb, BlobMeta, Derivative
 from app.models.system import Job
 from app.schemas.library import (
+    BlobMetaOut,
     DiffEntry,
     DiffEntrySide,
     DiffResponse,
+    FileEnrichment,
     FileOut,
     ModelDetail,
     ModelSummary,
     NoteOut,
+    PlateOut,
     RevisionDetail,
     RevisionSummary,
     TagOut,
 )
+from app.services import derivatives, layout
 from app.services import jobs as jobs_service
-from app.services import layout
 from app.services.cursor import decode_cursor, encode_cursor
 from app.storage.base import StorageBackend
 from app.storage.errors import StorageKeyNotFound
 
 _SORT_COLUMNS = {"updated_at": Model.updated_at, "name": Model.name}
+
+# Formats whose blobs get a `glb` derivative at all (Global Constraints
+# "Pipeline shape" table) -- mirrors `app.tasks.pipeline`'s private
+# `_MESH_FORMATS + _CAD_FORMATS`, duplicated here rather than imported to
+# avoid a services -> tasks layering inversion (`app.tasks.pipeline` already
+# imports `app.services.jobs`/`app.services.derivatives`).
+_GLB_FORMATS = (
+    BlobFormat.STL,
+    BlobFormat.OBJ,
+    BlobFormat.THREEMF,
+    BlobFormat.STEP,
+    BlobFormat.IGES,
+)
+
+
+# -- file enrichment (Task 7) ---------------------------------------------
+
+
+def _derivative_ok(blob: Blob, kind: DerivativeKind) -> bool:
+    return any(d.kind == kind and d.status == DerivativeStatus.OK for d in blob.derivatives)
+
+
+def _glb_status(blob: Blob) -> Literal["ok", "pending", "failed", "unsupported"] | None:
+    """``None`` when ``blob.format`` never produces a GLB at all; a missing
+    row on a GLB-format blob is ``"pending"`` (Task 7 interface decision).
+    """
+    if blob.format not in _GLB_FORMATS:
+        return None
+    deriv = next((d for d in blob.derivatives if d.kind == DerivativeKind.GLB), None)
+    if deriv is None:
+        return "pending"
+    return deriv.status.value
+
+
+async def _build_file_enrichments(
+    settings: Settings, blobs: Iterable[Blob]
+) -> dict[str, FileEnrichment]:
+    """``{blob_hash: FileEnrichment}`` for every DISTINCT blob among
+    ``blobs`` (already ``selectinload``ed with ``.meta``/``.derivatives`` by
+    the caller -- no extra DB queries here). The only filesystem access
+    anywhere in this function is plate-thumbnail existence (plate PNGs are
+    rowless, Global Constraints "Derivative store"): every plate path across
+    every blob is batched into ONE ``anyio.to_thread.run_sync`` call rather
+    than one per plate/file (Task 7 interface decision).
+    """
+    unique_blobs = {blob.hash: blob for blob in blobs}
+
+    plate_paths: dict[tuple[str, int], object] = {}
+    for blob_hash, blob in unique_blobs.items():
+        raw_plates = (blob.meta.raw or {}).get("plates") if blob.meta is not None else None
+        for plate in raw_plates or []:
+            plate_paths[(blob_hash, plate["index"])] = derivatives.plate_thumb_path(
+                settings, blob_hash, plate["index"]
+            )
+
+    def _check_existence() -> dict[tuple[str, int], bool]:
+        return {key: path.exists() for key, path in plate_paths.items()}
+
+    existence = await anyio.to_thread.run_sync(_check_existence) if plate_paths else {}
+
+    enrichments: dict[str, FileEnrichment] = {}
+    for blob_hash, blob in unique_blobs.items():
+        meta_out = None
+        if blob.meta is not None:
+            raw_plates = (blob.meta.raw or {}).get("plates")
+            plates_out = (
+                [
+                    PlateOut.from_raw(
+                        plate, thumbnail_available=existence.get((blob_hash, plate["index"]), False)
+                    )
+                    for plate in raw_plates
+                ]
+                if raw_plates
+                else None
+            )
+            meta_out = BlobMetaOut.from_model(blob.meta, plates_out)
+        enrichments[blob_hash] = FileEnrichment(
+            meta=meta_out,
+            thumb_ready=_derivative_ok(blob, DerivativeKind.THUMB_256),
+            glb_status=_glb_status(blob),
+            glb_preview_ready=_derivative_ok(blob, DerivativeKind.GLB_PREVIEW),
+        )
+    return enrichments
 
 
 # -- models -------------------------------------------------------------
@@ -139,28 +230,140 @@ async def archive_model(db: AsyncSession, model: Model) -> None:
     await db.commit()
 
 
-async def _gallery_aggregates(
-    db: AsyncSession, revision_ids: list[int]
-) -> dict[int, tuple[int, list[str]]]:
-    """``{revision_id: (file_count, sorted distinct blob formats)}`` for the
-    given (current) revision ids, computed in Python rather than
-    Postgres-specific ``array_agg`` to keep this dialect-agnostic.
+def _escape_like(value: str) -> str:
+    """Escape ``\\``, ``%``, ``_`` so a user's ``q`` is matched literally by
+    ``ILIKE`` rather than as a wildcard pattern (Task 7 backlog fold) -- e.g.
+    a search for ``"100%"`` must not incidentally match every row containing
+    plain ``"100"``. Paired with ``escape="\\\\"`` on the ``ilike()`` calls
+    below.
     """
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+@dataclass(slots=True)
+class _GalleryAggregate:
+    """Per-(current-revision) batch of gallery fields, computed for a whole
+    page at once (Task 7 brief: "FIXED number of queries per page, never
+    per-model/per-file").
+    """
+
+    file_count: int
+    formats: list[BlobFormat]
+    has_sliced: bool
+    print_time_s: int | None
+    assembly_ok: bool
+    first_ok_thumb_blob_hash: str | None
+
+
+async def _gallery_aggregates(
+    db: AsyncSession, page_models: list[Model]
+) -> tuple[dict[int, _GalleryAggregate], set[str]]:
+    """``({revision_id: _GalleryAggregate}, {ok-thumb cover_blob_hash})`` for
+    ``page_models``'s current revisions -- three queries total for the whole
+    page (file/format/print-time/thumb-ok join, assembly-thumb-ok set,
+    cover-blob-ok set), never one per model or per file.
+    """
+    revision_ids = [m.current_revision_id for m in page_models if m.current_revision_id is not None]
     if not revision_ids:
-        return {}
+        return {}, set()
+
     rows = (
         await db.execute(
-            select(File.revision_id, File.id, Blob.format)
+            select(
+                File.revision_id,
+                File.id,
+                File.rel_path,
+                File.blob_hash,
+                Blob.format,
+                BlobMeta.print_time_s,
+                Derivative.id,
+            )
             .join(Blob, Blob.hash == File.blob_hash)
+            .outerjoin(BlobMeta, BlobMeta.blob_hash == File.blob_hash)
+            .outerjoin(
+                Derivative,
+                (Derivative.blob_hash == File.blob_hash)
+                & (Derivative.kind == DerivativeKind.THUMB_256)
+                & (Derivative.status == DerivativeStatus.OK),
+            )
             .where(File.revision_id.in_(revision_ids))
         )
     ).all()
-    buckets: dict[int, dict[str, set]] = {}
-    for revision_id, file_id, fmt in rows:
-        bucket = buckets.setdefault(revision_id, {"file_ids": set(), "formats": set()})
+
+    buckets: dict[int, dict] = {}
+    for revision_id, file_id, rel_path, blob_hash, fmt, print_time_s, thumb_ok_id in rows:
+        bucket = buckets.setdefault(
+            revision_id,
+            {"file_ids": set(), "formats": set(), "print_times": [], "thumb_files": []},
+        )
         bucket["file_ids"].add(file_id)
         bucket["formats"].add(fmt)
-    return {rid: (len(b["file_ids"]), sorted(b["formats"])) for rid, b in buckets.items()}
+        if print_time_s is not None:
+            bucket["print_times"].append(print_time_s)
+        bucket["thumb_files"].append((rel_path, blob_hash, thumb_ok_id is not None))
+
+    assembly_ok_revision_ids = set(
+        (
+            await db.execute(
+                select(AssemblyThumb.revision_id).where(
+                    AssemblyThumb.revision_id.in_(revision_ids),
+                    AssemblyThumb.status == DerivativeStatus.OK,
+                )
+            )
+        ).scalars()
+    )
+
+    cover_hashes = {m.cover_blob_hash for m in page_models if m.cover_blob_hash is not None}
+    cover_ok_hashes: set[str] = set()
+    if cover_hashes:
+        cover_ok_hashes = set(
+            (
+                await db.execute(
+                    select(Derivative.blob_hash).where(
+                        Derivative.blob_hash.in_(cover_hashes),
+                        Derivative.kind == DerivativeKind.THUMB_256,
+                        Derivative.status == DerivativeStatus.OK,
+                    )
+                )
+            ).scalars()
+        )
+
+    aggregates: dict[int, _GalleryAggregate] = {}
+    for revision_id, bucket in buckets.items():
+        first_ok_thumb = next(
+            (
+                blob_hash
+                for _, blob_hash, ok in sorted(bucket["thumb_files"], key=lambda t: t[0])
+                if ok
+            ),
+            None,
+        )
+        aggregates[revision_id] = _GalleryAggregate(
+            file_count=len(bucket["file_ids"]),
+            formats=sorted(bucket["formats"]),
+            has_sliced=bool(bucket["print_times"]),
+            print_time_s=min(bucket["print_times"]) if bucket["print_times"] else None,
+            assembly_ok=revision_id in assembly_ok_revision_ids,
+            first_ok_thumb_blob_hash=first_ok_thumb,
+        )
+    return aggregates, cover_ok_hashes
+
+
+def _gallery_cover_url(
+    model: Model, aggregate: _GalleryAggregate | None, cover_ok_hashes: set[str]
+) -> str | None:
+    """Cover priority chain (Task 7 interface decision): the model's own
+    ``cover_blob_hash`` (if its thumb is ready) beats the revision's
+    assembly thumbnail (if ready) beats the first (by ``rel_path``) file
+    with a ready thumb; ``None`` if nothing is ready yet.
+    """
+    if model.cover_blob_hash is not None and model.cover_blob_hash in cover_ok_hashes:
+        return f"/api/blobs/{model.cover_blob_hash}/thumb?size=256"
+    if aggregate is not None and aggregate.assembly_ok:
+        return f"/api/revisions/{model.current_revision_id}/assembly-thumb"
+    if aggregate is not None and aggregate.first_ok_thumb_blob_hash is not None:
+        return f"/api/blobs/{aggregate.first_ok_thumb_blob_hash}/thumb?size=256"
+    return None
 
 
 async def list_models(
@@ -169,13 +372,14 @@ async def list_models(
     q: str | None,
     tag: str | None,
     format_: str | None,
+    has_sliced: bool | None,
     sort: str,
     archived: bool,
     limit: int,
     cursor: str | None,
 ) -> tuple[list[ModelSummary], str | None]:
     """Gallery query: search/filter/sort + cursor pagination (Task 5
-    interface decision).
+    interface decision; Task 7 adds the ``has_sliced`` filter).
     """
     is_desc = sort.startswith("-")
     field_name = sort[1:] if is_desc else sort
@@ -187,8 +391,13 @@ async def list_models(
     if not archived:
         stmt = stmt.where(Model.is_archived.is_(False))
     if q:
-        like = f"%{q}%"
-        stmt = stmt.where(or_(Model.name.ilike(like), Model.description.ilike(like)))
+        like = f"%{_escape_like(q)}%"
+        stmt = stmt.where(
+            or_(
+                Model.name.ilike(like, escape="\\"),
+                Model.description.ilike(like, escape="\\"),
+            )
+        )
     if tag:
         stmt = stmt.where(
             Model.id.in_(
@@ -204,6 +413,17 @@ async def list_models(
                 .join(Blob, Blob.hash == File.blob_hash)
                 .where(Blob.format == format_)
             )
+        )
+    if has_sliced is not None:
+        sliced_revision_ids = (
+            select(File.revision_id)
+            .join(BlobMeta, BlobMeta.blob_hash == File.blob_hash)
+            .where(BlobMeta.print_time_s.is_not(None))
+        )
+        stmt = stmt.where(
+            Model.current_revision_id.in_(sliced_revision_ids)
+            if has_sliced
+            else Model.current_revision_id.not_in(sliced_revision_ids)
         )
 
     order_col = sort_column.desc() if is_desc else sort_column.asc()
@@ -230,25 +450,27 @@ async def list_models(
     has_more = len(page_models) > limit
     page_models = page_models[:limit]
 
-    aggregates = await _gallery_aggregates(
-        db, [m.current_revision_id for m in page_models if m.current_revision_id is not None]
-    )
+    aggregates, cover_ok_hashes = await _gallery_aggregates(db, page_models)
 
-    items = [
-        ModelSummary(
-            id=m.id,
-            slug=m.slug,
-            name=m.name,
-            description=m.description,
-            tags=[t.name for t in m.tags],
-            updated_at=m.updated_at,
-            created_at=m.created_at,
-            file_count=aggregates.get(m.current_revision_id, (0, []))[0],
-            formats=aggregates.get(m.current_revision_id, (0, []))[1],
-            cover=None,
+    items = []
+    for m in page_models:
+        agg = aggregates.get(m.current_revision_id)
+        items.append(
+            ModelSummary(
+                id=m.id,
+                slug=m.slug,
+                name=m.name,
+                description=m.description,
+                tags=[t.name for t in m.tags],
+                updated_at=m.updated_at,
+                created_at=m.created_at,
+                file_count=agg.file_count if agg else 0,
+                formats=agg.formats if agg else [],
+                cover=_gallery_cover_url(m, agg, cover_ok_hashes),
+                print_time_s=agg.print_time_s if agg else None,
+                has_sliced=agg.has_sliced if agg else False,
+            )
         )
-        for m in page_models
-    ]
 
     next_cursor = None
     if has_more and page_models:
@@ -281,7 +503,14 @@ async def get_revision_or_404(db: AsyncSession, revision_id: int) -> Revision:
     stmt = (
         select(Revision)
         .where(Revision.id == revision_id)
-        .options(selectinload(Revision.files).selectinload(File.blob))
+        .options(
+            # Two separate paths (not one chained loader) since `Blob.meta`/
+            # `Blob.derivatives` are independent relationships off the same
+            # `Blob` -- `build_revision_detail`'s `FileOut` enrichment needs
+            # both, batched here rather than lazy-loaded per file.
+            selectinload(Revision.files).selectinload(File.blob).selectinload(Blob.meta),
+            selectinload(Revision.files).selectinload(File.blob).selectinload(Blob.derivatives),
+        )
     )
     revision = (await db.execute(stmt)).scalar_one_or_none()
     if revision is None:
@@ -289,9 +518,13 @@ async def get_revision_or_404(db: AsyncSession, revision_id: int) -> Revision:
     return revision
 
 
-async def build_revision_detail(db: AsyncSession, revision: Revision) -> RevisionDetail:
+async def build_revision_detail(
+    db: AsyncSession, revision: Revision, settings: Settings
+) -> RevisionDetail:
     notes = await _list_notes(db, model_id=None, revision_id=revision.id)
-    files = [FileOut.from_model(f) for f in sorted(revision.files, key=lambda f: f.rel_path)]
+    sorted_files = sorted(revision.files, key=lambda f: f.rel_path)
+    enrichments = await _build_file_enrichments(settings, (f.blob for f in sorted_files))
+    files = [FileOut.from_model(f, enrichments.get(f.blob_hash)) for f in sorted_files]
     return RevisionDetail(
         id=revision.id,
         model_id=revision.model_id,
@@ -305,12 +538,12 @@ async def build_revision_detail(db: AsyncSession, revision: Revision) -> Revisio
     )
 
 
-async def build_model_detail(db: AsyncSession, model: Model) -> ModelDetail:
+async def build_model_detail(db: AsyncSession, model: Model, settings: Settings) -> ModelDetail:
     notes = await _list_notes(db, model_id=model.id, revision_id=None)
     current_revision = None
     if model.current_revision_id is not None:
         revision = await get_revision_or_404(db, model.current_revision_id)
-        current_revision = await build_revision_detail(db, revision)
+        current_revision = await build_revision_detail(db, revision, settings)
     return ModelDetail(
         id=model.id,
         slug=model.slug,
@@ -632,6 +865,12 @@ async def finalize_upload(
         verified_at=None,
     )
     db.add(file)
+    # Backlog fold: touch the model's `updated_at` so it sorts correctly in
+    # the gallery's default `-updated_at` order. The column's own
+    # `onupdate=func.now()` only fires when an UPDATE is actually issued for
+    # THIS model row -- an upload never otherwise changes any `models`
+    # column, so without this explicit touch the row would never get one.
+    model.updated_at = func.now()
     try:
         await db.commit()
     except IntegrityError:
@@ -684,6 +923,9 @@ async def delete_file(db: AsyncSession, backend: StorageBackend, file_id: int) -
         await anyio.to_thread.run_sync(backend.delete, file.storage_path)
     revision_id = revision.id
     await db.delete(file)
+    # Backlog fold: see `finalize_upload`'s matching comment -- deleting a
+    # file never otherwise issues an UPDATE against `models`.
+    model.updated_at = func.now()
     await db.commit()
 
     # Local import: breaks the same import cycle as `create_revision`'s call
@@ -704,7 +946,7 @@ async def list_tags(db: AsyncSession) -> list[TagOut]:
 
 async def add_tag_to_model(db: AsyncSession, model_id: int, name: str) -> TagOut:
     """Get-or-create the tag, then associate it with the model (idempotent)."""
-    await get_model_by_id(db, model_id)
+    model = await get_model_by_id(db, model_id)
 
     tag = (await db.execute(select(Tag).where(Tag.name == name))).scalar_one_or_none()
     if tag is None:
@@ -719,12 +961,16 @@ async def add_tag_to_model(db: AsyncSession, model_id: int, name: str) -> TagOut
     )
     if already_linked is None:
         await db.execute(model_tags.insert().values(model_id=model_id, tag_id=tag.id))
+        # Backlog fold: see `finalize_upload`'s matching comment -- tagging
+        # never otherwise issues an UPDATE against `models`. Only on an
+        # actual new link, not the idempotent no-op re-tag.
+        model.updated_at = func.now()
     await db.commit()
     return TagOut(id=tag.id, name=tag.name)
 
 
 async def remove_tag_from_model(db: AsyncSession, model_id: int, name: str) -> None:
-    await get_model_by_id(db, model_id)
+    model = await get_model_by_id(db, model_id)
 
     tag = (await db.execute(select(Tag).where(Tag.name == name))).scalar_one_or_none()
     if tag is None:
@@ -737,6 +983,7 @@ async def remove_tag_from_model(db: AsyncSession, model_id: int, name: str) -> N
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, f"tag {name!r} is not attached to model {model_id}"
         )
+    model.updated_at = func.now()
     await db.commit()
 
 

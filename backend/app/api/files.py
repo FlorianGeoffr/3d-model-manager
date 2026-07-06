@@ -13,26 +13,21 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import iterate_in_threadpool
 
-from app.config import Settings, get_settings
+from app.api.deps import get_storage_backend
 from app.db import get_db
 from app.models import Blob, File
 from app.services import library
 from app.storage.base import StorageBackend
 from app.storage.errors import StorageKeyNotFound
-from app.storage.registry import get_backend
 
 router = APIRouter(prefix="/files", tags=["files"])
-
-
-def _backend(settings: Settings = Depends(get_settings)) -> StorageBackend:
-    return get_backend(settings)
 
 
 @router.delete("/{file_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_file(
     file_id: int,
     db: AsyncSession = Depends(get_db),
-    backend: StorageBackend = Depends(_backend),
+    backend: StorageBackend = Depends(get_storage_backend),
 ) -> None:
     await library.delete_file(db, backend, file_id)
 
@@ -41,7 +36,7 @@ async def delete_file(
 async def download_file(
     file_id: int,
     db: AsyncSession = Depends(get_db),
-    backend: StorageBackend = Depends(_backend),
+    backend: StorageBackend = Depends(get_storage_backend),
 ) -> StreamingResponse:
     """Stream a file's bytes from the storage backend (Task 6 interface
     decision). 409 if the file hasn't finished being stored yet (NULL

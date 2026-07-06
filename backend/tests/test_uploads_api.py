@@ -21,6 +21,7 @@ from app.models.enums import BlobFormat, BlobKind
 from app.services import jobs as jobs_service
 from app.services import library
 from app.storage.local import LocalStorageBackend
+from tests.corpus import CorpusPaths
 
 pytestmark = pytest.mark.usefixtures("library_root", "data_dir")
 
@@ -500,3 +501,64 @@ async def test_upload_job_id_equals_uuid_used_for_spool(
     job = await db_session.get(Job, uuid.UUID(job_id))
     assert job is not None
     assert job.celery_id == job_id
+
+
+# ---------------------------------------------------------------------------
+# updated_at touch backlog fold (Task 7)
+# ---------------------------------------------------------------------------
+
+
+async def test_upload_to_old_model_bumps_it_above_an_untouched_newer_model(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    """``finalize_upload`` never otherwise issues an UPDATE against the
+    `models` row it belongs to, so without an explicit touch the gallery's
+    default `-updated_at` sort would never reflect new uploads to an
+    otherwise-untouched model.
+    """
+    old_model = await _create_model(authenticated_client, "Old Model")
+    await _create_model(authenticated_client, "New Model")
+
+    await _upload(
+        authenticated_client,
+        model_id=old_model["id"],
+        revision_id=old_model["current_revision"]["id"],
+        rel_path="part.stl",
+        content=b"some-bytes",
+    )
+
+    gallery = await authenticated_client.get("/api/models")
+
+    names = [item["name"] for item in gallery.json()["items"]]
+    assert names[0] == "Old Model"
+
+
+# ---------------------------------------------------------------------------
+# FileOut enrichment through a real eager pipeline run (Task 7) -- the ONE
+# expensive end-to-end test (multi-second f3d render); every other
+# enrichment scenario seeds rows/files directly (see test_blobs_api.py).
+# ---------------------------------------------------------------------------
+
+
+async def test_upload_real_stl_enriches_file_detail_after_full_pipeline_run(
+    authenticated_client: httpx.AsyncClient, corpus: CorpusPaths
+) -> None:
+    created = await _create_model(authenticated_client, "Full Pipeline Target")
+    revision_id = created["current_revision"]["id"]
+
+    response = await _upload(
+        authenticated_client,
+        model_id=created["id"],
+        revision_id=revision_id,
+        rel_path="box.stl",
+        content=corpus.box_stl.read_bytes(),
+    )
+    assert response.status_code == 201, response.text
+
+    detail = await authenticated_client.get(f"/api/revisions/{revision_id}")
+    file_out = next(f for f in detail.json()["files"] if f["rel_path"] == "box.stl")
+
+    assert file_out["meta"] is not None
+    assert file_out["meta"]["triangle_count"] == 12
+    assert file_out["thumb_ready"] is True
+    assert file_out["glb_status"] == "ok"

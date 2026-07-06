@@ -10,8 +10,8 @@ import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import File, Model, Revision
-from app.models.enums import BlobFormat
+from app.models import AssemblyThumb, BlobMeta, Derivative, File, Model, Revision
+from app.models.enums import BlobFormat, BlobKind, DerivativeKind, DerivativeStatus
 from app.storage.local import LocalStorageBackend
 
 pytestmark = pytest.mark.usefixtures("library_root")
@@ -359,3 +359,181 @@ async def test_patch_model_clearing_cover_blob_hash_with_null(
     # Verify it persisted in DB
     await db_session.refresh(model)
     assert model.cover_blob_hash is None
+
+
+# ---------------------------------------------------------------------------
+# gallery: cover priority chain (Task 7)
+# ---------------------------------------------------------------------------
+
+
+async def _gallery_item(client: httpx.AsyncClient, slug: str) -> dict:
+    response = await client.get("/api/models")
+    return next(item for item in response.json()["items"] if item["slug"] == slug)
+
+
+async def test_gallery_cover_prefers_cover_blob_hash_when_its_thumb_is_ok(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    created = await _create_model(authenticated_client, "Cover From Hash")
+    model = await db_session.get(Model, created["id"])
+    revision = await db_session.get(Revision, model.current_revision_id)
+    file = await seed_file(model, revision, "part.stl", b"solid cover-bytes")
+    db_session.add(
+        Derivative(
+            blob_hash=file.blob_hash, kind=DerivativeKind.THUMB_256, status=DerivativeStatus.OK
+        )
+    )
+    model.cover_blob_hash = file.blob_hash
+    await db_session.commit()
+
+    item = await _gallery_item(authenticated_client, created["slug"])
+
+    assert item["cover"] == f"/api/blobs/{file.blob_hash}/thumb?size=256"
+
+
+async def test_gallery_cover_falls_back_to_assembly_thumb_when_no_cover_blob_hash(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    created = await _create_model(authenticated_client, "Cover From Assembly")
+    model = await db_session.get(Model, created["id"])
+    revision = await db_session.get(Revision, model.current_revision_id)
+    await seed_file(model, revision, "part.stl", b"solid no-thumb-bytes")
+    db_session.add(AssemblyThumb(revision_id=revision.id, status=DerivativeStatus.OK))
+    await db_session.commit()
+
+    item = await _gallery_item(authenticated_client, created["slug"])
+
+    assert item["cover"] == f"/api/revisions/{revision.id}/assembly-thumb"
+
+
+async def test_gallery_cover_falls_back_to_first_ok_thumb_file_by_rel_path(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    created = await _create_model(authenticated_client, "Cover From First File")
+    model = await db_session.get(Model, created["id"])
+    revision = await db_session.get(Revision, model.current_revision_id)
+    # "a.stl" sorts first by rel_path but has no ready thumb -- the fallback
+    # must skip it and use "b.stl", proving it's not just "any file".
+    await seed_file(model, revision, "a.stl", b"file-a-bytes")
+    file_b = await seed_file(model, revision, "b.stl", b"file-b-bytes")
+    db_session.add(
+        Derivative(
+            blob_hash=file_b.blob_hash, kind=DerivativeKind.THUMB_256, status=DerivativeStatus.OK
+        )
+    )
+    await db_session.commit()
+
+    item = await _gallery_item(authenticated_client, created["slug"])
+
+    assert item["cover"] == f"/api/blobs/{file_b.blob_hash}/thumb?size=256"
+
+
+async def test_gallery_cover_is_none_when_nothing_is_ready(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    created = await _create_model(authenticated_client, "Cover Not Ready")
+    model = await db_session.get(Model, created["id"])
+    revision = await db_session.get(Revision, model.current_revision_id)
+    await seed_file(model, revision, "part.stl", b"no-derivatives-at-all")
+
+    item = await _gallery_item(authenticated_client, created["slug"])
+
+    assert item["cover"] is None
+
+
+# ---------------------------------------------------------------------------
+# gallery: has_sliced filter + print_time_s aggregation (Task 7)
+# ---------------------------------------------------------------------------
+
+
+async def test_gallery_has_sliced_filter(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    sliced = await _create_model(authenticated_client, "Sliced Model")
+    plain = await _create_model(authenticated_client, "Plain Model")
+
+    sliced_model = await db_session.get(Model, sliced["id"])
+    sliced_revision = await db_session.get(Revision, sliced_model.current_revision_id)
+    sliced_file = await seed_file(
+        sliced_model,
+        sliced_revision,
+        "print.gcode.3mf",
+        b"sliced-bytes",
+        blob_format=BlobFormat.GCODE_3MF,
+        blob_kind=BlobKind.SLICED,
+    )
+    db_session.add(BlobMeta(blob_hash=sliced_file.blob_hash, print_time_s=3600))
+
+    plain_model = await db_session.get(Model, plain["id"])
+    plain_revision = await db_session.get(Revision, plain_model.current_revision_id)
+    await seed_file(plain_model, plain_revision, "part.stl", b"plain-bytes")
+
+    await db_session.commit()
+
+    sliced_only = await authenticated_client.get("/api/models?has_sliced=true")
+    plain_only = await authenticated_client.get("/api/models?has_sliced=false")
+
+    assert [i["slug"] for i in sliced_only.json()["items"]] == [sliced["slug"]]
+    assert {i["slug"] for i in plain_only.json()["items"]} == {plain["slug"]}
+
+
+async def test_gallery_print_time_s_is_min_over_sliced_files_in_current_revision(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    created = await _create_model(authenticated_client, "Multi Plate Model")
+    model = await db_session.get(Model, created["id"])
+    revision = await db_session.get(Revision, model.current_revision_id)
+
+    file_a = await seed_file(
+        model,
+        revision,
+        "a.gcode.3mf",
+        b"a-bytes",
+        blob_format=BlobFormat.GCODE_3MF,
+        blob_kind=BlobKind.SLICED,
+    )
+    file_b = await seed_file(
+        model,
+        revision,
+        "b.gcode.3mf",
+        b"b-bytes",
+        blob_format=BlobFormat.GCODE_3MF,
+        blob_kind=BlobKind.SLICED,
+    )
+    db_session.add(BlobMeta(blob_hash=file_a.blob_hash, print_time_s=7200))
+    db_session.add(BlobMeta(blob_hash=file_b.blob_hash, print_time_s=3600))
+    await db_session.commit()
+
+    item = await _gallery_item(authenticated_client, created["slug"])
+
+    assert item["print_time_s"] == 3600
+    assert item["has_sliced"] is True
+
+
+# ---------------------------------------------------------------------------
+# gallery: q ILIKE-escaping backlog fold (Task 7)
+# ---------------------------------------------------------------------------
+
+
+async def test_gallery_q_escapes_percent_so_it_matches_literally(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    await _create_model(authenticated_client, "Sale 100% Off")
+    await _create_model(authenticated_client, "Best 100 Widgets")
+
+    response = await authenticated_client.get("/api/models", params={"q": "100%"})
+
+    names = {item["name"] for item in response.json()["items"]}
+    assert names == {"Sale 100% Off"}

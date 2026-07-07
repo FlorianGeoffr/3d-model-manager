@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from typing import ClassVar
+from urllib.parse import urlparse
 
 import httpx
 
@@ -16,7 +17,8 @@ from app.importers.registry import register_importer
 from app.models.enums import ImportSite
 
 _BASE_URL = "https://api.thingiverse.com"
-_URL_RE = re.compile(r"thingiverse\.com/(?:thing:|.*?[?&]thing=)(\d+)", re.IGNORECASE)
+_ALLOWED_HOSTS = {"thingiverse.com", "www.thingiverse.com"}
+_ID_RE = re.compile(r"(?:thing:|.*?[?&]thing=)(\d+)", re.IGNORECASE)
 _UA = "3d-model-manager/1.0 (+https://github.com/metril/3d-model-manager)"
 
 # Manual license map (FULL line 228). Falls back to the raw string.
@@ -55,7 +57,13 @@ class ThingiverseImporter:
     site: ClassVar[ImportSite] = ImportSite.THINGIVERSE
 
     def canonicalize(self, url: str) -> str | None:
-        m = _URL_RE.search(url)
+        try:
+            host = (urlparse(url).hostname or "").lower()
+        except ValueError:
+            return None
+        if host not in _ALLOWED_HOSTS:
+            return None
+        m = _ID_RE.search(url)
         return m.group(1) if m else None
 
     def _thing(self, external_id: str) -> dict:

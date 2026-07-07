@@ -30,6 +30,9 @@ def imp(monkeypatch):
         ("https://www.thingiverse.com/thing:763622", "763622"),
         ("https://www.thingiverse.com/thing:763622/files", "763622"),
         ("https://example.com/nope", None),
+        ("https://thingiverse.com/thing:5", "5"),
+        ("https://notthingiverse.com/thing:5", None),
+        ("https://example.com/x", None),
     ],
 )
 def test_canonicalize(url, expected):
@@ -81,7 +84,12 @@ def test_live_thingiverse_metadata():
     monkey = pytest.MonkeyPatch()
     monkey.setattr(tv, "_token", lambda: token)
     try:
-        meta = tv.ThingiverseImporter().fetch_metadata(fx.THING_ID)
+        importer = tv.ThingiverseImporter()
+        meta = importer.fetch_metadata(fx.THING_ID)
         assert meta.title and meta.external_id == fx.THING_ID
+        # Guards the zip_data assumption (SPEC/FULL line 228): if the live API
+        # doesn't nest files/images under zip_data, these fail first.
+        assert importer.list_files(fx.THING_ID)
+        assert meta.cover_url is not None
     finally:
         monkey.undo()

@@ -12,6 +12,8 @@ probe actually runs with the flag on (see ``tests/test_flag_off_imports.py``).
 
 from __future__ import annotations
 
+import json
+
 import anyio
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -25,11 +27,13 @@ from app.crypto import encrypt_secret
 from app.db import get_db
 from app.models import Blob, File, Printer, PrintJob
 from app.models.enums import BlobFormat, PrintJobState
+from app.printers.base import command_channel
 from app.printers.connection import connection_from_printer
 from app.printers.registry import build_adapter
 from app.schemas.printers import (
     PrinterCreate,
     PrinterOut,
+    PrinterStatusOut,
     PrinterUpdate,
     PrintJobOut,
     PrintRequest,
@@ -189,3 +193,94 @@ async def start_print(
     send_to_printer.apply_async(args=[job.id, payload.model_dump()])
     await db.refresh(job)  # eager mode already ran the task through its own sync session
     return PrintJobOut.from_model(job)
+
+
+_STATE_FIELDS = (
+    "gcode_state",
+    "mc_percent",
+    "layer_num",
+    "total_layer_num",
+    "mc_remaining_time",
+    "print_error",
+    "nozzle_temper",
+    "bed_temper",
+    "subtask_name",
+    "wifi_signal",
+)
+
+
+@router.get("/{printer_id}/status", response_model=PrinterStatusOut)
+async def printer_status(
+    printer_id: int,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> PrinterStatusOut:
+    """Read-only poll of printerd's last-reported state (SPEC "Printer
+    integration"; Task 7). Deliberately NOT gated on ``printer.enabled`` --
+    last-known/"unknown" status for a disabled printer is harmless and still
+    useful (unlike the command endpoints below, this never talks to
+    printerd). An absent or corrupt Redis key degrades to ``online: False``,
+    never a 500 (mirrors the send flow's preflight fail-closed behavior).
+    """
+    await _get_or_404(db, printer_id)
+    client = aioredis.Redis.from_url(settings.redis_url)
+    try:
+        state = await read_state_async(client, printer_id)
+    finally:
+        await client.aclose()
+    if state is None:
+        return PrinterStatusOut(online=False)
+    return PrinterStatusOut(online=True, **{k: state.get(k) for k in _STATE_FIELDS})
+
+
+async def _publish_command(settings: Settings, printer_id: int, command: str) -> None:
+    client = aioredis.Redis.from_url(settings.redis_url)
+    try:
+        await client.publish(command_channel(printer_id), json.dumps({"command": command}))
+    finally:
+        await client.aclose()
+
+
+async def _get_enabled_or_404(db: AsyncSession, printer_id: int) -> Printer:
+    """Same access-control principle as ``start_print`` (Task 6): a disabled
+    printer isn't supervised by printerd, so a command published for it
+    would never be heard -- reject up front instead of silently publishing
+    into the void.
+    """
+    printer = await _get_or_404(db, printer_id)
+    if not printer.enabled:
+        raise HTTPException(status.HTTP_409_CONFLICT, "printer is disabled")
+    return printer
+
+
+@router.post("/{printer_id}/pause", status_code=status.HTTP_202_ACCEPTED)
+async def pause_printer(
+    printer_id: int,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    await _get_enabled_or_404(db, printer_id)
+    await _publish_command(settings, printer_id, "pause")
+    return {"status": "sent"}
+
+
+@router.post("/{printer_id}/resume", status_code=status.HTTP_202_ACCEPTED)
+async def resume_printer(
+    printer_id: int,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    await _get_enabled_or_404(db, printer_id)
+    await _publish_command(settings, printer_id, "resume")
+    return {"status": "sent"}
+
+
+@router.post("/{printer_id}/stop", status_code=status.HTTP_202_ACCEPTED)
+async def stop_printer(
+    printer_id: int,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    await _get_enabled_or_404(db, printer_id)
+    await _publish_command(settings, printer_id, "stop")
+    return {"status": "sent"}

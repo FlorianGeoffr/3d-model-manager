@@ -20,6 +20,7 @@ from app.api import (
     jobs,
     models,
     notes,
+    print_jobs,
     printers,
     revisions,
     scan,
@@ -49,5 +50,6 @@ protected_router.include_router(scan.router)
 protected_router.include_router(settings.router)
 protected_router.include_router(features.router)
 protected_router.include_router(printers.router)
+protected_router.include_router(print_jobs.router)
 
 api_router.include_router(protected_router)

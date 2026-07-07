@@ -17,6 +17,7 @@ from app.api import (
     events,
     features,
     files,
+    imports,
     jobs,
     models,
     notes,
@@ -51,5 +52,6 @@ protected_router.include_router(settings.router)
 protected_router.include_router(features.router)
 protected_router.include_router(printers.router)
 protected_router.include_router(print_jobs.router)
+protected_router.include_router(imports.router)
 
 api_router.include_router(protected_router)

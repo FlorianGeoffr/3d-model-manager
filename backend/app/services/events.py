@@ -108,3 +108,19 @@ def publish_scan_event_sync(redis_url: str, scan_run_id: int, state: str) -> Non
         subject_type="scan_run",
         subject_id=scan_run_id,
     )
+
+
+def publish_import_event_sync(redis_url: str, import_id: int, state: str) -> None:
+    """Publish a gallery import's state as a ``job.updated`` event (M5;
+    mirrors ``publish_scan_event_sync``). ``job_type="import_from_url"``,
+    ``subject_type="import"`` -- the frontend's ``job.updated`` handler adds
+    one branch keyed on that job_type to invalidate ``["imports"]``/
+    ``["models"]``; no new SSE event type."""
+    publish_job_event_sync(
+        redis_url,
+        job_id=str(import_id),
+        job_type="import_from_url",
+        state=state,
+        subject_type="import",
+        subject_id=import_id,
+    )

@@ -46,6 +46,7 @@ celery_app.conf.update(
         "app.tasks.scan",
         "app.tasks.migrate",
         "app.tasks.printing",
+        "app.tasks.importing",
     ),
 )
 

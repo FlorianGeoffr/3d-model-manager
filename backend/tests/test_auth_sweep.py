@@ -45,6 +45,7 @@ _PATH_PARAM_VALUES = {
     "index": "1",
     "id": "1",
     "printer_id": "1",
+    "import_id": "1",
 }
 
 

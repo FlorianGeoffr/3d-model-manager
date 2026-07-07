@@ -43,4 +43,5 @@ def deferred_site_for_url(url: str) -> ImportSite | None:
     return _DEFERRED_HOSTS.get(host)
 
 
+from app.importers import printables as _printables  # noqa: E402,F401  (registers printables)
 from app.importers import thingiverse as _thingiverse  # noqa: E402,F401  (registers thingiverse)

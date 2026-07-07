@@ -100,7 +100,8 @@ async def retry_job(db: AsyncSession, settings: Settings, job_id: uuid.UUID) -> 
     still-spooled bytes; any name in ``app.tasks.pipeline.PIPELINE_STEPS``
     re-runs that step against its subject file's current blob;
     ``render_assembly_thumb`` (Task 6) re-runs against its subject revision.
-    Anything else 409s as an unknown job type. 409 if the job isn't
+    ``migrate_storage`` (Task 6) never retries -- see the dedicated 409
+    below. Anything else 409s as an unknown job type. 409 if the job isn't
     ``failed`` to begin with.
     """
     job = await get_job_or_404(db, job_id)
@@ -112,6 +113,17 @@ async def retry_job(db: AsyncSession, settings: Settings, job_id: uuid.UUID) -> 
 
     if job.type == "render_assembly_thumb":
         return await _retry_render_assembly_thumb(db, job)
+
+    if job.type == "migrate_storage":
+        # No retry path (Task 6): the job row has no payload column to stash
+        # the failed migration's target config in, and there's nothing else
+        # to re-derive it from. Simplest correct behavior -- point the
+        # operator back at Settings to kick off a fresh migration rather
+        # than inventing a payload-persistence detour for a rare, operator-
+        # driven action.
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "migrations are re-run from Settings, not retried"
+        )
 
     # Local import: app.tasks.pipeline imports app.services.jobs (for the
     # mark_*/create_job_sync helpers), so importing it back at module level

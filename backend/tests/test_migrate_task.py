@@ -1,0 +1,139 @@
+"""``migrate_storage`` Celery task (Task 6 brief): copies the whole library
+tree from the currently active backend onto a target backend, verifying
+blake3 per file as it streams, and only cuts the active ``storage`` setting
+over once every file has verified. Exercises the realistic cross-backend
+path -- local source -> MinIO/S3 target via the Task 2 testcontainer fixture
+-- since ``LocalConfig`` carries no path of its own (always
+``TDMM_LIBRARY_ROOT``), so there's no way to represent a second, distinct
+local root as a migration target.
+"""
+
+from __future__ import annotations
+
+import uuid
+
+import pytest
+
+from app.services import jobs as jobs_service
+from app.services.storage_config import get_active_config_sync
+from app.storage.base import WriteResult
+from app.storage.local import LocalStorageBackend
+from app.storage.s3 import S3StorageBackend
+from app.tasks import base
+from app.tasks.migrate import migrate_storage
+
+pytestmark = pytest.mark.usefixtures("library_root", "data_dir")
+
+
+async def _seed_migrate_job(db_session) -> str:
+    token = uuid.uuid4()
+    await jobs_service.create_job(
+        db_session, id=token, type="migrate_storage", subject_type=None, subject_id=None
+    )
+    return str(token)
+
+
+async def test_migrate_copies_verifies_and_cuts_over(
+    db_session, backend: LocalStorageBackend, s3_backend
+) -> None:
+    backend.write("widget/rev-001/part.stl", [b"first-file-bytes"])
+    backend.write("widget/rev-001/notes/readme.txt", [b"second-file-bytes"])
+    job_id = await _seed_migrate_job(db_session)
+    target = s3_backend.config.model_dump()
+
+    migrate_storage(job_id, target)
+
+    assert b"".join(s3_backend.read("widget/rev-001/part.stl")) == b"first-file-bytes"
+    assert b"".join(s3_backend.read("widget/rev-001/notes/readme.txt")) == b"second-file-bytes"
+
+    with base.sync_session() as s:
+        active = get_active_config_sync(s)
+    assert active.backend == "s3"
+    assert active.bucket == target["bucket"]
+
+    job = await jobs_service.get_job_or_404(db_session, uuid.UUID(job_id))
+    await db_session.refresh(job)
+    assert job.state == "done"
+
+
+async def test_migrate_leaves_source_intact(
+    db_session, backend: LocalStorageBackend, s3_backend
+) -> None:
+    backend.write("widget/rev-001/part.stl", [b"do-not-delete-me"])
+    job_id = await _seed_migrate_job(db_session)
+    target = s3_backend.config.model_dump()
+
+    migrate_storage(job_id, target)
+
+    # migrate_storage never deletes/moves anything on the source backend --
+    # the file must still be readable from the original local library root.
+    assert b"".join(backend.read("widget/rev-001/part.stl")) == b"do-not-delete-me"
+
+
+async def test_migrate_never_touches_derivatives(
+    db_session, backend: LocalStorageBackend, s3_backend, data_dir
+) -> None:
+    backend.write("widget/rev-001/part.stl", [b"library-bytes"])
+    deriv_path = data_dir / "derivatives" / "aa" / "thumb.png"
+    deriv_path.parent.mkdir(parents=True, exist_ok=True)
+    deriv_path.write_bytes(b"derivative-bytes")
+
+    job_id = await _seed_migrate_job(db_session)
+    target = s3_backend.config.model_dump()
+
+    migrate_storage(job_id, target)
+
+    target_keys = {entry.key for entry in s3_backend.walk("")}
+    assert target_keys == {"widget/rev-001/part.stl"}
+    # Derivatives live on local disk regardless of the active library
+    # backend (Global Constraints "DERIVATIVES ALWAYS STAY LOCAL") -- migrate
+    # must not have moved, copied, or deleted this file.
+    assert deriv_path.read_bytes() == b"derivative-bytes"
+
+
+async def test_migrate_hash_mismatch_marks_failed_and_does_not_cut_over(
+    db_session,
+    backend: LocalStorageBackend,
+    s3_backend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend.write("widget/rev-001/part.stl", [b"tampered-in-flight"])
+    job_id = await _seed_migrate_job(db_session)
+    target = s3_backend.config.model_dump()
+
+    original_write = S3StorageBackend.write
+
+    def _wrong_hash_write(self, key, chunks):
+        result = original_write(self, key, chunks)
+        return WriteResult(hash="0" * 64, size=result.size)
+
+    monkeypatch.setattr(S3StorageBackend, "write", _wrong_hash_write)
+
+    with pytest.raises(RuntimeError, match="hash mismatch"):
+        migrate_storage(job_id, target)
+
+    job = await jobs_service.get_job_or_404(db_session, uuid.UUID(job_id))
+    await db_session.refresh(job)
+    assert job.state == "failed"
+    assert "hash mismatch" in job.error
+
+    with base.sync_session() as s:
+        active = get_active_config_sync(s)
+    assert active.backend == "local"  # cutover never happened
+
+
+async def test_retry_migrate_storage_job_is_409(authenticated_client) -> None:
+    response = await authenticated_client.post(
+        "/api/settings/storage/migrate", json={"backend": "local", "config": {}}
+    )
+    job_id = response.json()["id"]
+    # The job is `done` (eager mode, no files to migrate) so retry would
+    # normally 409 as "not failed" -- force it to `failed` directly to
+    # exercise the dedicated `migrate_storage` retry-disposition branch.
+    with base.sync_session() as s:
+        jobs_service.mark_failed(s, job_id, "forced for test")
+
+    retry_response = await authenticated_client.post(f"/api/jobs/{job_id}/retry")
+
+    assert retry_response.status_code == 409
+    assert "Settings" in retry_response.json()["detail"]

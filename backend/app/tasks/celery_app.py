@@ -40,7 +40,7 @@ celery_app.conf.update(
         "app.tasks.pipeline.*": {"queue": "cpu"},
         "app.tasks.*": {"queue": "io"},
     },
-    imports=("app.tasks.ingest", "app.tasks.pipeline", "app.tasks.scan"),
+    imports=("app.tasks.ingest", "app.tasks.pipeline", "app.tasks.scan", "app.tasks.migrate"),
 )
 
 # Optional scheduled scan (SPEC "optional scheduled scan"; Task 5 brief):

@@ -129,4 +129,9 @@ def s3_backend(minio_container: MinioContainer) -> Iterator[object]:
         prefix="lib",
         addressing="path",
     )
-    yield S3StorageBackend(config)
+    backend = S3StorageBackend(config)
+    # Exposed (Task 6) so a test that needs the raw config -- e.g. to build a
+    # `migrate_storage` target dict -- doesn't have to duplicate this
+    # fixture's bucket-creation dance just to get it.
+    backend.config = config
+    yield backend

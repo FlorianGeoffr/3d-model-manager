@@ -140,7 +140,24 @@ class BambuLanAdapter(PrinterAdapter):
 
     # -- lifecycle -----------------------------------------------------
     def connect(self) -> None:
-        self._client().connect()
+        # bl.Printer.connect() == mqtt_start() + camera_start(). We only ever
+        # read MQTT-derived state (see _snapshot/test_connection below) and
+        # never touch the camera (no get_camera_frame/camera_client_alive
+        # call anywhere in this app), so we call mqtt_start() directly and
+        # deliberately never start the camera worker thread. This matters
+        # because bambulabs_api's PrinterCamera.stop() (invoked from
+        # disconnect()/close() below) does an UNBOUNDED Thread.join() on a
+        # thread blocked inside a timeout-less
+        # socket.create_connection((host, 6000)) -- against an unreachable
+        # printer that blocks for the OS TCP retry ceiling (measured
+        # ~136s), far past any adapter-level timeout. Never starting that
+        # thread means PrinterCamera.stop()'s "if self.__thread is not
+        # None" guard is always False, so close() can never hang on it.
+        # (paho-mqtt's own loop_stop() join is bounded by its default 5s
+        # socket connect timeout, polled every <=1s -- confirmed in
+        # site-packages/paho/mqtt/client.py -- so it stays well inside a
+        # probe's timeout.)
+        self._client().mqtt_start()
 
     def close(self) -> None:
         if self._printer is not None:
@@ -189,11 +206,19 @@ class BambuLanAdapter(PrinterAdapter):
         state = None
         try:
             p = self._client()
-            p.connect()
+            p.mqtt_start()  # see connect() -- never starts the camera thread
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
-                state = _state_token(p.get_state())
-                if state:
+                candidate = _state_token(p.get_state())
+                # bambulabs_api's GcodeState._missing_ falls back to the
+                # (truthy) UNKNOWN member for any not-yet-populated read --
+                # i.e. before the printer's first MQTT report arrives, which
+                # for an unreachable host is forever. Treating that as
+                # "found" would report ok=True for a black-hole host on the
+                # very first poll; only a REAL reported state ends the wait
+                # early, so we keep polling until the timeout otherwise.
+                if candidate and candidate != "UNKNOWN":
+                    state = candidate
                     break
                 time.sleep(0.5)
         except Exception as exc:  # noqa: BLE001 -- a probe never raises to the caller

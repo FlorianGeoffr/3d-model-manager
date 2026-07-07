@@ -1,3 +1,5 @@
+import time
+
 from app.models.enums import PrintJobState
 from app.printers import bambu
 from app.printers.bambu import BambuLanAdapter
@@ -16,7 +18,7 @@ class StubPrinter:
         self.uploaded: list[str] = []
         self.started: list[tuple] = []
 
-    def connect(self):
+    def mqtt_start(self):
         self.connected = True
 
     def disconnect(self):
@@ -158,7 +160,7 @@ def test_test_connection_ok(monkeypatch):
 
 def test_test_connection_soft_fails(monkeypatch):
     class _Boom:
-        def connect(self):
+        def mqtt_start(self):
             raise OSError("no route to host")
 
         def disconnect(self):
@@ -167,3 +169,34 @@ def test_test_connection_soft_fails(monkeypatch):
     monkeypatch.setattr(bambu, "_build_printer", lambda conn: _Boom())
     result = BambuLanAdapter(CONN).test_connection(timeout=1)
     assert result.ok is False and "OSError" in result.detail
+
+
+def test_test_connection_bounded_against_unreachable_host():
+    """Regression for the M4 live-e2e hang (task-9-report.md): bl.Printer's
+    disconnect() (called from test_connection()'s ``finally: self.close()``)
+    used to route through PrinterCamera.stop(), an UNBOUNDED Thread.join() on
+    a camera thread blocked inside a timeout-less
+    ``socket.create_connection((host, 6000))``. Against an unreachable host
+    that blocks for the OS TCP retry ceiling -- measured 136.27s in the
+    report, 141.29s reproduced here against the real adapter before the fix
+    -- not the adapter's advertised ``timeout``.
+
+    This drives the REAL adapter (NOT StubPrinter -- a same-thread, zero-cost
+    stub that never touches a real socket/thread and is exactly why the unit
+    suite missed this) against ``192.0.2.1`` (RFC 5737 TEST-NET-1,
+    guaranteed non-routable/reserved for documentation) so the socket
+    genuinely cannot connect, with no real printer or MQTT broker involved.
+
+    The fix makes connect()/test_connection() call bl.Printer.mqtt_start()
+    directly instead of connect() (== mqtt_start() + camera_start()), so the
+    camera worker thread is never started and PrinterCamera.stop() is a
+    no-op; close() then only waits on paho-mqtt's own loop_stop(), which is
+    bounded by its default 5s socket-connect timeout (polled every <=1s).
+    """
+    conn = PrinterConnection(host="192.0.2.1", serial="E2ESERIAL", access_code="12345678")
+    adapter = BambuLanAdapter(conn)
+    t0 = time.monotonic()
+    result = adapter.test_connection(timeout=1.0)
+    elapsed = time.monotonic() - t0
+    assert result.ok is False
+    assert elapsed < 15, f"probe took {elapsed:.1f}s -- should be bounded, not ~136s"

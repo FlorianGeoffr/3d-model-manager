@@ -110,6 +110,80 @@ database rows. To run scans automatically on a schedule instead of only
 on demand, set `TDMM_SCAN_INTERVAL_S` (seconds) in `.env` and start the
 optional `beat` service: `docker compose --profile beat up -d`.
 
+## Printer integration (Bambu LAN, feature-flagged)
+
+**Off by default.** Enable it by setting `TDMM_PRINTER_ENABLED=true` in
+`.env` **and** starting the printer daemon with `docker compose --profile
+printer up -d` (a plain `up` never starts `printerd`) — both are required.
+With the flag off (the default), the app is fully usable: the printers API
+503s and the Printer nav hides.
+
+**Printer prerequisites**: an A1/A1 mini on firmware **≥ 01.05.00.00**. On
+the printer's screen, enable **LAN-only Mode**, power-cycle it, then enable
+**Developer Mode** in the same menu; the **access code** shows on the
+LAN-only screen (toggle LAN-only off and back on if it displays zeros). A
+healthy **microSD card is mandatory** — without one, uploads fail with an
+"Insert SD card" error. Pin the firmware version that's known to work for
+you, and re-verify connectivity after every firmware update using the
+setup wizard's **Test connection** (an MQTT connect + `pushall` probe).
+
+**Tradeoff**: Developer Mode requires LAN-only Mode, which disconnects the
+printer from **Bambu Cloud and the Bambu Handy app**. Deliver firmware
+updates via microSD instead, or temporarily re-enable cloud connectivity
+when you need one.
+
+**ToS / responsibility**: LAN Developer Mode is a user-enabled,
+**Bambu-unsupported** escape hatch — enabling it is your decision and your
+responsibility. This app never uses the Bambu Connect signed cloud path.
+
+**Security**: the printer's access code is stored **Fernet-encrypted**
+(`printers.access_code_enc`) using a key at `${TDMM_DATA_DIR}/secrets/
+printer.key` (mode `0600`, auto-generated and shared across api/worker/
+printerd via the `tdmm_data` volume) or supplied explicitly via
+`TDMM_PRINTER_KEY`. It is decrypted only inside the worker/printerd
+processes, and is never returned by the API or written to logs. **TLS
+verification is off in v1**: the printer's MQTT/FTPS/camera ports present a
+self-signed certificate from Bambu's private CA that no system trust store
+accepts (and there's no hostname to check against), so — like every other
+LAN client — this app disables verification rather than trusting nothing. A
+**TOFU (trust-on-first-use) certificate pin is deferred to M6** hardening.
+
+**Sending**: only sliced **`.gcode.3mf`** files (Bambu Studio's "Export
+plate sliced file") can be sent to a printer — a bare `.gcode` is rejected.
+A print won't start unless the printer is idle (state ∈ `IDLE`/`FINISH`/
+`FAILED`); a printer that's busy, offline, or of unknown state is rejected
+before anything is uploaded.
+
+Register a printer from **Settings → Printer** (host, serial, access code)
+— the setup wizard runs **Test connection** against it before saving.
+
+### Manual/Live Acceptance (deferred — user present, real A1 mini, NOT automated)
+
+The physical "the A1 mini actually starts printing" drill needs a real
+printer on the LAN and a person watching the first print start, so it is
+**not** part of the automated test suite (see `backend/tests_e2e/
+test_m4_printer.py` for the hardware-free flag-off/wizard/preflight
+coverage that *is* automated). When hardware is available, run this once
+against a real A1 mini:
+
+1. On the printer: firmware ≥ 01.05, enable **LAN-only Mode** → power-cycle
+   → enable **Developer Mode**; note the access code.
+2. Set `TDMM_PRINTER_ENABLED=true`, `docker compose --profile printer up
+   -d`; add the printer in **Settings → Printer** (host/serial/access
+   code); **Test connection** should report `ok:true` with a real
+   `gcode_state`.
+3. Export a plate as `.gcode.3mf` from Bambu Studio, upload it to a model,
+   open **Files → Print**, pick the plate/AMS/calibration options, and
+   **Send** — **the A1 mini starts the print** (the load-bearing
+   acceptance for this milestone).
+4. On `/printer`: confirm live **%/layer/remaining/temps** update; that
+   **Pause/Resume/Stop** work; that **sending while RUNNING is blocked**;
+   and that pulling the **microSD card** surfaces an actionable SD-missing
+   error.
+
+Record the outcome in the milestone ledger; file any firmware-drift
+findings against the pinned-firmware note above.
+
 ## Development
 
 ### Backend
@@ -147,10 +221,14 @@ uv run ruff format --check .
 
 The full Docker-based end-to-end flow (build image, run compose stack, drive
 the M1 upload/revision/diff/download/restart flow, the M2 metadata/GLB/
-thumbnail pipeline flow, and the M3 scan drill — move a folder on the
+thumbnail pipeline flow, the M3 scan drill — move a folder on the
 bind-mounted share, rescan, relink by hash, download-verify; drop an
-untracked folder, rescan, adopt it as a draft model — all over HTTP) lives
-in `backend/tests_e2e/` and runs via:
+untracked folder, rescan, adopt it as a draft model — and the M4 printer
+flow — flag off (printers 503, app otherwise fine), flip
+`TDMM_PRINTER_ENABLED` on, register a printer, probe it (soft-fails, no
+hardware), and confirm a bare `.gcode` and a not-ready printer are both
+rejected before any print starts — all over HTTP) lives in
+`backend/tests_e2e/` and runs via:
 
 ```sh
 scripts/e2e.sh

@@ -19,6 +19,11 @@
 # `TDMM_SCAN_INTERVAL_S` is also set to a positive number of seconds in
 # `.env` (see `app.tasks.celery_app`'s conditional `beat_schedule`).
 #
+# `printerd` (M4, opt-in via `docker compose --profile printer up`): the
+# Bambu LAN MQTT supervisor -- a plain `docker compose up` never starts it,
+# and it idles harmlessly unless `TDMM_PRINTER_ENABLED=true` is also set in
+# `.env` (see README "Printer integration").
+#
 # Quickstart: `cp .env.example .env` then `docker compose up -d --build`.
 # See README "Quickstart" for the first-run admin password note.
 

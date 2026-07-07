@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
-# M1+M2 acceptance gate (Task 9, renamed/generalized by Task 10): builds and
-# starts the full docker compose stack, waits for the api to become healthy,
-# then runs every test under backend/tests_e2e/ against the real HTTP API --
-# currently the M1 upload/revision/diff/download/restart flow
-# (test_m1_flow.py) and the M2 processing-pipeline flow
-# (test_m2_pipeline.py) -- then tears the stack down.
+# M1+M2+M3+M4 acceptance gate (Task 9, renamed/generalized by Task 10):
+# builds and starts the full docker compose stack, waits for the api to
+# become healthy, then runs every test under backend/tests_e2e/ against the
+# real HTTP API -- currently the M1 upload/revision/diff/download/restart
+# flow (test_m1_flow.py), the M2 processing-pipeline flow
+# (test_m2_pipeline.py), the M3 scan relink/adopt flow (test_m3_scan.py),
+# and the M4 printer flow (test_m4_printer.py: flag-off safety, then the
+# flag flipped on to drive the setup wizard/CRUD, a Developer-Mode test
+# probe that soft-fails with no hardware present, and the bare-`.gcode`/
+# not-ready-printer send-flow rejections -- no printer hardware or MQTT
+# broker involved) -- then tears the stack down. test_m4_printer.py toggles
+# `TDMM_PRINTER_ENABLED` in `.env` and force-recreates the `api` container
+# itself, so no extra compose bring-up/profile flag is needed here.
 #
 # Usage: scripts/e2e.sh [--keep-volumes]
 set -euo pipefail

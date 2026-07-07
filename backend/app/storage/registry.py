@@ -16,9 +16,10 @@ from collections.abc import Callable
 
 from app.config import Settings
 from app.storage.base import StorageBackend
-from app.storage.config import LocalConfig, StorageConfig
+from app.storage.config import LocalConfig, SmbConfig, StorageConfig
 from app.storage.errors import StorageError
 from app.storage.local import LocalStorageBackend
+from app.storage.smb import SmbStorageBackend
 
 _BackendFactory = Callable[[Settings, StorageConfig], StorageBackend]
 
@@ -38,6 +39,12 @@ def register(scheme: str) -> Callable[[_BackendFactory], _BackendFactory]:
 @register("local")
 def _build_local_backend(settings: Settings, config: StorageConfig) -> StorageBackend:
     return LocalStorageBackend(settings.library_root)
+
+
+@register("smb")
+def _build_smb_backend(settings: Settings, config: StorageConfig) -> StorageBackend:
+    assert isinstance(config, SmbConfig)
+    return SmbStorageBackend(config)
 
 
 def get_backend(settings: Settings, config: StorageConfig | None = None) -> StorageBackend:

@@ -7,11 +7,11 @@ backend-agnostic behavior; they never import or reference a concrete backend
 class directly (that lives in the fixture below, and in
 ``tests/storage_containers.py`` for smb/s3).
 
-Only the ``local`` param runs today. ``smb``/``s3`` skip with a clear reason
-so their containers (``tests/storage_containers.py``) never start during a
-normal run -- Task 3/Task 4 flip each skip to the real ``smb_backend``/
-``s3_backend`` fixture as that backend lands, at which point this same suite
-proves it green with no changes to the tests themselves.
+``local`` and ``smb`` (Task 3) run for real today; ``s3`` still skips with a
+clear reason so its container (``tests/storage_containers.py``) never starts
+during a normal run until Task 4 flips that skip to the real ``s3_backend``
+fixture, at which point this same suite proves it green with no changes to
+the tests themselves.
 
 The walk-ordering tests are the load-bearing ones: they pin the "sort each
 directory's entries by bare name, recurse depth-first" contract from
@@ -39,14 +39,14 @@ from app.storage.local import LocalStorageBackend
 def storage_backend(request: pytest.FixtureRequest, tmp_path):
     """Yield an empty ``StorageBackend`` for each backend under test.
 
-    ``smb``/``s3`` skip outright -- without requesting ``smb_backend``/
-    ``s3_backend`` -- so neither container in ``tests/storage_containers.py``
-    starts until Task 3/Task 4 removes the skip.
+    ``s3`` still skips outright -- without requesting ``s3_backend`` -- so
+    its container in ``tests/storage_containers.py`` doesn't start until
+    Task 4 removes the skip.
     """
     if request.param == "local":
         return LocalStorageBackend(tmp_path / "library")
     if request.param == "smb":
-        pytest.skip("SMB backend lands in Task 3")  # remove in Task 3
+        return request.getfixturevalue("smb_backend")
     if request.param == "s3":
         pytest.skip("S3 backend lands in Task 4")  # remove in Task 4
     raise AssertionError(f"unhandled storage_backend param: {request.param!r}")

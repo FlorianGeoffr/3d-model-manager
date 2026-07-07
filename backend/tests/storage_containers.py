@@ -33,7 +33,7 @@ import pytest
 import smbclient
 from botocore.client import Config as BotoConfig
 from testcontainers.core.container import DockerContainer
-from testcontainers.core.waiting_utils import wait_for_logs
+from testcontainers.core.wait_strategies import LogMessageWaitStrategy
 from testcontainers.minio import MinioContainer
 
 from app.storage.config import S3Config, SmbConfig
@@ -54,10 +54,12 @@ def samba_container() -> Iterator[DockerContainer]:
         DockerContainer("dperson/samba:latest")
         .with_command(f'-u "{SMB_USER};{SMB_PASS}" -s "{SMB_SHARE};/share;yes;no;no;{SMB_USER}" -p')
         .with_exposed_ports(445)
+        .waiting_for(
+            LogMessageWaitStrategy("daemon 'smbd' finished starting up").with_startup_timeout(60)
+        )
     )
     container.start()
     try:
-        wait_for_logs(container, "daemon 'smbd' finished starting up", timeout=60)
         yield container
     finally:
         smbclient.reset_connection_cache()

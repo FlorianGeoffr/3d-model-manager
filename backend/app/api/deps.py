@@ -85,6 +85,14 @@ async def require_session(
     return AuthContext(user=user, session=session)
 
 
+def require_printer_enabled(settings: Settings = Depends(get_settings)) -> None:
+    """503 when the printer flag is off (Global Constraints). Routes stay
+    mounted so the frontend can tell 'disabled' from a genuine 404; the app
+    is fully functional with the flag off."""
+    if not settings.printer_enabled:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "printer integration is disabled")
+
+
 async def get_storage_backend(
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),

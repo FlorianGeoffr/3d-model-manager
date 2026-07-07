@@ -15,10 +15,12 @@ from app.api import (
     auth,
     blobs,
     events,
+    features,
     files,
     jobs,
     models,
     notes,
+    printers,
     revisions,
     scan,
     settings,
@@ -45,5 +47,7 @@ protected_router.include_router(jobs.router)
 protected_router.include_router(events.router)
 protected_router.include_router(scan.router)
 protected_router.include_router(settings.router)
+protected_router.include_router(features.router)
+protected_router.include_router(printers.router)
 
 api_router.include_router(protected_router)

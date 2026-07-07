@@ -4,17 +4,12 @@ from pathlib import Path
 
 
 def test_app_import_does_not_load_the_printer_lib():
-    # app.api.printers doesn't exist until a later M4 task adds the printers
-    # API router (see m4-surface-map.md); import it best-effort so this
-    # guard starts covering it automatically once it lands, without needing
-    # to fail on THIS task's narrower module set.
+    # app.api.printers now exists (M4 Task 4 adds the printers API router);
+    # import it for real so this guard actually covers it, rather than the
+    # earlier best-effort try/except for a module that didn't exist yet.
     code = (
-        "import sys, importlib\n"
-        "import app.main, app.printers.registry, app.printers.bambu\n"
-        "try:\n"
-        "    importlib.import_module('app.api.printers')\n"
-        "except ModuleNotFoundError:\n"
-        "    pass\n"
+        "import sys\n"
+        "import app.main, app.printers.registry, app.printers.bambu, app.api.printers\n"
         "leaked = sorted(m for m in sys.modules if 'bambulabs_api' in m or m.startswith('paho'))\n"
         "assert not leaked, leaked\n"
         "print('ok')\n"

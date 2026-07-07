@@ -193,6 +193,21 @@ def data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
 
 
 @pytest.fixture
+def printer_enabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Turn the printer feature flag on for this test, with a tmp
+    ``TDMM_DATA_DIR`` so the Fernet key (``app.crypto``) is isolated per
+    test rather than shared/persisted across the suite.
+    """
+    pdata = tmp_path / "pdata"
+    pdata.mkdir()
+    monkeypatch.setenv("TDMM_PRINTER_ENABLED", "true")
+    monkeypatch.setenv("TDMM_DATA_DIR", str(pdata))
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+@pytest.fixture
 async def admin_user(db_session: AsyncSession) -> User:
     user = User(username=ADMIN_USERNAME, password_hash=hash_password(ADMIN_PASSWORD))
     db_session.add(user)

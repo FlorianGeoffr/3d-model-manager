@@ -44,6 +44,7 @@ _PATH_PARAM_VALUES = {
     "blob_hash": "a" * 64,
     "index": "1",
     "id": "1",
+    "printer_id": "1",
 }
 
 

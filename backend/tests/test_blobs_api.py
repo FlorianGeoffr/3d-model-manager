@@ -163,6 +163,78 @@ async def test_get_thumb_if_none_match_returns_304(
     assert second.status_code == 304
 
 
+async def test_get_thumb_if_none_match_multi_value_returns_304(
+    authenticated_client: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    """M2-Minor 4 fold: a client revalidating several cached representations
+    sends its whole ``If-None-Match`` list on one request -- a strict
+    single-value string compare would only match if the right entry happened
+    to be first.
+    """
+    settings = get_settings()
+    blob = await _seed_blob(db_session, blob_hash="1" * 64)
+    await _seed_derivative(
+        db_session, blob_hash=blob.hash, kind=DerivativeKind.THUMB_256, status=DerivativeStatus.OK
+    )
+    path = derivatives.derivative_path(settings, blob.hash, DerivativeKind.THUMB_256)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(_PNG_BYTES)
+
+    first = await authenticated_client.get(f"/api/blobs/{blob.hash}/thumb")
+    etag = first.headers["etag"]
+
+    second = await authenticated_client.get(
+        f"/api/blobs/{blob.hash}/thumb",
+        headers={"If-None-Match": f'"some-other-etag", {etag}'},
+    )
+
+    assert second.status_code == 304
+
+
+async def test_get_thumb_if_none_match_weak_prefix_returns_304(
+    authenticated_client: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    """M2-Minor 4 fold: a weak validator (``W/"..."``, RFC 7232) must still
+    match the strong ETag we compute -- the leading ``W/`` is stripped before
+    comparing.
+    """
+    settings = get_settings()
+    blob = await _seed_blob(db_session, blob_hash="2" * 64)
+    await _seed_derivative(
+        db_session, blob_hash=blob.hash, kind=DerivativeKind.THUMB_256, status=DerivativeStatus.OK
+    )
+    path = derivatives.derivative_path(settings, blob.hash, DerivativeKind.THUMB_256)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(_PNG_BYTES)
+
+    first = await authenticated_client.get(f"/api/blobs/{blob.hash}/thumb")
+    etag = first.headers["etag"]
+
+    second = await authenticated_client.get(
+        f"/api/blobs/{blob.hash}/thumb", headers={"If-None-Match": f"W/{etag}"}
+    )
+
+    assert second.status_code == 304
+
+
+async def test_get_thumb_ok_derivative_missing_file_on_disk_is_404(
+    authenticated_client: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    """M2-Minor 4 fold: the DB says `ok`, but the file was removed out of
+    band -- this must be a clean 404, not a raw 500 from `FileResponse`
+    discovering the file's gone at send time.
+    """
+    blob = await _seed_blob(db_session, blob_hash="3" * 64)
+    await _seed_derivative(
+        db_session, blob_hash=blob.hash, kind=DerivativeKind.THUMB_256, status=DerivativeStatus.OK
+    )
+    # Deliberately never writes the derivative file to disk.
+
+    response = await authenticated_client.get(f"/api/blobs/{blob.hash}/thumb")
+
+    assert response.status_code == 404
+
+
 # ---------------------------------------------------------------------------
 # GET /api/blobs/{hash}/plates/{index}/thumb
 # ---------------------------------------------------------------------------
@@ -285,6 +357,23 @@ async def test_get_glb_serves_raw_derivative_when_web_missing(
     assert response.content == b"raw-glb-bytes"
     assert response.headers["content-type"] == "model/gltf-binary"
     assert response.headers["cache-control"] == "public, max-age=31536000, immutable"
+
+
+async def test_get_glb_ok_derivative_missing_file_on_disk_is_404(
+    authenticated_client: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    """M2-Minor 4 fold: same clean-404 fix as the thumb route, for the raw
+    GLB derivative.
+    """
+    blob = await _seed_blob(db_session, blob_hash="d" + "b" * 63)
+    await _seed_derivative(
+        db_session, blob_hash=blob.hash, kind=DerivativeKind.GLB, status=DerivativeStatus.OK
+    )
+    # Deliberately never writes the raw GLB (or web GLB) file to disk.
+
+    response = await authenticated_client.get(f"/api/blobs/{blob.hash}/glb")
+
+    assert response.status_code == 404
 
 
 async def test_get_glb_prefers_web_glb_over_raw_when_both_present(

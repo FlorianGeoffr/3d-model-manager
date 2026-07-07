@@ -36,13 +36,42 @@ class ThumbSize(IntEnum):
     LARGE = 1024
 
 
-def _conditional_file_response(
-    request: Request, path, etag: str, media_type: str, *, cache_control: str
+def _if_none_match_matches(request: Request, quoted_etag: str) -> bool:
+    """``If-None-Match`` may carry a comma-separated list of validators
+    (RFC 7232 SS3.2), any of which can be weak (``W/"..."``-prefixed) -- a
+    client revalidating several cached representations (e.g. after the
+    ``size``/``preview`` query param changed) sends its whole list on one
+    request. A strict single-value string compare only matched when the
+    right entry happened to be first (M2-Minor 4 fold).
+    """
+    header = request.headers.get("if-none-match")
+    if not header:
+        return False
+    return any(
+        candidate.strip().removeprefix("W/") == quoted_etag for candidate in header.split(",")
+    )
+
+
+async def _conditional_file_response(
+    request: Request,
+    path,
+    etag: str,
+    media_type: str,
+    *,
+    cache_control: str,
+    missing_detail: str = DerivativeStatus.PENDING.value,
 ) -> Response:
     quoted_etag = f'"{etag}"'
     headers = {"Cache-Control": cache_control, "ETag": quoted_etag}
-    if request.headers.get("if-none-match") == quoted_etag:
+    if _if_none_match_matches(request, quoted_etag):
         return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
+    exists = await anyio.to_thread.run_sync(path.exists)
+    if not exists:
+        # The DB says `ok`, but the file is gone (e.g. removed out of band)
+        # -- an inconsistent state, but a clean 404 beats `FileResponse`
+        # raising a raw 500 at send time (M2-Minor 4 fold; matches
+        # app.api.revisions.get_assembly_thumb's existing handling).
+        raise HTTPException(status.HTTP_404_NOT_FOUND, missing_detail)
     return FileResponse(path, media_type=media_type, headers=headers)
 
 
@@ -83,7 +112,7 @@ async def get_blob_thumb(
         raise HTTPException(status.HTTP_404_NOT_FOUND, _not_ready_detail(deriv))
 
     path = derivatives.derivative_path(settings, blob_hash, kind)
-    return _conditional_file_response(
+    return await _conditional_file_response(
         request,
         path,
         f"{blob_hash}:{kind.value}",
@@ -102,16 +131,14 @@ async def get_blob_plate_thumb(
 ) -> Response:
     await _get_blob_or_404(db, blob_hash)
     path = derivatives.plate_thumb_path(settings, blob_hash, index)
-    exists = await anyio.to_thread.run_sync(path.exists)
-    if not exists:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "plate thumbnail not found")
 
-    return _conditional_file_response(
+    return await _conditional_file_response(
         request,
         path,
         f"{blob_hash}:plate{index}",
         "image/png",
         cache_control=_IMMUTABLE_CACHE_CONTROL,
+        missing_detail="plate thumbnail not found",
     )
 
 
@@ -135,7 +162,7 @@ async def get_blob_glb(
         preview_deriv = await _get_derivative(db, blob_hash, DerivativeKind.GLB_PREVIEW)
         if preview_deriv is not None and preview_deriv.status == DerivativeStatus.OK:
             path = derivatives.derivative_path(settings, blob_hash, DerivativeKind.GLB_PREVIEW)
-            return _conditional_file_response(
+            return await _conditional_file_response(
                 request,
                 path,
                 f"{blob_hash}:glb_preview",
@@ -155,7 +182,7 @@ async def get_blob_glb(
         else derivatives.derivative_path(settings, blob_hash, DerivativeKind.GLB)
     )
 
-    return _conditional_file_response(
+    return await _conditional_file_response(
         request,
         path,
         f"{blob_hash}:glb",

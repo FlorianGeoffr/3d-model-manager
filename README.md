@@ -184,6 +184,40 @@ against a real A1 mini:
 Record the outcome in the milestone ledger; file any firmware-drift
 findings against the pinned-firmware note above.
 
+## Gallery importers
+
+**What it does.** Paste a **Thingiverse** or **Printables** model URL on
+`/import`; the app detects the site, downloads every file into a new
+library model with full attribution (source link, author, license, tags),
+and runs it through the normal ingest pipeline (lands as
+`rev-001_imported`). Imports are **atomic** — a failed or paid/Club model
+creates no model.
+
+**Thingiverse token setup.** Thingiverse requires a personal **App Token**
+to download files: go to `thingiverse.com/apps/create`, register a
+**"Desktop app"**, copy the **App Token**, and paste it in **Settings →
+Gallery site tokens**. The token is stored masked and never shown again
+(blank the field to keep the stored one). Printables needs **no token**
+(free models only; **Club/paid models are rejected with a clear
+message** — they require a Printables login).
+
+**MakerWorld — not yet.** MakerWorld import is **deferred to a later
+milestone** (it needs a Bambu-account login). Pasting a MakerWorld URL
+shows a friendly "not available yet" message rather than failing.
+
+**ToS / personal use.** These importers are for **personal use, one model
+per action**; by importing you confirm the model's license permits it. The
+`/import` page header carries this note. Respect each site's Terms of
+Service and the model's license (imported CC attribution is preserved on
+the model page).
+
+**Reliability.** The Thingiverse API is historically flaky and the
+Printables GraphQL schema is unofficial; both are isolated behind one
+module each with recorded-fixture contract tests, and a failed import
+never corrupts library state. A `live_importer`-marked smoke test per site
+(deferred/manual, excluded from the default gate — see below) hits the
+real API on demand.
+
 ## Development
 
 ### Backend
@@ -214,7 +248,7 @@ OSMesa path.
 Tests (real Postgres + Redis via `testcontainers`, no mocks):
 
 ```sh
-uv run pytest        # unit/integration suite (e2e excluded via the `e2e` marker)
+uv run pytest        # unit/integration suite (e2e + live_importer excluded via the -m in addopts)
 uv run ruff check .
 uv run ruff format --check .
 ```

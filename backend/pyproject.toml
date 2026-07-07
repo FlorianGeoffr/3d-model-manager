@@ -65,13 +65,17 @@ asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
 markers = [
     "e2e: end-to-end tests against a live docker compose stack (see scripts/e2e.sh); excluded from the default run by the -m in addopts below",
-    "live_importer: live-network importer smoke tests; excluded from the default gate",
+    "live_importer: live-network importer smoke tests (real Thingiverse/Printables); excluded from the default gate by the -m in addopts",
 ]
-# `-m 'not e2e'` keeps `uv run pytest` (the unit-suite gate) from trying to
-# hit a live server that isn't running. `-m` is a single-value pytest
-# option, so scripts/e2e.sh's own explicit `-m e2e` on the command line
-# overrides this rather than combining with it.
-addopts = "-m 'not e2e'"
+# `-m 'not e2e and not live_importer'` keeps `uv run pytest` (the unit-suite
+# gate) off the network entirely: `not e2e` skips the live-docker-compose
+# suite (see scripts/e2e.sh) and `not live_importer` skips the real-
+# Thingiverse/Printables smokes (tests/test_thingiverse_importer.py,
+# tests/test_printables_importer.py). `-m` is a single-value pytest option,
+# so scripts/e2e.sh's own explicit `-m e2e` on the command line overrides
+# this rather than combining with it -- the live-stack e2e run picks up
+# `e2e` but stays off `live_importer` too, since it never sets that marker.
+addopts = "-m 'not e2e and not live_importer'"
 filterwarnings = [
     # testcontainers' own redis module trips this library-internal
     # deprecation at import time (Task 6 adds the Redis container) --

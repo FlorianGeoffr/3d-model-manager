@@ -65,6 +65,7 @@ asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
 markers = [
     "e2e: end-to-end tests against a live docker compose stack (see scripts/e2e.sh); excluded from the default run by the -m in addopts below",
+    "live_importer: live-network importer smoke tests; excluded from the default gate",
 ]
 # `-m 'not e2e'` keeps `uv run pytest` (the unit-suite gate) from trying to
 # hit a live server that isn't running. `-m` is a single-value pytest

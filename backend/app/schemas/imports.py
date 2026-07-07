@@ -41,3 +41,11 @@ class ImportOut(BaseModel):
             created_at=imp.created_at,
             updated_at=imp.updated_at,
         )
+
+
+class ImportTokensIn(BaseModel):
+    thingiverse_token: str = ""
+
+
+class ImportTokensOut(BaseModel):
+    thingiverse_token: str  # "***" when a token is stored, "" otherwise -- never the real value

@@ -20,10 +20,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.db import get_db
+from app.schemas.imports import ImportTokensIn, ImportTokensOut
 from app.schemas.jobs import JobOut
 from app.schemas.settings import ConnectionTestOut, StorageConfigIn, StorageConfigOut
+from app.services import import_tokens, storage_config
 from app.services import jobs as jobs_service
-from app.services import storage_config
 from app.services.storage_probe import probe_backend
 from app.storage.config import StorageConfig, parse_storage_config
 from app.storage.registry import get_backend
@@ -146,3 +147,35 @@ async def migrate_storage_settings(
     # app.api.scan.trigger_scan).
     await db.refresh(job)
     return JobOut.from_model(job)
+
+
+@router.get("/import-tokens", response_model=ImportTokensOut)
+async def get_import_tokens_settings(db: AsyncSession = Depends(get_db)) -> ImportTokensOut:
+    tokens = await import_tokens.get_import_tokens(db)
+    return ImportTokensOut(thingiverse_token=_REDACTED_SENTINEL if tokens.thingiverse_token else "")
+
+
+@router.put("/import-tokens", response_model=ImportTokensOut)
+async def put_import_tokens_settings(
+    payload: ImportTokensIn, db: AsyncSession = Depends(get_db)
+) -> ImportTokensOut:
+    """Merge-on-blank/sentinel, mirroring ``_merge_stored_secrets``: a blank
+    or ``"***"`` submit keeps the stored token; a bare ``"***"`` with nothing
+    stored is rejected 422 (never persist the placeholder as a credential);
+    a real value replaces it."""
+    incoming = (payload.thingiverse_token or "").strip()
+    stored = (await import_tokens.get_import_tokens(db)).thingiverse_token or ""
+    if incoming in ("", _REDACTED_SENTINEL):
+        if stored:
+            value: str | None = stored
+        elif incoming == _REDACTED_SENTINEL:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                'Cannot set the token to the redaction placeholder "***"; enter the real token.',
+            )
+        else:
+            value = None  # explicit clear when nothing stored + blank submit
+    else:
+        value = incoming
+    await import_tokens.set_thingiverse_token(db, value)
+    return ImportTokensOut(thingiverse_token=_REDACTED_SENTINEL if value else "")

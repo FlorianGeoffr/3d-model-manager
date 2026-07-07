@@ -11,7 +11,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 
 import type { JobUpdatedEvent, ModelDetail, UploadResult } from "@/api/types";
-import { UploadPage } from "@/pages/UploadPage";
+import { TerminalEventMap, UploadPage } from "@/pages/UploadPage";
 
 // `vi.mock` factories are hoisted above the module's own top-level bindings
 // (same pattern as LibraryPage.test.tsx), so the fakes have to be created
@@ -261,5 +261,84 @@ describe("UploadPage", () => {
     resolveUpload(fakeUploadResult("job-1"));
 
     await waitFor(() => expect(screen.getByText("Stored")).toBeInTheDocument());
+  });
+
+  it("evicts a terminal job id from the pending map once it's been applied to its queue item (M2-Minor 5)", async () => {
+    // The pending map is a private ref on the component, so this spies on
+    // `TerminalEventMap.prototype.delete` -- a dedicated wrapper class kept
+    // exactly so tests have a narrow seam to verify eviction through,
+    // without hooking the global `Map.prototype` (which React/Radix/
+    // TanStack Query also use internally, and did in fact pollute this
+    // assertion when tried against the raw `Map`) -- to prove the record
+    // doesn't linger for the rest of the tab's life once consumed, instead
+    // of growing unbounded across a long session.
+    const deleteSpy = vi.spyOn(TerminalEventMap.prototype, "delete");
+    createModelMock.mockResolvedValue(fakeModel());
+    uploadFileMock.mockResolvedValueOnce(fakeUploadResult("job-1"));
+
+    const { container } = renderUploadPage();
+
+    fireEvent.change(await screen.findByLabelText("Model name"), { target: { value: "My Model" } });
+    addFileToQueue(container, "a.stl");
+    fireEvent.click(screen.getByRole("button", { name: /^Upload/ }));
+
+    await waitFor(() => expect(uploadFileMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(eventsListener.current).not.toBeNull());
+
+    // By now the upload's PUT response has already resolved and attached
+    // `jobId: "job-1"` to the queue item, so this event lands on the direct
+    // (already-matched) path -- the record must be evicted right away.
+    eventsListener.current?.({
+      type: "job.updated",
+      job_id: "job-1",
+      job_type: "convert_to_glb",
+      state: "done",
+      subject_type: "file",
+      subject_id: 1,
+    });
+
+    await waitFor(() => expect(screen.getByText("Stored")).toBeInTheDocument());
+    expect(deleteSpy).toHaveBeenCalledWith("job-1");
+
+    deleteSpy.mockRestore();
+  });
+
+  it("evicts a terminal job id from the pending map once handleStartUpload consults it after a raced event", async () => {
+    createModelMock.mockResolvedValue(fakeModel());
+    let resolveUpload: (result: UploadResult) => void = () => {};
+    uploadFileMock.mockReturnValueOnce(
+      new Promise<UploadResult>((resolve) => {
+        resolveUpload = resolve;
+      }),
+    );
+
+    const { container } = renderUploadPage();
+
+    fireEvent.change(await screen.findByLabelText("Model name"), { target: { value: "My Model" } });
+    addFileToQueue(container, "a.stl");
+    fireEvent.click(screen.getByRole("button", { name: /^Upload/ }));
+
+    await waitFor(() => expect(uploadFileMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(eventsListener.current).not.toBeNull());
+
+    // The event arrives before the PUT response, so it's held in the
+    // pending map (no queue item carries "job-1" yet) rather than evicted
+    // immediately.
+    eventsListener.current?.({
+      type: "job.updated",
+      job_id: "job-1",
+      job_type: "convert_to_glb",
+      state: "done",
+      subject_type: "file",
+      subject_id: 1,
+    });
+
+    const deleteSpy = vi.spyOn(TerminalEventMap.prototype, "delete");
+    resolveUpload(fakeUploadResult("job-1"));
+
+    await waitFor(() => expect(screen.getByText("Stored")).toBeInTheDocument());
+    expect(deleteSpy).toHaveBeenCalledWith("job-1");
+
+    deleteSpy.mockRestore();
   });
 });

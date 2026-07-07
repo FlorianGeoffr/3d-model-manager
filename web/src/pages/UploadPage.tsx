@@ -20,6 +20,27 @@ interface ResolvedTarget {
   name: string;
 }
 
+/** Thin wrapper around a `Map<string, "done" | "failed">` (Task 8, M2-Minor
+ * 5 fold) -- a dedicated class rather than a bare `Map` so tests can spy on
+ * `.delete` calls to verify the eviction below actually fires, without
+ * hooking the global `Map.prototype` and picking up every unrelated `Map`
+ * React/Radix/TanStack Query use internally. */
+export class TerminalEventMap {
+  private readonly entries = new Map<string, "done" | "failed">();
+
+  get(jobId: string): "done" | "failed" | undefined {
+    return this.entries.get(jobId);
+  }
+
+  set(jobId: string, state: "done" | "failed"): void {
+    this.entries.set(jobId, state);
+  }
+
+  delete(jobId: string): void {
+    this.entries.delete(jobId);
+  }
+}
+
 function toQueueItems(files: DroppedFile[]): QueueItem[] {
   return files.map((entry) => ({
     id: crypto.randomUUID(),
@@ -50,21 +71,45 @@ export function UploadPage() {
   // event here means the jobId lookup below survives regardless of which
   // one lands first, instead of silently dropping an event that arrived for
   // a jobId no queue item had yet.
-  const seenTerminal = useRef(new Map<string, "done" | "failed">());
+  const seenTerminal = useRef(new TerminalEventMap());
 
   useEffect(() => {
     return events.subscribe((event) => {
-      if (event.state === "done" || event.state === "failed") {
-        seenTerminal.current.set(event.job_id, event.state);
-      }
-      setQueue((prev) =>
-        prev.map((item) => {
-          if (item.jobId !== event.job_id) return item;
-          if (event.state === "done") return { ...item, status: "stored" };
-          if (event.state === "failed") return { ...item, status: "failed", error: "Processing failed" };
-          return item;
-        }),
-      );
+      if (event.state !== "done" && event.state !== "failed") return;
+      // Narrowed to a local so the type survives into the nested `setQueue`
+      // updater below (TS doesn't carry a narrowing on `event.state` itself
+      // through a closure).
+      const terminalState = event.state;
+
+      // The eviction decision has to be made *inside* the updater, off
+      // whatever `prev` React actually hands it -- reading a flag set by
+      // the updater immediately after calling `setQueue` doesn't work
+      // reliably, because React doesn't always invoke a `setState` updater
+      // synchronously (e.g. with another update already in flight, it can
+      // defer running this one until the next render pass), so such a flag
+      // can still read as its initial value here.
+      setQueue((prev) => {
+        const matchIndex = prev.findIndex((item) => item.jobId === event.job_id);
+        if (matchIndex === -1) {
+          // The event raced ahead of the upload's PUT response attaching
+          // this jobId to a queue item -- keep the record so
+          // `handleStartUpload`'s post-await consultation below can still
+          // find it once the response resolves, which evicts it there.
+          seenTerminal.current.set(event.job_id, terminalState);
+          return prev;
+        }
+        // Applied directly to the item that already carried this jobId --
+        // no future lookup will ever need the pending record again, so
+        // evict it now instead of letting `seenTerminal` grow for the rest
+        // of the tab's life (M2-Minor 5).
+        seenTerminal.current.delete(event.job_id);
+        return prev.map((item, index) => {
+          if (index !== matchIndex) return item;
+          return terminalState === "done"
+            ? { ...item, status: "stored" }
+            : { ...item, status: "failed", error: "Processing failed" };
+        });
+      });
     });
   }, [events]);
 
@@ -155,10 +200,14 @@ export function UploadPage() {
         );
         updateItem(item.id, { status: "processing", progress: 100, jobId: result.job_id });
         const terminal = seenTerminal.current.get(result.job_id);
-        if (terminal === "done") {
-          updateItem(item.id, { status: "stored" });
-        } else if (terminal === "failed") {
-          updateItem(item.id, { status: "failed", error: "Processing failed" });
+        if (terminal) {
+          // Consumed -- evict so this record doesn't linger forever (M2-Minor 5).
+          seenTerminal.current.delete(result.job_id);
+          if (terminal === "done") {
+            updateItem(item.id, { status: "stored" });
+          } else {
+            updateItem(item.id, { status: "failed", error: "Processing failed" });
+          }
         }
       } catch (error) {
         updateItem(item.id, {

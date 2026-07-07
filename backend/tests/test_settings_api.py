@@ -137,3 +137,220 @@ async def test_migrate_dispatches_tracked_job(authenticated_client: httpx.AsyncC
     assert body["type"] == "migrate_storage"
     assert body["id"]
     assert body["state"] in {"queued", "running", "done", "failed"}
+
+
+# ---------------------------------------------------------------------------
+# Secret-merge behavior (gap surfaced during Task 7): GET always redacts a
+# set secret to "***", so the frontend never has the real value to send
+# back. PUT/test/migrate must transparently substitute the stored secret
+# when the incoming one is blank/absent/the redaction sentinel, for the
+# same backend type -- without ever leaking the real value in a response.
+# ---------------------------------------------------------------------------
+
+
+async def test_put_omitted_smb_password_keeps_stored_secret(
+    authenticated_client: httpx.AsyncClient, db_session
+) -> None:
+    from app.services.storage_config import get_active_config
+
+    seed_payload = {
+        "backend": "smb",
+        "config": {
+            "host": "fileserver.local",
+            "share": "models",
+            "username": "svc",
+            "password": "hunter2",
+        },
+    }
+    seed_response = await authenticated_client.put("/api/settings/storage", json=seed_payload)
+    assert seed_response.status_code == 200, seed_response.text
+
+    update_payload = {
+        "backend": "smb",
+        "config": {
+            "host": "new-fileserver.local",
+            "share": "models",
+            "username": "svc",
+            "password": "",
+        },
+    }
+    update_response = await authenticated_client.put("/api/settings/storage", json=update_payload)
+
+    assert update_response.status_code == 200, update_response.text
+    assert update_response.json()["config"]["password"] == "***"
+    # The raw secret must never appear in a response body.
+    assert "hunter2" not in update_response.text
+
+    stored = await get_active_config(db_session)
+    assert stored.host == "new-fileserver.local"
+    assert stored.password == "hunter2"
+
+
+async def test_put_redacted_sentinel_smb_password_keeps_stored_secret(
+    authenticated_client: httpx.AsyncClient, db_session
+) -> None:
+    from app.services.storage_config import get_active_config
+
+    seed_payload = {
+        "backend": "smb",
+        "config": {
+            "host": "fileserver.local",
+            "share": "models",
+            "username": "svc",
+            "password": "hunter2",
+        },
+    }
+    await authenticated_client.put("/api/settings/storage", json=seed_payload)
+
+    update_payload = {
+        "backend": "smb",
+        "config": {
+            "host": "another-fileserver.local",
+            "share": "models",
+            "username": "svc",
+            "password": "***",
+        },
+    }
+    update_response = await authenticated_client.put("/api/settings/storage", json=update_payload)
+
+    assert update_response.status_code == 200, update_response.text
+    stored = await get_active_config(db_session)
+    assert stored.host == "another-fileserver.local"
+    assert stored.password == "hunter2"
+
+
+async def test_put_omitted_s3_secret_key_keeps_stored_secret(
+    authenticated_client: httpx.AsyncClient, db_session
+) -> None:
+    from app.services.storage_config import get_active_config
+
+    seed_payload = {
+        "backend": "s3",
+        "config": {
+            "bucket": "my-bucket",
+            "access_key": "AKIAEXAMPLE",
+            "secret_key": "super-secret-value",
+            "endpoint_url": "http://127.0.0.1:1",
+            "addressing": "path",
+        },
+    }
+    seed_response = await authenticated_client.put("/api/settings/storage", json=seed_payload)
+    assert seed_response.status_code == 200, seed_response.text
+
+    update_payload = {
+        "backend": "s3",
+        "config": {
+            "bucket": "renamed-bucket",
+            "access_key": "AKIAEXAMPLE",
+            "secret_key": "",
+            "endpoint_url": "http://127.0.0.1:1",
+            "addressing": "path",
+        },
+    }
+    update_response = await authenticated_client.put("/api/settings/storage", json=update_payload)
+
+    assert update_response.status_code == 200, update_response.text
+    assert update_response.json()["config"]["secret_key"] == "***"
+    assert "super-secret-value" not in update_response.text
+
+    stored = await get_active_config(db_session)
+    assert stored.bucket == "renamed-bucket"
+    assert stored.secret_key == "super-secret-value"
+
+
+async def test_put_new_secret_value_is_not_clobbered_by_merge(
+    authenticated_client: httpx.AsyncClient, db_session
+) -> None:
+    from app.services.storage_config import get_active_config
+
+    seed_payload = {
+        "backend": "smb",
+        "config": {
+            "host": "fileserver.local",
+            "share": "models",
+            "username": "svc",
+            "password": "hunter2",
+        },
+    }
+    await authenticated_client.put("/api/settings/storage", json=seed_payload)
+
+    update_payload = {
+        "backend": "smb",
+        "config": {
+            "host": "fileserver.local",
+            "share": "models",
+            "username": "svc",
+            "password": "brand-new-secret",
+        },
+    }
+    update_response = await authenticated_client.put("/api/settings/storage", json=update_payload)
+
+    assert update_response.status_code == 200, update_response.text
+    stored = await get_active_config(db_session)
+    assert stored.password == "brand-new-secret"
+
+
+async def test_put_blank_secret_with_no_stored_config_of_that_type_still_422s(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    # Active config is the default LocalConfig -- there is nothing of the
+    # same backend type to merge a secret in from, so a blank/absent secret
+    # must still fail validation.
+    response = await authenticated_client.put(
+        "/api/settings/storage",
+        json={
+            "backend": "smb",
+            "config": {"host": "fileserver.local", "share": "models", "username": "svc"},
+        },
+    )
+
+    assert response.status_code == 422
+
+
+async def test_connection_test_reuses_stored_secret_when_omitted(
+    authenticated_client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seed_payload = {
+        "backend": "smb",
+        "config": {
+            "host": "fileserver.local",
+            "share": "models",
+            "username": "svc",
+            "password": "hunter2",
+        },
+    }
+    seed_response = await authenticated_client.put("/api/settings/storage", json=seed_payload)
+    assert seed_response.status_code == 200, seed_response.text
+
+    captured: dict = {}
+
+    class _FakeBackend:
+        def __init__(self) -> None:
+            self._stash: dict[str, bytes] = {}
+
+        def write(self, key, chunks):
+            self._stash[key] = b"".join(chunks)
+
+        def read(self, key):
+            yield self._stash[key]
+
+        def delete(self, key):
+            self._stash.pop(key, None)
+
+    def _spy_get_backend(settings, config):
+        captured["config"] = config
+        return _FakeBackend()
+
+    monkeypatch.setattr("app.api.settings.get_backend", _spy_get_backend)
+
+    response = await authenticated_client.post(
+        "/api/settings/storage/test",
+        json={
+            "backend": "smb",
+            "config": {"host": "fileserver.local", "share": "models", "username": "svc"},
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["ok"] is True
+    assert captured["config"].password == "hunter2"

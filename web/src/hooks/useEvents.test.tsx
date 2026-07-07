@@ -43,6 +43,72 @@ function renderProvider() {
   );
 }
 
+describe("EventsProvider scan invalidation", () => {
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal("EventSource", FakeEventSource);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("invalidates the scan query when a scan_library job.updated event arrives", () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <EventsProvider>
+          <div>ready</div>
+        </EventsProvider>
+      </QueryClientProvider>,
+    );
+    const source = FakeEventSource.instances[0];
+    expect(source).toBeDefined();
+
+    source.onmessage?.({
+      data: JSON.stringify({
+        type: "job.updated",
+        job_id: "1",
+        job_type: "scan_library",
+        state: "running",
+        subject_type: "scan_run",
+        subject_id: 1,
+      }),
+    } as MessageEvent<string>);
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["scan"] });
+  });
+
+  it("does not invalidate the scan query for a non-scan job event", () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <EventsProvider>
+          <div>ready</div>
+        </EventsProvider>
+      </QueryClientProvider>,
+    );
+    const source = FakeEventSource.instances[0];
+
+    source.onmessage?.({
+      data: JSON.stringify({
+        type: "job.updated",
+        job_id: "1",
+        job_type: "convert_to_glb",
+        state: "done",
+        subject_type: "file",
+        subject_id: 1,
+      }),
+    } as MessageEvent<string>);
+
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["scan"] });
+  });
+});
+
 describe("EventsProvider onerror session probe", () => {
   beforeEach(() => {
     getMock.mockClear();

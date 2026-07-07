@@ -258,6 +258,66 @@ export interface ConnectionTestOut {
   latency_ms: number;
 }
 
+// -- scan (backend/app/schemas/scan.py, Task 8) ----------------------------
+
+export type ScanState = "queued" | "running" | "done" | "failed" | "skipped";
+
+export interface ScanAdopted {
+  model_id: number;
+  slug: string;
+  revision_id: number;
+  files: string[];
+}
+
+export interface ScanRelinked {
+  file_id: number;
+  from: string;
+  to: string;
+  hash: string;
+}
+
+export interface ScanChanged {
+  file_id: number;
+  storage_path: string;
+  old_hash: string;
+  new_hash: string;
+}
+
+export interface ScanMissing {
+  file_id: number;
+  storage_path: string;
+  model_slug: string;
+}
+
+// Added in Task 5's fix wave alongside `verified` -- both must be mirrored
+// here even though the earlier Task 5/6 interface note predates them.
+export interface ScanError {
+  storage_path: string;
+  error: string;
+}
+
+export interface ScanReport {
+  adopted: ScanAdopted[];
+  relinked: ScanRelinked[];
+  changed: ScanChanged[];
+  missing: ScanMissing[];
+  errors: ScanError[];
+  verified: number;
+}
+
+export interface ScanRunOut {
+  id: number;
+  created_at: string;
+  finished_at: string | null;
+  state: ScanState;
+  files_seen: number;
+  files_hashed: number;
+  relinked: number;
+  adopted: number;
+  missing: number;
+  report: ScanReport | null;
+}
+
 // -- events (SSE, Global Constraints) --------------------------------
 
 export interface JobUpdatedEvent {

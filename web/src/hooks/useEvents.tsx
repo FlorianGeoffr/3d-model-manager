@@ -48,6 +48,15 @@ export function EventsProvider({ children }: { children: ReactNode }) {
         void queryClient.invalidateQueries({ queryKey: ["revisions"] });
       }
 
+      // The scanner reuses this same `job.updated` shape for its progress
+      // (Task 5 brief: "no new SSE event type"), with `job_type:
+      // "scan_library"` on every state transition (queued/running/done/
+      // failed/skipped) -- refresh the Scan report live for all of them,
+      // not just the terminal ones above.
+      if (parsed.job_type === "scan_library") {
+        void queryClient.invalidateQueries({ queryKey: ["scan"] });
+      }
+
       for (const listener of listenersRef.current) listener(parsed);
     };
 

@@ -11,6 +11,7 @@ import {
   StorageBackendForm,
   stripBlankSecrets,
 } from "@/components/settings/StorageBackendForm";
+import { ScanReport } from "@/components/settings/ScanReport";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -42,7 +43,10 @@ export function SettingsPage() {
           </div>
         </Card>
       ) : configQuery.data ? (
-        <StorageSettingsCard active={configQuery.data} />
+        <>
+          <StorageSettingsCard active={configQuery.data} />
+          <ScanReport />
+        </>
       ) : null}
     </div>
   );

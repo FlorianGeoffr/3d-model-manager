@@ -158,15 +158,22 @@ class PrinterDaemon:
         for printer in self.enabled_printers():
             try:
                 self.start_printer(printer)
-            except Exception:
-                log.exception("printerd: failed to start printer %s", printer.id)
+            except Exception as exc:
+                # Exception TEXT could echo the plaintext access code (e.g. an
+                # MQTT/FTPS auth-failure string) -- log only the type, never
+                # the full exception body.
+                log.error(
+                    "printerd: failed to start printer %s: %s", printer.id, type(exc).__name__
+                )
         while not self._stop.wait(_POLL_INTERVAL_S):
             for worker in self._workers.values():
                 try:
                     # emit a fresh lib snapshot -> Redis + transitions
                     worker.adapter.request_full_status()
-                except Exception:
-                    log.exception("printerd: status poll failed")
+                except Exception as exc:
+                    # Same access-code leak concern as the start-failure log
+                    # above -- type only, never the full exception body.
+                    log.error("printerd: status poll failed: %s", type(exc).__name__)
 
     def stop(self) -> None:
         self._stop.set()

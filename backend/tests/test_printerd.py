@@ -1,13 +1,15 @@
 import json
+import logging
 import time
 
 import pytest
 import redis as redis_lib
 
+from app import printerd as printerd_module
 from app.config import get_settings
 from app.models import Blob, File, Model, Printer, PrintJob, Revision
 from app.models.enums import BlobFormat, BlobKind, PrinterKind, PrintJobState
-from app.printerd import PrinterWorker
+from app.printerd import PrinterDaemon, PrinterWorker
 from app.printers.base import PrinterConnection, state_key
 from app.printers.fake import FakePrinterAdapter
 from app.tasks import base
@@ -125,3 +127,55 @@ def test_command_dispatch(worker):
     w.handle_command("resume")
     w.handle_command("stop")
     assert adapter.paused == 1 and adapter.resumed == 1 and adapter.stopped == 1
+
+
+def test_run_logs_start_failure_type_only(caplog, monkeypatch, redis_url):
+    """M4 review Fix A part 2: a start_printer failure's exception TEXT could
+    echo the printer's plaintext access code (e.g. an MQTT/FTPS auth-failure
+    string) -- printerd's failure log must carry only the exception TYPE,
+    never the full exception body."""
+    settings = get_settings()
+    daemon = PrinterDaemon(settings)
+
+    class _StubPrinterRow:
+        id = 999
+
+    monkeypatch.setattr(daemon, "enabled_printers", lambda: [_StubPrinterRow()])
+
+    def _boom(printer):
+        raise RuntimeError("mqtt auth failed for access code 12345678")
+
+    monkeypatch.setattr(daemon, "start_printer", _boom)
+    daemon._stop.set()  # skip the (real, multi-second-interval) poll loop below
+
+    with caplog.at_level(logging.ERROR, logger="printerd"):
+        daemon.run()
+
+    assert "failed to start printer" in caplog.text
+    assert "12345678" not in caplog.text
+    assert "RuntimeError" in caplog.text
+
+
+def test_run_logs_poll_failure_type_only(caplog, monkeypatch, redis_url):
+    """Same leak-surface concern as above, for the status-poll log line."""
+    settings = get_settings()
+    daemon = PrinterDaemon(settings)
+    monkeypatch.setattr(daemon, "enabled_printers", lambda: [])
+    monkeypatch.setattr(printerd_module, "_POLL_INTERVAL_S", 0.0)
+
+    class _BoomAdapter:
+        def request_full_status(self):
+            daemon._stop.set()  # stop the loop after this one poll iteration
+            raise RuntimeError("ftps auth failed for access code 87654321")
+
+    class _StubWorker:
+        adapter = _BoomAdapter()
+
+    daemon._workers[1] = _StubWorker()
+
+    with caplog.at_level(logging.ERROR, logger="printerd"):
+        daemon.run()
+
+    assert "status poll failed" in caplog.text
+    assert "87654321" not in caplog.text
+    assert "RuntimeError" in caplog.text

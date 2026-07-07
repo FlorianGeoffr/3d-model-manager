@@ -171,6 +171,28 @@ def test_test_connection_soft_fails(monkeypatch):
     assert result.ok is False and "OSError" in result.detail
 
 
+def test_test_connection_scrubs_access_code_from_exception_detail(monkeypatch):
+    """M4 review Fix A: a probe failure's exception text could echo the
+    printer's plaintext access code back (e.g. an auth-rejected string from
+    the mqtt client) -- this ``detail`` flows verbatim into the
+    ``POST /api/printers/{id}/test`` response, so it must never contain the
+    code CONN was built with ("12345678"); it should show up as ``***``
+    instead."""
+
+    class _Boom:
+        def mqtt_start(self):
+            raise OSError("auth rejected for access code 12345678")
+
+        def disconnect(self):
+            pass
+
+    monkeypatch.setattr(bambu, "_build_printer", lambda conn: _Boom())
+    result = BambuLanAdapter(CONN).test_connection(timeout=1)
+    assert result.ok is False
+    assert CONN.access_code not in result.detail
+    assert "***" in result.detail
+
+
 def test_test_connection_bounded_against_unreachable_host():
     """Regression for the M4 live-e2e hang (task-9-report.md): bl.Printer's
     disconnect() (called from test_connection()'s ``finally: self.close()``)

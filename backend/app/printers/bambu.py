@@ -222,7 +222,13 @@ class BambuLanAdapter(PrinterAdapter):
                     break
                 time.sleep(0.5)
         except Exception as exc:  # noqa: BLE001 -- a probe never raises to the caller
-            return ProbeResult(ok=False, detail=f"{type(exc).__name__}: {exc}")
+            # This flows verbatim into the POST /api/printers/{id}/test response
+            # -- a bambulabs_api/paho exception could echo the plaintext access
+            # code back in its message, so redact it before it ever leaves here.
+            detail = f"{type(exc).__name__}: {exc}"
+            if self.conn.access_code and self.conn.access_code in detail:
+                detail = detail.replace(self.conn.access_code, "***")
+            return ProbeResult(ok=False, detail=detail)
         finally:
             self.close()
         if state:

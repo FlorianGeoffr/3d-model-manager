@@ -324,6 +324,42 @@ def test_task_every_allowed_state_proceeds(
     assert spec.ams_mapping == (0,)
 
 
+def test_task_decrypt_failure_marks_failed_never_uploads(
+    printer_enabled, library_root, redis_url, fake_adapter
+):
+    """M4 review Fix B: if the Fernet key was rotated (or ``access_code_enc``
+    is otherwise undecryptable), ``connection_from_printer`` raises
+    ``cryptography.fernet.InvalidToken``. That decrypt now happens INSIDE the
+    task's try/except, so the job must land FAILED (never stuck QUEUED),
+    upload_and_start must never be invoked, and -- since there is no
+    plaintext code to leak in the first place -- the failure text must not
+    contain it either."""
+    from cryptography.fernet import Fernet
+
+    settings = get_settings()
+    pid, job_id = _seed_printer_and_job(
+        settings, redis_url, content=corpus.sliced_gcode_3mf(), fmt=BlobFormat.GCODE_3MF
+    )
+    _seed_state(redis_url, pid, "IDLE")
+    # A well-formed Fernet token encrypted under an unrelated key: syntactically
+    # valid, but fails HMAC verification under the real settings key -- exactly
+    # what a rotated/lost printer key produces in production.
+    bogus = Fernet(Fernet.generate_key()).encrypt(b"12345678").decode()
+    with base.sync_session() as s:
+        printer = s.get(Printer, pid)
+        printer.access_code_enc = bogus
+        s.commit()
+
+    with pytest.raises(SendError):
+        send_to_printer(job_id, DEFAULT_OPTS)
+    with base.sync_session() as s:
+        job = s.get(PrintJob, job_id)
+        assert job.state == PrintJobState.FAILED.value
+        assert job.state != PrintJobState.QUEUED.value
+        assert "12345678" not in (job.printer_error or "")
+    assert fake_adapter.uploaded == []  # never touched the printer
+
+
 def test_task_scrubs_access_code_from_failure_message(
     printer_enabled, library_root, redis_url, fake_adapter
 ):

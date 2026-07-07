@@ -47,15 +47,18 @@ class SendError(RuntimeError):
     """Actionable send-flow failure surfaced on the print_jobs row."""
 
 
-def _scrub(exc: Exception, conn: PrinterConnection) -> str:
+def _scrub(exc: Exception, conn: PrinterConnection | None) -> str:
     """``job.printer_error`` is exposed verbatim over the API (``PrintJobOut``)
     -- an adapter exception (bambulabs_api/ftplib/paho) could echo the
     plaintext access code back in its message (e.g. an FTPS auth-failure
     string). Defensively redact any occurrence of the decrypted code before
     it's ever persisted, without touching the rest of the actionable detail.
+    ``conn`` is ``None`` when the failure happened while decrypting the
+    access code itself (see ``connection_from_printer`` below) -- there is no
+    plaintext code to redact in that case.
     """
     message = str(exc)
-    if conn.access_code and conn.access_code in message:
+    if conn is not None and conn.access_code and conn.access_code in message:
         return message.replace(conn.access_code, "***")
     return message
 
@@ -107,9 +110,21 @@ def _send_to_printer(
         printer_id, kind = printer.id, printer.kind
         blob_hash = blob.hash
         subtask = job.subtask_name or file.rel_path
-        conn = connection_from_printer(settings, printer)  # decrypt (worker)
     _set_job_state(settings, print_job_id, PrintJobState.UPLOADING)
+    conn: PrinterConnection | None = None
     try:
+        # Decrypt HERE, inside the try: a rotated/corrupted Fernet key raises
+        # cryptography.fernet.InvalidToken, which must mark the job FAILED
+        # like every other send-flow failure rather than escape and leave the
+        # row stuck in QUEUED/UPLOADING forever. `conn` stays None on failure
+        # so `_scrub` below has nothing to redact (there is no plaintext code
+        # to leak -- decrypting it is exactly what failed).
+        try:
+            conn = connection_from_printer(settings, printer)  # decrypt (worker)
+        except Exception as e:
+            raise SendError(
+                "printer access code could not be decrypted (was the printer key rotated?)"
+            ) from e
         state = read_state_sync(client, printer_id)
         if not preflight_ok(state):
             gs = state.get("gcode_state") if state else "unknown"

@@ -13,6 +13,7 @@ import {
 } from "@/components/settings/StorageBackendForm";
 import { PrinterSetupCard } from "@/components/settings/PrinterSetupCard";
 import { ScanReport } from "@/components/settings/ScanReport";
+import { SiteTokensCard } from "@/components/settings/SiteTokensCard";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -48,6 +49,7 @@ export function SettingsPage() {
           <StorageSettingsCard active={configQuery.data} />
           <ScanReport />
           <PrinterSetupCard />
+          <SiteTokensCard />
         </>
       ) : null}
     </div>

@@ -69,6 +69,14 @@ export function EventsProvider({ children }: { children: ReactNode }) {
         void queryClient.invalidateQueries({ queryKey: ["scan"] });
       }
 
+      // Gallery imports reuse the job.updated shape (M5; no new SSE type) with
+      // job_type: "import_from_url" -- refresh the import poll + the gallery so
+      // a finished import's model appears without a manual reload.
+      if (parsed.job_type === "import_from_url") {
+        void queryClient.invalidateQueries({ queryKey: ["imports"] });
+        void queryClient.invalidateQueries({ queryKey: ["models"] });
+      }
+
       for (const listener of listenersRef.current) listener(parsed);
     };
 

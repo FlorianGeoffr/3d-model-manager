@@ -4,6 +4,7 @@ import { Outlet, createRootRouteWithContext, createRoute, redirect } from "@tans
 import { authQueryOptions } from "@/api/auth";
 import { AppShell } from "@/components/AppShell";
 import { ComingSoonPage } from "@/pages/ComingSoonPage";
+import { ImportPage } from "@/pages/ImportPage";
 import { LibraryPage } from "@/pages/LibraryPage";
 import { LoginPage } from "@/pages/LoginPage";
 import { ModelDetailPage } from "@/pages/ModelDetailPage";
@@ -62,7 +63,7 @@ const uploadRoute = createRoute({
 const importRoute = createRoute({
   getParentRoute: () => authenticatedRoute,
   path: "/import",
-  component: () => <ComingSoonPage title="Import" />,
+  component: ImportPage,
 });
 
 const printerRoute = createRoute({

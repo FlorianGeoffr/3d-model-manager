@@ -57,6 +57,11 @@ export function ModelCard({ model }: { model: ModelSummary }) {
               </Badge>
             ))}
           </div>
+          {model.source_site && (
+            <Badge variant="outline" className="w-fit capitalize" data-testid="source-badge">
+              {model.source_site}
+            </Badge>
+          )}
           {(model.has_sliced || model.print_time_s !== null) && (
             <div className="flex flex-wrap gap-1" data-testid="status-badges">
               {model.has_sliced && <Badge variant="secondary">Sliced</Badge>}

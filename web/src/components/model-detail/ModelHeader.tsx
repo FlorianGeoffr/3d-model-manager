@@ -3,6 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useArchiveModel, usePatchModel } from "@/api/library";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { InlineEdit } from "@/components/InlineEdit";
+import { ProvenanceBlock } from "@/components/model-detail/ProvenanceBlock";
 import { TagEditor } from "@/components/model-detail/TagEditor";
 import { Button } from "@/components/ui/button";
 import type { ModelDetail } from "@/api/types";
@@ -52,6 +53,7 @@ export function ModelHeader({ model }: { model: ModelDetail }) {
         />
       </div>
       <TagEditor model={model} />
+      <ProvenanceBlock model={model} />
     </div>
   );
 }

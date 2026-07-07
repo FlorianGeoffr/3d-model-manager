@@ -616,6 +616,7 @@ async def list_models(
                 cover=_gallery_cover_url(m, agg, cover_ok_hashes),
                 print_time_s=agg.print_time_s if agg else None,
                 has_sliced=agg.has_sliced if agg else False,
+                source_site=m.source_site,
             )
         )
 

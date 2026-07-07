@@ -61,6 +61,7 @@ class ModelSummary(BaseModel):
     cover: str | None = None
     print_time_s: int | None = None
     has_sliced: bool = False
+    source_site: str | None = None
 
 
 class GalleryPage(BaseModel):

@@ -18,6 +18,7 @@ const MODEL: ModelSummary = {
   cover: null,
   print_time_s: null,
   has_sliced: false,
+  source_site: null,
 };
 
 function renderCard(model: ModelSummary) {
@@ -90,5 +91,18 @@ describe("ModelCard", () => {
 
     expect(await screen.findByText("Articulated Dragon")).toBeInTheDocument();
     expect(screen.queryByTestId("status-badges")).not.toBeInTheDocument();
+  });
+
+  it("shows a source badge when the model was imported, none for a manual model", async () => {
+    renderCard({ ...MODEL, source_site: "thingiverse" });
+
+    expect(await screen.findByTestId("source-badge")).toHaveTextContent("thingiverse");
+  });
+
+  it("renders no source badge for a manually-created model", async () => {
+    renderCard(MODEL);
+
+    expect(await screen.findByText("Articulated Dragon")).toBeInTheDocument();
+    expect(screen.queryByTestId("source-badge")).not.toBeInTheDocument();
   });
 });

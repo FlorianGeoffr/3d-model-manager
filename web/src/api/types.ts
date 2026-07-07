@@ -49,6 +49,7 @@ export interface ModelSummary {
   cover: string | null;
   print_time_s: number | null;
   has_sliced: boolean;
+  source_site: string | null;
 }
 
 export interface GalleryPage {
@@ -436,3 +437,38 @@ export interface PrintJobUpdatedEvent {
 }
 
 export type AppEvent = JobUpdatedEvent | PrintJobUpdatedEvent;
+
+// -- imports (backend/app/schemas/imports.py, app/models/enums.py) --------
+
+export type ImportSite = "thingiverse" | "printables" | "makerworld";
+export type ImportState = "pending" | "fetching" | "downloading" | "done" | "failed";
+
+export interface ImportOut {
+  id: number;
+  url: string;
+  site: ImportSite;
+  external_id: string | null;
+  state: ImportState;
+  model_id: number | null;
+  error: string | null;
+  meta: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ImportCreate {
+  url: string;
+}
+
+export interface ImportTokensIn {
+  thingiverse_token: string;
+}
+
+// "***" when set, "" otherwise
+export interface ImportTokensOut {
+  thingiverse_token: string;
+}
+
+// Imports reuse the existing `job.updated` shape (JobUpdatedEvent above) --
+// no new event type; only useEvents.tsx's handler gains an
+// `import_from_url` branch.

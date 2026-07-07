@@ -559,3 +559,37 @@ async def test_gallery_q_escapes_percent_so_it_matches_literally(
 
     names = {item["name"] for item in response.json()["items"]}
     assert names == {"Sale 100% Off"}
+
+
+# ---------------------------------------------------------------------------
+# gallery: source_site (Task 6 -- gallery badge attribution)
+# ---------------------------------------------------------------------------
+
+
+async def test_gallery_item_carries_source_site_for_imported_and_manual_models(
+    authenticated_client: httpx.AsyncClient, backend: LocalStorageBackend
+) -> None:
+    from app.services import library
+    from app.tasks.base import sync_session
+
+    with sync_session() as s:
+        library.create_imported_model_sync(
+            s,
+            backend,
+            name="Imported Vase",
+            description=None,
+            source_url="https://www.thingiverse.com/thing:763622",
+            source_site="thingiverse",
+            source_author="alice",
+            source_license="CC-BY-4.0",
+            imported_at=None,
+            tags=[],
+        )
+
+    await _create_model(authenticated_client, "Manual Widget")
+
+    response = await authenticated_client.get("/api/models")
+    items = {item["name"]: item for item in response.json()["items"]}
+
+    assert items["Imported Vase"]["source_site"] == "thingiverse"
+    assert items["Manual Widget"]["source_site"] is None

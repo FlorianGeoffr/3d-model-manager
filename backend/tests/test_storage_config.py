@@ -11,6 +11,10 @@ from app.storage.config import LocalConfig, S3Config, SmbConfig, parse_storage_c
 from app.storage.local import LocalStorageBackend
 
 
+def test_settings_key_is_storage():
+    assert SETTINGS_KEY == "storage"
+
+
 def test_parse_discriminates_by_backend():
     assert isinstance(parse_storage_config({"backend": "local"}), LocalConfig)
     smb = parse_storage_config(

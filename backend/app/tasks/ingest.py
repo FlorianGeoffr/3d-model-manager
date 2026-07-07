@@ -23,7 +23,7 @@ from pathlib import Path
 from app.config import get_settings
 from app.models import File
 from app.services import jobs
-from app.storage.registry import get_backend
+from app.services.storage_config import resolve_backend_sync
 from app.tasks import base, pipeline
 from app.tasks.celery_app import celery_app
 
@@ -44,7 +44,8 @@ def _spool_chunks(path: Path) -> Iterator[bytes]:
 @celery_app.task
 def store_to_backend(job_id: str, file_id: int, spool_path: str) -> None:
     settings = get_settings()
-    backend = get_backend(settings)
+    with base.sync_session() as session:
+        backend = resolve_backend_sync(session, settings)
     path = Path(spool_path)
 
     try:

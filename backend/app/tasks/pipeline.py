@@ -57,8 +57,8 @@ from app.models import Blob, BlobMeta, Derivative, File, Job
 from app.models.enums import BlobFormat, DerivativeKind, DerivativeStatus
 from app.pipeline import convert, meshload, render, slicedmeta, thumbs
 from app.services import derivatives, jobs
+from app.services.storage_config import resolve_backend_sync
 from app.storage.base import StorageBackend
-from app.storage.registry import get_backend
 from app.tasks import base
 from app.tasks.celery_app import celery_app
 
@@ -372,15 +372,14 @@ def run_step(job_id: str, blob_hash: str, step: str, fn: StepFn) -> None:
     with base.sync_session() as session:
         jobs.mark_running(session, job_id)
 
+    settings = get_settings()
     with base.sync_session() as session:
         blob = session.get(Blob, blob_hash)
         if blob is None:
             jobs.mark_failed(session, job_id, f"blob {blob_hash} not found")
             return
         fmt = blob.format
-
-    settings = get_settings()
-    backend = get_backend(settings)
+        backend = resolve_backend_sync(session, settings)
 
     try:
         outcome: StepOutcome
@@ -389,6 +388,9 @@ def run_step(job_id: str, blob_hash: str, step: str, fn: StepFn) -> None:
             try:
                 with base.sync_session() as session:
                     blob = session.get(Blob, blob_hash)
+                    if blob is None:
+                        jobs.mark_failed(session, job_id, f"blob {blob_hash} not found")
+                        return
                     outcome = fn(session, settings, backend, blob)
                 break
             except UnsupportedBlobError:

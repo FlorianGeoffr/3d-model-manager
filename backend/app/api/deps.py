@@ -16,7 +16,6 @@ from app.config import Settings, get_settings
 from app.db import get_db
 from app.models import Session, User
 from app.storage.base import StorageBackend
-from app.storage.registry import get_backend
 
 SESSION_COOKIE_NAME = "tdmm_session"
 SESSION_MAX_AGE = timedelta(days=30)
@@ -86,11 +85,22 @@ async def require_session(
     return AuthContext(user=user, session=session)
 
 
-def get_storage_backend(settings: Settings = Depends(get_settings)) -> StorageBackend:
-    """Shared FastAPI dependency wrapping ``storage.registry.get_backend``
+async def get_storage_backend(
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> StorageBackend:
+    """Shared FastAPI dependency wrapping ``storage_config.resolve_backend``
     (Task 7 backlog fold): three routers (``models``/``files``/``revisions``)
     each carried an identical private ``_backend()`` copy of this one-liner;
     consolidated here so a future storage-backend change has one call site to
     update instead of three.
+
+    DB-aware since M3 Task 1 (Global Constraints "Backend selection is
+    DB-driven"): resolves the active backend + its config from the
+    ``settings`` table, defaulting to local when unset. FastAPI awaits async
+    dependencies, so every existing ``Depends(get_storage_backend)`` call
+    site is unchanged.
     """
-    return get_backend(settings)
+    from app.services.storage_config import resolve_backend
+
+    return await resolve_backend(db, settings)

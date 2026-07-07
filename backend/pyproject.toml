@@ -28,13 +28,13 @@ dependencies = [
     "boto3",
     "bambulabs-api",
     "cryptography",
+    "httpx",
 ]
 
 [dependency-groups]
 dev = [
     "pytest",
     "pytest-asyncio",
-    "httpx",
     "ruff",
     "testcontainers[postgres,redis,minio]",
 ]

@@ -22,13 +22,14 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import PurePosixPath
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import anyio
 from fastapi import HTTPException, status
 from sqlalchemy import func, or_, select, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session as SyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import Settings
@@ -56,6 +57,12 @@ from app.services import jobs as jobs_service
 from app.services.cursor import decode_cursor, encode_cursor
 from app.storage.base import StorageBackend
 from app.storage.errors import StorageKeyNotFound
+
+if TYPE_CHECKING:
+    # Avoids a runtime import cycle (app.importers.download doesn't import
+    # this module, but keeping the dependency one-directional at runtime is
+    # simplest): only needed for the `store_imported_file_sync` annotation.
+    from app.importers.download import StagedFile
 
 _SORT_COLUMNS = {"updated_at": Model.updated_at, "name": Model.name}
 
@@ -158,7 +165,17 @@ async def _unique_slug(db: AsyncSession, name: str) -> str:
 
 
 async def create_model(
-    db: AsyncSession, backend: StorageBackend, *, name: str, description: str | None
+    db: AsyncSession,
+    backend: StorageBackend,
+    *,
+    name: str,
+    description: str | None,
+    source_url: str | None = None,
+    source_site: str | None = None,
+    source_author: str | None = None,
+    source_license: str | None = None,
+    imported_at: datetime | None = None,
+    initial_revision_name: str = "initial",
 ) -> Model:
     slug = await _unique_slug(db, name)
     # `tags=[]` marks the relationship collection as already-loaded on this
@@ -167,11 +184,22 @@ async def create_model(
     # would find the collection unloaded and try to lazy-load it, which
     # raises ``MissingGreenlet`` outside of an explicit ``await
     # session.execute(...)``-style call.
-    model = Model(slug=slug, name=name, description=description, tags=[])
+    model = Model(
+        slug=slug,
+        name=name,
+        description=description,
+        tags=[],
+        source_url=source_url,
+        source_site=source_site,
+        source_author=source_author,
+        source_license=source_license,
+        imported_at=imported_at,
+    )
     db.add(model)
     await db.flush()  # assigns model.id, needed for the sidecar body
 
-    revision = Revision(model_id=model.id, number=1, name="initial", dir_name="rev-001_initial")
+    dir_name = layout.revision_dir_name(1, initial_revision_name)
+    revision = Revision(model_id=model.id, number=1, name=initial_revision_name, dir_name=dir_name)
     db.add(revision)
     await db.flush()
 
@@ -184,6 +212,110 @@ async def create_model(
     model.current_revision_id = revision.id
     await db.commit()
     return model
+
+
+def _unique_slug_sync(session: SyncSession, name: str) -> str:
+    base = layout.slug_for(name)
+    slug = base
+    suffix = 2
+    while session.scalar(select(Model.id).where(Model.slug == slug)) is not None:
+        slug = f"{base}-{suffix}"
+        suffix += 1
+    return slug
+
+
+def create_imported_model_sync(
+    session: SyncSession,
+    backend: StorageBackend,
+    *,
+    name: str,
+    description: str | None,
+    source_url: str | None,
+    source_site: str | None,
+    source_author: str | None,
+    source_license: str | None,
+    imported_at: datetime | None,
+    tags: list[str],
+    initial_revision_name: str = "imported",
+) -> Model:
+    """SYNC twin of ``create_model`` for the import worker (app.tasks.base
+    sync world). Inserts the Model + first revision WITH provenance, writes
+    the storage sidecar, get-or-creates tag rows, and commits atomically --
+    called only AFTER every file is staged to spool, so a Model row never
+    exists for a failed import (Global Constraints "IMPORTS ATOMIC")."""
+    slug = _unique_slug_sync(session, name)
+    model = Model(
+        slug=slug,
+        name=name,
+        description=description,
+        tags=[],
+        source_url=source_url,
+        source_site=source_site,
+        source_author=source_author,
+        source_license=source_license,
+        imported_at=imported_at,
+    )
+    session.add(model)
+    session.flush()
+    dir_name = layout.revision_dir_name(1, initial_revision_name)
+    revision = Revision(model_id=model.id, number=1, name=initial_revision_name, dir_name=dir_name)
+    session.add(revision)
+    session.flush()
+    backend.mkdirs(layout.revision_dir_key(slug, dir_name))
+    layout.write_sidecar(backend, model.id, slug, model.name)
+    for tag_name in tags:
+        tag = session.scalar(select(Tag).where(Tag.name == tag_name))
+        if tag is None:
+            tag = Tag(name=tag_name)
+            session.add(tag)
+            session.flush()
+        model.tags.append(tag)
+    model.current_revision_id = revision.id
+    session.commit()
+    return model
+
+
+def store_imported_file_sync(
+    session: SyncSession, *, model: Model, revision: Revision, staged: StagedFile
+) -> File:
+    """The §3a ingest seam for one staged import file (SYNC twin of the
+    ``finalize_upload`` + ``create_job`` + ``store_to_backend.apply_async``
+    sequence ``PUT /uploads`` runs). Upserts the Blob by hash, inserts the
+    File (verified_at NULL), then dispatches the SAME store_to_backend job a
+    browser upload does -- so glb/thumbs run afterward via the normal
+    pipeline. ``staged.token`` is the spool token AND the job id (so a retry
+    re-finds the spool), mirroring ``app.api.uploads``."""
+    from app.services import jobs as jobs_service
+    from app.tasks.ingest import store_to_backend
+
+    blob = session.get(Blob, staged.blob_hash)
+    if blob is None:
+        blob = Blob(
+            hash=staged.blob_hash, size=staged.size, kind=staged.kind, format=staged.format_
+        )
+        session.add(blob)
+        try:
+            session.flush()
+        except IntegrityError:
+            session.rollback()
+            blob = session.get(Blob, staged.blob_hash)  # concurrent insert of same content
+    file = File(
+        revision_id=revision.id,
+        blob_hash=staged.blob_hash,
+        rel_path=staged.rel_path,
+        storage_path=layout.file_key(model.slug, revision.dir_name, staged.rel_path),
+        verified_at=None,
+    )
+    session.add(file)
+    session.commit()
+    session.refresh(file)
+    job = jobs_service.create_job_sync(
+        session, id=staged.token, type="store_to_backend", subject_type="file", subject_id=file.id
+    )
+    store_to_backend.apply_async(
+        args=[str(job.id), file.id, str(staged.spool_path)], task_id=str(job.id)
+    )
+    return file
 
 
 async def get_model_by_id(db: AsyncSession, model_id: int) -> Model:

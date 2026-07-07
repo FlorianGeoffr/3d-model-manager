@@ -2356,6 +2356,7 @@ dependencies = [
     { name = "cryptography" },
     { name = "f3d" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "lib3mf" },
     { name = "numpy" },
     { name = "pillow" },
@@ -2371,7 +2372,6 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
@@ -2393,6 +2393,7 @@ requires-dist = [
     { name = "cryptography" },
     { name = "f3d" },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "lib3mf" },
     { name = "numpy" },
     { name = "pillow" },
@@ -2408,7 +2409,6 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },

@@ -26,6 +26,8 @@ dependencies = [
     "numpy",
     "smbprotocol>=1.16.1",
     "boto3",
+    "bambulabs-api",
+    "cryptography",
 ]
 
 [dependency-groups]

@@ -42,6 +42,14 @@ class Settings(BaseSettings):
     # (the default) means OFF -- see `app.tasks.celery_app`'s conditional
     # `beat_schedule`.
     scan_interval_s: int = 0
+    # Printer integration (SPEC "Printer integration"; M4). OFF by default:
+    # the whole app is fully functional without it -- the printers API 503s,
+    # printerd idles, and the frontend greys the Printer nav.
+    printer_enabled: bool = False
+    # Overrides the on-disk Fernet key at {data_dir}/secrets/printer.key when
+    # set (e.g. to share one key across api/worker/printerd via env instead of
+    # a shared volume). A urlsafe-base64 32-byte Fernet key.
+    printer_key: str | None = None
 
 
 @lru_cache

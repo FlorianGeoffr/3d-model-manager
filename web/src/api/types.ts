@@ -238,6 +238,26 @@ export interface JobOut {
   updated_at: string;
 }
 
+// -- settings / storage config (backend/app/schemas/settings.py, Task 7) --
+
+export type StorageScheme = "local" | "smb" | "s3";
+
+export interface StorageConfigOut {
+  backend: StorageScheme;
+  config: Record<string, unknown>;
+}
+
+export interface StorageConfigIn {
+  backend: StorageScheme;
+  config: Record<string, unknown>;
+}
+
+export interface ConnectionTestOut {
+  ok: boolean;
+  detail: string;
+  latency_ms: number;
+}
+
 // -- events (SSE, Global Constraints) --------------------------------
 
 export interface JobUpdatedEvent {

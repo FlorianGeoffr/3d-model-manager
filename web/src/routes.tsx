@@ -7,6 +7,7 @@ import { ComingSoonPage } from "@/pages/ComingSoonPage";
 import { LibraryPage } from "@/pages/LibraryPage";
 import { LoginPage } from "@/pages/LoginPage";
 import { ModelDetailPage } from "@/pages/ModelDetailPage";
+import { PrinterPage } from "@/pages/PrinterPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { UploadPage } from "@/pages/UploadPage";
 
@@ -67,7 +68,7 @@ const importRoute = createRoute({
 const printerRoute = createRoute({
   getParentRoute: () => authenticatedRoute,
   path: "/printer",
-  component: () => <ComingSoonPage title="Printer" />,
+  component: PrinterPage,
 });
 
 const jobsRoute = createRoute({

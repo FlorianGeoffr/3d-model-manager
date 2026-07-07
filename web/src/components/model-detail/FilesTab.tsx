@@ -4,6 +4,7 @@ import { DownloadIcon, Trash2Icon } from "lucide-react";
 import { useDeleteFile } from "@/api/library";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CopyableHash } from "@/components/model-detail/CopyableHash";
+import { SendToPrinterButton } from "@/components/model-detail/SendToPrinterButton";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -114,6 +115,7 @@ export function FilesTab({ model }: { model: ModelDetail }) {
               </TableCell>
               <TableCell>
                 <div className="flex justify-end gap-1">
+                  <SendToPrinterButton file={file} />
                   {file.verified_at ? (
                     <Button asChild variant="ghost" size="icon-sm" aria-label={`Download ${file.rel_path}`}>
                       <a href={`/api/files/${file.id}/download`}>

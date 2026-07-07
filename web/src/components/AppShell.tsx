@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 
 import { useAuth, useLogout } from "@/api/auth";
+import { useFeatures } from "@/api/features";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { EventsProvider } from "@/hooks/useEvents";
@@ -27,6 +28,8 @@ export function AppShell() {
   const { data: me } = useAuth();
   const logout = useLogout();
   const navigate = useNavigate();
+  const features = useFeatures();
+  const navItems = NAV_ITEMS.filter((item) => item.to !== "/printer" || features.data?.printer_enabled);
 
   function handleLogout() {
     logout.mutate(undefined, {
@@ -40,7 +43,7 @@ export function AppShell() {
         <aside className="flex w-56 shrink-0 flex-col border-r border-border bg-card">
           <div className="px-4 py-4 text-base font-semibold">3D Model Manager</div>
           <nav className="flex flex-1 flex-col gap-1 px-2">
-            {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
+            {navItems.map(({ to, label, icon: Icon }) => (
               <Link
                 key={to}
                 to={to}

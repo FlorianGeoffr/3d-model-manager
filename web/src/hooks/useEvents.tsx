@@ -10,7 +10,7 @@ import { createContext, useContext, useEffect, useMemo, useRef, type ReactNode }
 import { useQueryClient } from "@tanstack/react-query";
 
 import { api } from "@/api/client";
-import type { JobUpdatedEvent } from "@/api/types";
+import type { AppEvent, JobUpdatedEvent } from "@/api/types";
 
 type Listener = (event: JobUpdatedEvent) => void;
 
@@ -35,12 +35,24 @@ export function EventsProvider({ children }: { children: ReactNode }) {
     const source = new EventSource("/api/events");
 
     source.onmessage = (event: MessageEvent<string>) => {
-      let parsed: JobUpdatedEvent;
+      let parsed: AppEvent;
       try {
-        parsed = JSON.parse(event.data) as JobUpdatedEvent;
+        parsed = JSON.parse(event.data) as AppEvent;
       } catch {
         return;
       }
+
+      // Coarse print-job transitions (M4 Task 8): the high-frequency
+      // telemetry (percent/layer/temps) is NOT delivered here -- it's
+      // polled from `usePrinterStatus`. This event only means "go refetch
+      // the job list / printer status", so it's a plain invalidation with
+      // no listener fan-out.
+      if (parsed.type === "print_job.updated") {
+        void queryClient.invalidateQueries({ queryKey: ["print-jobs"] });
+        void queryClient.invalidateQueries({ queryKey: ["printers"] }); // status polled separately
+        return;
+      }
+
       if (parsed.type !== "job.updated") return;
 
       if (parsed.state === "done" || parsed.state === "failed") {

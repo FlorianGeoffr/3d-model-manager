@@ -1,8 +1,10 @@
+import { useEffect } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { EventsProvider } from "@/hooks/useEvents";
+import type { JobUpdatedEvent } from "@/api/types";
+import { EventsProvider, useEvents } from "@/hooks/useEvents";
 
 // `vi.mock` factories are hoisted above the module's own top-level bindings
 // (same pattern as LibraryPage.test.tsx), so the fake has to be created
@@ -30,6 +32,15 @@ class FakeEventSource {
     FakeEventSource.instances.push(this);
   }
   close() {}
+}
+
+/** Registers a `job.updated` listener via `useEvents().subscribe`, so a test
+ * can assert the union branch for `print_job.updated` does NOT fan out to
+ * `job.updated` listeners. */
+function JobUpdatedListener({ onEvent }: { onEvent: (event: JobUpdatedEvent) => void }) {
+  const { subscribe } = useEvents();
+  useEffect(() => subscribe(onEvent), [subscribe, onEvent]);
+  return null;
 }
 
 function renderProvider() {
@@ -106,6 +117,41 @@ describe("EventsProvider scan invalidation", () => {
     } as MessageEvent<string>);
 
     expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["scan"] });
+  });
+});
+
+describe("EventsProvider print_job.updated", () => {
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal("EventSource", FakeEventSource);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("invalidates print-jobs and printers queries, without notifying job.updated listeners", () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    const jobUpdatedListener = vi.fn();
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <EventsProvider>
+          <JobUpdatedListener onEvent={jobUpdatedListener} />
+        </EventsProvider>
+      </QueryClientProvider>,
+    );
+    const source = FakeEventSource.instances[0];
+    expect(source).toBeDefined();
+
+    source.onmessage?.({
+      data: JSON.stringify({ type: "print_job.updated", print_job_id: 1, printer_id: 1, state: "printing" }),
+    } as MessageEvent<string>);
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["print-jobs"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["printers"] });
+    expect(jobUpdatedListener).not.toHaveBeenCalled();
   });
 });
 

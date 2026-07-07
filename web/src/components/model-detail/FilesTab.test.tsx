@@ -1,9 +1,26 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { FilesTab } from "@/components/model-detail/FilesTab";
-import type { FileOut, ModelDetail } from "@/api/types";
+import type { FileOut, Features, ModelDetail, PrinterOut } from "@/api/types";
+
+// `vi.mock` factories are hoisted above the module's own top-level bindings
+// (same pattern as SettingsPage.test.tsx), so the fake has to be created
+// through `vi.hoisted`. The Files-tab `SendToPrinterButton` calls
+// `useFeatures`/`usePrinters` (both `api.get`) -- the default mock below
+// resolves `/features` to `undefined`, i.e. `printer_enabled` falsy, so the
+// button self-hides in every test in this file except the ones that
+// explicitly opt in.
+const { getMock } = vi.hoisted(() => ({ getMock: vi.fn().mockResolvedValue(undefined) }));
+
+vi.mock("@/api/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/client")>();
+  return {
+    ...actual,
+    api: { ...actual.api, get: getMock },
+  };
+});
 
 const VERIFIED_FILE: FileOut = {
   id: 1,
@@ -70,6 +87,11 @@ function renderFilesTab(files: FileOut[]) {
 }
 
 describe("FilesTab", () => {
+  beforeEach(() => {
+    getMock.mockReset();
+    getMock.mockResolvedValue(undefined);
+  });
+
   it("keeps the download action enabled and linked for a verified file", () => {
     renderFilesTab([VERIFIED_FILE]);
 
@@ -199,5 +221,38 @@ describe("FilesTab", () => {
     renderFilesTab([{ ...VERIFIED_FILE, meta: null }]);
 
     expect(screen.queryByTitle(/tris|plates/)).not.toBeInTheDocument();
+  });
+
+  it("hides the Print button for a sliced file when the printer feature is off (default mock)", async () => {
+    const slicedFile: FileOut = { ...VERIFIED_FILE, format: "gcode_3mf", kind: "sliced" };
+    renderFilesTab([slicedFile]);
+
+    await waitFor(() => expect(getMock).toHaveBeenCalledWith("/features"));
+    expect(screen.queryByRole("button", { name: `Print ${slicedFile.rel_path}` })).not.toBeInTheDocument();
+  });
+
+  it("shows the Print button for a sliced file once the printer feature is on and a printer exists", async () => {
+    const slicedFile: FileOut = { ...VERIFIED_FILE, format: "gcode_3mf", kind: "sliced" };
+    const printer: PrinterOut = {
+      id: 1,
+      name: "Bambu A1",
+      kind: "bambu_lan",
+      host: "192.168.1.50",
+      serial: "AC12345",
+      model: "A1 mini",
+      enabled: true,
+      options: {},
+      access_code_set: true,
+    };
+    const features: Features = { printer_enabled: true };
+    getMock.mockImplementation((path: string) => {
+      if (path === "/features") return Promise.resolve(features);
+      if (path === "/printers") return Promise.resolve([printer]);
+      return Promise.resolve([]);
+    });
+
+    renderFilesTab([slicedFile]);
+
+    expect(await screen.findByRole("button", { name: `Print ${slicedFile.rel_path}` })).toBeInTheDocument();
   });
 });

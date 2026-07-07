@@ -328,3 +328,111 @@ export interface JobUpdatedEvent {
   subject_type: string | null;
   subject_id: number | null;
 }
+
+// -- printers/features/events union (backend/app/schemas/printers.py,
+// backend/app/api/features.py; M4 Task 8) ----------------------------------
+
+export interface Features {
+  printer_enabled: boolean;
+}
+
+export type PrinterKind = "bambu_lan";
+
+export interface PrinterOut {
+  id: number;
+  name: string;
+  kind: PrinterKind;
+  host: string;
+  serial: string;
+  model: string | null;
+  enabled: boolean;
+  options: Record<string, unknown>;
+  access_code_set: boolean;
+}
+
+export interface PrinterCreate {
+  name: string;
+  kind?: PrinterKind;
+  host: string;
+  serial: string;
+  access_code: string;
+  model?: string | null;
+  enabled?: boolean;
+  options?: Record<string, unknown>;
+}
+
+export interface PrinterUpdate {
+  name?: string;
+  host?: string;
+  serial?: string;
+  access_code?: string;
+  model?: string | null;
+  enabled?: boolean;
+  options?: Record<string, unknown>;
+}
+
+export interface ProbeOut {
+  ok: boolean;
+  detail: string;
+  gcode_state: string | null;
+}
+
+export interface PrinterStatusOut {
+  online: boolean;
+  gcode_state: string | null;
+  mc_percent: number | null;
+  layer_num: number | null;
+  total_layer_num: number | null;
+  mc_remaining_time: number | null;
+  print_error: number | null;
+  nozzle_temper: number | null;
+  bed_temper: number | null;
+  subtask_name: string | null;
+  wifi_signal: string | null;
+}
+
+export type PrintJobState =
+  | "queued"
+  | "uploading"
+  | "starting"
+  | "printing"
+  | "paused"
+  | "finished"
+  | "failed"
+  | "canceled";
+
+export interface PrintJobOut {
+  id: number;
+  printer_id: number;
+  file_id: number;
+  subtask_name: string | null;
+  state: PrintJobState;
+  progress_pct: number | null;
+  remaining_min: number | null;
+  layer: number | null;
+  total_layers: number | null;
+  printer_error: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface PrintRequest {
+  file_id: number;
+  plate?: number;
+  subtask_name?: string | null;
+  use_ams?: boolean;
+  ams_mapping?: number[];
+  bed_levelling?: boolean;
+  flow_cali?: boolean;
+  timelapse?: boolean;
+}
+
+export interface PrintJobUpdatedEvent {
+  type: "print_job.updated";
+  print_job_id: number;
+  printer_id: number;
+  state: PrintJobState;
+}
+
+export type AppEvent = JobUpdatedEvent | PrintJobUpdatedEvent;

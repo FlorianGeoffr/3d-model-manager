@@ -307,6 +307,36 @@ async def test_put_blank_secret_with_no_stored_config_of_that_type_still_422s(
     assert response.status_code == 422
 
 
+async def test_put_redacted_sentinel_with_no_stored_secret_of_that_type_422s(
+    authenticated_client: httpx.AsyncClient, db_session
+) -> None:
+    """Active config is the default LocalConfig, so a PUT for a *different*
+    backend type carrying the literal ``"***"`` redaction sentinel has no
+    stored secret to substitute. Regression for the review finding where
+    this fell through ``_merge_stored_secrets`` unchanged and got persisted
+    verbatim as the "secret" -- it must 422 instead, and never persist.
+    """
+    from app.services.storage_config import get_active_config
+
+    response = await authenticated_client.put(
+        "/api/settings/storage",
+        json={
+            "backend": "smb",
+            "config": {
+                "host": "fileserver.local",
+                "share": "models",
+                "username": "svc",
+                "password": "***",
+            },
+        },
+    )
+
+    assert response.status_code == 422, response.text
+
+    stored = await get_active_config(db_session)
+    assert stored.backend == "local"
+
+
 async def test_connection_test_reuses_stored_secret_when_omitted(
     authenticated_client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

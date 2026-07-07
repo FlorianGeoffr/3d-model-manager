@@ -127,7 +127,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile
     image: tdmm:local
-    command: ["celery", "-A", "app.tasks.celery_app", "beat", "-l", "info"]
+    command: ["celery", "-A", "app.tasks.celery_app", "beat", "-l", "info", "-s", "/tmp/celerybeat-schedule"]
     env_file:
       - .env
     depends_on:

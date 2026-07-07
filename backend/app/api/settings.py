@@ -69,6 +69,12 @@ async def _merge_stored_secrets(db: AsyncSession, backend: str, config: dict) ->
     genuinely blank secret with nothing of that backend type stored is left
     alone so ``_parse`` still 422s on it (a real error, not this case).
 
+    The ``"***"`` sentinel itself must never be accepted as a real secret,
+    though: if there's no stored secret to substitute (different backend
+    type currently active, or the same type but no secret set), reject with
+    422 instead of letting the literal placeholder fall through to
+    ``_parse`` and get persisted as the "secret".
+
     Never widens what a caller can learn: this only feeds a value back into
     server-side validation/backend construction, it never appears in a
     response (GET/PUT responses go through ``redacted()``).
@@ -80,12 +86,16 @@ async def _merge_stored_secrets(db: AsyncSession, backend: str, config: dict) ->
     if incoming not in ("", _REDACTED_SENTINEL):
         return config
     stored = await storage_config.get_active_config(db)
-    if stored.backend != backend:
-        return config
-    stored_secret = getattr(stored, secret_field, "")
-    if not stored_secret:
-        return config
-    return {**config, secret_field: stored_secret}
+    stored_secret = getattr(stored, secret_field, "") if stored.backend == backend else ""
+    if stored_secret:
+        return {**config, secret_field: stored_secret}
+    if incoming == _REDACTED_SENTINEL:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f'Cannot set {secret_field!r} to the redaction placeholder "***"; '
+            "enter the real secret.",
+        )
+    return config
 
 
 @router.get("/storage", response_model=StorageConfigOut)

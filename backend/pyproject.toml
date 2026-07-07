@@ -24,6 +24,8 @@ dependencies = [
     "f3d",
     "pillow",
     "numpy",
+    "smbprotocol>=1.16.1",
+    "boto3",
 ]
 
 [dependency-groups]
@@ -32,7 +34,7 @@ dev = [
     "pytest-asyncio",
     "httpx",
     "ruff",
-    "testcontainers[postgres]",
+    "testcontainers[postgres,redis,minio]",
 ]
 
 [tool.uv]

@@ -8,13 +8,17 @@ import type { FileOut, ModelDetail } from "@/api/types";
 // `ModelViewer` is a `React.lazy` chunk that mounts an R3F `<Canvas>`, which
 // jsdom can't run (no WebGL) -- stub it so ViewerTab's branching logic can
 // be exercised without ever touching three.js.
-const { modelViewerMock, platePanelMock } = vi.hoisted(() => ({
-  modelViewerMock: vi.fn(({ url }: { url: string }) => <div data-testid="model-viewer">{url}</div>),
-  // `PlatePanel` has its own dedicated test suite (PlatePanel.test.tsx) --
-  // stub it here so this file only asserts that ViewerTab wires it in for
-  // sliced files, not its internals.
-  platePanelMock: vi.fn(({ file }: { file: FileOut }) => <div data-testid="plate-panel">{file.rel_path}</div>),
-}));
+const { modelViewerMock, platePanelMock, defaultModelViewerImpl } = vi.hoisted(() => {
+  const defaultModelViewerImpl = ({ url }: { url: string }) => <div data-testid="model-viewer">{url}</div>;
+  return {
+    modelViewerMock: vi.fn(defaultModelViewerImpl),
+    // `PlatePanel` has its own dedicated test suite (PlatePanel.test.tsx) --
+    // stub it here so this file only asserts that ViewerTab wires it in for
+    // sliced files, not its internals.
+    platePanelMock: vi.fn(({ file }: { file: FileOut }) => <div data-testid="plate-panel">{file.rel_path}</div>),
+    defaultModelViewerImpl,
+  };
+});
 
 vi.mock("@/components/viewer/ModelViewer", () => ({ default: modelViewerMock }));
 vi.mock("@/components/model-detail/PlatePanel", () => ({ PlatePanel: platePanelMock }));
@@ -140,6 +144,48 @@ describe("ViewerTab", () => {
     const file = fakeFile({ format: "gcode", kind: "gcode", glb_status: null, rel_path: "print.gcode" });
     render(<ViewerTab model={fakeModel([file])} />);
     expect(screen.getByText("Plain G-code — no 3D preview")).toBeInTheDocument();
+  });
+
+  it("renders a fallback card instead of crashing when the 3D viewer throws", async () => {
+    // Suppress the expected React error-boundary console.error noise for
+    // this throw so test output stays clean -- the assertion below is what
+    // actually proves the boundary caught it. A persistent (not "once")
+    // implementation matters here: React retries a thrown render once,
+    // synchronously, before handing off to the boundary, so a `mockImplementationOnce`
+    // throw would only fire on the first attempt and the retry would then
+    // render normally, masking the very crash this test exists to catch.
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    modelViewerMock.mockImplementation(() => {
+      throw new Error("bad glb");
+    });
+    const file = fakeFile({ glb_status: "ok", blob_hash: "badhash" });
+
+    render(<ViewerTab model={fakeModel([file])} />);
+
+    expect(await screen.findByText("Preview failed to load")).toBeInTheDocument();
+    modelViewerMock.mockImplementation(defaultModelViewerImpl);
+    consoleSpy.mockRestore();
+  });
+
+  it("clears a previous file's crash when a different, working file is picked", async () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    modelViewerMock.mockImplementation(({ url }: { url: string }) => {
+      if (url.includes("badhash")) throw new Error("bad glb");
+      return defaultModelViewerImpl({ url });
+    });
+    const fileA = fakeFile({ id: 1, rel_path: "a.stl", blob_hash: "badhash", glb_status: "ok" });
+    const fileB = fakeFile({ id: 2, rel_path: "b.stl", blob_hash: "goodhash", glb_status: "ok" });
+    const { container } = render(<ViewerTab model={fakeModel([fileA, fileB])} />);
+
+    expect(await screen.findByText("Preview failed to load")).toBeInTheDocument();
+
+    const select = container.querySelector("select");
+    if (!select) throw new Error("file select not found");
+    fireEvent.change(select, { target: { value: String(fileB.id) } });
+
+    expect(await screen.findByTestId("model-viewer")).toHaveTextContent("/api/blobs/goodhash/glb");
+    modelViewerMock.mockImplementation(defaultModelViewerImpl);
+    consoleSpy.mockRestore();
   });
 
   it("swaps the rendered preview's URL when a different file is picked", async () => {

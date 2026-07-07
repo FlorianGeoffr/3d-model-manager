@@ -1,4 +1,4 @@
-import { Suspense, lazy, useState } from "react";
+import { Component, Suspense, lazy, useState, type ReactNode } from "react";
 import { LoaderCircleIcon } from "lucide-react";
 
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -32,6 +32,38 @@ function PlaceholderCard({
   );
 }
 
+// React has no hook form for error boundaries (`componentDidCatch`/
+// `getDerivedStateFromError` are class-only APIs), and this project has no
+// `react-error-boundary` dependency or existing boundary pattern to reuse
+// -- a tiny local class is the documented fallback (M2-Minor 1). Without
+// this, a GLB fetch/parse throw from the lazy R3F viewer propagates past
+// this tab to the router's top-level error surface, taking down the whole
+// model-detail page instead of just this one preview.
+interface ViewerErrorBoundaryState {
+  hasError: boolean;
+}
+
+class ViewerErrorBoundary extends Component<{ children: ReactNode }, ViewerErrorBoundaryState> {
+  state: ViewerErrorBoundaryState = { hasError: false };
+
+  static getDerivedStateFromError(): ViewerErrorBoundaryState {
+    return { hasError: true };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <PlaceholderCard
+          destructive
+          title="Preview failed to load"
+          description="The 3D preview crashed while loading this file. It may be corrupt or in an unsupported format."
+        />
+      );
+    }
+    return this.props.children;
+  }
+}
+
 function FilePreview({ file }: { file: FileOut }) {
   if (file.kind === "sliced") {
     return <PlatePanel file={file} />;
@@ -50,9 +82,15 @@ function FilePreview({ file }: { file: FileOut }) {
     case "ok":
       return (
         <div className="h-[28rem] overflow-hidden rounded-lg border border-border">
-          <Suspense fallback={<Skeleton className="h-full w-full" />}>
-            <ModelViewer url={glbUrl(file)} />
-          </Suspense>
+          {/* Keyed on the file's id so switching to a different file remounts
+              the boundary, clearing any error state left over from a
+              previous file's bad GLB instead of getting stuck on the
+              fallback forever. */}
+          <ViewerErrorBoundary key={file.id}>
+            <Suspense fallback={<Skeleton className="h-full w-full" />}>
+              <ModelViewer url={glbUrl(file)} />
+            </Suspense>
+          </ViewerErrorBoundary>
         </div>
       );
     case "pending":

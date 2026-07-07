@@ -61,6 +61,36 @@ async def publish_job_event(redis_url: str, **kwargs: object) -> None:
         await client.aclose()
 
 
+def print_job_event_payload(*, print_job_id: int, printer_id: int, state: str) -> dict:
+    """Coarse print-job lifecycle event (M4). A NEW SSE type distinct from
+    ``job.updated`` -- high-frequency printer telemetry is POLLED from
+    ``GET /printers/{id}/status`` instead of streamed here (Global
+    Constraints live-status decision)."""
+    return {
+        "type": "print_job.updated",
+        "print_job_id": print_job_id,
+        "printer_id": printer_id,
+        "state": state,
+    }
+
+
+def publish_print_job_event_sync(
+    redis_url: str, *, print_job_id: int, printer_id: int, state: str
+) -> None:
+    client = redis.Redis.from_url(redis_url)
+    try:
+        client.publish(
+            CHANNEL,
+            json.dumps(
+                print_job_event_payload(
+                    print_job_id=print_job_id, printer_id=printer_id, state=state
+                )
+            ),
+        )
+    finally:
+        client.close()
+
+
 def publish_scan_event_sync(redis_url: str, scan_run_id: int, state: str) -> None:
     """Publish a scan run's state as a ``job.updated`` event (Task 5 brief:
     "No new SSE event type" -- reuses ``job_event_payload``'s existing shape

@@ -1,5 +1,5 @@
-# api + worker-io + worker-cpu (one shared image, docker/Dockerfile) + db +
-# redis. `printerd` is M4 -- not added yet (SPEC "Architecture").
+# api + worker-io + worker-cpu + printerd (one shared image, docker/Dockerfile)
+# + db + redis (SPEC "Architecture").
 #
 # Worker split (SPEC "Architecture"; M2 Task 10): `worker-io` runs
 # `store_to_backend` and everything else that isn't a pipeline step;
@@ -131,6 +131,35 @@ services:
     env_file:
       - .env
     depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # printerd (M4, opt-in via `docker compose --profile printer up`): the
+  # long-lived Bambu MQTT supervisor (SPEC "Architecture"). A plain
+  # `docker compose up` never starts it (profile-gated), and it idles
+  # harmlessly unless TDMM_PRINTER_ENABLED=true is also set. Mirrors `beat`:
+  # shares the app image + the entrypoint's explicit-command passthrough (no
+  # TDMM_ROLE routing, no migrations/uvicorn), inherits PUID/PGID. Mounts
+  # /data for the Fernet key ({data_dir}/secrets/printer.key) it needs to
+  # decrypt access codes. No /library mount -- FTPS upload runs in worker-io.
+  printerd:
+    profiles: ["printer"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: tdmm:local
+    command: ["python", "-m", "app.printerd"]
+    environment:
+      PUID: ${PUID:-}
+      PGID: ${PGID:-}
+    env_file:
+      - .env
+    volumes:
+      - tdmm_data:/data
+    depends_on:
+      db:
+        condition: service_healthy
       redis:
         condition: service_healthy
     restart: unless-stopped

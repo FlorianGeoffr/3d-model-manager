@@ -32,7 +32,7 @@ from app.config import Settings, get_settings
 from app.models import Blob, File, Printer, PrintJob
 from app.models.enums import PrintJobState
 from app.printers import gcode3mf
-from app.printers.base import PrintSpec
+from app.printers.base import PrinterConnection, PrintSpec
 from app.printers.connection import connection_from_printer
 from app.printers.registry import build_adapter
 from app.services import derivatives
@@ -45,6 +45,19 @@ from app.tasks.celery_app import celery_app
 
 class SendError(RuntimeError):
     """Actionable send-flow failure surfaced on the print_jobs row."""
+
+
+def _scrub(exc: Exception, conn: PrinterConnection) -> str:
+    """``job.printer_error`` is exposed verbatim over the API (``PrintJobOut``)
+    -- an adapter exception (bambulabs_api/ftplib/paho) could echo the
+    plaintext access code back in its message (e.g. an FTPS auth-failure
+    string). Defensively redact any occurrence of the decrypted code before
+    it's ever persisted, without touching the rest of the actionable detail.
+    """
+    message = str(exc)
+    if conn.access_code and conn.access_code in message:
+        return message.replace(conn.access_code, "***")
+    return message
 
 
 def _set_job_state(
@@ -130,5 +143,5 @@ def _send_to_printer(
                     adapter.close()
         _set_job_state(settings, print_job_id, PrintJobState.STARTING)
     except Exception as exc:
-        _set_job_state(settings, print_job_id, PrintJobState.FAILED, error=str(exc))
+        _set_job_state(settings, print_job_id, PrintJobState.FAILED, error=_scrub(exc, conn))
         raise

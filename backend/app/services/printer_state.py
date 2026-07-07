@@ -22,9 +22,19 @@ def preflight_ok(state: dict | None) -> bool:
 
 def read_state_sync(redis_client, printer_id: int) -> dict | None:
     raw = redis_client.get(state_key(printer_id))
-    return json.loads(raw) if raw else None
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return None  # corrupt/partial value -> treat as absent (fail closed)
 
 
 async def read_state_async(redis_client, printer_id: int) -> dict | None:
     raw = await redis_client.get(state_key(printer_id))
-    return json.loads(raw) if raw else None
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return None  # corrupt/partial value -> treat as absent (fail closed)

@@ -155,7 +155,9 @@ async def start_print(
     upload, the MQTT start) happens in the worker, never on the request
     path.
     """
-    await _get_or_404(db, printer_id)
+    printer = await _get_or_404(db, printer_id)
+    if not printer.enabled:
+        raise HTTPException(status.HTTP_409_CONFLICT, "printer is disabled")
     file = await db.get(File, payload.file_id)
     if file is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "file not found")

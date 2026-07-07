@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 import pytest
 import redis as redis_lib
 from blake3 import blake3
+from sqlalchemy import select
 
 from app.config import get_settings
 from app.models import Blob, File, Model, Printer, PrintJob, Revision
@@ -68,6 +69,40 @@ async def test_bare_gcode_rejected_422(
     )
     r = await authenticated_client.post(f"/api/printers/{pid}/print", json={"file_id": f.id})
     assert r.status_code == 422
+
+
+async def test_disabled_printer_409(
+    authenticated_client, printer_enabled, library_root, seed_file, db_session, redis_url
+):
+    """Fix 1: the per-printer ``enabled`` column (distinct from the global
+    TDMM_PRINTER_ENABLED flag) must gate sends -- printerd only reads
+    ``enabled_printers()`` once at startup, so the API check is the real
+    protection against a printer disabled mid-run."""
+    pid = await _make_printer(authenticated_client)
+    printer = await db_session.get(Printer, pid)
+    printer.enabled = False
+    await db_session.commit()
+    f = await _sliced_file(db_session, seed_file)
+    _seed_state(redis_url, pid, "IDLE")  # even if otherwise ready...
+    r = await authenticated_client.post(f"/api/printers/{pid}/print", json={"file_id": f.id})
+    assert r.status_code == 409
+    assert r.json()["detail"] == "printer is disabled"
+    assert (await db_session.execute(select(PrintJob))).scalars().first() is None
+
+
+async def test_corrupt_redis_state_fails_closed_409(
+    authenticated_client, printer_enabled, library_root, seed_file, db_session, redis_url
+):
+    """Fix 2: a corrupt/partial Redis value at state_key(id) must not 500 the
+    preflight read -- it degrades to "not ready" (409), same as an absent
+    key."""
+    pid = await _make_printer(authenticated_client)
+    f = await _sliced_file(db_session, seed_file)
+    c = redis_lib.Redis.from_url(redis_url)
+    c.set(state_key(pid), "not json")
+    c.close()
+    r = await authenticated_client.post(f"/api/printers/{pid}/print", json={"file_id": f.id})
+    assert r.status_code == 409
 
 
 async def test_busy_printer_409(
@@ -287,3 +322,31 @@ def test_task_every_allowed_state_proceeds(
     assert spec.remote_name.endswith(".gcode.3mf")
     assert spec.use_ams is False
     assert spec.ams_mapping == (0,)
+
+
+def test_task_scrubs_access_code_from_failure_message(
+    printer_enabled, library_root, redis_url, fake_adapter
+):
+    """Fix 3: whatever the adapter's exception says (bambulabs_api/ftplib/
+    paho all surface raw provider strings), the plaintext access code -- here
+    "12345678", the same code ``_seed_printer_and_job``/``_enc`` encrypt onto
+    the printer row -- must never survive into ``job.printer_error``, since
+    ``PrintJobOut`` exposes that field over the API verbatim."""
+    settings = get_settings()
+    pid, job_id = _seed_printer_and_job(
+        settings, redis_url, content=corpus.sliced_gcode_3mf(), fmt=BlobFormat.GCODE_3MF
+    )
+    _seed_state(redis_url, pid, "IDLE")
+
+    def _raise(spec):
+        raise RuntimeError("ftps auth failed for access code 12345678")
+
+    fake_adapter.upload_and_start = _raise
+    with pytest.raises(RuntimeError):
+        send_to_printer(job_id, DEFAULT_OPTS)
+    with base.sync_session() as s:
+        job = s.get(PrintJob, job_id)
+        assert job.state == PrintJobState.FAILED.value
+        assert "12345678" not in (job.printer_error or "")
+        assert "***" in (job.printer_error or "")
+        assert "ftps auth failed" in (job.printer_error or "")

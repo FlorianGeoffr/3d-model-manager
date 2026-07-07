@@ -43,12 +43,22 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 #   which libgl1-mesa-dri alone does not provide (verified: without it,
 #   `from OCP.BRep import ...` dies with "libGL.so.1: cannot open shared
 #   object file" and takes the api/worker down at startup).
+# - gosu: the entrypoint's optional PUID/PGID privilege drop (Task 9) execs
+#   into it instead of `su`/`sudo` -- no PAM/tty baggage, correct signal
+#   forwarding as PID 1.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libosmesa6 libgl1-mesa-dri libgl1 \
+    && apt-get install -y --no-install-recommends libosmesa6 libgl1-mesa-dri libgl1 gosu \
     && rm -rf /var/lib/apt/lists/* \
     && ln -s "/usr/lib/$(uname -m)-linux-gnu/libOSMesa.so.8" \
         "/usr/lib/$(uname -m)-linux-gnu/libOSMesa.so" \
     && ldconfig
+
+# Base non-root user the entrypoint's privilege drop remaps to the
+# configured PUID/PGID at container start (Task 9) -- uid/gid 1000 here are
+# just placeholders, immediately overwritten by `usermod -o -u "$PUID" ...`
+# when PUID/PGID are set. Root stays the default (see the ENTRYPOINT note
+# below) when neither is set.
+RUN groupadd -g 1000 tdmm && useradd -u 1000 -g tdmm -M -s /usr/sbin/nologin tdmm
 
 COPY --from=gltfpack-build /build/gltfpack /usr/local/bin/gltfpack
 
@@ -76,10 +86,12 @@ COPY --from=web-build /web/dist ./static
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# Runs as root (a deliberate M1 choice, not an oversight): the `local`
-# storage backend writes into a bind-mounted host directory (./library),
-# and root sidesteps a UID-mapping story for arbitrary host setups. Revisit
-# if/when a deployment needs to drop privileges (e.g. multi-tenant hosting).
+# Root is still the default (unchanged M1 choice: the `local` storage
+# backend writes into a bind-mounted host directory (./library), and root
+# sidesteps a UID-mapping story for arbitrary host setups out of the box).
+# Set PUID/PGID (compose env) to opt into the entrypoint's privilege drop
+# instead -- see docker/entrypoint.sh -- so bind-mounted files come out
+# owned by a real host uid/gid rather than root (Task 9).
 
 EXPOSE 8080
 

@@ -3,7 +3,8 @@
 Self-hosted web app for managing a personal library of 3D-printable models.
 
 - **Library**: STL, 3MF (incl. Bambu Production Extension), OBJ, STEP, IGES, plus sliced `.gcode.3mf`/`.gcode` artifacts
-- **Storage**: pluggable backends — local directory, SMB share (userspace client, no privileged container), S3 — human-readable tree, every file content-hashed (blake3)
+- **Storage**: pluggable backends — local directory, SMB share (userspace client, no privileged container), S3 — human-readable tree, every file content-hashed (blake3); configured/connection-tested from Settings, with a local→X migration helper
+- **Scanner**: `scan_library` reconciles the DB against the backend on demand (or on a schedule) — relinks moved folders by hash without re-hashing untouched files, adopts out-of-band folders dropped straight onto the share as draft models, flags genuinely missing files for review; never deletes anything
 - **Revisions**: model-level, full snapshot per revision (fast-copied via reflink / SMB COPYCHUNK / S3 CopyObject), hash-diff between revisions
 - **Viewing**: server-side normalization to meshopt-compressed GLB; in-browser rotate/zoom/pan viewer; server-rendered thumbnails (f3d) + embedded 3MF plate thumbnails
 - **Printing**: send sliced files to a Bambu Lab A1 mini over LAN (Developer Mode: FTPS upload + MQTT start/status)
@@ -63,6 +64,52 @@ recycles each child process after 16 tasks or 1.5 GiB RSS, whichever comes
 first, to contain memory growth from OCCT (STEP/IGES) and f3d. Both workers
 expose a `celery inspect ping` healthcheck.
 
+**Running as a non-root user (PUID/PGID)**: by default the api/worker
+containers run as root, so files written under the bind-mounted `./library`
+end up root-owned on the host. Set `PUID`/`PGID` in `.env` (e.g. to your
+`id -u`/`id -g`) to have the entrypoint drop privileges to that uid/gid
+instead (linuxserver.io convention) — it also `chown`s the existing
+`./library`/`tdmm_data` contents to match on every start, so this is safe to
+turn on after the fact. Verify the drop works without standing up the whole
+stack:
+
+```sh
+docker build -f docker/Dockerfile -t tdmm:local .
+docker run --rm -e PUID=1000 -e PGID=1000 -e TDMM_ROLE=api tdmm:local id -u
+# -> 1000
+```
+
+## Storage backends & the scanner
+
+The active storage backend (local directory, SMB, or S3 — exactly one at a
+time) is chosen and configured from **Settings → Storage** in the running
+app, not via `.env`: each backend's connection details (SMB host/share/
+credentials, S3 bucket/keys/endpoint) are validated, connection-tested
+before they take effect, and stored in the database. Switching backends
+offers a **local→X migration** job that copies existing content over before
+the switch flips live.
+
+**SMB**: address the NAS by IP or a real, resolvable DNS name — never a bare
+mDNS/`.local`/NetBIOS name, which the container's resolver can't see. For a
+LAN-only DNS name, add an `extra_hosts:` entry for it to the `api`/
+`worker-io`/`worker-cpu` services in `compose.yaml`:
+
+```yaml
+    extra_hosts:
+      - "nas.lan:192.168.1.50"
+```
+
+**Rescan/reconcile**: trigger a scan from Settings → Storage (or `POST
+/api/scan`) to reconcile the database against whatever is actually on the
+backend — useful after reorganizing files directly on a share/NAS outside
+the app. A scan relinks moved folders by hash (without re-hashing files
+that didn't move), adopts folders dropped straight onto the share as new
+draft models for review, and flags files present in the database but
+missing on disk for a human to resolve. It never deletes library content or
+database rows. To run scans automatically on a schedule instead of only
+on demand, set `TDMM_SCAN_INTERVAL_S` (seconds) in `.env` and start the
+optional `beat` service: `docker compose --profile beat up -d`.
+
 ## Development
 
 ### Backend
@@ -99,9 +146,11 @@ uv run ruff format --check .
 ```
 
 The full Docker-based end-to-end flow (build image, run compose stack, drive
-the M1 upload/revision/diff/download/restart flow plus the M2
-metadata/GLB/thumbnail pipeline flow over HTTP) lives in `backend/tests_e2e/`
-and runs via:
+the M1 upload/revision/diff/download/restart flow, the M2 metadata/GLB/
+thumbnail pipeline flow, and the M3 scan drill — move a folder on the
+bind-mounted share, rescan, relink by hash, download-verify; drop an
+untracked folder, rescan, adopt it as a draft model — all over HTTP) lives
+in `backend/tests_e2e/` and runs via:
 
 ```sh
 scripts/e2e.sh

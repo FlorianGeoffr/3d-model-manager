@@ -9,6 +9,16 @@
 # or balloon memory per-task, so each cpu worker child is recycled after 16
 # tasks OR 1.5 GiB RSS, whichever comes first.
 #
+# PUID/PGID (Task 9): unset by default (containers run as root, unchanged
+# M1 behavior). Set both in `.env` to have the entrypoint drop api/worker
+# to that host uid/gid instead, so files written under the bind-mounted
+# `./library` aren't root-owned -- see docker/entrypoint.sh.
+#
+# `beat` (Task 9, opt-in via `docker compose --profile beat up`): runs
+# Celery beat for the optional scheduled scan -- only fires ticks once
+# `TDMM_SCAN_INTERVAL_S` is also set to a positive number of seconds in
+# `.env` (see `app.tasks.celery_app`'s conditional `beat_schedule`).
+#
 # Quickstart: `cp .env.example .env` then `docker compose up -d --build`.
 # See README "Quickstart" for the first-run admin password note.
 
@@ -22,6 +32,8 @@ services:
       - "8080:8080"
     environment:
       TDMM_ROLE: api
+      PUID: ${PUID:-}
+      PGID: ${PGID:-}
     env_file:
       - .env
     volumes:
@@ -49,6 +61,8 @@ services:
       TDMM_ROLE: worker
       TDMM_QUEUES: io
       TDMM_CONCURRENCY: 2
+      PUID: ${PUID:-}
+      PGID: ${PGID:-}
     env_file:
       - .env
     volumes:
@@ -80,6 +94,8 @@ services:
       # memory growth (SPEC "Architecture").
       TDMM_MAX_TASKS_PER_CHILD: 16
       TDMM_MAX_MEMORY_PER_CHILD_KB: 1572864
+      PUID: ${PUID:-}
+      PGID: ${PGID:-}
     env_file:
       - .env
     volumes:
@@ -95,6 +111,28 @@ services:
       interval: 30s
       start_period: 30s
       retries: 3
+    restart: unless-stopped
+
+  # Optional scheduled scan (SPEC "optional scheduled scan"; Task 9): a
+  # plain `docker compose up` never starts this (profile-gated). Opt in
+  # with `docker compose --profile beat up -d` AND set `TDMM_SCAN_INTERVAL_S`
+  # in `.env` -- otherwise beat runs with an empty schedule and just idles.
+  # Reuses the api/worker image + entrypoint: the entrypoint's explicit-
+  # command passthrough (see docker/entrypoint.sh) execs this directly
+  # instead of routing on TDMM_ROLE, so no migrations/uvicorn/worker startup
+  # happen here.
+  beat:
+    profiles: ["beat"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: tdmm:local
+    command: ["celery", "-A", "app.tasks.celery_app", "beat", "-l", "info"]
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
     restart: unless-stopped
 
   db:

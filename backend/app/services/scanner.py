@@ -65,7 +65,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import PurePosixPath
 
 from blake3 import blake3
@@ -100,7 +100,9 @@ def mark_scan_state(session: Session, scan_run_id: int, state: str) -> None:
     session.commit()
 
 
-def run_scan(session: Session, settings: Settings, backend: StorageBackend, scan_run_id: int) -> None:
+def run_scan(
+    session: Session, settings: Settings, backend: StorageBackend, scan_run_id: int
+) -> None:
     """The whole reconcile pass against ``scan_run_id`` (must already exist,
     created by the caller). Synchronous end to end.
     """

@@ -65,9 +65,7 @@ def _run_scan(backend: LocalStorageBackend) -> ScanRun:
         return scan_run
 
 
-async def _sync_mtime(
-    db_session: AsyncSession, backend: LocalStorageBackend, file: File
-) -> None:
+async def _sync_mtime(db_session: AsyncSession, backend: LocalStorageBackend, file: File) -> None:
     """Backfill ``file.mtime`` to match what's really on disk, so a
     known/unchanged file gets the cheap size+mtime match instead of always
     falling into the "changed" (rehash) branch on its very first scan.
@@ -147,10 +145,14 @@ async def test_known_changed_content_repoints_blob_and_reports(
 
     # Best-effort pipeline dispatch happened for the new blob.
     jobs = (
-        await db_session.execute(
-            select(Job).where(Job.subject_type == "file", Job.subject_id == file.id)
+        (
+            await db_session.execute(
+                select(Job).where(Job.subject_type == "file", Job.subject_id == file.id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert any(j.type == "extract_metadata" for j in jobs)
 
 
@@ -258,8 +260,10 @@ async def test_unknown_path_under_existing_model_attaches_to_revision(
     scan_run = _run_scan(backend)
 
     files = (
-        await db_session.execute(select(File).where(File.revision_id == revision.id))
-    ).scalars().all()
+        (await db_session.execute(select(File).where(File.revision_id == revision.id)))
+        .scalars()
+        .all()
+    )
     assert len(files) == 1
     assert files[0].rel_path == "extra.stl"
     assert files[0].storage_path == "widget/rev-001_initial/extra.stl"
@@ -300,8 +304,10 @@ async def test_unknown_path_duplicate_hash_adopts_as_new_file(
     assert len(blobs) == 1  # no new blob -- same content, deduped
 
     files = (
-        await db_session.execute(select(File).where(File.revision_id == revision.id))
-    ).scalars().all()
+        (await db_session.execute(select(File).where(File.revision_id == revision.id)))
+        .scalars()
+        .all()
+    )
     assert {f.rel_path for f in files} == {"part.stl", "duplicate.stl"}
 
     assert scan_run.adopted == 1

@@ -31,8 +31,4 @@ def build_adapter(kind: PrinterKind, conn: PrinterConnection) -> PrinterAdapter:
     return cls(conn)
 
 
-# Task 3 adds here:
-#   from app.printers import bambu as _bambu  # noqa: F401
-# which registers `bambu_lan` via the `@register_adapter` decorator on
-# `BambuLanAdapter`. Left out in Task 2 -- `app.printers.bambu` doesn't exist
-# yet.
+from app.printers import bambu as _bambu  # noqa: F401,E402  (registers bambu_lan)

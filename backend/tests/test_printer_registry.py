@@ -8,8 +8,9 @@ from app.printers.registry import PRINTER_REGISTRY, build_adapter, register_adap
 CONN = PrinterConnection(host="h", serial="S", access_code="c")
 
 
-@pytest.mark.skip(reason="bambu adapter lands in Task 3")
 def test_bambu_lan_is_registered():
+    from app.printers import bambu  # noqa: F401  (import side effect already ran via registry)
+
     assert PrinterKind.BAMBU_LAN in PRINTER_REGISTRY  # bambu import at registry bottom (Task 3)
 
 
@@ -26,9 +27,9 @@ def test_register_decorator_keys_on_kind():
     try:
         assert isinstance(build_adapter(PrinterKind.BAMBU_LAN, CONN), FakePrinterAdapter)
     finally:
-        # from app.printers import bambu
-        # PRINTER_REGISTRY[PrinterKind.BAMBU_LAN] = bambu.BambuLanAdapter
-        del PRINTER_REGISTRY[PrinterKind.BAMBU_LAN]
+        from app.printers import bambu
+
+        PRINTER_REGISTRY[PrinterKind.BAMBU_LAN] = bambu.BambuLanAdapter
 
 
 def test_fake_merge_and_public_state():

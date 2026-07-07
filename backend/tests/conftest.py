@@ -38,7 +38,7 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 # tests/storage_containers.py (M3 Task 2) supplies the MinIO/dperson-samba
 # container fixtures + smb_backend/s3_backend factory fixtures consumed by
 # tests/test_storage_contract.py and Task 3/4's backend-specific tests.
-pytest_plugins = ("tests.storage_containers",)
+pytest_plugins = ("tests.storage_containers", "tests.printer_fixtures")
 
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "correct horse battery staple"

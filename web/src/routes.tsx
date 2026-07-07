@@ -7,6 +7,7 @@ import { ComingSoonPage } from "@/pages/ComingSoonPage";
 import { LibraryPage } from "@/pages/LibraryPage";
 import { LoginPage } from "@/pages/LoginPage";
 import { ModelDetailPage } from "@/pages/ModelDetailPage";
+import { SettingsPage } from "@/pages/SettingsPage";
 import { UploadPage } from "@/pages/UploadPage";
 
 export interface RouterContext {
@@ -78,7 +79,7 @@ const jobsRoute = createRoute({
 const settingsRoute = createRoute({
   getParentRoute: () => authenticatedRoute,
   path: "/settings",
-  component: () => <ComingSoonPage title="Settings" />,
+  component: SettingsPage,
 });
 
 export const routeTree = rootRoute.addChildren([

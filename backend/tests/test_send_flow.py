@@ -1,0 +1,289 @@
+import json
+from datetime import UTC, datetime
+
+import pytest
+import redis as redis_lib
+from blake3 import blake3
+
+from app.config import get_settings
+from app.models import Blob, File, Model, Printer, PrintJob, Revision
+from app.models.enums import BlobFormat, BlobKind, PrinterKind, PrintJobState
+from app.printers.base import state_key
+from app.storage.local import LocalStorageBackend
+from app.tasks import base
+from app.tasks.printing import SendError, send_to_printer
+from tests import corpus
+
+CREATE = {"name": "A1 mini", "host": "192.168.1.50", "serial": "0309ABC", "access_code": "12345678"}
+DEFAULT_OPTS = {
+    "plate": 1,
+    "use_ams": False,
+    "ams_mapping": [0],
+    "bed_levelling": True,
+    "flow_cali": True,
+    "timelapse": False,
+}
+
+
+def _seed_state(redis_url: str, printer_id: int, gcode_state: str | None) -> None:
+    c = redis_lib.Redis.from_url(redis_url)
+    if gcode_state is not None:
+        c.set(state_key(printer_id), json.dumps({"gcode_state": gcode_state}))
+    c.close()
+
+
+async def _sliced_file(
+    db_session, seed_file, *, fmt=BlobFormat.GCODE_3MF, kind=BlobKind.SLICED, content=None
+) -> File:
+    content = content if content is not None else corpus.sliced_gcode_3mf()
+    model = Model(slug="sendm", name="Send M")
+    db_session.add(model)
+    await db_session.flush()
+    rev = Revision(model_id=model.id, number=1, dir_name="rev-001_init")
+    db_session.add(rev)
+    await db_session.commit()
+    await db_session.refresh(rev)
+    return await seed_file(model, rev, "job.gcode.3mf", content, blob_format=fmt, blob_kind=kind)
+
+
+async def _make_printer(client) -> int:
+    return (await client.post("/api/printers", json=CREATE)).json()["id"]
+
+
+# ---------------------------------------------------------------------------
+# API layer: fast pre-checks (Invariant 1 fast-reject, Invariant 2 fast gate)
+# ---------------------------------------------------------------------------
+
+
+async def test_bare_gcode_rejected_422(
+    authenticated_client, printer_enabled, library_root, seed_file, db_session
+):
+    pid = await _make_printer(authenticated_client)
+    f = await _sliced_file(
+        db_session,
+        seed_file,
+        fmt=BlobFormat.GCODE,
+        kind=BlobKind.GCODE,
+        content=corpus.bambu_gcode(),
+    )
+    r = await authenticated_client.post(f"/api/printers/{pid}/print", json={"file_id": f.id})
+    assert r.status_code == 422
+
+
+async def test_busy_printer_409(
+    authenticated_client, printer_enabled, library_root, seed_file, db_session, redis_url
+):
+    pid = await _make_printer(authenticated_client)
+    f = await _sliced_file(db_session, seed_file)
+    _seed_state(redis_url, pid, "RUNNING")
+    r = await authenticated_client.post(f"/api/printers/{pid}/print", json={"file_id": f.id})
+    assert r.status_code == 409
+
+
+async def test_unknown_state_409(
+    authenticated_client, printer_enabled, library_root, seed_file, db_session, redis_url
+):
+    pid = await _make_printer(authenticated_client)
+    f = await _sliced_file(db_session, seed_file)
+    _seed_state(redis_url, pid, None)  # nothing in Redis -> cannot confirm idle
+    r = await authenticated_client.post(f"/api/printers/{pid}/print", json={"file_id": f.id})
+    assert r.status_code == 409
+
+
+@pytest.mark.parametrize("bad_state", ["RUNNING", "PAUSE", "PREPARE", "UNKNOWN"])
+async def test_every_disallowed_state_409(
+    authenticated_client, printer_enabled, library_root, seed_file, db_session, redis_url, bad_state
+):
+    """Adversarial: the allowed set is {IDLE, FINISH, FAILED} -- prove every
+    other real gcode_state token (not just RUNNING) is rejected, so the gate
+    isn't accidentally hardcoded to a single disallowed value."""
+    pid = await _make_printer(authenticated_client)
+    f = await _sliced_file(db_session, seed_file)
+    _seed_state(redis_url, pid, bad_state)
+    r = await authenticated_client.post(f"/api/printers/{pid}/print", json={"file_id": f.id})
+    assert r.status_code == 409
+
+
+async def test_send_success_uploads_and_starts(
+    authenticated_client,
+    printer_enabled,
+    library_root,
+    seed_file,
+    db_session,
+    redis_url,
+    fake_adapter,
+):
+    pid = await _make_printer(authenticated_client)
+    f = await _sliced_file(db_session, seed_file)
+    _seed_state(redis_url, pid, "IDLE")
+    r = await authenticated_client.post(
+        f"/api/printers/{pid}/print", json={"file_id": f.id, "plate": 1}
+    )
+    assert r.status_code == 201, r.text
+    assert len(fake_adapter.uploaded) == 1  # eager task ran the upload
+    spec = fake_adapter.uploaded[0]
+    assert spec.plate == 1 and spec.remote_name.endswith(".gcode.3mf")
+    job = await db_session.get(PrintJob, r.json()["id"])
+    assert job.state == PrintJobState.STARTING.value
+
+
+# ---------------------------------------------------------------------------
+# Task layer: authoritative re-checks (the TOCTOU-closing gate). Seeded
+# directly via the sync world, bypassing the API's fast pre-check entirely,
+# to prove the task itself refuses -- not just the endpoint in front of it.
+# ---------------------------------------------------------------------------
+
+
+def _seed_printer_and_job(settings, redis_url, *, content, fmt) -> tuple[int, int]:
+    backend = LocalStorageBackend(settings.library_root)
+    digest = blake3(content).hexdigest()
+    with base.sync_session() as s:
+        printer = Printer(
+            name="p",
+            kind=PrinterKind.BAMBU_LAN,
+            host="h",
+            serial="S",
+            access_code_enc=_enc(settings),
+            enabled=True,
+        )
+        blob = Blob(hash=digest, size=len(content), kind=BlobKind.SLICED, format=fmt)
+        model = Model(slug="td", name="TD")
+        s.add_all([printer, blob, model])
+        s.flush()
+        rev = Revision(model_id=model.id, number=1, dir_name="rev-001")
+        s.add(rev)
+        s.flush()
+        path = "td/rev-001/job.gcode.3mf"
+        backend.write(path, [content])
+        f = File(
+            revision_id=rev.id,
+            blob_hash=digest,
+            rel_path="job.gcode.3mf",
+            storage_path=path,
+            verified_at=datetime.now(UTC),
+        )
+        s.add(f)
+        s.flush()
+        job = PrintJob(
+            printer_id=printer.id, file_id=f.id, state=PrintJobState.QUEUED, subtask_name="w"
+        )
+        s.add(job)
+        s.commit()
+        return printer.id, job.id
+
+
+def _enc(settings) -> str:
+    from app.crypto import encrypt_secret
+
+    return encrypt_secret(settings, "12345678")
+
+
+def test_task_preflight_failure_marks_failed(
+    printer_enabled, library_root, redis_url, fake_adapter
+):
+    settings = get_settings()
+    pid, job_id = _seed_printer_and_job(
+        settings, redis_url, content=corpus.sliced_gcode_3mf(), fmt=BlobFormat.GCODE_3MF
+    )
+    _seed_state(redis_url, pid, "RUNNING")  # not idle
+    with pytest.raises(SendError):
+        send_to_printer(job_id, DEFAULT_OPTS)
+    with base.sync_session() as s:
+        assert s.get(PrintJob, job_id).state == PrintJobState.FAILED.value
+    assert fake_adapter.uploaded == []  # never touched the printer
+
+
+def test_task_absent_state_marks_failed(printer_enabled, library_root, redis_url, fake_adapter):
+    """Invariant 2, task layer: printerd never having reported (no key in
+    Redis at all) must fail closed, exactly like a known-busy state --
+    proven at the task's authoritative re-check, not just the API's
+    pre-check (test_unknown_state_409 above only proves the latter)."""
+    settings = get_settings()
+    pid, job_id = _seed_printer_and_job(
+        settings, redis_url, content=corpus.sliced_gcode_3mf(), fmt=BlobFormat.GCODE_3MF
+    )
+    # deliberately do not seed any state for this printer
+    with pytest.raises(SendError):
+        send_to_printer(job_id, DEFAULT_OPTS)
+    with base.sync_session() as s:
+        assert s.get(PrintJob, job_id).state == PrintJobState.FAILED.value
+    assert fake_adapter.uploaded == []
+
+
+def test_task_bare_gcode_refused_never_uploads(
+    printer_enabled, library_root, redis_url, fake_adapter
+):
+    """Invariant 1, task layer: even with the printer IDLE (preflight would
+    pass) and the API's fast .gcode.3mf check bypassed entirely, a bare
+    .gcode payload must never reach upload_and_start -- the task's own
+    archive-open is the authoritative gate, not the blob's format label."""
+    settings = get_settings()
+    pid, job_id = _seed_printer_and_job(
+        settings, redis_url, content=corpus.bambu_gcode(), fmt=BlobFormat.GCODE
+    )
+    _seed_state(redis_url, pid, "IDLE")
+    with pytest.raises(SendError):
+        send_to_printer(job_id, DEFAULT_OPTS)
+    with base.sync_session() as s:
+        assert s.get(PrintJob, job_id).state == PrintJobState.FAILED.value
+    assert fake_adapter.uploaded == []
+
+
+def test_task_no_plate_gcode_at_all_marks_failed(
+    printer_enabled, library_root, redis_url, fake_adapter
+):
+    """Invariant 1, task layer, distinct from "plate 2 unavailable" below: a
+    .gcode.3mf archive with ZERO Metadata/plate_N.gcode entries at all
+    (box_3mf_bambu -- no Metadata/ directory whatsoever) must fail, not just
+    one requesting an out-of-range plate number."""
+    settings = get_settings()
+    pid, job_id = _seed_printer_and_job(
+        settings, redis_url, content=corpus.box_3mf_bambu(), fmt=BlobFormat.GCODE_3MF
+    )
+    _seed_state(redis_url, pid, "IDLE")
+    with pytest.raises(SendError):
+        send_to_printer(job_id, DEFAULT_OPTS)
+    with base.sync_session() as s:
+        job = s.get(PrintJob, job_id)
+        assert job.state == PrintJobState.FAILED.value
+        assert "no Metadata/plate" in (job.printer_error or "")
+    assert fake_adapter.uploaded == []
+
+
+def test_task_plate_unavailable_marks_failed(
+    printer_enabled, library_root, redis_url, fake_adapter
+):
+    settings = get_settings()
+    pid, job_id = _seed_printer_and_job(
+        settings, redis_url, content=corpus.sliced_gcode_3mf(), fmt=BlobFormat.GCODE_3MF
+    )
+    _seed_state(redis_url, pid, "IDLE")
+    with pytest.raises(SendError):
+        send_to_printer(job_id, {**DEFAULT_OPTS, "plate": 2})  # plate 2 gcode absent
+    with base.sync_session() as s:
+        job = s.get(PrintJob, job_id)
+        assert job.state == PrintJobState.FAILED.value and "plate 2" in (job.printer_error or "")
+    assert fake_adapter.uploaded == []
+
+
+@pytest.mark.parametrize("good_state", ["IDLE", "FINISH", "FAILED"])
+def test_task_every_allowed_state_proceeds(
+    printer_enabled, library_root, redis_url, fake_adapter, good_state
+):
+    """Invariant 2, full allowed-set coverage: IDLE, FINISH, AND FAILED must
+    all let a valid send proceed -- not just IDLE, which is the only value
+    the happy-path API test above exercises."""
+    settings = get_settings()
+    pid, job_id = _seed_printer_and_job(
+        settings, redis_url, content=corpus.sliced_gcode_3mf(), fmt=BlobFormat.GCODE_3MF
+    )
+    _seed_state(redis_url, pid, good_state)
+    send_to_printer(job_id, DEFAULT_OPTS)
+    with base.sync_session() as s:
+        assert s.get(PrintJob, job_id).state == PrintJobState.STARTING.value
+    assert len(fake_adapter.uploaded) == 1
+    spec = fake_adapter.uploaded[0]
+    assert spec.plate == 1
+    assert spec.remote_name.endswith(".gcode.3mf")
+    assert spec.use_ams is False
+    assert spec.ams_mapping == (0,)

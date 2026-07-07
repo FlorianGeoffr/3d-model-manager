@@ -13,6 +13,7 @@ probe actually runs with the flag on (see ``tests/test_flag_off_imports.py``).
 from __future__ import annotations
 
 import anyio
+import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
@@ -22,15 +23,20 @@ from app.api.deps import require_printer_enabled
 from app.config import Settings, get_settings
 from app.crypto import encrypt_secret
 from app.db import get_db
-from app.models import Printer, PrintJob
+from app.models import Blob, File, Printer, PrintJob
+from app.models.enums import BlobFormat, PrintJobState
 from app.printers.connection import connection_from_printer
 from app.printers.registry import build_adapter
 from app.schemas.printers import (
     PrinterCreate,
     PrinterOut,
     PrinterUpdate,
+    PrintJobOut,
+    PrintRequest,
     ProbeOut,
 )
+from app.services.printer_state import preflight_ok, read_state_async
+from app.tasks.printing import send_to_printer
 
 router = APIRouter(
     prefix="/printers", tags=["printers"], dependencies=[Depends(require_printer_enabled)]
@@ -132,3 +138,52 @@ async def test_printer(
     adapter = build_adapter(printer.kind, conn)
     result = await anyio.to_thread.run_sync(adapter.test_connection)
     return ProbeOut(ok=result.ok, detail=result.detail, gcode_state=result.gcode_state)
+
+
+@router.post("/{printer_id}/print", status_code=status.HTTP_201_CREATED, response_model=PrintJobOut)
+async def start_print(
+    printer_id: int,
+    payload: PrintRequest,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> PrintJobOut:
+    """Fast pre-checks only (SPEC "Printer integration"; Task 6): a cheap
+    format check (no archive read) and a Redis preflight read. Both are
+    re-checked AUTHORITATIVELY inside ``send_to_printer`` itself -- this
+    endpoint only ever creates the ``print_jobs`` row and enqueues the task;
+    every heavy step (fetching the file, opening the archive, the FTPS
+    upload, the MQTT start) happens in the worker, never on the request
+    path.
+    """
+    await _get_or_404(db, printer_id)
+    file = await db.get(File, payload.file_id)
+    if file is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "file not found")
+    blob = await db.get(Blob, file.blob_hash)
+    if blob is None or blob.format != BlobFormat.GCODE_3MF:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "only sliced .gcode.3mf files can be sent to a printer",
+        )
+    client = aioredis.Redis.from_url(settings.redis_url)
+    try:
+        state = await read_state_async(client, printer_id)
+    finally:
+        await client.aclose()
+    if not preflight_ok(state):
+        gs = state.get("gcode_state") if state else "unknown"
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"printer not ready (state={gs}); must be IDLE/FINISH/FAILED"
+        )
+    job = PrintJob(
+        printer_id=printer_id,
+        file_id=file.id,
+        state=PrintJobState.QUEUED,
+        subtask_name=payload.subtask_name,
+    )
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+    send_to_printer.apply_async(args=[job.id, payload.model_dump()])
+    await db.refresh(job)  # eager mode already ran the task through its own sync session
+    return PrintJobOut.from_model(job)

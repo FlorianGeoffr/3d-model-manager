@@ -86,6 +86,10 @@ class Model(Base):
     cover_blob_hash: Mapped[str | None] = mapped_column(
         CHAR(64), ForeignKey("blobs.hash", ondelete="SET NULL")
     )
+    # NULL = normal; "adopted" = the scanner attached this model out-of-band
+    # and it hasn't been reviewed yet (SPEC M3 "Rescan/reconcile"; Task 5
+    # brief). `patch_model` allows clearing it so the UI can dismiss the flag.
+    review_state: Mapped[str | None] = mapped_column(String)
     is_archived: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=false())
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(

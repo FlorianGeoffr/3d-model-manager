@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.models import Blob, File, Job, Model, Revision, ScanRun
 from app.services import layout, scanner
+from app.storage.errors import StorageKeyNotFound
 from app.storage.local import LocalStorageBackend
 from app.tasks import base
 
@@ -200,6 +201,66 @@ async def test_unknown_path_matching_hash_relinks_moved_file(
     # The untouched file was cheaply verified, not rehashed or relinked.
     assert stay_file.storage_path == "gadget/rev-001_initial/stay.stl"
     assert scan_run.report["verified"] == 1
+
+
+# ---------------------------------------------------------------------------
+# 3b. Task 5 fix-wave Finding 1 regression: relink must only claim a row
+#     from the CONFIRMED-missing set, never a not-yet-walked row whose own
+#     on-disk file is still present.
+# ---------------------------------------------------------------------------
+
+
+async def test_unknown_path_relink_only_claims_confirmed_missing_row(
+    db_session: AsyncSession,
+    backend: LocalStorageBackend,
+    library_root,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    """Two byte-identical files sharing a basename ("part.stl") under two
+    different models. Moving only one must relink THAT file and must never
+    touch the other, still-present one -- even though, mid-walk, the
+    still-present row can look like an equally good relink candidate simply
+    because the walk hasn't reached its own (unchanged) path yet.
+
+    The pre-fix single-pass algorithm broke the hash+tail tie by lowest
+    ``File.id`` among ALL not-yet-visited rows, not just confirmed-missing
+    ones -- so creating the stay-put model ("b") FIRST (giving it the lower
+    id) and the moved model ("a") SECOND reliably reproduces the bug: the
+    buggy code relinks "b" (still present) to "a"'s moved location, then
+    reports "a" (the file that actually moved) as missing.
+    """
+    stay_model, stay_revision = await _create_model_and_revision(db_session, "b", "B")
+    stay_file = await seed_file(stay_model, stay_revision, "part.stl", b"identical-bytes")
+    await _sync_mtime(db_session, backend, stay_file)
+
+    moved_model, moved_revision = await _create_model_and_revision(db_session, "a", "A")
+    moved_file = await seed_file(moved_model, moved_revision, "part.stl", b"identical-bytes")
+    await _sync_mtime(db_session, backend, moved_file)
+
+    old_path = moved_file.storage_path
+    os.rename(library_root / "a", library_root / "a-moved")
+    new_path = old_path.replace("a/", "a-moved/", 1)
+
+    scan_run = _run_scan(backend)
+
+    await db_session.refresh(moved_file)
+    await db_session.refresh(stay_file)
+
+    # The file that actually moved is the one that gets relinked.
+    assert moved_file.storage_path == new_path
+    assert scan_run.relinked == 1
+    relinked = scan_run.report["relinked"]
+    assert len(relinked) == 1
+    assert relinked[0]["file_id"] == moved_file.id
+    assert relinked[0]["from"] == old_path
+    assert relinked[0]["to"] == new_path
+
+    # The still-present file is untouched: not relinked away from its own
+    # path, not reported missing, not duplicated into a false adopted draft.
+    assert stay_file.storage_path == "b/rev-001_initial/part.stl"
+    assert scan_run.missing == 0
+    assert scan_run.report["missing"] == []
+    assert scan_run.adopted == 0
 
 
 # ---------------------------------------------------------------------------
@@ -421,3 +482,59 @@ async def test_stale_sidecar_refreshed_during_scan(
     sidecar_bytes = b"".join(backend.read("widget/.3dmm.json"))
     sidecar = json.loads(sidecar_bytes)
     assert sidecar == {"model_id": model.id, "slug": "widget", "name": "New Name"}
+
+
+# ---------------------------------------------------------------------------
+# Task 5 fix-wave Finding 3: one unreadable file must not abort the scan.
+# ---------------------------------------------------------------------------
+
+
+async def test_unreadable_file_recorded_as_error_and_scan_continues(
+    db_session: AsyncSession,
+    backend: LocalStorageBackend,
+    seed_file: Callable[..., Awaitable[File]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A TOCTOU deletion (or a transient SMB/S3 read error) on one file's
+    re-hash must not discard the whole run's reconcile progress -- it's
+    recorded in ``report["errors"]`` and the scan finishes ``done``, with
+    every other file still reconciled normally.
+    """
+    model, revision = await _create_model_and_revision(db_session, "widget", "Widget")
+    ok_file = await seed_file(model, revision, "ok.stl", b"fine-bytes")
+    await _sync_mtime(db_session, backend, ok_file)
+
+    # A brand-new, unknown-path file whose read will fail during the pass-2
+    # re-hash -- simulates the file vanishing (or a backend hiccup) between
+    # `walk()` discovering the key and the scanner actually reading it.
+    broken_key = "widget/rev-001_initial/broken.stl"
+    backend.write(broken_key, [b"will-fail-to-read"])
+
+    real_read = backend.read
+
+    def flaky_read(key: str, *args: object, **kwargs: object):
+        if key == broken_key:
+            raise StorageKeyNotFound(key)
+        return real_read(key, *args, **kwargs)
+
+    monkeypatch.setattr(backend, "read", flaky_read)
+
+    scan_run = _run_scan(backend)
+
+    assert scan_run.state == "done"
+    assert scan_run.finished_at is not None
+
+    errors = scan_run.report["errors"]
+    assert len(errors) == 1
+    assert errors[0]["storage_path"] == broken_key
+    assert errors[0]["error"]
+
+    # The broken file wasn't counted toward any outcome.
+    assert scan_run.adopted == 0
+    assert scan_run.relinked == 0
+    assert scan_run.missing == 0
+
+    # The healthy file was still reconciled normally.
+    await db_session.refresh(ok_file)
+    assert ok_file.verified_at is not None
+    assert scan_run.report["verified"] == 1

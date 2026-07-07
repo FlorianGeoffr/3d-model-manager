@@ -33,6 +33,7 @@ async def test_post_scan_creates_and_runs_to_done(
         "relinked": [],
         "changed": [],
         "missing": [],
+        "errors": [],
         "verified": 0,
     }
 

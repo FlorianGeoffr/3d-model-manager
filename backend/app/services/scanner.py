@@ -12,12 +12,14 @@ in the UI -- this module leaves it alone.
 Runs entirely in the worker's SYNC world (see ``app.tasks.base``) -- callers
 pass a plain SQLAlchemy ``Session``, never the API's async engine.
 
-Reconcile algorithm (SPEC decision table, implemented exactly):
+Reconcile algorithm (SPEC decision table, implemented exactly, in TWO
+PASSES over the walk -- see ``run_scan``'s docstring / Task 5 fix-wave
+Finding 1 for why a single pass isn't safe):
 
 1. Snapshot ``{storage_path: File}`` (size comes from the joined ``Blob``).
-2. ``backend.walk("")`` the tree, skipping ``.3dmm.json`` sidecars (handled
-   separately below -- they aren't ``files`` rows).
-3. Per on-disk entry:
+2. Pass 1: ``backend.walk("")`` the tree once, skipping ``.3dmm.json``
+   sidecars (handled separately below -- they aren't ``files`` rows). Per
+   on-disk entry:
    - **Known path, unchanged** (size matches, and on local/SMB mtime matches
      within tolerance; S3 compares size only): touch ``verified_at``, count
      toward ``report["verified"]``. No re-hash.
@@ -25,16 +27,27 @@ Reconcile algorithm (SPEC decision table, implemented exactly):
      ``mtime``/``verified_at``. New hash -> upsert the ``Blob``, repoint
      ``file.blob_hash``, append to ``report["changed"]``, best-effort
      re-enqueue the pipeline.
-   - **Unknown path**: re-hash. Known hash with a matching missing-candidate
-     (same hash + matching ``rel_path`` tail) -> relink (repoint
-     ``storage_path``). Known hash with no candidate, or unknown hash ->
-     adopt (attach to an existing model+revision if the key fits
-     ``<slug>/<dir_name>/<rel...>``, else create a draft ``Model`` +
-     ``rev-001`` flagged ``review_state="adopted"``).
-4. Any snapshot file never matched by an on-disk entry -> ``missing``. Its
-   row and the (absent) object are both left untouched.
-5. Counters + the report JSONB are written onto the ``ScanRun`` row, which is
+   - **Unknown path**: deferred to pass 2 (not yet hashed).
+   Every known-path entry visited this pass is added to a ``seen`` set.
+3. The CONFIRMED-missing set is computed only now, after the full walk:
+   every snapshot row whose ``storage_path`` was never in ``seen``.
+4. Pass 2, over the entries deferred in step 2: re-hash (``files_hashed``
+   still only counts the actually-unknown paths, not the whole tree). Known
+   hash with a matching row IN THE CONFIRMED-missing set (same hash +
+   matching ``rel_path`` tail) -> relink (repoint ``storage_path``), and
+   remove that row from the confirmed-missing set so it can't be claimed
+   twice. Known hash with no such candidate, or unknown hash -> adopt
+   (attach to an existing model+revision if the key fits
+   ``<slug>/<dir_name>/<rel...>``, else create a draft ``Model`` +
+   ``rev-001`` flagged ``review_state="adopted"``).
+5. Whatever remains in the confirmed-missing set after pass 2 ->
+   ``missing``. Its row and the (absent) object are both left untouched.
+6. Counters + the report JSONB are written onto the ``ScanRun`` row, which is
    marked ``state="done"``.
+
+A single unreadable file (``report["errors"]``: TOCTOU deletion between
+``walk`` and ``read``, or a transient SMB/S3 read error) is recorded and
+skipped rather than aborting the whole run -- see ``_record_error``.
 
 Implementation decisions not spelled out verbatim by the SPEC table (documented
 here rather than guessed silently, per the task's "stop on genuine ambiguity"
@@ -105,6 +118,18 @@ def run_scan(
 ) -> None:
     """The whole reconcile pass against ``scan_run_id`` (must already exist,
     created by the caller). Synchronous end to end.
+
+    Runs in TWO PASSES over the walked tree (Task 5 fix-wave Finding 1):
+    pass 1 resolves every on-disk entry that matches a known
+    ``files.storage_path`` and defers every UNKNOWN entry; only once pass 1
+    has walked the WHOLE tree do we know which snapshot rows were genuinely
+    never seen on disk -- that ``missing_candidates`` set is the only pool
+    pass 2's relink may draw from. The pre-fix single pass instead matched a
+    relink candidate against *any not-yet-visited* row, including one whose
+    own on-disk file was simply later in walk order (still present) -- with
+    two byte-identical files sharing a basename in different models, moving
+    one could falsely relink the other, silently corrupting a still-present
+    file's ``storage_path`` while reporting the actually-moved file missing.
     """
     scan_run = session.get(ScanRun, scan_run_id)
     if scan_run is None:
@@ -117,11 +142,6 @@ def run_scan(
         f.storage_path: f
         for f in session.execute(select(File).options(joinedload(File.blob))).unique().scalars()
     }
-    matched_file_ids: set[int] = set()
-    # Relink candidates: files not yet matched to an on-disk entry. Consumed
-    # (popped) as relinks claim them so the same origin row is never
-    # relinked twice within one scan.
-    unmatched_candidates: dict[int, File] = {f.id: f for f in files_by_path.values()}
 
     counters = {"files_seen": 0, "files_hashed": 0, "relinked": 0, "adopted": 0}
     report: dict[str, object] = {
@@ -129,14 +149,14 @@ def run_scan(
         "relinked": [],
         "changed": [],
         "missing": [],
+        "errors": [],
         "verified": 0,
     }
-    adopted_index: dict[tuple[int, int], dict] = {}
-    # Top-level on-disk directory name -> the draft (Model, Revision) created
-    # for it THIS scan, so multiple adopted files under the same dropped
-    # folder land on one new model, not one model per file.
-    draft_models: dict[str, tuple[Model, Revision]] = {}
 
+    seen: set[str] = set()
+    deferred: list[EntryInfo] = []
+
+    # --- Pass 1: resolve every KNOWN path; defer every UNKNOWN one. --------
     for entry in backend.walk(""):
         parts = entry.key.split("/")
         if len(parts) == 2 and parts[1] == layout.SIDECAR_NAME:
@@ -148,16 +168,33 @@ def run_scan(
         file = files_by_path.get(entry.key)
         if file is not None:
             _reconcile_known(session, backend, file, entry, size_only, now, counters, report)
-            matched_file_ids.add(file.id)
-            unmatched_candidates.pop(file.id, None)
+            seen.add(entry.key)
             continue
 
+        deferred.append(entry)
+
+    # The CONFIRMED-missing set: snapshot rows whose storage_path the full
+    # walk never visited. Pass 2's relink may only claim rows out of this
+    # set -- popped as each relink claims one, so the same origin row can
+    # never be relinked twice in one scan.
+    missing_candidates: dict[int, File] = {
+        f.id: f for path, f in files_by_path.items() if path not in seen
+    }
+
+    adopted_index: dict[tuple[int, int], dict] = {}
+    # Top-level on-disk directory name -> the draft (Model, Revision) created
+    # for it THIS scan, so multiple adopted files under the same dropped
+    # folder land on one new model, not one model per file.
+    draft_models: dict[str, tuple[Model, Revision]] = {}
+
+    # --- Pass 2: resolve every UNKNOWN path against the confirmed-missing --
+    # --- set only. -----------------------------------------------------
+    for entry in deferred:
         _reconcile_unknown(
             session,
             backend,
             entry,
-            unmatched_candidates,
-            matched_file_ids,
+            missing_candidates,
             draft_models,
             adopted_index,
             now,
@@ -165,7 +202,7 @@ def run_scan(
             report,
         )
 
-    missing_files = [f for f in files_by_path.values() if f.id not in matched_file_ids]
+    missing_files = list(missing_candidates.values())
     slug_by_file_id = _slugs_for_files(session, [f.id for f in missing_files])
     for file in missing_files:
         report["missing"].append(
@@ -206,6 +243,15 @@ def _hash_entry(backend: StorageBackend, key: str) -> str:
     return hasher.hexdigest()
 
 
+def _record_error(report: dict[str, object], storage_path: str, exc: Exception) -> None:
+    """Task 5 fix-wave Finding 3: a single unreadable file (TOCTOU deletion
+    between ``walk`` and ``read``, or a transient SMB/S3 read error) must
+    never abort the whole scan. Record it and let the caller move on.
+    """
+    report["errors"].append({"storage_path": storage_path, "error": str(exc)})
+    logger.warning("scan: read failed for %s: %s", storage_path, exc, exc_info=True)
+
+
 def _reconcile_known(
     session: Session,
     backend: StorageBackend,
@@ -230,7 +276,13 @@ def _reconcile_known(
         return
 
     counters["files_hashed"] += 1
-    new_hash = _hash_entry(backend, entry.key)
+    try:
+        new_hash = _hash_entry(backend, entry.key)
+    except Exception as exc:
+        # The path IS present -- the walk found it -- so it must never be
+        # reported `missing`; leave the row untouched and move on (Finding 3).
+        _record_error(report, entry.key, exc)
+        return
     if new_hash == file.blob_hash:
         file.mtime = entry.mtime
         file.verified_at = now
@@ -258,11 +310,20 @@ def _reconcile_known(
     _best_effort_pipeline(session, blob_hash=new_hash, file_id=file.id)
 
 
-def _find_relink_candidate(candidates: dict[int, File], digest: str, key: str) -> File | None:
+def _find_relink_candidate(
+    missing_candidates: dict[int, File], digest: str, key: str
+) -> File | None:
+    """Pick the confirmed-missing row (see ``run_scan``'s ``missing_candidates``
+    -- rows the full first pass never matched on disk) this ``key`` should
+    relink to: same blob hash, matching ``rel_path`` tail. Never called
+    against a row whose own on-disk path might just be later in walk order
+    (Task 5 fix-wave Finding 1) -- ``missing_candidates`` is only ever built
+    from the FULL first pass's leftovers.
+    """
     matches = sorted(
         (
             f
-            for f in candidates.values()
+            for f in missing_candidates.values()
             if f.blob_hash == digest and (key == f.rel_path or key.endswith("/" + f.rel_path))
         ),
         key=lambda f: f.id,
@@ -383,8 +444,7 @@ def _reconcile_unknown(
     session: Session,
     backend: StorageBackend,
     entry: EntryInfo,
-    unmatched_candidates: dict[int, File],
-    matched_file_ids: set[int],
+    missing_candidates: dict[int, File],
     draft_models: dict[str, tuple[Model, Revision]],
     adopted_index: dict[tuple[int, int], dict],
     now: datetime,
@@ -392,11 +452,17 @@ def _reconcile_unknown(
     report: dict[str, object],
 ) -> None:
     counters["files_hashed"] += 1
-    digest = _hash_entry(backend, entry.key)
+    try:
+        digest = _hash_entry(backend, entry.key)
+    except Exception as exc:
+        # Not counted as adopted/relinked/missing -- there's no row to leave
+        # "as-is" for a never-adopted path; just skip it (Finding 3).
+        _record_error(report, entry.key, exc)
+        return
     blob = session.get(Blob, digest)
 
     if blob is not None:
-        candidate = _find_relink_candidate(unmatched_candidates, digest, entry.key)
+        candidate = _find_relink_candidate(missing_candidates, digest, entry.key)
         if candidate is not None:
             old_path = candidate.storage_path
             candidate.storage_path = entry.key
@@ -406,8 +472,7 @@ def _reconcile_unknown(
             report["relinked"].append(
                 {"file_id": candidate.id, "from": old_path, "to": entry.key, "hash": digest}
             )
-            matched_file_ids.add(candidate.id)
-            unmatched_candidates.pop(candidate.id, None)
+            missing_candidates.pop(candidate.id, None)
             return
 
         _attach_adopted_file(

@@ -7,11 +7,8 @@ backend-agnostic behavior; they never import or reference a concrete backend
 class directly (that lives in the fixture below, and in
 ``tests/storage_containers.py`` for smb/s3).
 
-``local`` and ``smb`` (Task 3) run for real today; ``s3`` still skips with a
-clear reason so its container (``tests/storage_containers.py``) never starts
-during a normal run until Task 4 flips that skip to the real ``s3_backend``
-fixture, at which point this same suite proves it green with no changes to
-the tests themselves.
+``local``, ``smb`` (Task 3), and ``s3`` (Task 4) all run for real, each
+proving this same suite green with no changes to the tests themselves.
 
 The walk-ordering tests are the load-bearing ones: they pin the "sort each
 directory's entries by bare name, recurse depth-first" contract from
@@ -37,18 +34,13 @@ from app.storage.local import LocalStorageBackend
 
 @pytest.fixture(params=["local", "smb", "s3"])
 def storage_backend(request: pytest.FixtureRequest, tmp_path):
-    """Yield an empty ``StorageBackend`` for each backend under test.
-
-    ``s3`` still skips outright -- without requesting ``s3_backend`` -- so
-    its container in ``tests/storage_containers.py`` doesn't start until
-    Task 4 removes the skip.
-    """
+    """Yield an empty ``StorageBackend`` for each backend under test."""
     if request.param == "local":
         return LocalStorageBackend(tmp_path / "library")
     if request.param == "smb":
         return request.getfixturevalue("smb_backend")
     if request.param == "s3":
-        pytest.skip("S3 backend lands in Task 4")  # remove in Task 4
+        return request.getfixturevalue("s3_backend")
     raise AssertionError(f"unhandled storage_backend param: {request.param!r}")
 
 

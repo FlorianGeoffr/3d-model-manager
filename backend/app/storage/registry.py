@@ -16,9 +16,10 @@ from collections.abc import Callable
 
 from app.config import Settings
 from app.storage.base import StorageBackend
-from app.storage.config import LocalConfig, SmbConfig, StorageConfig
+from app.storage.config import LocalConfig, S3Config, SmbConfig, StorageConfig
 from app.storage.errors import StorageError
 from app.storage.local import LocalStorageBackend
+from app.storage.s3 import S3StorageBackend
 from app.storage.smb import SmbStorageBackend
 
 _BackendFactory = Callable[[Settings, StorageConfig], StorageBackend]
@@ -45,6 +46,12 @@ def _build_local_backend(settings: Settings, config: StorageConfig) -> StorageBa
 def _build_smb_backend(settings: Settings, config: StorageConfig) -> StorageBackend:
     assert isinstance(config, SmbConfig)
     return SmbStorageBackend(config)
+
+
+@register("s3")
+def _build_s3(settings: Settings, config: StorageConfig) -> StorageBackend:
+    assert isinstance(config, S3Config)
+    return S3StorageBackend(config)
 
 
 def get_backend(settings: Settings, config: StorageConfig | None = None) -> StorageBackend:

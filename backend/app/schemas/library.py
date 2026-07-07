@@ -33,12 +33,15 @@ class ModelCreate(BaseModel):
 class ModelPatch(BaseModel):
     """All fields optional; only the ones present in the request body are
     applied (see ``model_dump(exclude_unset=True)`` in ``app.api.models``).
-    Setting ``name`` never changes ``slug``/on-disk directories in M1.
+    Setting ``name`` never changes ``slug``/on-disk directories in M1, but
+    does rewrite the ``.3dmm.json`` sidecar (Task 5 brief). ``review_state``
+    lets the UI clear the scanner's "adopted, review me" flag.
     """
 
     name: NonEmptyStr | None = None
     description: str | None = None
     cover_blob_hash: str | None = None
+    review_state: str | None = None
 
 
 class ModelSummary(BaseModel):

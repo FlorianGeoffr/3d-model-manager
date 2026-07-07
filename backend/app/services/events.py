@@ -59,3 +59,22 @@ async def publish_job_event(redis_url: str, **kwargs: object) -> None:
         await client.publish(CHANNEL, json.dumps(job_event_payload(**kwargs)))
     finally:
         await client.aclose()
+
+
+def publish_scan_event_sync(redis_url: str, scan_run_id: int, state: str) -> None:
+    """Publish a scan run's state as a ``job.updated`` event (Task 5 brief:
+    "No new SSE event type" -- reuses ``job_event_payload``'s existing shape
+    with ``job_type="scan_library"``, ``subject_type="scan_run"``, so the
+    frontend's existing ``job.updated`` handler already invalidates
+    ``["models"]``/``["revisions"]`` (adopted models show up) without any
+    protocol change; Task 8 adds one branch keyed on ``job_type ==
+    "scan_library"`` to also invalidate ``["scan"]``.
+    """
+    publish_job_event_sync(
+        redis_url,
+        job_id=str(scan_run_id),
+        job_type="scan_library",
+        state=state,
+        subject_type="scan_run",
+        subject_id=scan_run_id,
+    )

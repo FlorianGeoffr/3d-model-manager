@@ -67,10 +67,11 @@ async def patch_model(
     slug: str,
     payload: ModelPatch,
     db: AsyncSession = Depends(get_db),
+    backend: StorageBackend = Depends(get_storage_backend),
     settings: Settings = Depends(get_settings),
 ) -> ModelDetail:
     model = await library.get_model_by_slug(db, slug)
-    model = await library.patch_model(db, model, payload.model_dump(exclude_unset=True))
+    model = await library.patch_model(db, backend, model, payload.model_dump(exclude_unset=True))
     return await library.build_model_detail(db, model, settings)
 
 

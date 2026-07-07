@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     # `gltfpack` resolves to on PATH (see tests/conftest.py, which prepends
     # the npm-installed WASM shim's bin dir for local dev/CI).
     gltfpack_path: str = "gltfpack"
+    # Opt-in scheduled scan (SPEC "optional scheduled scan"; Task 5 brief):
+    # seconds between automatic `scan_library` runs via Celery beat. `0`
+    # (the default) means OFF -- see `app.tasks.celery_app`'s conditional
+    # `beat_schedule`.
+    scan_interval_s: int = 0
 
 
 @lru_cache

@@ -201,10 +201,15 @@ async def get_model_by_slug(db: AsyncSession, slug: str) -> Model:
     return model
 
 
-async def patch_model(db: AsyncSession, model: Model, changes: dict[str, object]) -> Model:
+async def patch_model(
+    db: AsyncSession, backend: StorageBackend, model: Model, changes: dict[str, object]
+) -> Model:
     """Apply ``changes`` (already ``exclude_unset``-filtered by the caller).
 
-    ``name`` never touches ``slug``/on-disk directories in M1 (Task 5 brief).
+    ``name`` never touches ``slug``/on-disk directories in M1 (Task 5 brief),
+    but DOES rewrite the ``.3dmm.json`` sidecar's ``name`` field (M3 carried
+    backlog item: the sidecar used to go stale after a rename). ``review_state``
+    is accepted here too so the UI can clear an adopted flag (M3 scanner note).
     Pre-validates ``cover_blob_hash`` if provided: must exist in blobs table.
     """
     # Pre-validate cover_blob_hash before applying changes
@@ -217,7 +222,17 @@ async def patch_model(db: AsyncSession, model: Model, changes: dict[str, object]
                     status.HTTP_422_UNPROCESSABLE_CONTENT, detail="unknown cover_blob_hash"
                 )
 
-    for field in ("name", "description", "cover_blob_hash"):
+    new_name = changes.get("name")
+    name_changing = "name" in changes and new_name != model.name
+    if name_changing:
+        # Storage side effect before the commit (module docstring's ordering
+        # rule): if the sidecar write fails, the request fails and nothing
+        # about it is committed.
+        await anyio.to_thread.run_sync(
+            layout.write_sidecar, backend, model.id, model.slug, new_name
+        )
+
+    for field in ("name", "description", "cover_blob_hash", "review_state"):
         if field in changes:
             setattr(model, field, changes[field])
     await db.commit()

@@ -138,6 +138,28 @@ async def test_patch_model_name_does_not_change_slug_or_dirs(
     assert backend.exists("original-name/.3dmm.json")
 
 
+async def test_patch_model_name_rewrites_sidecar_content(
+    authenticated_client: httpx.AsyncClient, backend: LocalStorageBackend
+) -> None:
+    """M3 carried backlog item: the sidecar used to go stale after a rename
+    (only the model's own row changed); ``patch_model`` now rewrites it.
+    """
+    created = await _create_model(authenticated_client, "Stale Sidecar Name")
+
+    response = await authenticated_client.patch(
+        f"/api/models/{created['slug']}", json={"name": "Fresh Sidecar Name"}
+    )
+
+    assert response.status_code == 200
+    sidecar_bytes = b"".join(backend.read("stale-sidecar-name/.3dmm.json"))
+    sidecar = json.loads(sidecar_bytes)
+    assert sidecar == {
+        "model_id": created["id"],
+        "slug": "stale-sidecar-name",
+        "name": "Fresh Sidecar Name",
+    }
+
+
 async def test_delete_model_archives_and_excludes_from_default_gallery(
     authenticated_client: httpx.AsyncClient,
 ) -> None:

@@ -43,6 +43,7 @@ _PATH_PARAM_VALUES = {
     "job_id": str(uuid.uuid4()),
     "blob_hash": "a" * 64,
     "index": "1",
+    "id": "1",
 }
 
 

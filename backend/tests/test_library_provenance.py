@@ -44,3 +44,48 @@ async def test_create_imported_model_sync_sets_provenance_and_rev_imported(db_se
         assert m.source_site == "thingiverse" and m.source_author == "alice"
         assert m.source_license == "CC-BY-4.0" and m.imported_at is not None
         assert {t.name for t in m.tags} == {"vase", "spiral"}
+
+
+@pytest.mark.asyncio
+async def test_create_imported_model_sync_commit_false_defers_visibility_to_caller(backend):
+    """M6 Task 4 fix-review defect: the import worker must create the Model
+    +Revision AND link ``imports.model_id`` in a SINGLE commit (Global
+    Constraints "IMPORTS ATOMIC") -- two separate commits leave a window
+    where the Model is durably committed but the link (and the import's
+    state) is not, which no redelivery guard can tell apart from a
+    legitimate in-flight link. ``commit=False`` lets the caller
+    (``app.tasks.importing``) defer the commit until it has also set
+    ``imp.model_id`` in the SAME transaction. Proven here via cross-
+    connection visibility on the real Postgres testcontainer: with
+    ``commit=False`` the row must stay invisible to an independent
+    connection until the ORIGINAL caller commits."""
+    from app.models.library import Model
+    from app.tasks.base import sync_session
+
+    with sync_session() as s1:
+        model = library.create_imported_model_sync(
+            s1,
+            backend,
+            name="Deferred Vase",
+            description=None,
+            source_url=None,
+            source_site="thingiverse",
+            source_author=None,
+            source_license=None,
+            imported_at=None,
+            tags=[],
+            commit=False,
+        )
+        model_id = model.id
+        assert model_id is not None  # flush() already assigned the PK
+
+        # Not yet committed by s1 -- must be invisible from an independent
+        # connection (a real second connection against the testcontainer).
+        with sync_session() as s2:
+            assert s2.get(Model, model_id) is None
+
+        s1.commit()
+
+    # Now that the caller committed, a fresh connection sees it.
+    with sync_session() as s3:
+        assert s3.get(Model, model_id) is not None

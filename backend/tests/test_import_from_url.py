@@ -237,6 +237,49 @@ async def test_store_failure_after_model_created_leaves_no_orphan_model(
 
 
 @pytest.mark.asyncio
+async def test_crash_between_model_create_and_link_leaves_no_orphan(
+    db_session, library_root, data_dir, fake_import, monkeypatch
+):
+    """Dedicated-review defect fix: phase (c) used to commit the new Model+
+    Revision INSIDE ``create_imported_model_sync`` and only link
+    ``imports.model_id`` in a SEPARATE, later commit -- an interruption
+    landing between those two commits left a fully-committed Model that no
+    redelivery guard could distinguish from a legitimate one still being
+    linked (``imports.model_id`` reads NULL either way). Simulate exactly
+    that interruption point -- right after the model/revision work
+    completes, before the caller sets ``imp.model_id`` and commits -- via a
+    spy that calls the real helper through to completion and then raises.
+    Pre-fix this leaves a committed orphan Model (this test is RED against
+    HEAD); post-fix (model creation no longer commits on its own -- the
+    caller commits Model+link together) it leaves ZERO trace."""
+    fake_import.files = {"cube.stl": corpus.box_stl()}
+    original = library.create_imported_model_sync
+
+    def crash_after_create(*args, **kwargs):
+        original(*args, **kwargs)
+        raise RuntimeError("simulated crash between model create and imp.model_id link")
+
+    monkeypatch.setattr(library, "create_imported_model_sync", crash_after_create)
+
+    imp = Import(
+        url="https://fake.test/thing/42",
+        site=ImportSite.THINGIVERSE,
+        external_id="42",
+        state=ImportState.PENDING,
+    )
+    db_session.add(imp)
+    await db_session.commit()
+    await db_session.refresh(imp)
+
+    import_from_url(imp.id)
+
+    await db_session.refresh(imp)
+    assert imp.state == ImportState.FAILED and imp.model_id is None
+    count = await db_session.scalar(select(func.count()).select_from(Model))
+    assert count == 0  # no orphan Model left behind by the interrupted commit
+
+
+@pytest.mark.asyncio
 async def test_redelivery_after_partial_commit_creates_no_duplicate(
     fake_import, data_dir, library_root
 ):
@@ -344,5 +387,78 @@ async def test_redelivery_ignored_while_lock_is_held(
     assert calls == []  # stream_remote_to_spool never reached while the lock is held
     await db_session.refresh(imp)
     assert imp.state == ImportState.PENDING  # row untouched -- lock contention is a clean no-op
+    count = await db_session.scalar(select(func.count()).select_from(Model))
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_redelivery_of_already_done_import_is_a_no_op(
+    db_session, library_root, data_dir, fake_import
+):
+    """Direct coverage for the terminal-state entry guard (``imp.state in
+    (DONE, FAILED): return``) -- previously only exercised indirectly. A
+    DONE import redelivered (e.g. a duplicate broker message, or a
+    redelivery racing a DONE that landed right before the ack) must be a
+    pure no-op: state/model_id untouched, no second Model created."""
+    from app.tasks.base import sync_session
+
+    with sync_session() as s:
+        backend = resolve_backend_sync(s, get_settings())
+        model = library.create_imported_model_sync(
+            s,
+            backend,
+            name="Already Done Vase",
+            description=None,
+            source_url="https://www.thingiverse.com/thing:1",
+            source_site="thingiverse",
+            source_author=None,
+            source_license=None,
+            imported_at=None,
+            tags=[],
+        )
+        model_id = model.id
+
+    imp = Import(
+        url="https://fake.test/thing/1",
+        site=ImportSite.THINGIVERSE,
+        external_id="1",
+        state=ImportState.DONE,
+        model_id=model_id,
+    )
+    db_session.add(imp)
+    await db_session.commit()
+    await db_session.refresh(imp)
+    import_id = imp.id
+
+    import_from_url(import_id)  # redelivery of an already-terminal import
+
+    await db_session.refresh(imp)
+    assert imp.state == ImportState.DONE
+    assert imp.model_id == model_id
+    count = await db_session.scalar(select(func.count()).select_from(Model))
+    assert count == 1  # no second model created
+
+
+@pytest.mark.asyncio
+async def test_redelivery_of_already_failed_import_is_a_no_op(db_session, library_root, data_dir):
+    """Same guard, FAILED side -- a redelivered already-FAILED import must
+    stay FAILED with no model_id and no Model created."""
+    imp = Import(
+        url="https://fake.test/thing/2",
+        site=ImportSite.THINGIVERSE,
+        external_id="2",
+        state=ImportState.FAILED,
+        error="some earlier failure",
+    )
+    db_session.add(imp)
+    await db_session.commit()
+    await db_session.refresh(imp)
+    import_id = imp.id
+
+    import_from_url(import_id)
+
+    await db_session.refresh(imp)
+    assert imp.state == ImportState.FAILED
+    assert imp.model_id is None
     count = await db_session.scalar(select(func.count()).select_from(Model))
     assert count == 0

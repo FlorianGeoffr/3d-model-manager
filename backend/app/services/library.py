@@ -237,12 +237,25 @@ def create_imported_model_sync(
     imported_at: datetime | None,
     tags: list[str],
     initial_revision_name: str = "imported",
+    commit: bool = True,
 ) -> Model:
     """SYNC twin of ``create_model`` for the import worker (app.tasks.base
     sync world). Inserts the Model + first revision WITH provenance, writes
-    the storage sidecar, get-or-creates tag rows, and commits atomically --
-    called only AFTER every file is staged to spool, so a Model row never
-    exists for a failed import (Global Constraints "IMPORTS ATOMIC")."""
+    the storage sidecar, get-or-creates tag rows, and (by default) commits
+    atomically -- called only AFTER every file is staged to spool, so a
+    Model row never exists for a failed import (Global Constraints "IMPORTS
+    ATOMIC").
+
+    ``commit=False`` (M6 Task 4 fix-review) lets ``app.tasks.importing``
+    defer the commit so it can set ``imports.model_id`` in the SAME
+    transaction as the Model+Revision insert -- the flushes below already
+    populate ``model.id``/``model.current_revision_id`` on the still-
+    in-session instance, so the caller has everything it needs before
+    committing. Without this, the early link was a SEPARATE second commit,
+    leaving a window where Model+Revision were durably committed while
+    ``imports.model_id`` (and the DOWNLOADING->done transition) was not --
+    undetectable to the redelivery guard, which only reconciles on
+    ``imports.model_id IS NOT NULL``."""
     slug = _unique_slug_sync(session, name)
     model = Model(
         slug=slug,
@@ -271,7 +284,8 @@ def create_imported_model_sync(
             session.flush()
         model.tags.append(tag)
     model.current_revision_id = revision.id
-    session.commit()
+    if commit:
+        session.commit()
     return model
 
 

@@ -29,19 +29,24 @@ singleton lock):
 1. A per-import Redis lock (``import_lock_key``) makes a genuinely
    concurrent redelivery (the original attempt still in-flight) a clean
    no-op -- the losing side returns immediately without touching the row.
-2. `imp.model_id` is now linked immediately after the model is created in
-   phase (c) (rather than after the whole per-file store loop), so a crash
+2. `imp.model_id` is linked immediately after the model is created in
+   phase (c) (rather than after the whole per-file store loop), AND in the
+   SAME commit as the Model+Revision insert (``create_imported_model_sync``
+   is called with ``commit=False`` for exactly this) -- so there is no
+   window where a Model is durably committed while the link is not. A crash
    from that point on leaves a *detectable* orphan: the model exists, is
    linked from the import row, but the row's state never reached `DONE`. The
    task's entry guard reconciles against this on every run -- a terminal
    (`DONE`/`FAILED`) row is a no-op (nothing to redo), while a non-terminal
    row with `model_id` already set is exactly that partial-commit crash:
    delete the orphan model (cascade takes its Revision/File rows) and
-   reprocess fresh. This still upholds the "ZERO orphans" invariant above:
-   the same-execution failure handler's orphan delete relies on
-   ``imports.model_id``'s ``ON DELETE SET NULL`` to null the link as part of
-   that same statement, whether the early link had already committed or
-   not."""
+   reprocess fresh. A crash BEFORE that single commit leaves nothing at all
+   (the flushed-but-uncommitted Model/Revision are discarded when the
+   session closes without committing). This still upholds the "ZERO
+   orphans" invariant above: the same-execution failure handler's orphan
+   delete relies on ``imports.model_id``'s ``ON DELETE SET NULL`` to null
+   the link as part of that same statement, whether the early link had
+   already committed or not."""
 
 from __future__ import annotations
 
@@ -189,10 +194,17 @@ def import_from_url(import_id: int) -> None:
                 imported_at=datetime.now(UTC),
                 tags=list(meta.tags),
                 initial_revision_name="imported",
+                commit=False,
             )
             created_model_id = model.id
             imp = s.get(Import, import_id)
-            # LINK EARLY: a crash from here on leaves a DETECTABLE orphan (entry guard above).
+            # LINK EARLY, SAME TRANSACTION: `commit=False` above left Model+
+            # Revision flushed-but-uncommitted -- this single commit persists
+            # them together with `imp.model_id`, so there is no window where
+            # the model is durably committed while the link is not. A crash
+            # from here on leaves a DETECTABLE orphan (entry guard above); a
+            # crash before this commit leaves NOTHING (the flush is rolled
+            # back when the session closes without committing).
             imp.model_id = model.id
             s.commit()
             rev = s.get(Revision, model.current_revision_id)

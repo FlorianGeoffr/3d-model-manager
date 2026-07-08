@@ -15,6 +15,8 @@ Runs entirely in the worker's SYNC world -- see ``app.tasks.base``.
 
 from __future__ import annotations
 
+import logging
+
 import blake3
 
 from app.config import get_settings
@@ -24,6 +26,8 @@ from app.storage.config import parse_storage_config
 from app.storage.registry import get_backend
 from app.tasks import base
 from app.tasks.celery_app import celery_app
+
+logger = logging.getLogger(__name__)
 
 
 @celery_app.task(name="app.tasks.migrate.migrate_storage")
@@ -60,10 +64,23 @@ def migrate_storage(job_id: str, target: dict) -> None:
             if result.hash != src_hash.hexdigest():
                 raise RuntimeError(f"hash mismatch migrating {entry.key}")
         with base.sync_session() as s:
-            # cutover only after every file verified; encrypts on write
+            # cutover only after every file verified; encrypts on write --
+            # point of no return: the config is switched here.
             set_active_config_sync(s, settings, target_cfg)
-            jobs.mark_done(s, job_id)
     except Exception as exc:
         with base.sync_session() as s:
             jobs.mark_failed(s, job_id, str(exc))
         raise
+
+    # Cutover succeeded: mark done in its OWN try (M3-deferred minor, folded
+    # into Task 8) so a post-cutover publish/commit hiccup can't misreport a
+    # done migration as failed -- the migration genuinely succeeded (config
+    # already switched, source intact), so there's nothing left to roll back
+    # and no reason to lie to the operator about it.
+    try:
+        with base.sync_session() as s:
+            jobs.mark_done(s, job_id)
+    except Exception:
+        logger.warning(
+            "migrate %s: cutover succeeded but marking done failed", job_id, exc_info=True
+        )

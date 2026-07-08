@@ -41,6 +41,12 @@ STATE_QUEUED = "queued"
 STATE_RUNNING = "running"
 STATE_DONE = "done"
 STATE_FAILED = "failed"
+# Task 8: formal dead-letter state -- distinct from a plain/early `failed`,
+# auto-parked (see `mark_failed` below) once a job has exhausted its
+# `max_attempts` ceiling, so the UI/operator can tell "worth retrying" apart
+# from "will deterministically fail again" instead of a `failed` job being
+# retryable forever.
+STATE_DEAD = "dead"
 
 
 # -- async: API-side -------------------------------------------------------
@@ -95,17 +101,23 @@ async def get_job_or_404(db: AsyncSession, job_id: uuid.UUID) -> Job:
 
 
 async def retry_job(db: AsyncSession, settings: Settings, job_id: uuid.UUID) -> Job:
-    """Re-dispatch a ``failed`` job, generalized (Task 2) over a small
-    dispatch table keyed by ``job.type``: ``store_to_backend`` re-sends its
-    still-spooled bytes; any name in ``app.tasks.pipeline.PIPELINE_STEPS``
-    re-runs that step against its subject file's current blob;
-    ``render_assembly_thumb`` (Task 6) re-runs against its subject revision.
-    ``migrate_storage`` (Task 6) never retries -- see the dedicated 409
-    below. Anything else 409s as an unknown job type. 409 if the job isn't
-    ``failed`` to begin with.
+    """Re-dispatch a ``failed`` (or ``dead``, Task 8) job, generalized
+    (Task 2) over a small dispatch table keyed by ``job.type``:
+    ``store_to_backend`` re-sends its still-spooled bytes; any name in
+    ``app.tasks.pipeline.PIPELINE_STEPS`` re-runs that step against its
+    subject file's current blob; ``render_assembly_thumb`` (Task 6) re-runs
+    against its subject revision. ``migrate_storage`` (Task 6) never retries
+    -- see the dedicated 409 below. Anything else 409s as an unknown job
+    type. 409 if the job isn't ``failed``/``dead`` to begin with.
+
+    ``dead`` (Task 8) is auto-park-only (``mark_failed`` parks a job there
+    once it's exhausted ``max_attempts`` -- there's no automatic retry loop
+    that would need to stop at ``dead``); this manual, operator-driven path
+    is deliberately still allowed to retry one, as the escape hatch for "I
+    fixed the underlying problem, try it again anyway."
     """
     job = await get_job_or_404(db, job_id)
-    if job.state != STATE_FAILED:
+    if job.state not in (STATE_FAILED, STATE_DEAD):
         raise HTTPException(status.HTTP_409_CONFLICT, f"job {job_id} is not in a failed state")
 
     if job.type == "store_to_backend":
@@ -333,8 +345,18 @@ def mark_done(session: SyncSession, job_id: str) -> None:
 
 
 def mark_failed(session: SyncSession, job_id: str, error: str) -> None:
+    """Mark a job failed -- or, if it has already run ``max_attempts`` times,
+    auto-park it ``dead`` instead (Task 8: formal dead-letter state).
+
+    ``attempts`` is incremented once per top-level run, in ``mark_running``
+    above, BEFORE the run executes -- so a job that has run ``max_attempts``
+    times and fails on that final attempt already has
+    ``attempts == max_attempts`` by the time it lands here, and the ``>=``
+    ceiling check below parks it correctly on that very call (no separate
+    "attempt N+1" needed to notice the ceiling was hit).
+    """
     job = _load_job(session, job_id)
-    job.state = STATE_FAILED
+    job.state = STATE_DEAD if job.attempts >= job.max_attempts else STATE_FAILED
     job.error = error
     session.commit()
     _publish(job)

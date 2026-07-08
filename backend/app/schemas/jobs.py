@@ -22,6 +22,7 @@ class JobOut(BaseModel):
     subject_id: int | None
     state: str
     attempts: int
+    max_attempts: int
     error: str | None
     created_at: datetime
     updated_at: datetime
@@ -36,6 +37,7 @@ class JobOut(BaseModel):
             subject_id=job.subject_id,
             state=job.state,
             attempts=job.attempts,
+            max_attempts=job.max_attempts,
             error=job.error,
             created_at=job.created_at,
             updated_at=job.updated_at,

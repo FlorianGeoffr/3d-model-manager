@@ -10,6 +10,7 @@ local root as a migration target.
 
 from __future__ import annotations
 
+import logging
 import uuid
 
 import pytest
@@ -144,6 +145,51 @@ async def test_migrate_hash_mismatch_marks_failed_and_does_not_cut_over(
     with base.sync_session() as s:
         active = get_active_config_sync(s, get_settings())
     assert active.backend == "local"  # cutover never happened
+
+
+async def test_migrate_mark_done_failure_after_cutover_does_not_flip_to_failed(
+    db_session,
+    backend: LocalStorageBackend,
+    s3_backend,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """M3-deferred minor, folded into Task 8: a bookkeeping hiccup in
+    ``jobs.mark_done`` AFTER the cutover has already committed must NOT
+    reflip a genuinely-successful migration to ``failed`` -- the config is
+    already switched and the source is intact; there's nothing left to roll
+    back, so misreporting it as ``failed`` would be a lie the DB doesn't
+    back up (same posture as the ``_publish`` best-effort review finding in
+    ``app.services.jobs``).
+    """
+    backend.write("widget/rev-001/part.stl", [b"already-cut-over-bytes"])
+    job_id = await _seed_migrate_job(db_session)
+    target = _plain_target(s3_backend.config)
+
+    original_mark_done = jobs_service.mark_done
+
+    def flaky_mark_done(session, jid):
+        if jid == job_id:
+            raise RuntimeError("simulated post-cutover bookkeeping hiccup")
+        return original_mark_done(session, jid)
+
+    monkeypatch.setattr(jobs_service, "mark_done", flaky_mark_done)
+
+    with caplog.at_level(logging.WARNING, logger="app.tasks.migrate"):
+        migrate_storage(job_id, target)  # must NOT raise
+
+    # The cutover itself succeeded and must stick despite mark_done blowing
+    # up afterward.
+    with base.sync_session() as s:
+        active = get_active_config_sync(s, get_settings())
+    assert active.backend == "s3"
+
+    job = await jobs_service.get_job_or_404(db_session, uuid.UUID(job_id))
+    await db_session.refresh(job)
+    assert job.state != "failed"
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("cutover succeeded but marking done failed" in r.getMessage() for r in warnings)
 
 
 async def test_retry_migrate_storage_job_is_409(authenticated_client) -> None:

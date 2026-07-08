@@ -54,6 +54,7 @@ class Job(Base):
     # as a plain string rather than inventing a value list.
     state: Mapped[str] = mapped_column(String, nullable=False)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="3")
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(

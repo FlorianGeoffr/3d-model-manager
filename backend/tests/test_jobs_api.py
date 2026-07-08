@@ -322,6 +322,73 @@ async def test_store_to_backend_spool_cleanup_failure_does_not_flip_done_job_to_
     assert (data_dir / "spool" / job_id).exists()
 
 
+async def test_job_failing_at_retry_ceiling_is_parked_dead(db_session) -> None:
+    """A job that has already run ``max_attempts`` times (``mark_running``
+    increments ``attempts`` once per top-level run -- see module docstring
+    there) and fails on that final attempt is auto-parked ``dead`` rather
+    than left ``failed`` (Task 8: formal dead-letter state, distinct from a
+    plain first/early failure -- see ``test_..._stays_failed`` below).
+    """
+    token = uuid.uuid4()
+    job = await jobs_service.create_job(
+        db_session, id=token, type="store_to_backend", subject_type=None, subject_id=None
+    )
+    job.attempts = 3
+    job.max_attempts = 3
+    job.state = "running"
+    await db_session.commit()
+
+    with base.sync_session() as s:
+        jobs_service.mark_failed(s, str(job.id), "boom")
+
+    await db_session.refresh(job)
+    assert job.state == "dead"
+    assert job.error == "boom"
+
+
+async def test_job_failing_below_ceiling_stays_failed(db_session) -> None:
+    token = uuid.uuid4()
+    job = await jobs_service.create_job(
+        db_session, id=token, type="store_to_backend", subject_type=None, subject_id=None
+    )
+    job.attempts = 1
+    job.max_attempts = 3
+    job.state = "running"
+    await db_session.commit()
+
+    with base.sync_session() as s:
+        jobs_service.mark_failed(s, str(job.id), "boom")
+
+    await db_session.refresh(job)
+    assert job.state == "failed"
+
+
+async def test_retry_dead_job_is_allowed_as_manual_override(
+    authenticated_client: httpx.AsyncClient, db_session
+) -> None:
+    """``retry_job``'s 409 guard normally blocks anything but ``failed``, but
+    a manual retry must still work as the operator escape hatch for a
+    ``dead`` (auto-parked) job -- only the AUTOMATIC retry path stops at
+    ``dead``; there isn't one here (retries are always operator-driven), so
+    this is really "the guard doesn't wrongly reject `dead`" (Task 8).
+    """
+    job_id, file_id, path_str = await _seed_mismatched_job(db_session)
+    store_to_backend(job_id, file_id, path_str)
+
+    with base.sync_session() as s:
+        # Force the job straight to `dead`, as if it had already hit its
+        # retry ceiling, without needing to actually loop mark_failed calls.
+        job = s.get(jobs_service.Job, uuid.UUID(job_id))
+        job.state = "dead"
+        s.commit()
+
+    Path(path_str).write_bytes(b"actual-spool-content")  # re-seed, wasn't cleaned up on failure
+
+    response = await authenticated_client.post(f"/api/jobs/{job_id}/retry")
+
+    assert response.status_code == 200, response.text
+
+
 async def test_list_jobs_filters_by_state(
     authenticated_client: httpx.AsyncClient,
 ) -> None:
@@ -335,6 +402,13 @@ async def test_list_jobs_filters_by_state(
 
     assert any(j["id"] == job_id for j in done.json())
     assert not any(j["id"] == job_id for j in failed.json())
+
+    job = next(j for j in done.json() if j["id"] == job_id)
+    # Task 8: JobOut exposes both halves of the dead-letter ceiling so the
+    # frontend can compute "dead-lettered" (state == "dead" or
+    # attempts >= max_attempts) without a second round-trip.
+    assert job["attempts"] == 1
+    assert job["max_attempts"] == 3
 
 
 async def test_retry_unknown_job_is_404(authenticated_client: httpx.AsyncClient) -> None:

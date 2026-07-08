@@ -20,8 +20,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import lib3mf
+import pytest
 
-from app.pipeline import slicedmeta
+from app.models.enums import BlobFormat
+from app.pipeline import meshload, slicedmeta
 
 CORPUS_REAL_DIR = Path(__file__).parent / "corpus_real"
 
@@ -72,3 +74,15 @@ for _path in _PROJECT_3MF_FILES:
 for _path in _SLICED_GCODE_3MF_FILES:
     _fn = _make_sliced_gcode_3mf_test(_path)
     globals()[_fn.__name__] = _fn
+
+
+def test_dotc_part2_meter_unit_3mf_dims_are_mm() -> None:
+    """U1 regression against a real, committed export (not the synthetic
+    corpus): ``DotC parts - Part 2.3mf`` declares ``unit="meter"`` --
+    before the fix this loaded at ~0.0064mm extents (1000x too small).
+    """
+    path = CORPUS_REAL_DIR / "DotC parts - Part 2.3mf"  # git-tracked; unit="meter"
+    load = meshload.load_mesh(path, BlobFormat.THREEMF)
+    # empirically-derived correct mm extents (correctness map U1); precise
+    # assertion since the fixture is a fixed committed binary that won't drift.
+    assert load.mesh.extents == pytest.approx((6.4495, 6.44976, 2.8), rel=1e-3)

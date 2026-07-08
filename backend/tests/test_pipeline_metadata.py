@@ -27,6 +27,7 @@ from app.storage.local import LocalStorageBackend
 from app.tasks import pipeline
 from app.tasks.base import sync_session
 from app.tasks.pipeline import UnsupportedBlobError
+from tests import corpus
 from tests.corpus import CorpusPaths
 
 pytestmark = pytest.mark.usefixtures("library_root", "data_dir")
@@ -64,6 +65,18 @@ def test_load_mesh_native_formats_use_trimesh(
     assert loaded.mesh.area == pytest.approx(700.0)
 
 
+def test_load_mesh_3mf_meter_unit_normalizes_to_mm(corpus: CorpusPaths) -> None:
+    """``box_3mf_meter`` describes the same 20x10x5 mm box in metres
+    (``unit="meter"``, coordinates /1000) -- trimesh parses the ``<model
+    unit>`` attribute but never applies it, so before the U1 fix this comes
+    back as a ~1000x-too-small ``(0.02, 0.01, 0.005)`` mesh.
+    """
+    loaded = meshload.load_mesh(corpus.box_3mf_meter, BlobFormat.THREEMF)
+
+    assert loaded.tool == "trimesh"
+    assert loaded.mesh.extents == pytest.approx(EXPECTED_EXTENTS_MM, abs=1e-3)
+
+
 def test_load_mesh_bambu_3mf_falls_back_to_lib3mf(corpus: CorpusPaths) -> None:
     """The Production-Extension fixture defeats trimesh's build-item
     resolution -- proving the lib3mf fallback actually fired, not just that
@@ -82,6 +95,22 @@ def test_load_3mf_lib3mf_direct(corpus: CorpusPaths) -> None:
 
     assert len(mesh.faces) == 12
     assert mesh.extents == pytest.approx(EXPECTED_EXTENTS_MM)
+
+
+def test_load_3mf_lib3mf_meter_unit_normalizes_to_mm(tmp_path: Path) -> None:
+    """Same U1 regression as ``test_load_mesh_3mf_meter_unit_normalizes_to_mm``,
+    but driving ``load_3mf_lib3mf`` directly via a Production-Extension
+    meter-unit 3MF (``box_3mf_bambu_meter``: same layout as ``box_3mf_bambu``,
+    with ``unit="meter"`` and coordinates /1000), proving the lib3mf branch's
+    own unit-factor table -- not just the trimesh branch -- normalizes to mm.
+    """
+    path = tmp_path / "box_bambu_meter.3mf"
+    path.write_bytes(corpus.box_3mf_bambu_meter())
+
+    mesh = meshload.load_3mf_lib3mf(path)
+
+    assert len(mesh.faces) == 12
+    assert mesh.extents == pytest.approx(EXPECTED_EXTENTS_MM, abs=1e-3)
 
 
 def test_load_mesh_stl_raises_clearly_on_unparseable_content(tmp_path: Path) -> None:
@@ -293,6 +322,38 @@ async def test_extract_metadata_native_mesh_formats(
         content,
         rel_path=f"part.{blob_format.value}",
         blob_format=blob_format,
+    )
+
+    assert outcome == "done"
+    with sync_session() as session:
+        meta = session.get(BlobMeta, blob_hash)
+    assert meta.triangle_count == 12
+    assert meta.dims_mm == pytest.approx(list(EXPECTED_EXTENTS_MM))
+    assert meta.volume_cm3 == pytest.approx(EXPECTED_VOLUME_CM3)
+    assert meta.surface_area_cm2 == pytest.approx(EXPECTED_AREA_CM2)
+    assert meta.is_watertight is True
+    assert meta.raw == {"tool": "trimesh"}
+
+
+async def test_extract_metadata_3mf_meter_unit_yields_correct_mm_metadata(
+    db_session: AsyncSession,
+    backend: LocalStorageBackend,
+    seed_file,
+    corpus: CorpusPaths,
+) -> None:
+    """U1 regression through the full pipeline step: a meter-unit 3MF must
+    yield correct mm-scale ``dims_mm``/``volume_cm3``/``surface_area_cm2``,
+    not the ~1000x-too-small values the unfixed loader used to produce.
+    """
+    content = corpus.box_3mf_meter.read_bytes()
+
+    blob_hash, outcome = await _run_extract_metadata(
+        db_session,
+        backend,
+        seed_file,
+        content,
+        rel_path="part_meter.3mf",
+        blob_format=BlobFormat.THREEMF,
     )
 
     assert outcome == "done"

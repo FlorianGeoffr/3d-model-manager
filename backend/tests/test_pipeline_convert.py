@@ -50,6 +50,7 @@ def _round_trip(path: Path) -> trimesh.Trimesh:
         ("box_stl", BlobFormat.STL, "trimesh"),
         ("box_obj", BlobFormat.OBJ, "trimesh"),
         ("box_3mf_generic", BlobFormat.THREEMF, "trimesh"),
+        ("box_3mf_meter", BlobFormat.THREEMF, "trimesh"),
         ("box_3mf_bambu", BlobFormat.THREEMF, "lib3mf"),
         ("box_step", BlobFormat.STEP, "cascadio"),
         ("box_iges", BlobFormat.IGES, "cadquery-ocp"),

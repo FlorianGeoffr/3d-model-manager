@@ -5,6 +5,18 @@ row 1; RESEARCH §1): trimesh handles STL/OBJ/generic-3MF natively, but its
 Studio/OrcaSlicer project files reference their geometry by default. lib3mf
 (the 3MF Consortium's own reference implementation) is the fallback that
 DOES understand that layout.
+
+Both branches normalize the 3MF ``<model unit>`` attribute to millimetres
+(U1, correctness map) -- trimesh parses it but never applies it, and lib3mf
+exposes it as a raw ``ModelUnit`` enum the caller has to scale by itself.
+Accepted tradeoff: a non-spec unit string now raises a clear ``ValueError``
+(``guess=False``) at extract/convert time instead of silently mis-scaling --
+a correctness improvement, but a previously-"succeeding" pathological upload
+could newly fail (none observed in the corpus). This is a pure loader fix
+with no migration: any meter-unit (or otherwise non-mm) 3MF ingested before
+this change keeps its wrong ``BlobMeta``/GLB under the skip-if-exists
+idempotency in ``app.tasks.pipeline`` -- re-upload, or manually delete its
+``BlobMeta``/``Derivative`` rows, to reprocess it.
 """
 
 from __future__ import annotations
@@ -21,6 +33,10 @@ from app.models.enums import BlobFormat
 class MeshLoad(NamedTuple):
     mesh: trimesh.Trimesh
     tool: str
+
+
+# lib3mf.ModelUnit codes (Lib3MF.py): MicroMeter=0 .. Meter=5 -> mm-per-unit.
+_LIB3MF_UNIT_TO_MM = {0: 0.001, 1: 1.0, 2: 10.0, 3: 25.4, 4: 304.8, 5: 1000.0}
 
 
 def to_single_mesh(loaded: trimesh.Trimesh | trimesh.Scene) -> trimesh.Trimesh:
@@ -65,6 +81,13 @@ def load_mesh(path: Path, fmt: BlobFormat) -> MeshLoad:
     except Exception:  # noqa: BLE001 - any load failure means "fall back to lib3mf"
         mesh = None
     if mesh is not None and len(mesh.faces) > 0:
+        # Apply the 3MF <model unit> attribute trimesh parsed but never
+        # applies (units default to "millimeter" per the 3MF spec, so this
+        # is a no-op factor 1.0 for the common case; guess=False raises a
+        # clear ValueError on a non-spec unit string rather than silently
+        # mis-scaling -- U1, correctness map). Fixes BOTH dims/volume/area
+        # AND the GLB derivative, since convert_to_glb_file uses this loader.
+        mesh.convert_units("millimeters", guess=False)
         return MeshLoad(mesh, "trimesh")
     return MeshLoad(load_3mf_lib3mf(path), "lib3mf")
 
@@ -96,4 +119,8 @@ def load_3mf_lib3mf(path: Path) -> trimesh.Trimesh:
 
     if not meshes:
         raise ValueError(f"no mesh objects found in 3mf: {path}")
-    return trimesh.util.concatenate(meshes)
+    factor = _LIB3MF_UNIT_TO_MM.get(int(model.GetUnit()), 1.0)
+    merged = trimesh.util.concatenate(meshes)
+    if factor != 1.0:
+        merged.apply_scale(factor)  # normalize to mm (no-op for MilliMeter)
+    return merged

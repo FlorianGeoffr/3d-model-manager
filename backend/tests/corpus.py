@@ -82,11 +82,15 @@ _ROOT_RELS_XML = (
 )
 
 
-def _cube_mesh_xml() -> str:
+def _cube_mesh_xml(scale: float = 1.0) -> str:
     """The ``<mesh>`` fragment for the shared cube, ready to embed inside an
-    ``<object>`` element.
+    ``<object>`` element. ``scale`` multiplies each coordinate (e.g. 0.001 to
+    describe the same physical box in metres per the 3MF ``<model unit>``
+    attribute).
     """
-    vertices = "".join(f'<vertex x="{x}" y="{y}" z="{z}"/>' for x, y, z in _CUBE_VERTICES)
+    vertices = "".join(
+        f'<vertex x="{x * scale}" y="{y * scale}" z="{z * scale}"/>' for x, y, z in _CUBE_VERTICES
+    )
     triangles = "".join(f'<triangle v1="{a}" v2="{b}" v3="{c}"/>' for a, b, c in _CUBE_TRIANGLES)
     return f"<mesh><vertices>{vertices}</vertices><triangles>{triangles}</triangles></mesh>"
 
@@ -121,17 +125,19 @@ def box_obj() -> bytes:
     return box.export(file_type="obj").encode()
 
 
-def box_3mf_generic() -> bytes:
-    """A hand-built, core-spec 3MF (no Production Extension): the cube mesh
-    is defined inline in the root ``3D/3dmodel.model`` -- exactly the shape
-    trimesh's loader handles natively.
+def _build_3mf(unit: str, scale: float = 1.0) -> bytes:
+    """Shared core-spec 3MF builder behind ``box_3mf_generic``/``box_3mf_meter``:
+    a single inline-mesh object referenced by one ``<build><item>``,
+    parametrized by the ``<model unit>`` attribute and the vertex-coordinate
+    scale (see ``_cube_mesh_xml``) needed to describe the same physical box
+    in that unit.
     """
     model_xml = (
         '<?xml version="1.0" encoding="UTF-8"?>'
-        '<model unit="millimeter" xml:lang="en-US" '
+        f'<model unit="{unit}" xml:lang="en-US" '
         'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
         "<resources>"
-        f'<object id="1" type="model">{_cube_mesh_xml()}</object>'
+        f'<object id="1" type="model">{_cube_mesh_xml(scale)}</object>'
         "</resources>"
         '<build><item objectid="1"/></build>'
         "</model>"
@@ -145,15 +151,36 @@ def box_3mf_generic() -> bytes:
     )
 
 
-def _box_3mf_bambu_members(extra: dict[str, str | bytes] | None = None) -> dict[str, str | bytes]:
+def box_3mf_generic() -> bytes:
+    """A hand-built, core-spec 3MF (no Production Extension): the cube mesh
+    is defined inline in the root ``3D/3dmodel.model`` -- exactly the shape
+    trimesh's loader handles natively.
+    """
+    return _build_3mf(unit="millimeter")
+
+
+def box_3mf_meter() -> bytes:
+    """A 20x10x5 mm box described in METRES (unit="meter", coords /1000) --
+    the U1 regression fixture: a correct loader must scale it back to mm.
+    """
+    return _build_3mf(unit="meter", scale=0.001)
+
+
+def _box_3mf_bambu_members(
+    extra: dict[str, str | bytes] | None = None,
+    *,
+    unit: str = "millimeter",
+    scale: float = 1.0,
+) -> dict[str, str | bytes]:
     """Shared zip member dict for the Production-Extension Bambu-shaped 3MF
-    fixtures below (``box_3mf_bambu``/``box_3mf_bambu_with_thumb``): identical
-    geometry layout, optionally merged with extra (e.g. ``Metadata/*``)
-    members.
+    fixtures below (``box_3mf_bambu``/``box_3mf_bambu_with_thumb``/
+    ``box_3mf_bambu_meter``): identical geometry layout, optionally merged
+    with extra (e.g. ``Metadata/*``) members, parametrized by the ``<model
+    unit>`` attribute and vertex scale (see ``_cube_mesh_xml``).
     """
     root_model_xml = (
         '<?xml version="1.0" encoding="UTF-8"?>'
-        '<model unit="millimeter" xml:lang="en-US" '
+        f'<model unit="{unit}" xml:lang="en-US" '
         'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" '
         'xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06" '
         'requiredextensions="p">'
@@ -163,10 +190,10 @@ def _box_3mf_bambu_members(extra: dict[str, str | bytes] | None = None) -> dict[
     )
     object_model_xml = (
         '<?xml version="1.0" encoding="UTF-8"?>'
-        '<model unit="millimeter" xml:lang="en-US" '
+        f'<model unit="{unit}" xml:lang="en-US" '
         'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
         "<resources>"
-        f'<object id="1" type="model">{_cube_mesh_xml()}</object>'
+        f'<object id="1" type="model">{_cube_mesh_xml(scale)}</object>'
         "</resources>"
         "<build/>"
         "</model>"
@@ -201,6 +228,16 @@ def box_3mf_bambu() -> bytes:
     entries at all -- the "no embedded thumbnail" case.
     """
     return _write_zip(_box_3mf_bambu_members())
+
+
+def box_3mf_bambu_meter() -> bytes:
+    """Same Production-Extension geometry/layout as ``box_3mf_bambu`` (so it
+    still defeats trimesh's build-item resolution and exercises the lib3mf
+    fallback), but described in METRES (``unit="meter"``, coordinates /1000)
+    -- the U1 regression fixture for the lib3mf branch's own unit-factor
+    table, mirroring ``box_3mf_meter``'s trimesh-branch counterpart.
+    """
+    return _write_zip(_box_3mf_bambu_members(unit="meter", scale=0.001))
 
 
 def box_3mf_bambu_with_thumb() -> bytes:
@@ -452,6 +489,7 @@ class CorpusPaths:
     box_stl: Path
     box_obj: Path
     box_3mf_generic: Path
+    box_3mf_meter: Path
     box_3mf_bambu: Path
     box_3mf_bambu_with_thumb: Path
     sliced_gcode_3mf: Path

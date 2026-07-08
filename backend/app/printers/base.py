@@ -29,7 +29,7 @@ class PrinterConnection:
 
     host: str
     serial: str
-    access_code: str
+    access_code: str = field(repr=False)
     model: str | None = None
     options: dict = field(default_factory=dict)
 

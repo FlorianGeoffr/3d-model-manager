@@ -190,7 +190,7 @@ async def test_put_omitted_smb_password_keeps_stored_secret(
 
     stored = await get_active_config(db_session, get_settings())
     assert stored.host == "new-fileserver.local"
-    assert stored.password == "hunter2"
+    assert stored.password.get_secret_value() == "hunter2"
 
 
 async def test_put_redacted_sentinel_smb_password_keeps_stored_secret(
@@ -223,7 +223,7 @@ async def test_put_redacted_sentinel_smb_password_keeps_stored_secret(
     assert update_response.status_code == 200, update_response.text
     stored = await get_active_config(db_session, get_settings())
     assert stored.host == "another-fileserver.local"
-    assert stored.password == "hunter2"
+    assert stored.password.get_secret_value() == "hunter2"
 
 
 async def test_put_omitted_s3_secret_key_keeps_stored_secret(
@@ -262,7 +262,7 @@ async def test_put_omitted_s3_secret_key_keeps_stored_secret(
 
     stored = await get_active_config(db_session, get_settings())
     assert stored.bucket == "renamed-bucket"
-    assert stored.secret_key == "super-secret-value"
+    assert stored.secret_key.get_secret_value() == "super-secret-value"
 
 
 async def test_put_new_secret_value_is_not_clobbered_by_merge(
@@ -294,7 +294,7 @@ async def test_put_new_secret_value_is_not_clobbered_by_merge(
 
     assert update_response.status_code == 200, update_response.text
     stored = await get_active_config(db_session, get_settings())
-    assert stored.password == "brand-new-secret"
+    assert stored.password.get_secret_value() == "brand-new-secret"
 
 
 async def test_put_blank_secret_with_no_stored_config_of_that_type_still_422s(
@@ -390,4 +390,4 @@ async def test_connection_test_reuses_stored_secret_when_omitted(
 
     assert response.status_code == 200, response.text
     assert response.json()["ok"] is True
-    assert captured["config"].password == "hunter2"
+    assert captured["config"].password.get_secret_value() == "hunter2"

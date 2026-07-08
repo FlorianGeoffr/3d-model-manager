@@ -9,6 +9,15 @@ from tests.cassettes import bambu_snapshots as snap
 CONN = PrinterConnection(host="1.2.3.4", serial="0309ABC", access_code="12345678")
 
 
+def test_printer_connection_repr_hides_access_code():
+    """M6 A2: ``access_code`` must never appear in an object repr/traceback
+    dump -- ``field(repr=False)`` on the dataclass, not a full ``SecretStr``
+    (the M4 scrub call sites below still compare it as a plain ``str``)."""
+    c = PrinterConnection(host="h", serial="s", access_code="12345678")
+    assert "12345678" not in repr(c)
+    assert c.access_code == "12345678"  # reads stay a plain str -- no call-site churn
+
+
 class StubPrinter:
     """Edge stub for a bambulabs_api.Printer -- records calls, canned status."""
 

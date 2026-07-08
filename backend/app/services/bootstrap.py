@@ -35,10 +35,13 @@ async def ensure_admin_user(session: AsyncSession) -> None:
         return
 
     settings = get_settings()
-    password = settings.admin_password
-    generated = password is None
-    if generated:
-        password = secrets.token_urlsafe(_GENERATED_PASSWORD_BYTES)
+    configured = settings.admin_password
+    generated = configured is None
+    password = (
+        secrets.token_urlsafe(_GENERATED_PASSWORD_BYTES)
+        if generated
+        else configured.get_secret_value()
+    )
 
     user = User(username=settings.admin_username, password_hash=hash_password(password))
     session.add(user)

@@ -18,6 +18,26 @@ def _settings(tmp_path, **kw) -> Settings:
     return Settings(data_dir=tmp_path / "data", **kw)
 
 
+def test_settings_repr_masks_secrets(tmp_path):
+    """M6 A2: ``admin_password``/``printer_key`` are ``SecretStr`` -- neither
+    the raw value nor a decoded key ever appears in ``Settings``' own
+    ``repr()``/``str()`` (object-dump/traceback leak)."""
+    s = _settings(tmp_path, admin_password="hunter2", printer_key="zzz-printer-key-zzz")
+    assert "hunter2" not in repr(s) and "hunter2" not in str(s)
+    assert "zzz-printer-key-zzz" not in repr(s) and "zzz-printer-key-zzz" not in str(s)
+
+
+def test_printer_key_from_settings_secret_str_returns_usable_bytes(tmp_path):
+    """``load_or_create_printer_key`` must unwrap the ``SecretStr`` (not hand
+    back the object, and not e.g. ``str(secretstr).encode()`` which would
+    yield the constant ``b"**********"`` instead of the real key)."""
+    key = Fernet.generate_key().decode()
+    s = _settings(tmp_path, printer_key=key)
+    raw = load_or_create_printer_key(s)
+    assert raw == key.encode()
+    Fernet(raw)  # a genuinely usable Fernet key, not the masked placeholder
+
+
 def test_round_trip(tmp_path):
     s = _settings(tmp_path)
     token = encrypt_secret(s, "12345678")

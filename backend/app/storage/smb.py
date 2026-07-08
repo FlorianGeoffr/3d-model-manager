@@ -103,7 +103,7 @@ class SmbStorageBackend:
         # every single call, not just the initial session registration.
         self._kwargs = {
             "username": self._c.username,
-            "password": self._c.password,
+            "password": self._c.password.get_secret_value(),
             "port": self._c.port,
             "encrypt": self._c.encrypt,
         }

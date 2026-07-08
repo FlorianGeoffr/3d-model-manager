@@ -44,11 +44,21 @@ SETTINGS_KEY = "storage"
 
 def encrypt_config_secret(settings: Settings, config: StorageConfig) -> dict:
     """``model_dump`` the config with its secret field Fernet-encrypted (a
-    no-op for ``LocalConfig`` or a backend whose secret is unset)."""
+    no-op for ``LocalConfig`` or a backend whose secret is unset).
+
+    M6 A2: ``model_dump()``'s secret field is now always the masked ``"***"``
+    sentinel (secure by default -- see ``app.storage.config``), so the real
+    plaintext is read straight off the ``config`` attribute via the explicit
+    ``.get_secret_value()`` escape hatch instead, and always written back
+    over whatever ``model_dump()`` put there -- no ``SecretStr`` object and
+    no ``"***"`` sentinel ever reaches the at-rest JSONB.
+    """
     data = config.model_dump()
     field = SECRET_FIELD_BY_BACKEND.get(data.get("backend"))
-    if field and data.get(field):
-        data[field] = encrypt_secret(settings, data[field])
+    if field:
+        secret = getattr(config, field, None)  # a SecretStr | None
+        plaintext = secret.get_secret_value() if secret is not None else None
+        data[field] = encrypt_secret(settings, plaintext) if plaintext else ""
     return data
 
 

@@ -8,6 +8,7 @@ list of supported variables.
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,9 +21,8 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     data_dir: Path = Path("./data")
     library_root: Path = Path("./library")
-    secret_key: str = "dev-insecure"  # reserved for future signed tokens; unused in M1/M2
     admin_username: str = "admin"
-    admin_password: str | None = None
+    admin_password: SecretStr | None = None
     cookie_secure: bool = False
     # How often GET /api/events sends a `: ping` heartbeat comment while idle
     # (Task 6). Overridable so tests don't have to wait a real 15s.
@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     # Overrides the on-disk Fernet key at {data_dir}/secrets/printer.key when
     # set (e.g. to share one key across api/worker/printerd via env instead of
     # a shared volume). A urlsafe-base64 32-byte Fernet key.
-    printer_key: str | None = None
+    printer_key: SecretStr | None = None
 
 
 @lru_cache

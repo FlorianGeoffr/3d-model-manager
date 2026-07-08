@@ -35,13 +35,29 @@ async def _seed_migrate_job(db_session) -> str:
     return str(token)
 
 
+def _plain_target(config) -> dict:
+    """``model_dump()`` but with the REAL secret substituted back in.
+
+    M6 A2 (secure-by-default): ``model_dump()`` now always masks the secret
+    field to ``"***"``, so it can no longer stand in for a raw dispatch
+    payload. Substituting the real value here exercises exactly the same
+    "plaintext row" fallback in ``decrypt_config_row`` (``InvalidToken`` ->
+    use-as-is) that a genuine pre-M6 legacy row would take -- these tests
+    call ``migrate_storage`` directly, bypassing the API's own
+    ``encrypt_config_secret`` dispatch wrapping (``app.api.settings``).
+    """
+    data = config.model_dump()
+    data["secret_key"] = config.secret_key.get_secret_value()
+    return data
+
+
 async def test_migrate_copies_verifies_and_cuts_over(
     db_session, backend: LocalStorageBackend, s3_backend
 ) -> None:
     backend.write("widget/rev-001/part.stl", [b"first-file-bytes"])
     backend.write("widget/rev-001/notes/readme.txt", [b"second-file-bytes"])
     job_id = await _seed_migrate_job(db_session)
-    target = s3_backend.config.model_dump()
+    target = _plain_target(s3_backend.config)
 
     migrate_storage(job_id, target)
 
@@ -52,7 +68,7 @@ async def test_migrate_copies_verifies_and_cuts_over(
         active = get_active_config_sync(s, get_settings())
     assert active.backend == "s3"
     assert active.bucket == target["bucket"]
-    assert active.secret_key == target["secret_key"]
+    assert active.secret_key.get_secret_value() == target["secret_key"]
 
     # M6 A1.5.2: the target travels encrypted over the broker and the
     # cutover writes it back to the settings row encrypted too.
@@ -69,7 +85,7 @@ async def test_migrate_leaves_source_intact(
 ) -> None:
     backend.write("widget/rev-001/part.stl", [b"do-not-delete-me"])
     job_id = await _seed_migrate_job(db_session)
-    target = s3_backend.config.model_dump()
+    target = _plain_target(s3_backend.config)
 
     migrate_storage(job_id, target)
 
@@ -87,7 +103,7 @@ async def test_migrate_never_touches_derivatives(
     deriv_path.write_bytes(b"derivative-bytes")
 
     job_id = await _seed_migrate_job(db_session)
-    target = s3_backend.config.model_dump()
+    target = _plain_target(s3_backend.config)
 
     migrate_storage(job_id, target)
 
@@ -107,7 +123,7 @@ async def test_migrate_hash_mismatch_marks_failed_and_does_not_cut_over(
 ) -> None:
     backend.write("widget/rev-001/part.stl", [b"tampered-in-flight"])
     job_id = await _seed_migrate_job(db_session)
-    target = s3_backend.config.model_dump()
+    target = _plain_target(s3_backend.config)
 
     original_write = S3StorageBackend.write
 

@@ -84,6 +84,33 @@ async def test_ensure_admin_user_generates_and_logs_password_once(
     assert verify_password(generated_password, user.password_hash) is True
 
 
+async def test_bootstrap_still_logs_the_real_generated_password(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """M6 A2: ``admin_password`` becomes a ``SecretStr``, but when it's
+    unset a random one is generated and logged ONCE in cleartext -- the
+    only recovery path. ``SecretStr`` must NOT mask THAT log (e.g. by some
+    refactor accidentally routing it through ``str(secret_str)``, which
+    would log the constant ``"**********"`` instead of a real, usable
+    password)."""
+    monkeypatch.setenv("TDMM_ADMIN_USERNAME", "admin")
+    monkeypatch.delenv("TDMM_ADMIN_PASSWORD", raising=False)
+    get_settings.cache_clear()
+
+    with caplog.at_level(logging.WARNING, logger="app.services.bootstrap"):
+        await ensure_admin_user(db_session)
+
+    message = next(r for r in caplog.records if r.levelno == logging.WARNING).getMessage()
+    assert "**********" not in message  # SecretStr's own repr mask must never leak in here
+    password_line = next(line for line in message.splitlines() if "password:" in line)
+    generated_password = password_line.split("password:", 1)[1].strip()
+
+    user = (await db_session.execute(select(User))).scalar_one()
+    assert verify_password(generated_password, user.password_hash) is True
+
+
 async def test_ensure_admin_user_does_not_relog_on_restart(
     db_session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,

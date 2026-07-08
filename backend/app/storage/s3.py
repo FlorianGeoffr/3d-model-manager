@@ -111,7 +111,7 @@ class S3StorageBackend:
             endpoint_url=config.endpoint_url,
             region_name=config.region or "us-east-1",
             aws_access_key_id=config.access_key,
-            aws_secret_access_key=config.secret_key,
+            aws_secret_access_key=config.secret_key.get_secret_value(),
             config=BotoConfig(
                 s3={"addressing_style": config.addressing},
                 # botocore's newer flexible-checksum feature validates a

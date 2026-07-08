@@ -22,7 +22,7 @@ async def test_set_active_config_writes_ciphertext_not_plaintext(db_session):
     row = await db_session.get(Setting, "storage")
     assert row.value["password"] != "hunter2"  # ciphertext at rest
     back = await storage_config.get_active_config(db_session, s)
-    assert back.password == "hunter2"  # decrypts on read
+    assert back.password.get_secret_value() == "hunter2"  # decrypts on read
 
 
 @pytest.mark.asyncio
@@ -47,12 +47,13 @@ async def test_legacy_plaintext_row_reads_and_gets_reencrypted(db_session):
     await db_session.commit()
     # read still works (InvalidToken -> use-as-is fallback)
     cfg = await storage_config.get_active_config(db_session, s)
-    assert cfg.password == "plaintext123"
+    assert cfg.password.get_secret_value() == "plaintext123"
     # eager upgrade re-encrypts it at rest
     await reencrypt_secrets_at_rest(db_session, s)
     row = await db_session.get(Setting, "storage")
     assert row.value["password"] != "plaintext123"
-    assert (await storage_config.get_active_config(db_session, s)).password == "plaintext123"
+    back = await storage_config.get_active_config(db_session, s)
+    assert back.password.get_secret_value() == "plaintext123"
 
 
 @pytest.mark.asyncio

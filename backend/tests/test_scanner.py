@@ -14,15 +14,18 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Awaitable, Callable
+import time
+from collections.abc import Awaitable, Callable, Iterator
+from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.models import Blob, File, Job, Model, Revision, ScanRun
 from app.services import layout, scanner
+from app.storage.base import EntryInfo
 from app.storage.errors import StorageKeyNotFound
 from app.storage.local import LocalStorageBackend
 from app.tasks import base
@@ -538,3 +541,186 @@ async def test_unreadable_file_recorded_as_error_and_scan_continues(
     await db_session.refresh(ok_file)
     assert ok_file.verified_at is not None
     assert scan_run.report["verified"] == 1
+
+
+# ---------------------------------------------------------------------------
+# D2 (M6 Task 6): pass-2 N+1 batching + per-chunk checkpoint commits.
+#
+# `_FakeWalkBackend` isolates these from real disk I/O -- `walk` yields
+# synthetic entries and `read` returns tiny deterministic bytes -- so the
+# assertions below measure DB round trips and wall-clock, not I/O. Every
+# synthetic file under one backend shares IDENTICAL content (one digest for
+# the whole harness): that's what makes the harness deterministic and
+# side-effect-free -- only the very first ever-seen file triggers the
+# "brand new blob" branch (one best-effort pipeline dispatch total,
+# regardless of file count N); every other file lands on the "known hash,
+# no relink candidate" adopted-duplicate branch. A real scan with N
+# distinct files would still batch the SAME round trips (the batching is
+# per-chunk, not content-dependent) -- this just keeps the test's own
+# incidental pipeline-dispatch cost from scaling with N.
+# ---------------------------------------------------------------------------
+
+
+class _FakeWalkBackend:
+    """Synthetic in-memory backend for the pass-2 perf/query-count harness
+    (Task 6 brief Step 5): ``walk`` yields ``n`` synthetic entries under
+    ``prefix`` with zero real disk I/O, and ``read`` always returns the same
+    small deterministic payload -- unique to THIS backend's ``prefix`` (not
+    a shared class-level constant), so two harness runs against different
+    prefixes never accidentally share a ``Blob`` row and skew each other's
+    query count -- so every entry hashes to one shared digest (see module
+    comment above).
+    """
+
+    def __init__(self, prefix: str, n: int) -> None:
+        self._prefix = prefix
+        self._n = n
+        self.content = f"fake-pass2-bytes:{prefix}".encode()
+
+    def walk(self, prefix: str = "") -> Iterator[EntryInfo]:
+        mtime = datetime.now(UTC)
+        for i in range(self._n):
+            yield EntryInfo(key=f"{self._prefix}/{i:06d}.stl", size=len(self.content), mtime=mtime)
+
+    def read(self, key: str, start: int = 0, end: int | None = None) -> Iterator[bytes]:
+        yield self.content
+
+
+def _count_statements(fn: Callable[[], None]) -> int:
+    """Run ``fn``, counting every SQL statement executed against the worker
+    sync engine (``app.tasks.base``) meanwhile."""
+    engine = base.get_sync_engine()
+    count = 0
+
+    def _tick(*_args: object, **_kwargs: object) -> None:
+        nonlocal count
+        count += 1
+
+    event.listen(engine, "before_cursor_execute", _tick)
+    try:
+        fn()
+    finally:
+        event.remove(engine, "before_cursor_execute", _tick)
+    return count
+
+
+async def _scan_and_count(db_session: AsyncSession, slug: str, n: int) -> int:
+    await _create_model_and_revision(db_session, slug, slug)
+    backend = _FakeWalkBackend(f"{slug}/rev-001_initial", n)
+    scan_run_id = _create_scan_run()
+    settings = get_settings()
+
+    def _run() -> None:
+        with base.sync_session() as session:
+            scanner.run_scan(session, settings, backend, scan_run_id)
+
+    return _count_statements(_run)
+
+
+async def test_pass2_query_count_is_bounded_regardless_of_file_count(
+    db_session: AsyncSession,
+) -> None:
+    """RED->GREEN pin for D2: pre-fix, `_reconcile_unknown` pays ~6 sync DB
+    round trips per unknown file (`session.get(Blob)`, the adopt-target
+    selects, the Blob/File insert-flushes), so the executed-statement count
+    scales ~linearly with file count. Post-fix, pass 2 preloads adopt
+    targets once and batches the blob-existence lookup + inserts per chunk,
+    so the count should grow with chunk count, not file count -- both n=50
+    and n=500 fit in one `_CHUNK` (500), so the two counts should be nearly
+    identical (today they're roughly 10x apart).
+    """
+    count_50 = await _scan_and_count(db_session, "bulkq50", 50)
+    count_500 = await _scan_and_count(db_session, "bulkq500", 500)
+    print(f"\nD2 query-count harness: count_50={count_50} count_500={count_500}")
+    assert count_500 < count_50 * 3
+
+
+# ---------------------------------------------------------------------------
+# Checkpointing: a mid-scan crash must keep earlier chunks' committed data.
+# ---------------------------------------------------------------------------
+
+
+async def test_checkpoint_commit_survives_mid_scan_crash(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D2 checkpointing: pass 2 commits per chunk, so when a LATER chunk
+    raises, EARLIER chunks' adopted rows must already be durably committed
+    -- queryable from a totally fresh session/connection, not just visible
+    within the now-crashed transaction. `scan_library` (the Celery task
+    wrapping `run_scan`) still marks the run `failed` on the exception; this
+    test pins that prior chunks' *data* survives regardless.
+    """
+    await _create_model_and_revision(db_session, "chkpt", "Checkpoint")
+    monkeypatch.setattr(scanner, "_CHUNK", 2)
+
+    backend = _FakeWalkBackend("chkpt/rev-001_initial", 4)  # -> two chunks of 2
+
+    real_chunk = scanner._reconcile_unknown_chunk
+    calls = 0
+
+    def flaky_chunk(*args: object, **kwargs: object) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("boom mid-scan")
+        real_chunk(*args, **kwargs)
+
+    monkeypatch.setattr(scanner, "_reconcile_unknown_chunk", flaky_chunk)
+
+    scan_run_id = _create_scan_run()
+    settings = get_settings()
+    with pytest.raises(RuntimeError, match="boom mid-scan"), base.sync_session() as session:
+        scanner.run_scan(session, settings, backend, scan_run_id)
+
+    # A brand-new session/connection: proves the first chunk's two adopted
+    # files were actually COMMITTED, not merely visible inside the crashed
+    # transaction's own session.
+    with base.sync_session() as fresh:
+        files = fresh.execute(select(File)).scalars().all()
+        assert len(files) == 2
+
+
+# ---------------------------------------------------------------------------
+# 50k-file perf harness (Task 6 brief Step 5): a regression tripwire, not a
+# benchmark -- the query-count bound is the machine-independent signal, the
+# wall-clock bound is a generous CI-safe backstop.
+# ---------------------------------------------------------------------------
+
+
+def test_pass2_scales_to_50k_files_with_bounded_queries_and_time(
+    migrated_db: str,
+) -> None:
+    settings = get_settings()
+    with base.sync_session() as session:
+        model = Model(slug="bulk50k", name="Bulk 50k")
+        session.add(model)
+        session.flush()
+        revision = Revision(model_id=model.id, number=1, name="initial", dir_name="rev-001_initial")
+        session.add(revision)
+        session.flush()
+        model.current_revision_id = revision.id
+        session.commit()
+
+    backend = _FakeWalkBackend("bulk50k/rev-001_initial", 50_000)
+    scan_run_id = _create_scan_run()
+
+    def _run() -> None:
+        with base.sync_session() as session:
+            scanner.run_scan(session, settings, backend, scan_run_id)
+
+    start = time.monotonic()
+    count = _count_statements(_run)
+    elapsed = time.monotonic() - start
+    print(f"\nD2 50k harness: statements={count} elapsed={elapsed:.2f}s")
+
+    with base.sync_session() as session:
+        scan_run = session.get(ScanRun, scan_run_id)
+        assert scan_run.state == "done"
+        assert scan_run.adopted == 50_000
+
+    # ~100 chunks (50_000 / _CHUNK=500) worth of overhead, nowhere near one
+    # round trip per file (which would be tens of thousands of statements).
+    assert count < 1_000
+    # Generous CI-safe tripwire -- see module comment.
+    assert elapsed < 30

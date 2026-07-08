@@ -98,6 +98,15 @@ logger = logging.getLogger(__name__)
 # rounding, not a meaningful window for anything else.
 _MTIME_TOLERANCE_S = 2.0
 
+# Pass-2 chunk size (D2, M6 Task 6): unknown-path entries are reconciled
+# `_CHUNK` at a time, each chunk's DB work batched into a small constant
+# number of round trips and then committed -- a checkpoint, so a mid-scan
+# crash keeps every earlier chunk's already-committed data rather than
+# rolling the whole run back. A module-level name (not a local/parameter
+# default) so tests can `monkeypatch.setattr(scanner, "_CHUNK", ...)` to
+# exercise multi-chunk behavior against a small fake walk.
+_CHUNK = 500
+
 
 def mark_scan_state(session: Session, scan_run_id: int, state: str) -> None:
     """Transition a ``ScanRun``'s ``state`` (Celery task bookkeeping, called
@@ -130,6 +139,13 @@ def run_scan(
     two byte-identical files sharing a basename in different models, moving
     one could falsely relink the other, silently corrupting a still-present
     file's ``storage_path`` while reporting the actually-moved file missing.
+
+    Pass 2 itself runs in ``_CHUNK``-sized batches (D2, M6 Task 6): every
+    adopt target it could need is preloaded ONCE, up front, via
+    ``_preload_adopt_targets`` -- never mid-chunk -- and each chunk commits
+    when it's done (a checkpoint: a mid-scan crash keeps every earlier
+    chunk's data). None of this moves any work earlier than the full pass-1
+    walk above; it only changes how pass 2's own DB round trips are batched.
     """
     scan_run = session.get(ScanRun, scan_run_id)
     if scan_run is None:
@@ -188,19 +204,31 @@ def run_scan(
     draft_models: dict[str, tuple[Model, Revision]] = {}
 
     # --- Pass 2: resolve every UNKNOWN path against the confirmed-missing --
-    # --- set only. -----------------------------------------------------
-    for entry in deferred:
-        _reconcile_unknown(
+    # --- set only, in `_CHUNK`-sized batches (D2). One-shot preload of --
+    # --- every adopt target the chunks could need (mirrors the --
+    # --- `files_by_path` snapshot above), THEN chunk -- never before the --
+    # --- full pass-1 walk above has computed `missing_candidates`. --------
+    models_by_slug, revisions_by_key, taken = _preload_adopt_targets(session, deferred)
+    for i in range(0, len(deferred), _CHUNK):
+        _reconcile_unknown_chunk(
             session,
             backend,
-            entry,
+            deferred[i : i + _CHUNK],
             missing_candidates,
             draft_models,
+            models_by_slug,
+            revisions_by_key,
+            taken,
             adopted_index,
             now,
             counters,
             report,
         )
+        # Checkpoint: a crash partway through a large scan keeps every
+        # already-processed chunk's data rather than rolling the whole run
+        # back (D2). The caller (`scan_library`) still marks the ScanRun
+        # `failed` if a later chunk raises.
+        session.commit()
 
     missing_files = list(missing_candidates.values())
     slug_by_file_id = _slugs_for_files(session, [f.id for f in missing_files])
@@ -331,15 +359,6 @@ def _find_relink_candidate(
     return matches[0] if matches else None
 
 
-def _rel_path_taken(session: Session, revision_id: int, rel_path: str) -> bool:
-    return (
-        session.scalar(
-            select(File.id).where(File.revision_id == revision_id, File.rel_path == rel_path)
-        )
-        is not None
-    )
-
-
 def _unique_slug_sync(session: Session, name: str) -> str:
     base = layout.slug_for(name)
     slug = base
@@ -350,25 +369,71 @@ def _unique_slug_sync(session: Session, name: str) -> str:
     return slug
 
 
+def _preload_adopt_targets(
+    session: Session, deferred: list[EntryInfo]
+) -> tuple[dict[str, Model], dict[tuple[int, str], Revision], set[tuple[int, str]]]:
+    """One-shot bulk load of every adopt target pass 2's chunks could need
+    (D2, M6 Task 6), replacing the per-file ``select(Model)``/
+    ``select(Revision)``/``_rel_path_taken`` round trips with in-memory
+    dict/set lookups. Mirrors ``run_scan``'s ``files_by_path`` snapshot
+    pattern -- called once, before any chunk runs, off the FULL ``deferred``
+    list (never re-run mid-scan; ``_resolve_adopt_target`` keeps these
+    structures current in-place as it creates draft models or attaches
+    files during the chunk loop).
+    """
+    slugs = {p[0] for e in deferred if len(p := e.key.split("/")) >= 3}
+    if not slugs:
+        return {}, {}, set()
+
+    models = list(session.execute(select(Model).where(Model.slug.in_(slugs))).scalars())
+    models_by_slug = {m.slug: m for m in models}
+
+    model_ids = [m.id for m in models]
+    revisions_by_key: dict[tuple[int, str], Revision] = {}
+    taken: set[tuple[int, str]] = set()
+    if model_ids:
+        for rev in session.execute(
+            select(Revision).where(Revision.model_id.in_(model_ids))
+        ).scalars():
+            revisions_by_key[(rev.model_id, rev.dir_name)] = rev
+        rev_ids = [r.id for r in revisions_by_key.values()]
+        if rev_ids:
+            for rid, rel in session.execute(
+                select(File.revision_id, File.rel_path).where(File.revision_id.in_(rev_ids))
+            ):
+                taken.add((rid, rel))
+    return models_by_slug, revisions_by_key, taken
+
+
 def _resolve_adopt_target(
     session: Session,
     backend: StorageBackend,
     key: str,
     draft_models: dict[str, tuple[Model, Revision]],
+    models_by_slug: dict[str, Model],
+    revisions_by_key: dict[tuple[int, str], Revision],
+    taken: set[tuple[int, str]],
 ) -> tuple[Model, Revision, str]:
     """Where an adopted ``key`` should attach: an existing model+revision if
     it fits ``<slug>/<dir_name>/<rel...>``, otherwise a draft model (reusing
     one already created this scan for the same top-level directory).
+
+    Consults the preloaded ``models_by_slug``/``revisions_by_key``/``taken``
+    (from ``_preload_adopt_targets``) instead of querying -- no DB round
+    trip on the existing-model path at all. A genuinely new top-level
+    folder still creates+caches a draft model (necessarily a DB round trip,
+    but bounded by the number of distinct dropped folders, not file count),
+    and registers it into ``models_by_slug``/``revisions_by_key`` so later
+    files in the same scan (including a later chunk) see it without
+    re-querying.
     """
     parts = key.split("/")
     if len(parts) >= 3:
         slug, dir_name, rel_path = parts[0], parts[1], "/".join(parts[2:])
-        model = session.execute(select(Model).where(Model.slug == slug)).scalar_one_or_none()
+        model = models_by_slug.get(slug)
         if model is not None:
-            revision = session.execute(
-                select(Revision).where(Revision.model_id == model.id, Revision.dir_name == dir_name)
-            ).scalar_one_or_none()
-            if revision is not None and not _rel_path_taken(session, revision.id, rel_path):
+            revision = revisions_by_key.get((model.id, dir_name))
+            if revision is not None and (revision.id, rel_path) not in taken:
                 return model, revision, rel_path
 
     top = parts[0] if len(parts) > 1 else PurePosixPath(parts[0]).stem
@@ -389,6 +454,8 @@ def _resolve_adopt_target(
     model.current_revision_id = revision.id
     layout.write_sidecar(backend, model.id, slug, top)
     draft_models[top] = (model, revision)
+    models_by_slug[slug] = model
+    revisions_by_key[(model.id, dir_name)] = revision
     return model, revision, rel_path
 
 
@@ -412,99 +479,160 @@ def _attach_adopted_file(
     session: Session,
     backend: StorageBackend,
     entry: EntryInfo,
-    blob: Blob,
+    blob_hash: str,
     draft_models: dict[str, tuple[Model, Revision]],
+    models_by_slug: dict[str, Model],
+    revisions_by_key: dict[tuple[int, str], Revision],
+    taken: set[tuple[int, str]],
     adopted_index: dict[tuple[int, int], dict],
     now: datetime,
     counters: dict[str, int],
     report: dict[str, object],
-    *,
-    enqueue_pipeline: bool,
-) -> None:
-    model, revision, rel_path = _resolve_adopt_target(session, backend, entry.key, draft_models)
+) -> File:
+    """Resolve where ``entry`` attaches and stage its ``File`` row.
+
+    Adds the row to the session but deliberately does NOT flush it (D2):
+    the caller (``_reconcile_unknown_chunk``) batches ONE flush across every
+    File/Blob row the whole chunk stages, so a chunk of N adopted files
+    costs a small constant number of INSERT statements, not N. ``taken`` is
+    updated immediately (a plain in-memory set, no DB round trip) so a
+    later file in the SAME chunk sees this attachment right away -- mirrors
+    the live-DB-visibility a per-file ``_rel_path_taken`` query used to give
+    for free.
+    """
+    model, revision, rel_path = _resolve_adopt_target(
+        session, backend, entry.key, draft_models, models_by_slug, revisions_by_key, taken
+    )
 
     file = File(
         revision_id=revision.id,
-        blob_hash=blob.hash,
+        blob_hash=blob_hash,
         rel_path=rel_path,
         storage_path=entry.key,
         mtime=entry.mtime,
         verified_at=now,
     )
     session.add(file)
-    session.flush()
+    taken.add((revision.id, rel_path))
 
     counters["adopted"] += 1
     _record_adopted(report, adopted_index, model, revision, rel_path)
-    if enqueue_pipeline:
-        _best_effort_pipeline(session, blob_hash=blob.hash, file_id=file.id)
+    return file
 
 
-def _reconcile_unknown(
+def _reconcile_unknown_chunk(
     session: Session,
     backend: StorageBackend,
-    entry: EntryInfo,
+    chunk: list[EntryInfo],
     missing_candidates: dict[int, File],
     draft_models: dict[str, tuple[Model, Revision]],
+    models_by_slug: dict[str, Model],
+    revisions_by_key: dict[tuple[int, str], Revision],
+    taken: set[tuple[int, str]],
     adopted_index: dict[tuple[int, int], dict],
     now: datetime,
     counters: dict[str, int],
     report: dict[str, object],
 ) -> None:
-    counters["files_hashed"] += 1
-    try:
-        digest = _hash_entry(backend, entry.key)
-    except Exception as exc:
-        # Not counted as adopted/relinked/missing -- there's no row to leave
-        # "as-is" for a never-adopted path; just skip it (Finding 3).
-        _record_error(report, entry.key, exc)
+    """Reconcile one ``_CHUNK``-sized slice of pass 2's deferred (unknown-
+    path) entries (D2, M6 Task 6), batching what used to be a handful of DB
+    round trips PER FILE (``session.get(Blob, digest)``, the adopt-target
+    selects, a Blob insert-flush, a File insert-flush) into a small constant
+    number per CHUNK: ONE ``select(Blob.hash)`` for the whole chunk's
+    blob-existence check, then ONE flush for every new ``Blob``/``File`` row
+    the chunk stages (the best-effort pipeline dispatch, which needs each
+    new File's generated id, is deferred until after that flush).
+
+    Entries are still decided ONE AT A TIME, in walk order, with EXACTLY the
+    same relink-vs-adopt / new-blob-vs-known-hash logic the old per-file
+    reconcile used: relink pops its claimed row out of ``missing_candidates``
+    immediately so a later entry in this same chunk can't claim it twice,
+    and a hash first seen partway through this chunk is tracked in
+    ``known_hashes`` so a later duplicate in the SAME chunk correctly takes
+    the "known hash" branch instead of creating a second ``Blob`` row for it
+    -- exactly what a live ``session.get(Blob, digest)`` would have found.
+    Only the *round trips* are batched; the *decisions* are unchanged.
+    """
+    hashed: list[tuple[EntryInfo, str]] = []
+    for entry in chunk:
+        counters["files_hashed"] += 1
+        try:
+            digest = _hash_entry(backend, entry.key)
+        except Exception as exc:
+            # Not counted as adopted/relinked/missing -- there's no row to
+            # leave "as-is" for a never-adopted path; just skip it
+            # (Finding 3).
+            _record_error(report, entry.key, exc)
+            continue
+        hashed.append((entry, digest))
+
+    if not hashed:
         return
-    blob = session.get(Blob, digest)
 
-    if blob is not None:
-        candidate = _find_relink_candidate(missing_candidates, digest, entry.key)
-        if candidate is not None:
-            old_path = candidate.storage_path
-            candidate.storage_path = entry.key
-            candidate.mtime = entry.mtime
-            candidate.verified_at = now
-            counters["relinked"] += 1
-            report["relinked"].append(
-                {"file_id": candidate.id, "from": old_path, "to": entry.key, "hash": digest}
+    digests = {digest for _, digest in hashed}
+    known_hashes: set[str] = set(
+        session.execute(select(Blob.hash).where(Blob.hash.in_(digests))).scalars()
+    )
+
+    new_blobs: list[Blob] = []
+    pending_dispatch: list[tuple[File, str]] = []
+
+    for entry, digest in hashed:
+        if digest in known_hashes:
+            candidate = _find_relink_candidate(missing_candidates, digest, entry.key)
+            if candidate is not None:
+                old_path = candidate.storage_path
+                candidate.storage_path = entry.key
+                candidate.mtime = entry.mtime
+                candidate.verified_at = now
+                counters["relinked"] += 1
+                report["relinked"].append(
+                    {"file_id": candidate.id, "from": old_path, "to": entry.key, "hash": digest}
+                )
+                missing_candidates.pop(candidate.id, None)
+                continue
+
+            _attach_adopted_file(
+                session,
+                backend,
+                entry,
+                digest,
+                draft_models,
+                models_by_slug,
+                revisions_by_key,
+                taken,
+                adopted_index,
+                now,
+                counters,
+                report,
             )
-            missing_candidates.pop(candidate.id, None)
-            return
+            continue
 
-        _attach_adopted_file(
+        kind, format_ = layout.infer_blob_kind_format(entry.key)
+        new_blobs.append(Blob(hash=digest, size=entry.size, kind=kind, format=format_))
+        known_hashes.add(digest)
+        file = _attach_adopted_file(
             session,
             backend,
             entry,
-            blob,
+            digest,
             draft_models,
+            models_by_slug,
+            revisions_by_key,
+            taken,
             adopted_index,
             now,
             counters,
             report,
-            enqueue_pipeline=False,
         )
-        return
+        pending_dispatch.append((file, digest))
 
-    kind, format_ = layout.infer_blob_kind_format(entry.key)
-    new_blob = Blob(hash=digest, size=entry.size, kind=kind, format=format_)
-    session.add(new_blob)
+    if new_blobs:
+        session.add_all(new_blobs)
     session.flush()
-    _attach_adopted_file(
-        session,
-        backend,
-        entry,
-        new_blob,
-        draft_models,
-        adopted_index,
-        now,
-        counters,
-        report,
-        enqueue_pipeline=True,
-    )
+
+    for file, digest in pending_dispatch:
+        _best_effort_pipeline(session, blob_hash=digest, file_id=file.id)
 
 
 def _best_effort_pipeline(session: Session, *, blob_hash: str, file_id: int) -> None:

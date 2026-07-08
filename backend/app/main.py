@@ -13,6 +13,7 @@ from app.db import get_sessionmaker
 from app.logging_config import configure_logging
 from app.services import spool
 from app.services.bootstrap import ensure_admin_user
+from app.services.secrets_at_rest import reencrypt_secrets_at_rest
 from app.static import mount_spa
 
 logger = logging.getLogger(__name__)
@@ -20,12 +21,14 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Run first-run bootstrap (SPEC requirement 1) and create the upload
-    spool directory (Task 6) once on startup.
+    """Run first-run bootstrap (SPEC requirement 1), create the upload spool
+    directory (Task 6), and eagerly re-encrypt any legacy plaintext secret
+    (M6 A1) once on startup.
     """
     spool.ensure_spool_dir(get_settings())
     async with get_sessionmaker()() as session:
         await ensure_admin_user(session)
+        await reencrypt_secrets_at_rest(session, get_settings())
     yield
 
 

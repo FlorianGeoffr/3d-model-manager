@@ -1,5 +1,7 @@
 import pytest
 
+from app.models import Setting
+
 
 @pytest.mark.asyncio
 async def test_get_tokens_empty(authenticated_client):
@@ -8,7 +10,7 @@ async def test_get_tokens_empty(authenticated_client):
 
 
 @pytest.mark.asyncio
-async def test_put_and_mask_roundtrip(authenticated_client):
+async def test_put_and_mask_roundtrip(authenticated_client, db_session):
     put = await authenticated_client.put(
         "/api/settings/import-tokens", json={"thingiverse_token": "tok-abc-123"}
     )
@@ -16,6 +18,10 @@ async def test_put_and_mask_roundtrip(authenticated_client):
     # GET never returns the real token
     got = await authenticated_client.get("/api/settings/import-tokens")
     assert got.json() == {"thingiverse_token": "***"}
+
+    # M6 A1: the token must be Fernet-encrypted at rest, not stored plaintext.
+    row = await db_session.get(Setting, "import_tokens")
+    assert row.value["thingiverse_token"] != "tok-abc-123"
 
 
 @pytest.mark.asyncio

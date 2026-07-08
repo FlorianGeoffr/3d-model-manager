@@ -13,6 +13,9 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from app.config import get_settings
+from app.models import Setting
+
 pytestmark = pytest.mark.usefixtures("library_root", "data_dir")
 
 
@@ -26,7 +29,7 @@ async def test_get_default_storage_settings_is_local(
 
 
 async def test_put_s3_config_then_get_redacts_secret(
-    authenticated_client: httpx.AsyncClient,
+    authenticated_client: httpx.AsyncClient, db_session
 ) -> None:
     payload = {
         "backend": "s3",
@@ -47,6 +50,10 @@ async def test_put_s3_config_then_get_redacts_secret(
     assert put_body["backend"] == "s3"
     assert put_body["config"]["secret_key"] == "***"
     assert put_body["config"]["access_key"] == "AKIAEXAMPLE"
+
+    # M6 A1: the secret must be Fernet-encrypted at rest, not stored plaintext.
+    row = await db_session.get(Setting, "storage")
+    assert row.value["secret_key"] != "super-secret-value"
 
     get_response = await authenticated_client.get("/api/settings/storage")
 
@@ -181,7 +188,7 @@ async def test_put_omitted_smb_password_keeps_stored_secret(
     # The raw secret must never appear in a response body.
     assert "hunter2" not in update_response.text
 
-    stored = await get_active_config(db_session)
+    stored = await get_active_config(db_session, get_settings())
     assert stored.host == "new-fileserver.local"
     assert stored.password == "hunter2"
 
@@ -214,7 +221,7 @@ async def test_put_redacted_sentinel_smb_password_keeps_stored_secret(
     update_response = await authenticated_client.put("/api/settings/storage", json=update_payload)
 
     assert update_response.status_code == 200, update_response.text
-    stored = await get_active_config(db_session)
+    stored = await get_active_config(db_session, get_settings())
     assert stored.host == "another-fileserver.local"
     assert stored.password == "hunter2"
 
@@ -253,7 +260,7 @@ async def test_put_omitted_s3_secret_key_keeps_stored_secret(
     assert update_response.json()["config"]["secret_key"] == "***"
     assert "super-secret-value" not in update_response.text
 
-    stored = await get_active_config(db_session)
+    stored = await get_active_config(db_session, get_settings())
     assert stored.bucket == "renamed-bucket"
     assert stored.secret_key == "super-secret-value"
 
@@ -286,7 +293,7 @@ async def test_put_new_secret_value_is_not_clobbered_by_merge(
     update_response = await authenticated_client.put("/api/settings/storage", json=update_payload)
 
     assert update_response.status_code == 200, update_response.text
-    stored = await get_active_config(db_session)
+    stored = await get_active_config(db_session, get_settings())
     assert stored.password == "brand-new-secret"
 
 
@@ -333,7 +340,7 @@ async def test_put_redacted_sentinel_with_no_stored_secret_of_that_type_422s(
 
     assert response.status_code == 422, response.text
 
-    stored = await get_active_config(db_session)
+    stored = await get_active_config(db_session, get_settings())
     assert stored.backend == "local"
 
 

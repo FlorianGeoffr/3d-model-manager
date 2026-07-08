@@ -1,9 +1,12 @@
-"""Fernet encryption for at-rest secrets (SPEC ``printers.access_code_enc
-/*fernet*/``; M4). The key lives at ``{data_dir}/secrets/printer.key``
-(0600) or comes from ``TDMM_PRINTER_KEY``; it is loaded ONLY where an
-adapter is built (the send task, printerd, the test-connection probe) --
-never eagerly at import, and the decrypted plaintext is never logged,
-returned, or published (Global Constraints).
+"""Fernet encryption for at-rest secrets -- printer access codes, SMB/S3
+storage credentials, and the Thingiverse import token -- all under one key
+at ``{data_dir}/secrets/printer.key`` (SPEC ``printers.access_code_enc
+/*fernet*/``; M4; extended to storage/import secrets by M6 A1). The key
+lives there (0600) or comes from ``TDMM_PRINTER_KEY``; it is loaded ONLY
+where a secret is actually encrypted/decrypted (the send task, printerd, the
+test-connection probe, the storage-config/import-token seams) -- never
+eagerly at import, and decrypted plaintext is never logged, returned, or
+published (Global Constraints).
 """
 
 from __future__ import annotations

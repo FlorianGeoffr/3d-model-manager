@@ -44,6 +44,12 @@ class S3Config(BaseModel):
 StorageConfig = Annotated[LocalConfig | SmbConfig | S3Config, Field(discriminator="backend")]
 _ADAPTER = TypeAdapter(StorageConfig)
 
+# Per-backend secret field name (M6 A1: the single owner of this map -- both
+# the encrypt-at-rest seam in app.services.storage_config and the
+# GET/PUT-secret-merge logic in app.api.settings import it from here).
+# Local has none.
+SECRET_FIELD_BY_BACKEND: dict[str, str] = {"smb": "password", "s3": "secret_key"}
+
 
 def parse_storage_config(data: dict) -> StorageConfig:
     """Validate a raw settings-row dict into the right per-backend model."""

@@ -46,11 +46,13 @@ def _map_license(raw: str | None) -> str | None:
 
 
 def _token() -> str | None:
+    from app.config import get_settings
     from app.services.import_tokens import get_import_tokens_sync
     from app.tasks.base import sync_session
 
+    settings = get_settings()
     with sync_session() as s:
-        return get_import_tokens_sync(s).thingiverse_token
+        return get_import_tokens_sync(s, settings).thingiverse_token
 
 
 class ThingiverseImporter:

@@ -18,7 +18,7 @@ from __future__ import annotations
 import blake3
 
 from app.config import get_settings
-from app.services import jobs
+from app.services import jobs, storage_config
 from app.services.storage_config import resolve_backend_sync, set_active_config_sync
 from app.storage.config import parse_storage_config
 from app.storage.registry import get_backend
@@ -29,7 +29,11 @@ from app.tasks.celery_app import celery_app
 @celery_app.task(name="app.tasks.migrate.migrate_storage")
 def migrate_storage(job_id: str, target: dict) -> None:
     settings = get_settings()
-    target_cfg = parse_storage_config(target)
+    # `target` travels over the internal Celery broker encrypted (M6 A1.5.2
+    # -- see app.api.settings.migrate_storage_settings); decrypt it here,
+    # right where it's used, same posture as the M4 printer access code.
+    data, _ = storage_config.decrypt_config_row(settings, dict(target))
+    target_cfg = parse_storage_config(data)
     with base.sync_session() as s:
         jobs.mark_running(s, job_id)
         source = resolve_backend_sync(s, settings)
@@ -56,7 +60,8 @@ def migrate_storage(job_id: str, target: dict) -> None:
             if result.hash != src_hash.hexdigest():
                 raise RuntimeError(f"hash mismatch migrating {entry.key}")
         with base.sync_session() as s:
-            set_active_config_sync(s, target_cfg)  # cutover only after every file verified
+            # cutover only after every file verified; encrypts on write
+            set_active_config_sync(s, settings, target_cfg)
             jobs.mark_done(s, job_id)
     except Exception as exc:
         with base.sync_session() as s:

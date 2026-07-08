@@ -14,6 +14,8 @@ import uuid
 
 import pytest
 
+from app.config import get_settings
+from app.models import Setting
 from app.services import jobs as jobs_service
 from app.services.storage_config import get_active_config_sync
 from app.storage.base import WriteResult
@@ -47,9 +49,15 @@ async def test_migrate_copies_verifies_and_cuts_over(
     assert b"".join(s3_backend.read("widget/rev-001/notes/readme.txt")) == b"second-file-bytes"
 
     with base.sync_session() as s:
-        active = get_active_config_sync(s)
+        active = get_active_config_sync(s, get_settings())
     assert active.backend == "s3"
     assert active.bucket == target["bucket"]
+    assert active.secret_key == target["secret_key"]
+
+    # M6 A1.5.2: the target travels encrypted over the broker and the
+    # cutover writes it back to the settings row encrypted too.
+    row = await db_session.get(Setting, "storage")
+    assert row.value["secret_key"] != target["secret_key"]
 
     job = await jobs_service.get_job_or_404(db_session, uuid.UUID(job_id))
     await db_session.refresh(job)
@@ -118,7 +126,7 @@ async def test_migrate_hash_mismatch_marks_failed_and_does_not_cut_over(
     assert "hash mismatch" in job.error
 
     with base.sync_session() as s:
-        active = get_active_config_sync(s)
+        active = get_active_config_sync(s, get_settings())
     assert active.backend == "local"  # cutover never happened
 
 

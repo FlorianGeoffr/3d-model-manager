@@ -26,7 +26,7 @@ from app.schemas.settings import ConnectionTestOut, StorageConfigIn, StorageConf
 from app.services import import_tokens, storage_config
 from app.services import jobs as jobs_service
 from app.services.storage_probe import probe_backend
-from app.storage.config import StorageConfig, parse_storage_config
+from app.storage.config import SECRET_FIELD_BY_BACKEND, StorageConfig, parse_storage_config
 from app.storage.registry import get_backend
 from app.tasks.migrate import migrate_storage
 
@@ -36,9 +36,6 @@ router = APIRouter(prefix="/settings", tags=["settings"])
 # -- an incoming request carrying this literal value is read back verbatim
 # from a form the client seeded off a redacted GET, never a real secret.
 _REDACTED_SENTINEL = "***"
-
-# Per-backend secret field name, for the merge below. Local has none.
-_SECRET_FIELD = {"smb": "password", "s3": "secret_key"}
 
 
 def _parse(backend: str, config: dict) -> StorageConfig:
@@ -57,7 +54,9 @@ def _parse(backend: str, config: dict) -> StorageConfig:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
 
 
-async def _merge_stored_secrets(db: AsyncSession, backend: str, config: dict) -> dict:
+async def _merge_stored_secrets(
+    db: AsyncSession, settings: Settings, backend: str, config: dict
+) -> dict:
     """Fill in the stored secret when the incoming one is missing, blank, or
     the ``"***"`` redaction sentinel GET always returns for a set secret.
 
@@ -80,13 +79,13 @@ async def _merge_stored_secrets(db: AsyncSession, backend: str, config: dict) ->
     server-side validation/backend construction, it never appears in a
     response (GET/PUT responses go through ``redacted()``).
     """
-    secret_field = _SECRET_FIELD.get(backend)
+    secret_field = SECRET_FIELD_BY_BACKEND.get(backend)
     if secret_field is None:
         return config
     incoming = config.get(secret_field) or ""
     if incoming not in ("", _REDACTED_SENTINEL):
         return config
-    stored = await storage_config.get_active_config(db)
+    stored = await storage_config.get_active_config(db, settings)
     stored_secret = getattr(stored, secret_field, "") if stored.backend == backend else ""
     if stored_secret:
         return {**config, secret_field: stored_secret}
@@ -100,18 +99,22 @@ async def _merge_stored_secrets(db: AsyncSession, backend: str, config: dict) ->
 
 
 @router.get("/storage", response_model=StorageConfigOut)
-async def get_storage_settings(db: AsyncSession = Depends(get_db)) -> StorageConfigOut:
-    config = await storage_config.get_active_config(db)
+async def get_storage_settings(
+    db: AsyncSession = Depends(get_db), settings: Settings = Depends(get_settings)
+) -> StorageConfigOut:
+    config = await storage_config.get_active_config(db, settings)
     return StorageConfigOut.from_config(config)
 
 
 @router.put("/storage", response_model=StorageConfigOut)
 async def put_storage_settings(
-    payload: StorageConfigIn, db: AsyncSession = Depends(get_db)
+    payload: StorageConfigIn,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> StorageConfigOut:
-    merged = await _merge_stored_secrets(db, payload.backend, payload.config)
+    merged = await _merge_stored_secrets(db, settings, payload.backend, payload.config)
     config = _parse(payload.backend, merged)
-    await storage_config.set_active_config(db, config)
+    await storage_config.set_active_config(db, settings, config)
     return StorageConfigOut.from_config(config)
 
 
@@ -121,7 +124,7 @@ async def test_storage_settings(
     settings: Settings = Depends(get_settings),
     db: AsyncSession = Depends(get_db),
 ) -> ConnectionTestOut:
-    merged = await _merge_stored_secrets(db, payload.backend, payload.config)
+    merged = await _merge_stored_secrets(db, settings, payload.backend, payload.config)
     config = _parse(payload.backend, merged)
     backend = get_backend(settings, config)
     ok, detail, latency_ms = await anyio.to_thread.run_sync(probe_backend, backend)
@@ -130,15 +133,23 @@ async def test_storage_settings(
 
 @router.post("/storage/migrate", response_model=JobOut)
 async def migrate_storage_settings(
-    payload: StorageConfigIn, db: AsyncSession = Depends(get_db)
+    payload: StorageConfigIn,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> JobOut:
-    merged = await _merge_stored_secrets(db, payload.backend, payload.config)
+    merged = await _merge_stored_secrets(db, settings, payload.backend, payload.config)
     config = _parse(payload.backend, merged)
     job = await jobs_service.create_job(
         db, id=uuid.uuid4(), type="migrate_storage", subject_type=None, subject_id=None
     )
 
-    migrate_storage.apply_async(args=[str(job.id), config.model_dump()], task_id=str(job.id))
+    # The target config travels over the internal Celery broker -- encrypt
+    # its secret field on the wire (M6 A1.5.2), same as it's encrypted at
+    # rest; migrate_storage decrypts it at the top of the task.
+    migrate_storage.apply_async(
+        args=[str(job.id), storage_config.encrypt_config_secret(settings, config)],
+        task_id=str(job.id),
+    )
 
     # Under the test suite's eager Celery mode, the line above already ran
     # the whole migration inline through its own SYNC session -- refresh so
@@ -150,21 +161,25 @@ async def migrate_storage_settings(
 
 
 @router.get("/import-tokens", response_model=ImportTokensOut)
-async def get_import_tokens_settings(db: AsyncSession = Depends(get_db)) -> ImportTokensOut:
-    tokens = await import_tokens.get_import_tokens(db)
+async def get_import_tokens_settings(
+    db: AsyncSession = Depends(get_db), settings: Settings = Depends(get_settings)
+) -> ImportTokensOut:
+    tokens = await import_tokens.get_import_tokens(db, settings)
     return ImportTokensOut(thingiverse_token=_REDACTED_SENTINEL if tokens.thingiverse_token else "")
 
 
 @router.put("/import-tokens", response_model=ImportTokensOut)
 async def put_import_tokens_settings(
-    payload: ImportTokensIn, db: AsyncSession = Depends(get_db)
+    payload: ImportTokensIn,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> ImportTokensOut:
     """Merge-on-blank/sentinel, mirroring ``_merge_stored_secrets``: a blank
     or ``"***"`` submit keeps the stored token; a bare ``"***"`` with nothing
     stored is rejected 422 (never persist the placeholder as a credential);
     a real value replaces it."""
     incoming = (payload.thingiverse_token or "").strip()
-    stored = (await import_tokens.get_import_tokens(db)).thingiverse_token or ""
+    stored = (await import_tokens.get_import_tokens(db, settings)).thingiverse_token or ""
     if incoming in ("", _REDACTED_SENTINEL):
         if stored:
             value: str | None = stored
@@ -177,5 +192,5 @@ async def put_import_tokens_settings(
             value = None  # explicit clear when nothing stored + blank submit
     else:
         value = incoming
-    await import_tokens.set_thingiverse_token(db, value)
+    await import_tokens.set_thingiverse_token(db, settings, value)
     return ImportTokensOut(thingiverse_token=_REDACTED_SENTINEL if value else "")

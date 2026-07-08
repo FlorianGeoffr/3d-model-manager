@@ -19,20 +19,27 @@ function GltfModel({ url }: { url: string }) {
   return <primitive object={scene} />;
 }
 
-export default function ModelViewer({ url }: { url: string }) {
+/**
+ * `urls` renders one GLB per entry inside a single shared `<Bounds>` so
+ * multiple mesh parts (Workstream A "multi-part combined view") appear
+ * together as one scene, each keeping its own local coordinates. Distinct
+ * urls each get their own cached `useGLTF` scene (drei's loader cache is
+ * keyed by url), so mounting several here is safe. `background` replaces
+ * the previous hard-coded studio gray -- see `background.ts` for the
+ * preset/theme resolution that produces it.
+ */
+export default function ModelViewer({ urls, background }: { urls: string[]; background: string }) {
   return (
     <Canvas frameloop="demand" dpr={[1, 2]} className="h-full w-full">
-      {/* Theme-independent neutral studio background: the page background is
-          near-black in dark mode, which hides dark-colored models against a
-          transparent canvas. A fixed mid-light gray keeps both dark and light
-          models legible (tunable). */}
-      <color attach="background" args={["#a1a1aa"]} />
+      <color attach="background" args={[background]} />
       <ambientLight intensity={0.8} />
       <hemisphereLight intensity={0.5} />
       <directionalLight position={[10, 10, 10]} intensity={1.2} />
       <directionalLight position={[-10, -5, -10]} intensity={0.4} />
       <Bounds fit clip observe margin={1.2}>
-        <GltfModel url={url} />
+        {urls.map((url) => (
+          <GltfModel key={url} url={url} />
+        ))}
       </Bounds>
       <OrbitControls makeDefault enablePan />
     </Canvas>

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { glbUrl, pickViewerFiles } from "@/components/viewer/viewable";
+import { glbFiles, glbUrl, pickViewerFiles } from "@/components/viewer/viewable";
 import type { BlobMetaOut, FileOut, ModelDetail } from "@/api/types";
 
 function fakeMeta(overrides: Partial<BlobMetaOut> = {}): BlobMetaOut {
@@ -119,5 +119,30 @@ describe("pickViewerFiles", () => {
   it("excludes files that are neither GLB-capable, sliced, nor plain gcode", () => {
     const cover = fakeFile({ id: 1, rel_path: "cover.png", format: "png", kind: "image", glb_status: null });
     expect(pickViewerFiles(fakeModel([cover]))).toEqual([]);
+  });
+});
+
+describe("glbFiles", () => {
+  it("returns an empty array when there is no current revision", () => {
+    expect(glbFiles({ ...fakeModel([]), current_revision: null })).toEqual([]);
+  });
+
+  it("keeps only files with a ready glb, in rel_path order", () => {
+    const glbOk = fakeFile({ id: 1, rel_path: "c.stl", glb_status: "ok" });
+    const glbOkToo = fakeFile({ id: 2, rel_path: "a.stl", glb_status: "ok" });
+    const glbPending = fakeFile({ id: 3, rel_path: "b.stl", glb_status: "pending" });
+    const glbFailed = fakeFile({ id: 4, rel_path: "e.stl", glb_status: "failed" });
+    const glbUnsupported = fakeFile({ id: 5, rel_path: "f.stl", glb_status: "unsupported" });
+    const sliced = fakeFile({ id: 6, rel_path: "d.gcode.3mf", format: "gcode_3mf", kind: "sliced", glb_status: null });
+
+    const picked = glbFiles(fakeModel([glbOk, glbOkToo, glbPending, glbFailed, glbUnsupported, sliced]));
+
+    expect(picked.map((f) => f.rel_path)).toEqual(["a.stl", "c.stl"]);
+  });
+
+  it("excludes plain gcode and sliced files even though they're viewable", () => {
+    const sliced = fakeFile({ id: 1, rel_path: "a.gcode.3mf", format: "gcode_3mf", kind: "sliced", glb_status: null });
+    const plainGcode = fakeFile({ id: 2, rel_path: "b.gcode", format: "gcode", kind: "gcode", glb_status: null });
+    expect(glbFiles(fakeModel([sliced, plainGcode]))).toEqual([]);
   });
 });

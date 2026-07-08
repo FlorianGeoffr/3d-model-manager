@@ -29,3 +29,12 @@ export function pickViewerFiles(model: ModelDetail): FileOut[] {
     .filter((file) => file.glb_status !== null || file.kind === "sliced" || file.format === "gcode")
     .sort((a, b) => a.rel_path.localeCompare(b.rel_path));
 }
+
+/** The subset of `pickViewerFiles` with a ready-to-render GLB -- the only
+ * files that can be combined into one multi-part scene (Workstream A
+ * "multi-part combined view"). Sliced files and plain gcode never have a
+ * mesh to combine, and pending/failed/unsupported GLBs have no scene to
+ * render yet. */
+export function glbFiles(model: ModelDetail): FileOut[] {
+  return pickViewerFiles(model).filter((file) => file.glb_status === "ok");
+}

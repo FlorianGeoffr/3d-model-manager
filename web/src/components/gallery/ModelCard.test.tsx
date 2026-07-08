@@ -1,9 +1,23 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, RouterProvider } from "@tanstack/react-router";
-import { render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ModelCard } from "@/components/gallery/ModelCard";
 import type { ModelSummary } from "@/api/types";
+
+// `usePatchModel` (the "Needs review" dismiss control) calls `api.patch`;
+// spy on it so the dismiss test can assert the request, and so the whole
+// card renders under a real QueryClient (the mutation hook needs one).
+const { patchMock } = vi.hoisted(() => ({ patchMock: vi.fn().mockResolvedValue({}) }));
+
+vi.mock("@/api/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/client")>();
+  return {
+    ...actual,
+    api: { ...actual.api, patch: patchMock },
+  };
+});
 
 const MODEL: ModelSummary = {
   id: 1,
@@ -22,6 +36,7 @@ const MODEL: ModelSummary = {
 };
 
 function renderCard(model: ModelSummary) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const rootRoute = createRootRoute();
   const cardRoute = createRoute({
     getParentRoute: () => rootRoute,
@@ -37,8 +52,16 @@ function renderCard(model: ModelSummary) {
     routeTree: rootRoute.addChildren([cardRoute, detailRoute]),
     history: createMemoryHistory({ initialEntries: ["/"] }),
   });
-  return render(<RouterProvider router={router} />);
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
+  );
 }
+
+beforeEach(() => {
+  patchMock.mockClear();
+});
 
 describe("ModelCard", () => {
   it("renders name, first 3 tags with overflow count, format badges, and updated date", async () => {
@@ -104,5 +127,28 @@ describe("ModelCard", () => {
 
     expect(await screen.findByText("Articulated Dragon")).toBeInTheDocument();
     expect(screen.queryByTestId("source-badge")).not.toBeInTheDocument();
+  });
+
+  it("shows a dismissable 'Needs review' badge for an adopted model", async () => {
+    renderCard({ ...MODEL, review_state: "adopted" });
+
+    expect(await screen.findByTestId("review-badge")).toHaveTextContent("Needs review");
+    expect(screen.getByRole("button", { name: "Dismiss needs review" })).toBeInTheDocument();
+  });
+
+  it("renders no 'Needs review' badge for a model that isn't adopted", async () => {
+    renderCard(MODEL);
+
+    expect(await screen.findByText("Articulated Dragon")).toBeInTheDocument();
+    expect(screen.queryByTestId("review-badge")).not.toBeInTheDocument();
+  });
+
+  it("dismissing the review badge PATCHes review_state to null without navigating", async () => {
+    renderCard({ ...MODEL, review_state: "adopted" });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Dismiss needs review" }));
+
+    await waitFor(() => expect(patchMock).toHaveBeenCalledTimes(1));
+    expect(patchMock).toHaveBeenCalledWith("/models/articulated-dragon", { review_state: null });
   });
 });

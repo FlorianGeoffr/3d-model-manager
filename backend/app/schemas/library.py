@@ -62,6 +62,7 @@ class ModelSummary(BaseModel):
     print_time_s: int | None = None
     has_sliced: bool = False
     source_site: str | None = None
+    review_state: str | None = None
 
 
 class GalleryPage(BaseModel):
@@ -279,6 +280,7 @@ class ModelDetail(BaseModel):
     tags: list[str]
     current_revision: RevisionDetail | None
     notes: list[NoteOut]
+    review_state: str | None = None
 
 
 # -- diff -------------------------------------------------------------

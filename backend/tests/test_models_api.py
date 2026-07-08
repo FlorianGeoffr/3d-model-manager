@@ -593,3 +593,36 @@ async def test_gallery_item_carries_source_site_for_imported_and_manual_models(
 
     assert items["Imported Vase"]["source_site"] == "thingiverse"
     assert items["Manual Widget"]["source_site"] is None
+
+
+# ---------------------------------------------------------------------------
+# gallery/detail: review_state (Task 11 -- "needs review" gallery badge)
+# ---------------------------------------------------------------------------
+
+
+async def test_gallery_and_detail_surface_review_state_for_adopted_model(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    adopted = await _create_model(authenticated_client, "Adopted Model")
+    model = await db_session.get(Model, adopted["id"])
+    model.review_state = "adopted"
+    await db_session.commit()
+
+    item = await _gallery_item(authenticated_client, adopted["slug"])
+    assert item["review_state"] == "adopted"
+
+    detail = await authenticated_client.get(f"/api/models/{adopted['slug']}")
+    assert detail.json()["review_state"] == "adopted"
+
+
+async def test_gallery_and_detail_review_state_is_null_for_normal_model(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    created = await _create_model(authenticated_client, "Normal Model")
+
+    item = await _gallery_item(authenticated_client, created["slug"])
+    assert item["review_state"] is None
+
+    detail = await authenticated_client.get(f"/api/models/{created['slug']}")
+    assert detail.json()["review_state"] is None

@@ -34,6 +34,7 @@ export interface ModelPatch {
   name?: string;
   description?: string | null;
   cover_blob_hash?: string | null;
+  review_state?: string | null;
 }
 
 export interface ModelSummary {
@@ -50,6 +51,7 @@ export interface ModelSummary {
   print_time_s: number | null;
   has_sliced: boolean;
   source_site: string | null;
+  review_state?: string | null;
 }
 
 export interface GalleryPage {
@@ -180,6 +182,7 @@ export interface ModelDetail {
   tags: string[];
   current_revision: RevisionDetail | null;
   notes: NoteOut[];
+  review_state?: string | null;
 }
 
 // -- diff ----------------------------------------------------------

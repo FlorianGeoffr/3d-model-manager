@@ -631,6 +631,7 @@ async def list_models(
                 print_time_s=agg.print_time_s if agg else None,
                 has_sliced=agg.has_sliced if agg else False,
                 source_site=m.source_site,
+                review_state=m.review_state,
             )
         )
 
@@ -723,6 +724,7 @@ async def build_model_detail(db: AsyncSession, model: Model, settings: Settings)
         tags=[t.name for t in model.tags],
         current_revision=current_revision,
         notes=notes,
+        review_state=model.review_state,
     )
 
 

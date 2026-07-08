@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { ClockIcon } from "lucide-react";
+import { ClockIcon, XIcon } from "lucide-react";
 
+import { usePatchModel } from "@/api/library";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { FORMAT_LABELS, formatIcon } from "@/lib/formatMeta";
@@ -12,11 +13,22 @@ const VISIBLE_TAGS = 3;
 
 export function ModelCard({ model }: { model: ModelSummary }) {
   const [coverErrored, setCoverErrored] = useState(false);
+  const patchModel = usePatchModel(model.slug);
   const visibleTags = model.tags.slice(0, VISIBLE_TAGS);
   const overflowCount = model.tags.length - visibleTags.length;
   const primaryFormat = model.formats[0];
   const Icon = formatIcon(primaryFormat);
   const showCover = model.cover !== null && !coverErrored;
+  const needsReview = model.review_state === "adopted";
+
+  // The card body is a `<Link>` (whole-card navigation); dismissing the
+  // badge must not also trigger that navigation, so stop the click before
+  // it reaches the anchor's handler.
+  function dismissReview(event: React.MouseEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    patchModel.mutate({ review_state: null });
+  }
 
   return (
     <Link to="/models/$slug" params={{ slug: model.slug }} className="block">
@@ -60,6 +72,19 @@ export function ModelCard({ model }: { model: ModelSummary }) {
           {model.source_site && (
             <Badge variant="outline" className="w-fit capitalize" data-testid="source-badge">
               {model.source_site}
+            </Badge>
+          )}
+          {needsReview && (
+            <Badge variant="secondary" className="w-fit gap-1 pr-1" data-testid="review-badge">
+              Needs review
+              <button
+                type="button"
+                aria-label="Dismiss needs review"
+                className="rounded-full hover:opacity-70"
+                onClick={dismissReview}
+              >
+                <XIcon className="size-3" />
+              </button>
             </Badge>
           )}
           {(model.has_sliced || model.print_time_s !== null) && (

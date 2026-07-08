@@ -21,8 +21,26 @@ import type {
 // `gcode_state` values that mean "actively doing something" -- poll fast
 // while any of these hold, back off to a slow heartbeat otherwise.
 const ACTIVE_GCODE = ["RUNNING", "PREPARE", "PAUSE"];
+// Confirmed-terminal `gcode_state` values (M4 status contract): once the
+// printer reports one of these the print has definitively ended, so stop
+// polling entirely (Task 11 fold of the M4 backlog minor). Anything else
+// -- including an empty/unrecognized state -- keeps the slow heartbeat
+// rather than risking a stuck "last known status" from stopping on a
+// merely transient report.
+const TERMINAL_GCODE = ["FINISH", "FAILED", "IDLE"];
 // `PrintJobOut.state` values that haven't reached a terminal state yet.
 const ACTIVE_JOB = ["queued", "uploading", "starting", "printing", "paused"];
+
+/** The `usePrinterStatus` poll cadence for a given `gcode_state`: fast while
+ * actively printing, stopped (`false`) once confirmed-terminal, slow
+ * heartbeat for anything else (incl. unknown/empty). Exported as a pure
+ * function so the cadence policy is unit-testable without driving the hook. */
+export function statusRefetchInterval(gcodeState: string | null | undefined): number | false {
+  const state = gcodeState ?? "";
+  if (ACTIVE_GCODE.includes(state)) return 2500;
+  if (TERMINAL_GCODE.includes(state)) return false;
+  return 8000;
+}
 
 export const printersQueryOptions = queryOptions({
   queryKey: ["printers"] as const,
@@ -62,14 +80,16 @@ export function useTestPrinter(id: number) {
 }
 
 /** Polls `GET /printers/{id}/status`, speeding up while the printer is
- * actively running/preparing/paused and backing off to a slow heartbeat
- * otherwise -- never stops entirely (unlike `useJob`/`usePrintJobs`) since
- * "last known status" is worth refreshing even while idle. */
+ * actively running/preparing/paused, backing off to a slow heartbeat for
+ * any other non-terminal (including unknown/transient) state, and
+ * stopping entirely once `gcode_state` reaches a confirmed terminal state
+ * (Task 11 fold of the M4 backlog minor -- mirrors `useJob`/
+ * `usePrintJobs`'s terminal-state stop). */
 export function usePrinterStatus(id: number) {
   return useQuery({
     queryKey: ["printers", id, "status"] as const,
     queryFn: () => api.get<PrinterStatusOut>(`/printers/${id}/status`),
-    refetchInterval: (q) => (ACTIVE_GCODE.includes(q.state.data?.gcode_state ?? "") ? 2500 : 8000),
+    refetchInterval: (q) => statusRefetchInterval(q.state.data?.gcode_state),
   });
 }
 

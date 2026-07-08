@@ -136,6 +136,58 @@ async def test_upload_to_non_current_revision_is_409(
     assert response.status_code == 409
 
 
+async def test_upload_to_stale_revision_with_fresh_rel_path_is_409_for_staleness_not_collision(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    """Task 10 (frontend "Add files" on the model detail page) regression
+    lock: the new UI seam resolves `{model_id, revision_id}` once and reuses
+    it across a batch, exactly like the existing Upload page's cached
+    target -- if a future refactor ever let that resolved `revision_id`
+    outlive a revision bump (e.g. caching it across renders/tabs instead of
+    re-reading `model.current_revision`), an upload against the now-stale
+    revision must still 409.
+
+    `test_upload_to_non_current_revision_is_409` above already covers the
+    status code, but its `rel_path` ("part.stl") has never been uploaded to
+    the stale revision either -- so, on its own, that 409 doesn't PROVE it
+    came from the staleness check (`validate_upload_target`'s
+    `model.current_revision_id != revision.id` branch) rather than
+    coincidentally from the name-collision check
+    (`test_upload_rel_path_collision_without_replace_is_409`'s branch)
+    landing on the same status code for an unrelated reason -- both would
+    look identical from `assert response.status_code == 409` alone. Uploading
+    something to the revision FIRST (while still current) to occupy a
+    filename, then bumping, then uploading a second, deliberately FRESH
+    `rel_path` (guaranteed to have no collision on that revision) removes
+    any way for the collision branch to fire, and asserting on the exact
+    staleness `detail` message locks in which branch actually raised the 409
+    -- so a future reordering of those two checks inside
+    `validate_upload_target` would break this test even if the status code
+    happened to stay 409.
+    """
+    created = await _create_model(authenticated_client, "Stale Revision Fresh Path Target")
+    rev1_id = created["current_revision"]["id"]
+    await _upload(
+        authenticated_client,
+        model_id=created["id"],
+        revision_id=rev1_id,
+        rel_path="already-on-rev1.stl",
+        content=b"occupies-a-filename-on-rev1",
+    )
+    await authenticated_client.post(f"/api/models/{created['id']}/revisions", json={})
+
+    response = await _upload(
+        authenticated_client,
+        model_id=created["id"],
+        revision_id=rev1_id,
+        rel_path="never-uploaded-anywhere.stl",
+        content=b"some-bytes",
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "uploads are only allowed on the model's current revision"
+
+
 async def test_upload_rel_path_collision_without_replace_is_409(
     authenticated_client: httpx.AsyncClient,
     backend: LocalStorageBackend,

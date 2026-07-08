@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { modelQueryOptions } from "@/api/library";
 import { FilesTab } from "@/components/model-detail/FilesTab";
 import type { FileOut, Features, ModelDetail, PrinterOut } from "@/api/types";
 
@@ -12,7 +13,10 @@ import type { FileOut, Features, ModelDetail, PrinterOut } from "@/api/types";
 // resolves `/features` to `undefined`, i.e. `printer_enabled` falsy, so the
 // button self-hides in every test in this file except the ones that
 // explicitly opt in.
-const { getMock } = vi.hoisted(() => ({ getMock: vi.fn().mockResolvedValue(undefined) }));
+const { getMock, uploadFileMock } = vi.hoisted(() => ({
+  getMock: vi.fn().mockResolvedValue(undefined),
+  uploadFileMock: vi.fn(),
+}));
 
 vi.mock("@/api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/client")>();
@@ -21,6 +25,15 @@ vi.mock("@/api/client", async (importOriginal) => {
     api: { ...actual.api, get: getMock },
   };
 });
+
+vi.mock("@/api/upload", () => ({ uploadFile: uploadFileMock }));
+
+// The Add-files action mounts `UploadDropzone`, which subscribes to the
+// app-wide SSE connection via `useEvents` -- unavailable in jsdom without an
+// `EventsProvider` (same stub as UploadPage.test.tsx/UploadDropzone.test.tsx).
+vi.mock("@/hooks/useEvents", () => ({
+  useEvents: () => ({ subscribe: () => () => {} }),
+}));
 
 const VERIFIED_FILE: FileOut = {
   id: 1,
@@ -90,6 +103,7 @@ describe("FilesTab", () => {
   beforeEach(() => {
     getMock.mockReset();
     getMock.mockResolvedValue(undefined);
+    uploadFileMock.mockReset();
   });
 
   it("keeps the download action enabled and linked for a verified file", () => {
@@ -254,5 +268,91 @@ describe("FilesTab", () => {
     renderFilesTab([slicedFile]);
 
     expect(await screen.findByRole("button", { name: `Print ${slicedFile.rel_path}` })).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// "Add files" action (Task 10): uploads straight into the model's CURRENT
+// revision via the shared UploadDropzone unit -- no model search, no
+// `create_revision` call.
+// ---------------------------------------------------------------------------
+
+function selectFileForUpload(name: string): File {
+  const input = document.querySelector('input[type="file"]');
+  if (!(input instanceof HTMLInputElement)) throw new Error("file input not found");
+  const file = new File(["bytes"], name);
+  fireEvent.change(input, { target: { files: [file] } });
+  return file;
+}
+
+describe("FilesTab -- Add files", () => {
+  beforeEach(() => {
+    getMock.mockReset();
+    getMock.mockResolvedValue(undefined);
+    uploadFileMock.mockReset();
+  });
+
+  it("uploads a selected file straight to the model's current revision, with no model search step", async () => {
+    uploadFileMock.mockResolvedValueOnce({ file_id: 1, blob_hash: "abc123", size: 5, job_id: "job-1" });
+    const model = buildModel([]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <FilesTab model={model} />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Add files" }));
+    const file = selectFileForUpload("part.stl");
+    fireEvent.click(screen.getByRole("button", { name: /^Upload/ }));
+
+    await waitFor(() => expect(uploadFileMock).toHaveBeenCalledTimes(1));
+    expect(uploadFileMock.mock.calls[0][0]).toEqual({
+      modelId: model.id,
+      revisionId: model.current_revision!.id,
+      relPath: file.name,
+      file,
+    });
+
+    // No "new vs existing model" target-resolution step anywhere in this flow.
+    expect(screen.queryByLabelText("Model name")).not.toBeInTheDocument();
+    expect(screen.queryByText(/existing model/i)).not.toBeInTheDocument();
+  });
+
+  it("invalidates the model detail query (not the gallery-only list) once the batch finishes", async () => {
+    uploadFileMock.mockResolvedValueOnce({ file_id: 1, blob_hash: "abc123", size: 5, job_id: "job-1" });
+    const model = buildModel([]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <FilesTab model={model} />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Add files" }));
+    selectFileForUpload("part.stl");
+    fireEvent.click(screen.getByRole("button", { name: /^Upload/ }));
+
+    await waitFor(() => expect(uploadFileMock).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: modelQueryOptions(model.slug).queryKey }),
+    );
+  });
+
+  it("hides the Add files action when the model has no current revision", () => {
+    const model = buildModel([]);
+    const noRevisionModel: ModelDetail = { ...model, current_revision: null };
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <FilesTab model={noRevisionModel} />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.queryByRole("button", { name: "Add files" })).not.toBeInTheDocument();
   });
 });

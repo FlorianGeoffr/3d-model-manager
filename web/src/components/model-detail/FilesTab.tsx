@@ -1,10 +1,12 @@
 import { useState } from "react";
-import { DownloadIcon, Trash2Icon } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { DownloadIcon, PlusIcon, Trash2Icon } from "lucide-react";
 
-import { useDeleteFile } from "@/api/library";
+import { modelQueryOptions, useDeleteFile } from "@/api/library";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CopyableHash } from "@/components/model-detail/CopyableHash";
 import { SendToPrinterButton } from "@/components/model-detail/SendToPrinterButton";
+import { UploadDropzone, type UploadTarget } from "@/components/upload/UploadDropzone";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -64,94 +66,132 @@ function FileThumb({ file }: { file: FileOut }) {
 
 export function FilesTab({ model }: { model: ModelDetail }) {
   const deleteFile = useDeleteFile(model.slug);
+  const queryClient = useQueryClient();
+  const [showAddFiles, setShowAddFiles] = useState(false);
   const files = model.current_revision?.files ?? [];
+  const currentRevision = model.current_revision;
 
-  if (files.length === 0) {
-    return <p className="py-8 text-center text-sm text-muted-foreground">No files on the current revision yet.</p>;
+  // Uploads (Task 10, correctness map §B4) always target the model's
+  // CURRENT revision through the existing `PUT /api/uploads` seam -- never
+  // `create_revision` (a costly full snapshot-copy that 409s mid-upload).
+  // Guarded on `currentRevision` truthiness the same way UploadPage.tsx
+  // guards its own (freshly-created) target before using it.
+  async function resolveTarget(): Promise<UploadTarget | null> {
+    if (!currentRevision) return null;
+    return { modelId: model.id, revisionId: currentRevision.id };
+  }
+
+  function handleUploadComplete() {
+    // The gallery-only `["models"]` key (what UploadPage.tsx invalidates)
+    // wouldn't refresh THIS already-open detail page -- invalidate the
+    // specific model-detail query instead (correctness map §6).
+    void queryClient.invalidateQueries({ queryKey: modelQueryOptions(model.slug).queryKey });
   }
 
   return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead className="w-14">
-            <span className="sr-only">Thumbnail</span>
-          </TableHead>
-          <TableHead>Path</TableHead>
-          <TableHead>Size</TableHead>
-          <TableHead>Hash</TableHead>
-          <TableHead>Modified</TableHead>
-          <TableHead>Status</TableHead>
-          <TableHead className="text-right">Actions</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {files.map((file) => {
-          const metaLine = fileMetaLine(file);
-          return (
-            <TableRow key={file.id}>
-              <TableCell>
-                <FileThumb file={file} />
-              </TableCell>
-              <TableCell className="max-w-64 font-mono text-xs">
-                <div className="truncate" title={file.rel_path}>
-                  {file.rel_path}
-                </div>
-                {metaLine ? (
-                  <div className="truncate font-sans text-[11px] font-normal text-muted-foreground" title={metaLine}>
-                    {metaLine}
-                  </div>
-                ) : null}
-              </TableCell>
-              <TableCell>{humanizeBytes(file.size)}</TableCell>
-              <TableCell>
-                <CopyableHash hash={file.blob_hash} />
-              </TableCell>
-              <TableCell>{formatDateTime(file.mtime)}</TableCell>
-              <TableCell>
-                <Badge variant={file.verified_at ? "secondary" : "outline"}>
-                  {file.verified_at ? "stored" : "processing"}
-                </Badge>
-              </TableCell>
-              <TableCell>
-                <div className="flex justify-end gap-1">
-                  <SendToPrinterButton file={file} />
-                  {file.verified_at ? (
-                    <Button asChild variant="ghost" size="icon-sm" aria-label={`Download ${file.rel_path}`}>
-                      <a href={`/api/files/${file.id}/download`}>
-                        <DownloadIcon className="size-4" />
-                      </a>
-                    </Button>
-                  ) : (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon-sm"
-                      disabled
-                      aria-label={`Download ${file.rel_path}`}
-                      title="Still processing — download will be available once verified"
-                    >
-                      <DownloadIcon className="size-4" />
-                    </Button>
-                  )}
-                  <ConfirmDialog
-                    trigger={
-                      <Button type="button" variant="ghost" size="icon-sm" aria-label={`Delete ${file.rel_path}`}>
-                        <Trash2Icon className="size-4" />
-                      </Button>
-                    }
-                    title={`Delete ${file.rel_path}?`}
-                    description="This removes the file from the current revision."
-                    confirmLabel="Delete"
-                    destructive
-                    onConfirm={() => deleteFile.mutate(file.id)}
-                  />
-                </div>
-              </TableCell>
+    <div className="space-y-4">
+      {currentRevision ? (
+        <div className="flex justify-end">
+          <Button type="button" variant="outline" size="sm" onClick={() => setShowAddFiles((prev) => !prev)}>
+            <PlusIcon className="size-4" />
+            Add files
+          </Button>
+        </div>
+      ) : null}
+
+      {showAddFiles && currentRevision ? (
+        <UploadDropzone resolveTarget={resolveTarget} onUploadComplete={handleUploadComplete} />
+      ) : null}
+
+      {files.length === 0 ? (
+        <p className="py-8 text-center text-sm text-muted-foreground">No files on the current revision yet.</p>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="w-14">
+                <span className="sr-only">Thumbnail</span>
+              </TableHead>
+              <TableHead>Path</TableHead>
+              <TableHead>Size</TableHead>
+              <TableHead>Hash</TableHead>
+              <TableHead>Modified</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead className="text-right">Actions</TableHead>
             </TableRow>
-          );
-        })}
-      </TableBody>
-    </Table>
+          </TableHeader>
+          <TableBody>
+            {files.map((file) => {
+              const metaLine = fileMetaLine(file);
+              return (
+                <TableRow key={file.id}>
+                  <TableCell>
+                    <FileThumb file={file} />
+                  </TableCell>
+                  <TableCell className="max-w-64 font-mono text-xs">
+                    <div className="truncate" title={file.rel_path}>
+                      {file.rel_path}
+                    </div>
+                    {metaLine ? (
+                      <div
+                        className="truncate font-sans text-[11px] font-normal text-muted-foreground"
+                        title={metaLine}
+                      >
+                        {metaLine}
+                      </div>
+                    ) : null}
+                  </TableCell>
+                  <TableCell>{humanizeBytes(file.size)}</TableCell>
+                  <TableCell>
+                    <CopyableHash hash={file.blob_hash} />
+                  </TableCell>
+                  <TableCell>{formatDateTime(file.mtime)}</TableCell>
+                  <TableCell>
+                    <Badge variant={file.verified_at ? "secondary" : "outline"}>
+                      {file.verified_at ? "stored" : "processing"}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex justify-end gap-1">
+                      <SendToPrinterButton file={file} />
+                      {file.verified_at ? (
+                        <Button asChild variant="ghost" size="icon-sm" aria-label={`Download ${file.rel_path}`}>
+                          <a href={`/api/files/${file.id}/download`}>
+                            <DownloadIcon className="size-4" />
+                          </a>
+                        </Button>
+                      ) : (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          disabled
+                          aria-label={`Download ${file.rel_path}`}
+                          title="Still processing — download will be available once verified"
+                        >
+                          <DownloadIcon className="size-4" />
+                        </Button>
+                      )}
+                      <ConfirmDialog
+                        trigger={
+                          <Button type="button" variant="ghost" size="icon-sm" aria-label={`Delete ${file.rel_path}`}>
+                            <Trash2Icon className="size-4" />
+                          </Button>
+                        }
+                        title={`Delete ${file.rel_path}?`}
+                        description="This removes the file from the current revision."
+                        confirmLabel="Delete"
+                        destructive
+                        onConfirm={() => deleteFile.mutate(file.id)}
+                      />
+                    </div>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      )}
+    </div>
   );
 }

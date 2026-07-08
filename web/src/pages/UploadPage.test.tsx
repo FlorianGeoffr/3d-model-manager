@@ -8,7 +8,6 @@ import {
 } from "@tanstack/react-router";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ReactNode } from "react";
 
 import type { JobUpdatedEvent, ModelDetail, UploadResult } from "@/api/types";
 import { TerminalEventMap, UploadPage } from "@/pages/UploadPage";
@@ -58,16 +57,6 @@ vi.mock("@/api/library", async (importOriginal) => {
 });
 
 vi.mock("@/api/upload", () => ({ uploadFile: uploadFileMock }));
-
-// Radix's Popover never reaches the open state under jsdom (floating-ui
-// positioning + dismissable-layer focus handling both depend on real
-// browser behavior), and popover mechanics aren't what these tests
-// exercise -- render trigger and content inline unconditionally.
-vi.mock("@/components/ui/popover", () => ({
-  Popover: ({ children }: { children?: ReactNode }) => <>{children}</>,
-  PopoverTrigger: ({ children }: { children?: ReactNode }) => <>{children}</>,
-  PopoverContent: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
-}));
 
 // UploadPage subscribes to the app-wide SSE connection via `useEvents`,
 // which normally requires an `EventsProvider` wrapping a real `EventSource`
@@ -206,7 +195,8 @@ describe("UploadPage", () => {
 
     fireEvent.click(await screen.findByRole("radio", { name: "Existing model" }));
 
-    // Pick Model A from the search results and upload batch 1 to it.
+    // Typing opens the inline results dropdown; pick Model A and upload batch 1.
+    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "Model" } });
     fireEvent.click(await screen.findByRole("button", { name: "Model A" }));
     await waitFor(() => expect(screen.getByLabelText("Model")).toHaveValue("Model A"));
     addFileToQueue(container, "a.stl");
@@ -216,7 +206,9 @@ describe("UploadPage", () => {
 
     // Switch the picker to Model B without touching the mode radio -- the
     // cached target from batch 1 must be invalidated, or batch 2 silently
-    // lands on Model A while the UI claims otherwise.
+    // lands on Model A while the UI claims otherwise. Typing again clears the
+    // previous selection and reopens the results.
+    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "Model" } });
     fireEvent.click(screen.getByRole("button", { name: "Model B" }));
     await waitFor(() => expect(screen.getByLabelText("Model")).toHaveValue("Model B"));
     addFileToQueue(container, "b.stl");

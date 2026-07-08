@@ -4,7 +4,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import { modelQueryOptions, useModelSearchQuery } from "@/api/library";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useDebouncedValue } from "@/lib/format";
 
@@ -88,52 +87,60 @@ export function TargetPicker({
       ) : (
         <div className="max-w-sm space-y-1.5">
           <Label htmlFor="upload-existing-model-search">Model</Label>
-          <Popover open={open} onOpenChange={setOpen}>
-            <PopoverTrigger asChild>
-              <Input
-                id="upload-existing-model-search"
-                value={existingTarget ? existingTarget.name : query}
-                onChange={(event) => {
-                  onExistingTargetChange(null);
-                  setQuery(event.target.value);
-                  setOpen(true);
-                }}
-                disabled={disabled}
-                placeholder="Search models…"
-                autoComplete="off"
-              />
-            </PopoverTrigger>
-            <PopoverContent
-              align="start"
-              className="w-72 p-1"
-              // The Input IS the PopoverTrigger. Radix focuses the content when
-              // the popover opens, which yanks focus out of the input after the
-              // first keystroke -- making the field impossible to type into.
-              // Keep focus in the input; the trigger stays "inside" the
-              // dismissable layer so typing doesn't close the popover either.
-              onOpenAutoFocus={(event) => event.preventDefault()}
-            >
-              {(searchQuery.data?.items ?? []).length === 0 ? (
-                <p className="p-2 text-sm text-muted-foreground">
-                  {debouncedQuery ? "No matching models" : "Type to search"}
-                </p>
-              ) : (
-                <ul className="max-h-56 overflow-y-auto">
-                  {searchQuery.data?.items.map((summary) => (
-                    <li key={summary.id}>
-                      <button
-                        type="button"
-                        className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-muted"
-                        onClick={() => void selectExisting(summary.slug)}
-                      >
-                        {summary.name}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </PopoverContent>
-          </Popover>
+          {/* Inline dropdown rather than a Radix Popover: the search field
+              needs to keep focus while the results are open, but a Popover
+              portals its content into a focus scope that yanks focus off an
+              external trigger input after the first keystroke. A plain
+              absolutely-positioned list under the input keeps focus where the
+              user is typing. Closes when focus leaves the whole widget. */}
+          <div
+            className="relative"
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
+            }}
+          >
+            <Input
+              id="upload-existing-model-search"
+              value={existingTarget ? existingTarget.name : query}
+              onChange={(event) => {
+                onExistingTargetChange(null);
+                setQuery(event.target.value);
+                setOpen(true);
+              }}
+              onFocus={() => {
+                if (!existingTarget && query.trim().length > 0) setOpen(true);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") setOpen(false);
+              }}
+              disabled={disabled}
+              placeholder="Search models…"
+              autoComplete="off"
+            />
+            {open && (
+              <div className="absolute z-50 mt-1 w-full rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md">
+                {(searchQuery.data?.items ?? []).length === 0 ? (
+                  <p className="p-2 text-sm text-muted-foreground">
+                    {debouncedQuery ? "No matching models" : "Type to search"}
+                  </p>
+                ) : (
+                  <ul className="max-h-56 overflow-y-auto">
+                    {searchQuery.data?.items.map((summary) => (
+                      <li key={summary.id}>
+                        <button
+                          type="button"
+                          className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-muted"
+                          onClick={() => void selectExisting(summary.slug)}
+                        >
+                          {summary.name}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

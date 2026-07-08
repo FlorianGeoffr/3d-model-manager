@@ -53,3 +53,16 @@ async def test_bare_sentinel_with_nothing_stored_is_422(authenticated_client):
         "/api/settings/import-tokens", json={"thingiverse_token": "***"}
     )
     assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_blank_put_with_nothing_stored_creates_no_setting_row(
+    authenticated_client, db_session
+):
+    # Clearing a token that was never stored is a true no-op: it must NOT
+    # create a null `{"thingiverse_token": None}` Setting row (M6 C3d).
+    r = await authenticated_client.put(
+        "/api/settings/import-tokens", json={"thingiverse_token": ""}
+    )
+    assert r.status_code == 200 and r.json() == {"thingiverse_token": ""}
+    assert await db_session.get(Setting, "import_tokens") is None

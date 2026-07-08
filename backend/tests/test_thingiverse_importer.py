@@ -8,6 +8,16 @@ from app.models.enums import ImportSite
 from tests.cassettes import thingiverse_fixtures as fx
 
 
+@pytest.fixture(autouse=True)
+def _truncate_all_tables():
+    """Local no-op override of the suite-wide autouse DB-truncate fixture
+    (conftest.py) -- every test in this module is DB-free (pure HTTP-mock /
+    string parsing), so skip pulling in ``migrated_db``/``postgres_url`` and
+    the Postgres container they spin up (M6 C3c). autouse must be
+    re-declared on the override for pytest to prefer it here."""
+    yield
+
+
 def _mock_client(cassette):
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == f"/things/{fx.THING_ID}"

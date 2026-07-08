@@ -82,4 +82,8 @@ filterwarnings = [
     # nothing we can fix from here, and the M1 gates require pristine
     # pytest output.
     "ignore:The @wait_container_is_ready decorator is deprecated:DeprecationWarning",
+    # The vendored bambulabs_api mqtt client builds its SSLContext with the
+    # deprecated ssl.PROTOCOL_TLS (paho/mqtt/client.py) -- nothing we can fix
+    # from here, and the gates require pristine pytest output (M6 C2).
+    "ignore:ssl.PROTOCOL_TLS is deprecated:DeprecationWarning",
 ]

@@ -47,9 +47,13 @@ def get_import_tokens_sync(session: SyncSession, settings: Settings) -> ImportTo
 
 
 async def set_thingiverse_token(db: AsyncSession, settings: Settings, token: str | None) -> None:
+    row = await db.get(Setting, SETTINGS_KEY)
+    if token is None and row is None:
+        # Clearing a token that was never stored: nothing to store and
+        # nothing to clear -- don't create a null Setting row (M6 C3d).
+        return
     stored = encrypt_secret(settings, token) if token else None
     value = {"thingiverse_token": stored}
-    row = await db.get(Setting, SETTINGS_KEY)
     if row is None:
         db.add(Setting(key=SETTINGS_KEY, value=value))
     else:

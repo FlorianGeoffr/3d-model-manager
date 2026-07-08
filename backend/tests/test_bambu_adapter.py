@@ -231,3 +231,33 @@ def test_test_connection_bounded_against_unreachable_host():
     elapsed = time.monotonic() - t0
     assert result.ok is False
     assert elapsed < 15, f"probe took {elapsed:.1f}s -- should be bounded, not ~136s"
+
+
+# Fast deterministic coverage for the two best-effort branches the M4
+# backlog minor #4 flagged (M6 C3b) -- no real socket/thread involved.
+def test_dump_get_reads_nested_print_dict():
+    # The real v2.6.6 mqtt_dump() nests fields under "print"; _dump_get must
+    # fall back into it (and prefer a top-level hit, and degrade to None).
+    assert bambu._dump_get({"print": {"gcode_state": "RUNNING"}}, "gcode_state") == "RUNNING"
+    assert bambu._dump_get({"print_error": 0}, "print_error") == 0  # top-level precedence
+    assert bambu._dump_get({}, "gcode_state") is None  # neither present -> None, never raises
+
+
+def test_test_connection_skips_unknown_state_then_succeeds(monkeypatch):
+    # The probe's poll loop must SKIP the truthy-but-meaningless UNKNOWN
+    # state (bambulabs_api's GcodeState._missing_ fallback) and keep waiting
+    # for a real report. Sequence UNKNOWN -> RUNNING, with time.sleep no-op'd
+    # so the branch is exercised in microseconds, not via a real socket wait.
+    states = iter(["UNKNOWN", "RUNNING"])
+
+    class _SeqStub(StubPrinter):
+        def get_state(self):
+            return next(states)
+
+    monkeypatch.setattr(bambu, "_build_printer", lambda conn: _SeqStub())
+    monkeypatch.setattr(bambu.time, "sleep", lambda _s: None)
+
+    result = BambuLanAdapter(CONN).test_connection(timeout=5.0)
+
+    assert result.ok is True
+    assert result.gcode_state == "RUNNING"

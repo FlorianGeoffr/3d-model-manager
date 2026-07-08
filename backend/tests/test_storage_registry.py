@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from app.config import Settings
-from app.storage.config import LocalConfig
+from app.config import Settings, get_settings
+from app.storage.config import LocalConfig, S3Config, SmbConfig
 from app.storage.errors import StorageError
 from app.storage.local import LocalStorageBackend
 from app.storage.registry import get_backend, register
@@ -50,3 +50,24 @@ def test_register_decorator_adds_a_new_scheme(
     settings = Settings(library_root=tmp_path / "library")
 
     assert get_backend(settings, _UnitTestConfig()) is sentinel
+
+
+# The smb/s3 factory paths (`_build_smb_backend`/`_build_s3`) were never
+# executed by any test -- the contract suite constructs the backends
+# directly (M3 carried gap, M6 C3a). Both constructors are I/O-free (smb
+# registers sessions lazily per call; the boto3 client connects on first
+# use), so these stay fast and deterministic with no container.
+def test_get_backend_returns_smb_backend_for_smb_config() -> None:
+    from app.storage.smb import SmbStorageBackend
+
+    cfg = SmbConfig(host="h", share="sh", username="u", password="p")
+
+    assert isinstance(get_backend(get_settings(), cfg), SmbStorageBackend)
+
+
+def test_get_backend_returns_s3_backend_for_s3_config() -> None:
+    from app.storage.s3 import S3StorageBackend
+
+    cfg = S3Config(bucket="b", access_key="a", secret_key="s")
+
+    assert isinstance(get_backend(get_settings(), cfg), S3StorageBackend)

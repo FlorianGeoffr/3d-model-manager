@@ -91,22 +91,26 @@ class ThingiverseImporter:
 
     def list_files(self, external_id: str) -> list[ImportFile]:
         d = self._thing(external_id)
+        # zip_data.files[] entries carry only {name, url} -- there is NO
+        # download_url here (that lives on the separate GET /things/{id}/files
+        # endpoint). `url` is a public cdn.thingiverse.com asset URL.
         files = (d.get("zip_data") or {}).get("files") or []
         return [
             ImportFile(
                 remote_id=str(f.get("name")),
                 filename=safe_filename(f.get("name")),
-                url=f.get("download_url"),
-                size=f.get("size"),
+                url=f.get("url"),
             )
             for f in files
-            if f.get("name") and f.get("download_url")
+            if f.get("name") and f.get("url")
         ]
 
     def resolve_download(self, external_id: str, file: ImportFile) -> ResolvedDownload:
-        token = _token()
-        headers = {"Authorization": f"Bearer {token}"} if token else {}
-        return ResolvedDownload(url=file.url or "", filename=file.filename, headers=headers)
+        # zip_data.files[].url are public cdn.thingiverse.com asset URLs -- no
+        # Authorization needed, and we deliberately don't send the app token to
+        # the CDN. (GET /things/{id}/files, which carries id/size/download_url
+        # + a token-gated /v2/files/{id}/download, is the documented fallback.)
+        return ResolvedDownload(url=file.url or "", filename=file.filename)
 
 
 register_importer(ThingiverseImporter())

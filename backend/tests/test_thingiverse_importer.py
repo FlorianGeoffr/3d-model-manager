@@ -65,8 +65,10 @@ def test_list_files_from_zip_data(imp):
     assert files[0].url == "https://cdn.thingiverse.com/assets/aa/marvin.stl"
 
 
-def test_resolve_download_adds_bearer(monkeypatch):
-    monkeypatch.setattr(thingiverse, "_token", lambda: "tok-xyz")
+def test_resolve_download_uses_public_cdn_url():
+    # zip_data.files[].url are public CDN assets -- resolve_download returns
+    # the URL with NO Authorization header (we must not leak the app token to
+    # the CDN, and it isn't needed).
     out = ThingiverseImporter().resolve_download(
         fx.THING_ID,
         ImportFile(
@@ -76,7 +78,7 @@ def test_resolve_download_adds_bearer(monkeypatch):
         ),
     )
     assert out.url == "https://cdn.thingiverse.com/assets/aa/marvin.stl"
-    assert out.headers == {"Authorization": "Bearer tok-xyz"}
+    assert out.headers == {}
 
 
 @pytest.mark.live_importer

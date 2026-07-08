@@ -2,8 +2,10 @@ import logging
 
 import httpx
 import pytest
+import redis.asyncio as aioredis
 from sqlalchemy import func, select
 
+from app.config import get_settings
 from app.importers import download
 from app.importers.base import ResolvedDownload
 from app.importers.fake import FAKE_DL, FakeImporter
@@ -12,6 +14,7 @@ from app.models.enums import ImportSite, ImportState
 from app.models.library import File, Model, Revision
 from app.models.system import Import
 from app.services import events, library
+from app.services.storage_config import resolve_backend_sync
 from app.tasks.importing import import_from_url
 from tests import corpus
 
@@ -223,3 +226,123 @@ async def test_store_failure_after_model_created_leaves_no_orphan_model(
     model_count = await db_session.scalar(select(func.count()).select_from(Model))
     revision_count = await db_session.scalar(select(func.count()).select_from(Revision))
     assert model_count == 0 and revision_count == 0
+
+
+# ---------------------------------------------------------------------------
+# M6 Task 4 (B1): re-entry idempotency under Celery `acks_late` redelivery.
+# A worker SIGKILLed mid-import never runs its `except` cleanup -- Celery
+# redelivers the same message and the redelivered attempt must not duplicate
+# the model nor leave the first one orphaned.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_redelivery_after_partial_commit_creates_no_duplicate(
+    fake_import, data_dir, library_root
+):
+    """Fabricates the EXACT post-crash DB state the early link is designed
+    to make detectable: a model + revision already committed AND
+    ``imp.model_id`` already linked to it (the early-link commit that now
+    happens immediately after model creation), but state still DOWNLOADING
+    because the worker died before the per-file store loop / DONE commit
+    ran.
+
+    NOTE (deviation from the brief's Step 1 snippet): the brief's snippet
+    leaves ``imp.model_id`` NULL here, describing the fabricated state as
+    "worker died between the model commit and the link commit" -- that was
+    the *pre-fix* window (model_id set only after the whole store loop, at
+    the very end). With the early link in place, that exact combination
+    ("files already committed" AND "model_id still NULL") can no longer
+    arise from this task's own code, since files are only stored *after*
+    the early-link commit. There is also no other durable, migration-free
+    signal (no unique constraint on ``models.source_url``; slug collisions
+    just get a numeric suffix, see ``_unique_slug_sync``) that could let a
+    redelivery identify *this specific* orphan if ``model_id`` were NULL.
+    Setting ``imp.model_id`` here instead accurately fabricates the window
+    the fix actually closes (window 2, matching the entry guard's own
+    ``imp.model_id is not None`` check and the dedicated-review checklist's
+    "redelivery after partial phase-(c) commit ... window 2")."""
+    from app.tasks.base import sync_session
+
+    fake_import.files = {"cube.stl": corpus.box_stl()}
+    with sync_session() as s:
+        imp = Import(
+            url="https://fake.test/thing/42",
+            site=ImportSite.THINGIVERSE,
+            external_id="42",
+            state=ImportState.DOWNLOADING,
+        )
+        s.add(imp)
+        s.commit()
+        s.refresh(imp)
+        import_id = imp.id
+        backend = resolve_backend_sync(s, get_settings())
+        orphan = library.create_imported_model_sync(
+            s,
+            backend,
+            name="Fake Thing",
+            description=None,
+            source_url="x",
+            source_site="thingiverse",
+            source_author=None,
+            source_license=None,
+            imported_at=None,
+            tags=[],
+            initial_revision_name="imported",
+        )
+        orphan_id = orphan.id
+        imp.model_id = orphan_id
+        s.commit()
+
+    import_from_url(import_id)  # redelivery: run the task again for the same import_id
+
+    with sync_session() as s:
+        assert s.query(Model).count() == 1  # the orphan was cleaned, not duplicated
+        assert s.get(Model, orphan_id) is None  # stale model deleted
+        imp = s.get(Import, import_id)
+        assert imp.state == ImportState.DONE and imp.model_id is not None
+
+
+@pytest.mark.asyncio
+async def test_redelivery_ignored_while_lock_is_held(
+    db_session, library_root, data_dir, fake_import, redis_url, monkeypatch
+):
+    """A genuinely concurrent redelivery (the original attempt is still
+    in-flight and holds the per-import Redis lock) must be a clean no-op:
+    the row is left untouched and the download path never runs a second
+    time."""
+    from app.tasks.importing import import_lock_key
+
+    fake_import.files = {"cube.stl": corpus.box_stl()}
+    imp = Import(
+        url="https://fake.test/thing/42",
+        site=ImportSite.THINGIVERSE,
+        external_id="42",
+        state=ImportState.PENDING,
+    )
+    db_session.add(imp)
+    await db_session.commit()
+    await db_session.refresh(imp)
+
+    calls = []
+    original_stream = download.stream_remote_to_spool
+
+    def spying_stream(*args, **kwargs):
+        calls.append((args, kwargs))
+        return original_stream(*args, **kwargs)
+
+    monkeypatch.setattr(download, "stream_remote_to_spool", spying_stream)
+
+    client = aioredis.Redis.from_url(redis_url)
+    await client.set(import_lock_key(imp.id), "some-other-worker-token")
+    try:
+        import_from_url(imp.id)
+    finally:
+        await client.delete(import_lock_key(imp.id))
+        await client.aclose()
+
+    assert calls == []  # stream_remote_to_spool never reached while the lock is held
+    await db_session.refresh(imp)
+    assert imp.state == ImportState.PENDING  # row untouched -- lock contention is a clean no-op
+    count = await db_session.scalar(select(func.count()).select_from(Model))
+    assert count == 0

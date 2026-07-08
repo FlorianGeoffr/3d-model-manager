@@ -115,6 +115,9 @@ class PrinterDaemon:
         self.settings = settings
         self.redis = redis.Redis.from_url(settings.redis_url)
         self._workers: dict[int, PrinterWorker] = {}
+        self._pubsubs: dict[int, redis.client.PubSub] = {}
+        self._threads: dict[int, threading.Thread] = {}
+        self._cmd_stops: dict[int, threading.Event] = {}
         self._stop = threading.Event()
 
     def enabled_printers(self) -> list[Printer]:
@@ -135,38 +138,77 @@ class PrinterDaemon:
     def _subscribe_commands(self, printer_id: int, worker: PrinterWorker) -> None:
         pubsub = self.redis.pubsub()
         pubsub.subscribe(command_channel(printer_id))
+        stop = threading.Event()
 
         def _loop() -> None:
-            for msg in pubsub.listen():
-                if self._stop.is_set():
-                    break
-                if msg["type"] != "message":
-                    continue
-                try:
-                    command = json.loads(msg["data"]).get("command")
-                except (ValueError, TypeError):
-                    continue
-                if command:
+            try:
+                for msg in pubsub.listen():
+                    if self._stop.is_set() or stop.is_set():
+                        break
+                    if msg["type"] != "message":
+                        continue
                     try:
-                        worker.handle_command(command)
-                    except Exception:
-                        log.exception("printerd: command %r failed", command)
+                        command = json.loads(msg["data"]).get("command")
+                    except (ValueError, TypeError):
+                        continue
+                    if command:
+                        try:
+                            worker.handle_command(command)
+                        except Exception:
+                            log.exception("printerd: command %r failed", command)
+            except Exception:
+                # pubsub.close() from stop_printer/stop() unblocks listen() by
+                # dropping the connection -> exit the thread instead of leaking it.
+                pass
+            finally:
+                with contextlib.suppress(Exception):
+                    pubsub.close()
 
-        threading.Thread(target=_loop, daemon=True, name=f"cmd-{printer_id}").start()
+        t = threading.Thread(target=_loop, daemon=True, name=f"cmd-{printer_id}")
+        t.start()
+        self._pubsubs[printer_id] = pubsub
+        self._threads[printer_id] = t
+        self._cmd_stops[printer_id] = stop
+
+    def stop_printer(self, printer_id: int) -> None:
+        stop = self._cmd_stops.pop(printer_id, None)
+        if stop is not None:
+            stop.set()
+        pubsub = self._pubsubs.pop(printer_id, None)
+        if pubsub is not None:
+            with contextlib.suppress(Exception):
+                pubsub.unsubscribe()
+                pubsub.close()  # unblocks the listen() loop
+        worker = self._workers.pop(printer_id, None)
+        if worker is not None:
+            with contextlib.suppress(Exception):
+                worker.adapter.close()
+        thread = self._threads.pop(printer_id, None)
+        if thread is not None:
+            thread.join(timeout=2.0)
+
+    def reconcile(self) -> None:
+        enabled = {p.id: p for p in self.enabled_printers()}
+        for printer_id in list(self._workers):
+            if printer_id not in enabled:
+                self.stop_printer(printer_id)
+        for printer_id, printer in enabled.items():
+            if printer_id not in self._workers:
+                try:
+                    self.start_printer(printer)
+                except Exception as exc:
+                    # Exception TEXT could echo the plaintext access code (e.g. an
+                    # MQTT/FTPS auth-failure string) -- log only the type, never
+                    # the full exception body.
+                    log.error(
+                        "printerd: failed to start printer %s: %s", printer_id, type(exc).__name__
+                    )
 
     def run(self) -> None:
-        for printer in self.enabled_printers():
-            try:
-                self.start_printer(printer)
-            except Exception as exc:
-                # Exception TEXT could echo the plaintext access code (e.g. an
-                # MQTT/FTPS auth-failure string) -- log only the type, never
-                # the full exception body.
-                log.error(
-                    "printerd: failed to start printer %s: %s", printer.id, type(exc).__name__
-                )
+        self.reconcile()  # initial start (replaces the old one-shot start loop)
         while not self._stop.wait(_POLL_INTERVAL_S):
-            for worker in self._workers.values():
+            self.reconcile()
+            for worker in list(self._workers.values()):
                 try:
                     # emit a fresh lib snapshot -> Redis + transitions
                     worker.adapter.request_full_status()
@@ -177,9 +219,8 @@ class PrinterDaemon:
 
     def stop(self) -> None:
         self._stop.set()
-        for worker in self._workers.values():
-            with contextlib.suppress(Exception):
-                worker.adapter.close()
+        for printer_id in list(self._workers):
+            self.stop_printer(printer_id)
 
 
 def main() -> None:

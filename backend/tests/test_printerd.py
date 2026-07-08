@@ -1,5 +1,6 @@
 import json
 import logging
+import threading
 import time
 
 import pytest
@@ -7,6 +8,7 @@ import redis as redis_lib
 
 from app import printerd as printerd_module
 from app.config import get_settings
+from app.crypto import encrypt_secret
 from app.models import Blob, File, Model, Printer, PrintJob, Revision
 from app.models.enums import BlobFormat, BlobKind, PrinterKind, PrintJobState
 from app.printerd import PrinterDaemon, PrinterWorker
@@ -160,7 +162,14 @@ def test_run_logs_poll_failure_type_only(caplog, monkeypatch, redis_url):
     """Same leak-surface concern as above, for the status-poll log line."""
     settings = get_settings()
     daemon = PrinterDaemon(settings)
-    monkeypatch.setattr(daemon, "enabled_printers", lambda: [])
+
+    class _StubPrinterRow:
+        id = 1
+
+    # Task 5: run() now reconciles every tick, diffing enabled_printers()
+    # against _workers -- stub printer 1 as still enabled so reconcile()
+    # doesn't tear the injected stub worker down before the poll below runs.
+    monkeypatch.setattr(daemon, "enabled_printers", lambda: [_StubPrinterRow()])
     monkeypatch.setattr(printerd_module, "_POLL_INTERVAL_S", 0.0)
 
     class _BoomAdapter:
@@ -179,3 +188,136 @@ def test_run_logs_poll_failure_type_only(caplog, monkeypatch, redis_url):
     assert "status poll failed" in caplog.text
     assert "87654321" not in caplog.text
     assert "RuntimeError" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Task 5 (M6 hardening B2): reconciliation loop + clean per-printer thread
+# teardown. printerd used to query enabled_printers() exactly once at
+# startup, so a printer enabled after start was invisible until a process
+# restart, and a disabled printer kept its MQTT session + command thread
+# alive forever. These drive the real run() loop (in a background thread)
+# against real Postgres + Redis so the fix is proven end-to-end, not just
+# via a directly-called reconcile().
+# ---------------------------------------------------------------------------
+
+
+def _seed_printer(settings, *, name: str, enabled: bool) -> int:
+    with base.sync_session() as s:
+        printer = Printer(
+            name=name,
+            kind=PrinterKind.BAMBU_LAN,
+            host="h",
+            serial=name,
+            access_code_enc=encrypt_secret(settings, "12345678"),
+            enabled=enabled,
+        )
+        s.add(printer)
+        s.commit()
+        s.refresh(printer)
+        return printer.id
+
+
+def _wait_until(predicate, *, timeout: float = 2.0, interval: float = 0.02) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return predicate()
+
+
+def _find_thread(name: str, *, timeout: float = 2.0, interval: float = 0.02) -> threading.Thread:
+    """Poll ``threading.enumerate()`` for a thread by name.
+
+    ``_workers[id]`` is set a couple of statements before the `cmd-{id}`
+    thread is actually spawned (see ``start_printer``/``_subscribe_commands``),
+    so a bare `id in daemon._workers` check can momentarily race ahead of the
+    thread's existence -- retry instead of a single lookup.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        for t in threading.enumerate():
+            if t.name == name:
+                return t
+        time.sleep(interval)
+    raise AssertionError(f"no thread named {name!r} appeared within {timeout}s")
+
+
+def test_run_reconciles_newly_enabled_printer(
+    redis_url, printer_enabled, migrated_db, fake_adapter, monkeypatch
+):
+    """A printer enabled/created AFTER printerd's run() loop has started must
+    be picked up within a poll tick or two -- no process restart required."""
+    settings = get_settings()
+    monkeypatch.setattr(printerd_module, "_POLL_INTERVAL_S", 0.05)
+    daemon = PrinterDaemon(settings)
+    thread = threading.Thread(target=daemon.run, daemon=True)
+    thread.start()
+    try:
+        # Give the loop a couple of ticks with nothing enabled yet.
+        time.sleep(0.15)
+        assert daemon._workers == {}
+
+        pid = _seed_printer(settings, name="late", enabled=True)
+
+        assert _wait_until(lambda: pid in daemon._workers), (
+            f"printer {pid} was never picked up by reconcile(); workers={daemon._workers!r}"
+        )
+    finally:
+        daemon.stop()
+        thread.join(timeout=2.0)
+
+
+def test_reconcile_tears_down_disabled_printer_thread(
+    redis_url, printer_enabled, migrated_db, fake_adapter, monkeypatch
+):
+    """Disabling a printer must tear down BOTH its worker AND its `cmd-{id}`
+    command thread (which blocks on a Redis pubsub `listen()`) -- a naive
+    `self._workers.pop(id)` leaves the thread (and its Redis connection)
+    running forever."""
+    settings = get_settings()
+    monkeypatch.setattr(printerd_module, "_POLL_INTERVAL_S", 0.05)
+    id1 = _seed_printer(settings, name="keep", enabled=True)
+    id2 = _seed_printer(settings, name="drop", enabled=True)
+
+    daemon = PrinterDaemon(settings)
+    thread = threading.Thread(target=daemon.run, daemon=True)
+    thread.start()
+    try:
+        assert _wait_until(lambda: {id1, id2} <= daemon._workers.keys())
+        cmd_thread = _find_thread(f"cmd-{id2}")
+        assert cmd_thread.is_alive()
+
+        with base.sync_session() as s:
+            printer = s.get(Printer, id2)
+            printer.enabled = False
+            s.commit()
+
+        assert _wait_until(lambda: id2 not in daemon._workers), (
+            f"disabled printer {id2} was never torn down; workers={daemon._workers!r}"
+        )
+        assert id1 in daemon._workers  # the still-enabled printer is untouched
+
+        cmd_thread.join(timeout=2.0)
+        assert not cmd_thread.is_alive()
+        assert not any(t.name == f"cmd-{id2}" for t in threading.enumerate())
+
+        # Step 4 sanity: a few more enable/disable cycles must never leak a
+        # lingering cmd-{id2} thread.
+        for _ in range(2):
+            with base.sync_session() as s:
+                s.get(Printer, id2).enabled = True
+                s.commit()
+            assert _wait_until(lambda: id2 in daemon._workers)
+            cycle_thread = _find_thread(f"cmd-{id2}")
+
+            with base.sync_session() as s:
+                s.get(Printer, id2).enabled = False
+                s.commit()
+            assert _wait_until(lambda: id2 not in daemon._workers)
+            cycle_thread.join(timeout=2.0)
+            assert not cycle_thread.is_alive()
+        assert not any(t.name == f"cmd-{id2}" for t in threading.enumerate())
+    finally:
+        daemon.stop()
+        thread.join(timeout=2.0)

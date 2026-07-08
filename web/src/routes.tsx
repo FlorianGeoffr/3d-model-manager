@@ -3,8 +3,8 @@ import { Outlet, createRootRouteWithContext, createRoute, redirect } from "@tans
 
 import { authQueryOptions } from "@/api/auth";
 import { AppShell } from "@/components/AppShell";
-import { ComingSoonPage } from "@/pages/ComingSoonPage";
 import { ImportPage } from "@/pages/ImportPage";
+import { JobsPage } from "@/pages/JobsPage";
 import { LibraryPage } from "@/pages/LibraryPage";
 import { LoginPage } from "@/pages/LoginPage";
 import { ModelDetailPage } from "@/pages/ModelDetailPage";
@@ -75,7 +75,7 @@ const printerRoute = createRoute({
 const jobsRoute = createRoute({
   getParentRoute: () => authenticatedRoute,
   path: "/jobs",
-  component: () => <ComingSoonPage title="Jobs" />,
+  component: JobsPage,
 });
 
 const settingsRoute = createRoute({

@@ -224,7 +224,10 @@ export interface UploadResult {
 
 // -- jobs (backend/app/schemas/jobs.py) --------------------------------
 
-export type JobState = "queued" | "running" | "done" | "failed";
+// `dead` (Task 8): a formal dead-letter state, auto-parked once a job has
+// exhausted its `max_attempts` ceiling -- distinct from a plain `failed`
+// that's still worth retrying automatically.
+export type JobState = "queued" | "running" | "done" | "failed" | "dead";
 
 export interface JobOut {
   id: string;
@@ -234,6 +237,7 @@ export interface JobOut {
   subject_id: number | null;
   state: JobState;
   attempts: number;
+  max_attempts: number;
   error: string | null;
   created_at: string;
   updated_at: string;

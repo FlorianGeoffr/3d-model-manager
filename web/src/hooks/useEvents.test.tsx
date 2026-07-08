@@ -54,6 +54,45 @@ function renderProvider() {
   );
 }
 
+describe("EventsProvider jobs invalidation", () => {
+  beforeEach(() => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal("EventSource", FakeEventSource);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("invalidates the jobs query on every job.updated transition, not just terminal ones", () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <EventsProvider>
+          <div>ready</div>
+        </EventsProvider>
+      </QueryClientProvider>,
+    );
+    const source = FakeEventSource.instances[0];
+    expect(source).toBeDefined();
+
+    source.onmessage?.({
+      data: JSON.stringify({
+        type: "job.updated",
+        job_id: "1",
+        job_type: "convert_to_glb",
+        state: "running",
+        subject_type: "file",
+        subject_id: 1,
+      }),
+    } as MessageEvent<string>);
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["jobs"] });
+  });
+});
+
 describe("EventsProvider scan invalidation", () => {
   beforeEach(() => {
     FakeEventSource.instances = [];

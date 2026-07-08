@@ -55,6 +55,11 @@ export function EventsProvider({ children }: { children: ReactNode }) {
 
       if (parsed.type !== "job.updated") return;
 
+      // The Jobs page (Task 9) lists every job type, live -- refresh it on
+      // every transition (queued/running/done/failed/dead), not just the
+      // terminal ones the models/revisions invalidation below cares about.
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+
       if (parsed.state === "done" || parsed.state === "failed") {
         void queryClient.invalidateQueries({ queryKey: ["models"] });
         void queryClient.invalidateQueries({ queryKey: ["revisions"] });

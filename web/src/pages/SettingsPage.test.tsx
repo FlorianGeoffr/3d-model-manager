@@ -80,6 +80,7 @@ function fakeJob(overrides: Partial<JobOut> = {}): JobOut {
     subject_id: null,
     state: "queued",
     attempts: 0,
+    max_attempts: 3,
     error: null,
     created_at: "2026-07-05T00:00:00Z",
     updated_at: "2026-07-05T00:00:00Z",

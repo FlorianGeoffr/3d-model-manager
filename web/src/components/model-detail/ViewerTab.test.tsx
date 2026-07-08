@@ -7,13 +7,15 @@ import type { FileOut, ModelDetail } from "@/api/types";
 
 // `ModelViewer` is a `React.lazy` chunk that mounts an R3F `<Canvas>`, which
 // jsdom can't run (no WebGL) -- stub it so ViewerTab's branching logic can
-// be exercised without ever touching three.js. It now takes multiple urls
-// (Workstream A "multi-part combined view") plus a resolved background
-// color -- render both onto the stub so tests can assert on them.
+// be exercised without ever touching three.js. It now takes multiple parts
+// (Workstream A "multi-part combined view"), each `{ id, url }`, plus a
+// resolved background color -- render the joined urls + the color onto the
+// stub so tests can assert on them (same joined-url shape as before).
+type ViewerPart = { id: number; url: string };
 const { modelViewerMock, platePanelMock, defaultModelViewerImpl } = vi.hoisted(() => {
-  const defaultModelViewerImpl = ({ urls, background }: { urls: string[]; background: string }) => (
+  const defaultModelViewerImpl = ({ parts, background }: { parts: { id: number; url: string }[]; background: string }) => (
     <div data-testid="model-viewer" data-background={background}>
-      {urls.join(",")}
+      {parts.map((part) => part.url).join(",")}
     </div>
   );
   return {
@@ -138,6 +140,22 @@ describe("ViewerTab", () => {
 
     expect(await screen.findByTestId("model-viewer")).toHaveTextContent("/api/blobs/readyhash/glb");
     expect(screen.getByRole("checkbox", { name: file.rel_path })).toBeChecked();
+  });
+
+  it("resyncs the first-part-checked default when the model's file set changes", async () => {
+    // TanStack Router reuses this component instance across `$slug`
+    // navigations, so `checkedIds` must not carry over model A's ids to
+    // model B (which would leave every box unchecked). `MeshSection` is keyed
+    // on the ready-GLB id set to force a fresh default on any file-set change.
+    const modelA = fakeModel([fakeFile({ id: 1, rel_path: "a.stl", blob_hash: "hashA", glb_status: "ok" })]);
+    const { rerender } = render(<ViewerTab model={modelA} />);
+    expect(await screen.findByRole("checkbox", { name: "a.stl" })).toBeChecked();
+
+    const modelB = fakeModel([fakeFile({ id: 5, rel_path: "z.stl", blob_hash: "hashZ", glb_status: "ok" })]);
+    rerender(<ViewerTab model={modelB} />);
+
+    expect(await screen.findByRole("checkbox", { name: "z.stl" })).toBeChecked();
+    expect(screen.getByTestId("model-viewer")).toHaveTextContent("/api/blobs/hashZ/glb");
   });
 
   it("checking a second glb part combines both urls into the one viewer; unchecking drops it again", async () => {
@@ -278,9 +296,9 @@ describe("ViewerTab", () => {
 
   it("clears a previous crash once the checked parts change to a working set", async () => {
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    modelViewerMock.mockImplementation(({ urls }: { urls: string[]; background: string }) => {
-      if (urls.some((url) => url.includes("badhash"))) throw new Error("bad glb");
-      return defaultModelViewerImpl({ urls, background: "#a1a1aa" });
+    modelViewerMock.mockImplementation(({ parts }: { parts: ViewerPart[]; background: string }) => {
+      if (parts.some((part) => part.url.includes("badhash"))) throw new Error("bad glb");
+      return defaultModelViewerImpl({ parts, background: "#a1a1aa" });
     });
     const fileA = fakeFile({ id: 1, rel_path: "a.stl", blob_hash: "badhash", glb_status: "ok" });
     const fileB = fakeFile({ id: 2, rel_path: "b.stl", blob_hash: "goodhash", glb_status: "ok" });

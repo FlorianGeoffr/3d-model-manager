@@ -4,7 +4,7 @@
  * unit testable under plain vitest; `useViewerBackground` is the stateful
  * half that persists the choice across sessions and follows the app theme.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTheme } from "next-themes";
 
 export type BackgroundPreset = "studio" | "white" | "dark" | "theme" | "custom";
@@ -98,7 +98,15 @@ export function useViewerBackground() {
 
   const [state, setState] = useState<StoredBackground>(() => readStoredBackground());
 
+  // Skip the initial run: `state` was just read back from localStorage, so
+  // persisting it again on mount would be a redundant no-op write. Only real
+  // changes (via the setters below) should hit storage.
+  const mounted = useRef(false);
   useEffect(() => {
+    if (!mounted.current) {
+      mounted.current = true;
+      return;
+    }
     writeStoredBackground(state);
   }, [state]);
 

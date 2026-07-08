@@ -76,17 +76,17 @@ class ViewerErrorBoundary extends Component<{ children: ReactNode }, ViewerError
  * boundary, clearing any error state left over from a previous selection
  * instead of getting stuck on the fallback forever (mirrors the old
  * single-file behavior keyed on `file.id`). */
-function MeshCanvas({ urls, background }: { urls: string[]; background: string }) {
-  if (urls.length === 0) {
+function MeshCanvas({ parts, background }: { parts: { id: number; url: string }[]; background: string }) {
+  if (parts.length === 0) {
     return (
       <PlaceholderCard title="Select a part to preview" description="Check at least one part above to render it." />
     );
   }
 
   return (
-    <ViewerErrorBoundary key={urls.join("|")}>
+    <ViewerErrorBoundary key={parts.map((part) => part.id).join("|")}>
       <Suspense fallback={<Skeleton className="h-full w-full" />}>
-        <ModelViewer urls={urls} background={background} />
+        <ModelViewer parts={parts} background={background} />
       </Suspense>
     </ViewerErrorBoundary>
   );
@@ -143,8 +143,8 @@ function MeshSection({ files }: { files: FileOut[] }) {
   const [expanded, setExpanded] = useState(false);
   const { preset, custom, color, setPreset, setCustom } = useViewerBackground();
 
-  const urls = useMemo(
-    () => files.filter((file) => checkedIds.has(file.id)).map(glbUrl),
+  const parts = useMemo(
+    () => files.filter((file) => checkedIds.has(file.id)).map((file) => ({ id: file.id, url: glbUrl(file) })),
     [files, checkedIds],
   );
 
@@ -183,7 +183,7 @@ function MeshSection({ files }: { files: FileOut[] }) {
       </div>
 
       <div className="h-[28rem] overflow-hidden rounded-lg border border-border">
-        <MeshCanvas urls={urls} background={color} />
+        <MeshCanvas parts={parts} background={color} />
       </div>
 
       <Dialog open={expanded} onOpenChange={setExpanded}>
@@ -192,7 +192,7 @@ function MeshSection({ files }: { files: FileOut[] }) {
             <DialogTitle>3D preview</DialogTitle>
           </DialogHeader>
           <div className="min-h-0 flex-1 overflow-hidden rounded-lg border border-border">
-            <MeshCanvas urls={urls} background={color} />
+            <MeshCanvas parts={parts} background={color} />
           </div>
         </DialogContent>
       </Dialog>
@@ -268,7 +268,13 @@ export function ViewerTab({ model }: { model: ModelDetail }) {
 
   return (
     <div className="space-y-6">
-      {glbable.length > 0 && <MeshSection files={glbable} />}
+      {/* Keying on the ready-GLB id set makes `MeshSection` remount -- and
+          so re-derive its first-part-checked default -- whenever the file set
+          changes. TanStack Router reuses this component instance across
+          `$slug` navigations (no route-level key), so without this, checked
+          part ids from a previous model would carry over to the next one,
+          leaving every box unchecked. */}
+      {glbable.length > 0 && <MeshSection key={glbable.map((file) => file.id).join(",")} files={glbable} />}
 
       {selectedFile && (
         <div className="space-y-4">

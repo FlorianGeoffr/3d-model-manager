@@ -146,7 +146,9 @@ verification is off in v1**: the printer's MQTT/FTPS/camera ports present a
 self-signed certificate from Bambu's private CA that no system trust store
 accepts (and there's no hostname to check against), so — like every other
 LAN client — this app disables verification rather than trusting nothing. A
-**TOFU (trust-on-first-use) certificate pin is deferred to M6** hardening.
+**TOFU (trust-on-first-use) certificate pin remains deferred** — pinning
+needs the real A1 mini's self-signed certificate in hand, so it pairs with
+the deferred live-hardware acceptance below.
 
 **Sending**: only sliced **`.gcode.3mf`** files (Bambu Studio's "Export
 plate sliced file") can be sent to a printer — a bare `.gcode` is rejected.

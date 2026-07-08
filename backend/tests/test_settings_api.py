@@ -391,3 +391,36 @@ async def test_connection_test_reuses_stored_secret_when_omitted(
     assert response.status_code == 200, response.text
     assert response.json()["ok"] is True
     assert captured["config"].password.get_secret_value() == "hunter2"
+
+
+@pytest.mark.asyncio
+async def test_merge_stored_secrets_rejects_sentinel_when_stored_secret_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M6-MINOR-1: a ``SecretStr`` is ALWAYS truthy -- even ``SecretStr("")``
+    -- so a stored EMPTY secret must NOT masquerade as "present" and let a
+    literal ``"***"`` fall through un-rejected. UI/API-unreachable (``_parse``
+    blocks storing an empty secret in the first place), so this drives
+    ``_merge_stored_secrets`` directly against a hand-built empty-secret
+    active config; pre-fix it returned the merged config (no 422), post-fix
+    it correctly rejects the sentinel."""
+    from fastapi import HTTPException
+
+    from app.api import settings as settings_module
+    from app.storage.config import SmbConfig
+
+    empty_secret_cfg = SmbConfig(host="h", share="sh", username="u", password="")
+
+    async def _fake_active(_db, _settings):
+        return empty_secret_cfg
+
+    monkeypatch.setattr(settings_module.storage_config, "get_active_config", _fake_active)
+
+    with pytest.raises(HTTPException) as exc:
+        await settings_module._merge_stored_secrets(
+            None,
+            get_settings(),
+            "smb",
+            {"backend": "smb", "host": "h", "share": "sh", "username": "u", "password": "***"},
+        )
+    assert exc.value.status_code == 422

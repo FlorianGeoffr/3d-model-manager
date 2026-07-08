@@ -86,9 +86,16 @@ async def _merge_stored_secrets(
     if incoming not in ("", _REDACTED_SENTINEL):
         return config
     stored = await storage_config.get_active_config(db, settings)
-    stored_secret = getattr(stored, secret_field, "") if stored.backend == backend else ""
-    if stored_secret:
-        return {**config, secret_field: stored_secret}
+    # `stored`'s secret field is a `SecretStr` (M6 A2/T3), whose truthiness is
+    # ALWAYS True -- even for `SecretStr("")`. Unwrap to the plain value and
+    # gate on THAT, so a stored EMPTY secret doesn't masquerade as "present"
+    # (which would skip the `"***"`-sentinel 422 below) and so the merged
+    # dict carries a plain str -- matching the incoming JSON config -- into
+    # `_parse`, never a stray `SecretStr` (M6-MINOR-1).
+    stored_secret = getattr(stored, secret_field, None) if stored.backend == backend else None
+    stored_value = stored_secret.get_secret_value() if stored_secret is not None else ""
+    if stored_value:
+        return {**config, secret_field: stored_value}
     if incoming == _REDACTED_SENTINEL:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,

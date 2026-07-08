@@ -15,10 +15,12 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Identity,
+    Index,
     Integer,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -31,6 +33,16 @@ class BlobMeta(Base):
     """Extracted mesh/slice metadata for a blob (SPEC ``blob_meta``)."""
 
     __tablename__ = "blob_meta"
+    __table_args__ = (
+        # Backs the gallery's `has_sliced=` filter (Task 7 brief D1); partial
+        # on `IS NOT NULL` since only sliced blobs (a minority) need to be
+        # findable this way.
+        Index(
+            "ix_blob_meta_print_time_s",
+            "print_time_s",
+            postgresql_where=text("print_time_s IS NOT NULL"),
+        ),
+    )
 
     blob_hash: Mapped[str] = mapped_column(
         CHAR(64), ForeignKey("blobs.hash", ondelete="CASCADE"), primary_key=True

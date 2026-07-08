@@ -44,6 +44,9 @@ model_tags = Table(
     Column("model_id", BigInteger, ForeignKey("models.id", ondelete="CASCADE"), primary_key=True),
     Column("tag_id", BigInteger, ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True),
 )
+# Only the composite PK (model_id, tag_id) exists otherwise -- the gallery's
+# `tag=` filter looks up by `tag_id` alone (Task 7 brief D1).
+Index("ix_model_tags_tag_id", model_tags.c.tag_id)
 
 
 class Model(Base):
@@ -65,6 +68,12 @@ class Model(Base):
             postgresql_using="gin",
             postgresql_ops={"description": "gin_trgm_ops"},
         ),
+        # Gallery keyset-pagination indexes (Task 7 brief D1): back the
+        # `sort=name` and default `-updated_at` keyset predicates
+        # (`WHERE (sort_col, id) > (cursor_val, cursor_id) ORDER BY sort_col,
+        # id`) with a composite index instead of a full sort.
+        Index("ix_models_name_id", "name", "id"),
+        Index("ix_models_updated_at_id", "updated_at", "id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
@@ -158,6 +167,10 @@ class Blob(Base):
     """
 
     __tablename__ = "blobs"
+    __table_args__ = (
+        # Backs the gallery's `format=` filter (Task 7 brief D1).
+        Index("ix_blobs_format", "format"),
+    )
 
     hash: Mapped[str] = mapped_column(CHAR(64), primary_key=True)
     size: Mapped[int] = mapped_column(BigInteger, nullable=False)

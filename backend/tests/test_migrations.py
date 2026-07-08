@@ -39,6 +39,12 @@ EXPECTED_INDEXES = {
     "ix_models_name_trgm",
     "ix_models_description_trgm",
     "ix_print_jobs_state",
+    # Task 7 (D1): gallery keyset/filter indexes.
+    "ix_models_name_id",
+    "ix_models_updated_at_id",
+    "ix_model_tags_tag_id",
+    "ix_blobs_format",
+    "ix_blob_meta_print_time_s",
 }
 
 

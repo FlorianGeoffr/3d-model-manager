@@ -42,8 +42,12 @@ query PrintProfile($id: ID!) {
 """.strip()
 
 DOWNLOAD_MUTATION = """
-mutation GetDownloadLink($id: ID!, $fileId: ID!, $fileType: DownloadFileTypeEnum!) {
-  getDownloadLink(id: $id, fileId: $fileId, fileType: $fileType) {
+mutation GetDownloadLink(
+  $printId: ID!
+  $files: [DownloadFileInput]!
+  $source: DownloadSourceEnum!
+) {
+  getDownloadLink(printId: $printId, files: $files, source: $source) {
     ok output { link }
   }
 }
@@ -130,7 +134,11 @@ class PrintablesImporter:
             data = _post(
                 c,
                 DOWNLOAD_MUTATION,
-                {"id": external_id, "fileId": file.remote_id, "fileType": "STL"},
+                {
+                    "printId": external_id,
+                    "source": "model_detail",
+                    "files": [{"fileType": "stl", "ids": [file.remote_id]}],
+                },
             )
         out = (data.get("getDownloadLink") or {}).get("output") or {}
         link = out.get("link")

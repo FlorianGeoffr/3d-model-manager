@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 
@@ -11,6 +13,16 @@ def _mock_client(print_body, link_body=None):
     def handler(request: httpx.Request) -> httpx.Response:
         payload = request.read().decode()
         if "getDownloadLink" in payload:
+            # Guard the live getDownloadLink signature (it drifted once, and
+            # the mock happily returns a link regardless of what we send): the
+            # request MUST carry the current args -- printId, a model_detail
+            # source, and files:[{fileType:"stl", ids:[...]}] with the
+            # LOWERCASE enum. A future drift breaks this assert, not silently
+            # ships a broken importer.
+            variables = json.loads(payload)["variables"]
+            assert variables["printId"] == fx.MODEL_ID
+            assert variables["source"] == "model_detail"
+            assert variables["files"] == [{"fileType": "stl", "ids": ["90001"]}]
             return httpx.Response(200, json=link_body or fx.DOWNLOAD_LINK_90001)
         return httpx.Response(200, json=print_body)
 

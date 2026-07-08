@@ -103,7 +103,16 @@ export function TargetPicker({
                 autoComplete="off"
               />
             </PopoverTrigger>
-            <PopoverContent align="start" className="w-72 p-1">
+            <PopoverContent
+              align="start"
+              className="w-72 p-1"
+              // The Input IS the PopoverTrigger. Radix focuses the content when
+              // the popover opens, which yanks focus out of the input after the
+              // first keystroke -- making the field impossible to type into.
+              // Keep focus in the input; the trigger stays "inside" the
+              // dismissable layer so typing doesn't close the popover either.
+              onOpenAutoFocus={(event) => event.preventDefault()}
+            >
               {(searchQuery.data?.items ?? []).length === 0 ? (
                 <p className="p-2 text-sm text-muted-foreground">
                   {debouncedQuery ? "No matching models" : "Type to search"}

@@ -10,6 +10,7 @@ import { UploadQueueItem, type QueueItem } from "@/components/upload/UploadQueue
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { resolveDroppedFiles, type DroppedFile } from "@/lib/droppedFiles";
+import { randomId } from "@/lib/randomId";
 import { useEvents } from "@/hooks/useEvents";
 import type { ModelDetail } from "@/api/types";
 
@@ -43,7 +44,7 @@ export class TerminalEventMap {
 
 function toQueueItems(files: DroppedFile[]): QueueItem[] {
   return files.map((entry) => ({
-    id: crypto.randomUUID(),
+    id: randomId(),
     file: entry.file,
     relPath: entry.relPath,
     size: entry.file.size,

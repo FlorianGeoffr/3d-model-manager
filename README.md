@@ -218,6 +218,80 @@ never corrupts library state. A `live_importer`-marked smoke test per site
 (deferred/manual, excluded from the default gate — see below) hits the
 real API on demand.
 
+## Backup & Restore
+
+Three things hold state; back up all three together and they must stay in
+sync on restore.
+
+**1. The Postgres database.** Holds models/revisions/files, jobs, settings
+(the storage-backend config with its **encrypted** SMB/S3 secret and the
+**encrypted** Thingiverse token), and printers (`access_code_enc`). No host
+port is published for `db`, so dump through the container:
+
+```sh
+docker compose exec db pg_dump -U tdmm tdmm > backup.sql
+```
+
+**2. `${TDMM_DATA_DIR}/secrets/printer.key`** (or the matching
+`TDMM_PRINTER_KEY` value). **This is the critical one.** As of M6 this single
+Fernet key decrypts the printer access codes **and** the SMB/S3 storage
+secret **and** the Thingiverse token. **Lose it — or restore a database
+against a *different* key — and every encrypted secret becomes permanently
+undecryptable** (`InvalidToken`); everything else restores fine, but you'll
+be re-entering every credential by hand. The DB dump and this key are a
+matched pair: back them up together, restore them together. (Same key
+described under [Printer integration → Security](#printer-integration-bambu-lan-feature-flagged).)
+
+**3. The `library/` contents.** For the **local** backend this is the
+`./library` bind-mount on the host — copy it like any directory. For the
+**SMB** or **S3** backends the library lives on your own share/bucket, which
+this app does not manage — back it up with your NAS/S3 tooling. Derivatives
+are never stored here (see below).
+
+**Do _not_ bother backing up:**
+- `${TDMM_DATA_DIR}/derivatives/**` — thumbnails and GLBs, all **regenerable**
+  by re-running the pipeline against the library originals (the migrate task
+  documents "derivatives always stay local"). Skipping them keeps backups
+  small.
+- `${TDMM_DATA_DIR}/spool/**` — transient in-flight upload bytes, meaningless
+  after the fact.
+
+**Restore runbook:**
+
+1. Bring up a fresh `db` service and load the dump:
+   ```sh
+   docker compose up -d db
+   docker compose exec -T db psql -U tdmm tdmm < backup.sql
+   ```
+2. Put `printer.key` back into the `tdmm_data` volume at
+   `${TDMM_DATA_DIR}/secrets/printer.key` (mode `0600`), **or** set the same
+   `TDMM_PRINTER_KEY` in `.env` — **before** starting api/worker/printerd, so
+   the encrypted secrets decrypt and the eager startup re-encryption pass
+   (idempotent, safe on already-encrypted data) doesn't run against the wrong
+   key.
+3. Restore `library/` (local backend) or confirm the SMB share / S3 bucket is
+   reachable.
+4. `docker compose up -d` — Alembic migrations run automatically on api boot.
+
+The env vars that must match the backed-up stack: `TDMM_DATABASE_URL`,
+`TDMM_DATA_DIR`, and the `db` service's `POSTGRES_USER` / `POSTGRES_PASSWORD`
+/ `POSTGRES_DB`.
+
+> **Warning:** `docker compose down --volumes` destroys **both** the `pgdata`
+> and `tdmm_data` volumes — that is your database, your derivatives, your
+> **secrets** (`printer.key`), and the spool, gone together and
+> irrecoverably. Like the first-run admin password, none of it comes back
+> without a backup. Use plain `docker compose down` (no `--volumes`) to stop
+> the stack while keeping state.
+
+**Acceptance (deferred — one-time manual restore drill, not automated):**
+like the printer's [live acceptance](#manuallive-acceptance-deferred--user-present-real-a1-mini-not-automated),
+a full restore is verified by hand, not in the test suite: `pg_dump` a seeded
+stack, `docker compose down --volumes`, then restore the DB + `printer.key` +
+`library/` into a fresh stack and confirm the gallery renders, a printer's
+access code still decrypts (Test connection succeeds), and a stored SMB/S3
+secret still works — proving the key travelled with the DB.
+
 ## Development
 
 ### Backend

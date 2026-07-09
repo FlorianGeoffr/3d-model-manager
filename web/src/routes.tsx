@@ -3,14 +3,13 @@ import { Outlet, createRootRouteWithContext, createRoute, redirect } from "@tans
 
 import { authQueryOptions } from "@/api/auth";
 import { AppShell } from "@/components/AppShell";
-import { ImportPage } from "@/pages/ImportPage";
+import { AddPage } from "@/pages/AddPage";
 import { JobsPage } from "@/pages/JobsPage";
 import { LibraryPage } from "@/pages/LibraryPage";
 import { LoginPage } from "@/pages/LoginPage";
 import { ModelDetailPage } from "@/pages/ModelDetailPage";
 import { PrinterPage } from "@/pages/PrinterPage";
 import { SettingsPage } from "@/pages/SettingsPage";
-import { UploadPage } from "@/pages/UploadPage";
 
 export interface RouterContext {
   queryClient: QueryClient;
@@ -54,16 +53,30 @@ const modelDetailRoute = createRoute({
   component: ModelDetailPage,
 });
 
-const uploadRoute = createRoute({
+const addRoute = createRoute({
   getParentRoute: () => authenticatedRoute,
-  path: "/upload",
-  component: UploadPage,
+  path: "/add",
+  component: AddPage,
 });
 
-const importRoute = createRoute({
+// /upload and /import were consolidated into /add (M8 E2). Keep the old paths
+// as redirects so existing bookmarks/links still land somewhere useful.
+const uploadRedirectRoute = createRoute({
+  getParentRoute: () => authenticatedRoute,
+  path: "/upload",
+  beforeLoad: () => {
+    throw redirect({ to: "/add" });
+  },
+  component: () => null,
+});
+
+const importRedirectRoute = createRoute({
   getParentRoute: () => authenticatedRoute,
   path: "/import",
-  component: ImportPage,
+  beforeLoad: () => {
+    throw redirect({ to: "/add" });
+  },
+  component: () => null,
 });
 
 const printerRoute = createRoute({
@@ -89,8 +102,9 @@ export const routeTree = rootRoute.addChildren([
   authenticatedRoute.addChildren([
     libraryRoute,
     modelDetailRoute,
-    uploadRoute,
-    importRoute,
+    addRoute,
+    uploadRedirectRoute,
+    importRedirectRoute,
     printerRoute,
     jobsRoute,
     settingsRoute,

@@ -534,6 +534,22 @@ export interface SearchResult {
   thumbnail_url: string | null;
 }
 
+// Per-site outcome of a federated `GET /imports/search` (M8 E1): counts,
+// whether another page likely exists, and errors, so the UI can label each
+// site and surface which upstream failed or needs a token.
+export interface SiteSearchStatus {
+  site: ImportSite;
+  count: number;
+  has_more: boolean;
+  status: "ok" | "error";
+  detail: string | null;
+}
+
+export interface SearchResponse {
+  results: SearchResult[];
+  per_site: SiteSearchStatus[];
+}
+
 // -- Bambu Lab account (backend/app/schemas/settings.py, Workstream B task
 // B2) -- connecting an account powers MakerWorld's authenticated search +
 // file downloads; anonymous MakerWorld access only sees trending results

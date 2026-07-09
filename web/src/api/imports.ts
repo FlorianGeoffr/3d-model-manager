@@ -6,7 +6,13 @@
  * `useImportSearch` (Workstream B task B3) backs the Search tab's
  * browse-then-import flow against `GET /imports/search`.
  */
-import { queryOptions, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  queryOptions,
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 
 import { api } from "@/api/client";
 import type {
@@ -15,7 +21,7 @@ import type {
   ImportSite,
   ImportTokensIn,
   ImportTokensOut,
-  SearchResult,
+  SearchResponse,
 } from "@/api/types";
 
 const ACTIVE: ReadonlyArray<ImportOut["state"]> = ["pending", "fetching", "downloading"];
@@ -53,18 +59,25 @@ export function useUpdateImportTokens() {
   });
 }
 
-/** Browse-then-import search (Workstream B task B1's `GET /imports/search`)
- * against a single site. Enabled only once `q` is non-empty -- the caller is
- * expected to pass an already-debounced `q` (mirrors `useModelSearchQuery`'s
- * `enabled` gate in `library.ts`). */
-export function useImportSearch(site: ImportSite, q: string, page = 1) {
+/** Federated browse-then-import search (M8 E1's `GET /imports/search`): queries
+ * the selected `sites` at once (repeat `?site=`), paginated via
+ * `useInfiniteQuery` — `getNextPageParam` advances while ANY site still reports
+ * `has_more`. Enabled once `q` is non-empty and at least one site is selected
+ * (an empty site list would otherwise read to the backend as "all sites"). The
+ * caller passes an already-debounced `q`. */
+export function useImportSearch(sites: ImportSite[], q: string) {
   const query = q.trim();
-  return useQuery({
-    queryKey: ["imports", "search", site, query, page] as const,
-    queryFn: () =>
-      api.get<SearchResult[]>(
-        `/imports/search?site=${encodeURIComponent(site)}&q=${encodeURIComponent(query)}&page=${page}`,
+  const selected = [...sites].sort();
+  const siteParams = selected.map((s) => `&site=${encodeURIComponent(s)}`).join("");
+  return useInfiniteQuery({
+    queryKey: ["imports", "search", selected, query] as const,
+    queryFn: ({ pageParam }) =>
+      api.get<SearchResponse>(
+        `/imports/search?q=${encodeURIComponent(query)}&page=${pageParam}${siteParams}`,
       ),
-    enabled: query.length > 0,
+    initialPageParam: 1,
+    getNextPageParam: (lastPage, allPages) =>
+      lastPage.per_site.some((s) => s.has_more) ? allPages.length + 1 : undefined,
+    enabled: query.length > 0 && selected.length > 0,
   });
 }

@@ -37,7 +37,7 @@ export function AppShell() {
           <div className="px-4 py-4 text-base font-semibold tracking-tight">3D Model Manager</div>
           <div className="px-2 pb-2">
             <Button asChild className="w-full justify-start gap-2">
-              <Link to="/upload">
+              <Link to="/add">
                 <Plus className="size-4" /> Add to library
               </Link>
             </Button>

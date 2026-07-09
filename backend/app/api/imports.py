@@ -9,8 +9,10 @@ a friendly 422, never a crash; an unsupported one always does."""
 
 from __future__ import annotations
 
+from typing import Annotated
+
 import anyio
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,24 +39,31 @@ router = APIRouter(prefix="/imports", tags=["imports"])
 
 
 @router.get("/search", response_model=SearchResponse)
-async def search_imports(q: str, site: ImportSite | None = None, page: int = 1) -> SearchResponse:
-    """Search one site (``?site=``) or, when ``site`` is omitted, ALL registered
-    sites at once (federated). Each site is queried on its own worker thread so
-    one slow or failing upstream can't stall or sink the others; results are
-    merged and a per-site status row reports counts, likely-more, and errors."""
+async def search_imports(
+    q: str,
+    site: Annotated[list[ImportSite] | None, Query()] = None,
+    page: int = 1,
+) -> SearchResponse:
+    """Search a chosen subset of sites (repeat ``?site=`` per site) or, when no
+    ``site`` is given, ALL registered sites at once (federated). Each site is
+    queried on its own worker thread so one slow or failing upstream can't stall
+    or sink the others; results are merged and a per-site status row reports
+    counts, likely-more, and errors."""
     q = q.strip()
     if not q:
         return SearchResponse(results=[], per_site=[])
 
-    if site is not None:
+    if site:
         # An explicit site with no importer stays a hard 422 (asking for a
-        # specific unavailable site is an error); the federated path below
-        # instead just omits unregistered sites.
-        if get_importer(site) is None:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_CONTENT, f"{site.value} isn't available"
-            )
-        sites = [site]
+        # specific unavailable site is an error); the federated (no-site) path
+        # below instead just omits unregistered sites. Dedupe while preserving
+        # the caller's order.
+        sites = list(dict.fromkeys(site))
+        for target in sites:
+            if get_importer(target) is None:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_CONTENT, f"{target.value} isn't available"
+                )
     else:
         sites = registered_sites()
 

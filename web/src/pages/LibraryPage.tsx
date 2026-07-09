@@ -205,7 +205,7 @@ export function LibraryPage() {
           </CardHeader>
           <div className="flex justify-center pb-4">
             <Button asChild>
-              <Link to="/upload">Upload a model</Link>
+              <Link to="/add">Add a model</Link>
             </Button>
           </div>
         </Card>

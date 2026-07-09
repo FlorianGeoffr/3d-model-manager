@@ -10,8 +10,11 @@ import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.models import AssemblyThumb, BlobMeta, Derivative, File, Model, Revision
 from app.models.enums import BlobFormat, BlobKind, DerivativeKind, DerivativeStatus
+from app.services import storage_backends as sb
+from app.storage.config import LocalConfig
 from app.storage.local import LocalStorageBackend
 
 pytestmark = pytest.mark.usefixtures("library_root")
@@ -626,3 +629,79 @@ async def test_gallery_and_detail_review_state_is_null_for_normal_model(
 
     detail = await authenticated_client.get(f"/api/models/{created['slug']}")
     assert detail.json()["review_state"] is None
+
+
+# ---------------------------------------------------------------------------
+# relocate (Workstream C task C3): POST /models/{slug}/relocate enqueues
+# app.tasks.relocate.relocate_model_storage. The relocate MECHANICS
+# (move/replicate copy+verify, hash-mismatch handling) are covered end to
+# end in tests/test_relocate.py -- this only exercises the API surface: job
+# dispatch and the mode/target-backend validation guardrails.
+# ---------------------------------------------------------------------------
+
+
+async def test_relocate_dispatches_tracked_job(
+    authenticated_client: httpx.AsyncClient, db_session: AsyncSession, tmp_path
+) -> None:
+    settings = get_settings()
+    target = await sb.create_backend(
+        db_session, settings, "Target", LocalConfig(root=str(tmp_path / "target"))
+    )
+    created = await _create_model(authenticated_client, "Relocate Me")
+
+    response = await authenticated_client.post(
+        f"/api/models/{created['slug']}/relocate",
+        json={"target_backend_id": target.id, "mode": "move"},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["type"] == "relocate_model_storage"
+    assert body["id"]
+    assert body["state"] in {"queued", "running", "done", "failed"}
+
+
+async def test_relocate_bad_mode_is_422(
+    authenticated_client: httpx.AsyncClient, db_session: AsyncSession, tmp_path
+) -> None:
+    settings = get_settings()
+    target = await sb.create_backend(
+        db_session, settings, "Target", LocalConfig(root=str(tmp_path / "target"))
+    )
+    created = await _create_model(authenticated_client, "Relocate Bad Mode")
+
+    response = await authenticated_client.post(
+        f"/api/models/{created['slug']}/relocate",
+        json={"target_backend_id": target.id, "mode": "duplicate"},
+    )
+
+    assert response.status_code == 422
+
+
+async def test_relocate_unknown_target_backend_is_404(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    created = await _create_model(authenticated_client, "Relocate Bad Target")
+
+    response = await authenticated_client.post(
+        f"/api/models/{created['slug']}/relocate",
+        json={"target_backend_id": 999999, "mode": "move"},
+    )
+
+    assert response.status_code == 404
+
+
+async def test_relocate_unknown_model_is_404(
+    authenticated_client: httpx.AsyncClient, db_session: AsyncSession, tmp_path
+) -> None:
+    settings = get_settings()
+    target = await sb.create_backend(
+        db_session, settings, "Target", LocalConfig(root=str(tmp_path / "target"))
+    )
+
+    response = await authenticated_client.post(
+        "/api/models/does-not-exist/relocate",
+        json={"target_backend_id": target.id, "mode": "move"},
+    )
+
+    assert response.status_code == 404

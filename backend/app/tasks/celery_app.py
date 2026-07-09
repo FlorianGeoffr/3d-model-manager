@@ -45,6 +45,7 @@ celery_app.conf.update(
         "app.tasks.pipeline",
         "app.tasks.scan",
         "app.tasks.migrate",
+        "app.tasks.relocate",
         "app.tasks.printing",
         "app.tasks.importing",
     ),

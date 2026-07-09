@@ -1,0 +1,189 @@
+"""``relocate_model_storage`` Celery task (Workstream C multi-backend storage
+design spec's "Relocate" section -- labeled task C2 in the shared spec, but
+implemented here as task C3): moves or replicates every file of a model,
+across ALL its revisions, from its current PRIMARY backend onto a TARGET
+backend.
+
+Reuses ``app.tasks.migrate``'s streaming copy-while-hashing-then-verify
+pattern (a ``_chunks`` closure feeding ``dest.write`` while hashing, then
+asserting ``result.hash`` against the expected hash) -- but per FILE rather
+than per whole-tree walk, since a model's files can already span more than
+one source backend (that's the whole point of Workstream C): each file
+resolves its OWN current primary backend independently before copying.
+
+**Content-dedup note:** physical storage here is layout-addressed, not
+content-addressed -- the same blob referenced by two ``files`` rows at two
+different ``storage_path`` keys exists as two independent physical objects
+(see ``app.services.storage_backends`` module docstring). Relocating a file
+therefore moves only THAT file's path; a sibling file elsewhere in the model
+(or a different model entirely) that happens to share the same blob hash is
+completely unaffected, even if it's never itself relocated.
+
+**Verify-before-delete (move mode):** the target copy is streamed, hashed,
+and verified -- and its ``file_locations`` row committed -- before anything
+on the source is touched. Only once that's durably committed does this task
+flip ``files.backend_id`` to the target and delete the source object/row.
+This ordering (copy+verify+commit, THEN cut over, THEN delete source) means
+a crash at any point before the delete leaves the source fully intact, so no
+in-flight relocation can ever lose data -- the worst a crash can do is leave
+extra bytes on the source backend that a later re-run of THIS SAME relocate
+(current_backend_id already flipped to target) won't come back to clean up.
+That stray-bytes case is a deliberately accepted, purely cosmetic trade-off:
+it duplicates storage, but it never loses or orphans a DB reference.
+
+Each file's copy + bookkeeping commits independently (its own
+``base.sync_session()``), mirroring the scanner's per-chunk checkpoint
+commits: a job that crashes partway through a large model leaves the
+files already relocated exactly as they are (retryable no-ops, see below)
+and picks back up on the remaining ones on retry.
+
+Runs entirely in the worker's SYNC world -- see ``app.tasks.base``.
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import UTC, datetime
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.config import Settings, get_settings
+from app.models import File, FileLocation, Revision
+from app.services import jobs
+from app.services.storage_backends import (
+    backend_for_id_sync,
+    resolve_default_backend_sync,
+)
+from app.storage.base import StorageBackend
+from app.tasks import base
+from app.tasks.celery_app import celery_app
+
+logger = logging.getLogger(__name__)
+
+MODES = frozenset({"move", "replicate"})
+
+
+@celery_app.task(name="app.tasks.relocate.relocate_model_storage")
+def relocate_model_storage(job_id: str, model_id: int, target_backend_id: int, mode: str) -> None:
+    settings = get_settings()
+    with base.sync_session() as s:
+        jobs.mark_running(s, job_id)
+
+    try:
+        # The API validates `mode` before ever dispatching (a pydantic
+        # `Literal["move", "replicate"]`), so this is defense-in-depth for a
+        # task invoked directly -- raised INSIDE the try so it still runs
+        # through the normal mark_failed path below rather than leaving the
+        # job stuck `running` forever.
+        if mode not in MODES:
+            raise ValueError(f"unknown relocate mode: {mode!r}; expected one of {sorted(MODES)}")
+
+        with base.sync_session() as s:
+            file_ids = list(
+                s.execute(
+                    select(File.id)
+                    .join(Revision, File.revision_id == Revision.id)
+                    .where(Revision.model_id == model_id)
+                    .order_by(File.id)
+                ).scalars()
+            )
+            # Resolved once -- the target is fixed for the whole job, and a
+            # `StorageBackend` instance carries no session state, so it's
+            # safe to reuse across every per-file session opened below (same
+            # posture as `app.tasks.migrate`'s `dest`).
+            target_backend = backend_for_id_sync(s, settings, target_backend_id)
+
+        for file_id in file_ids:
+            with base.sync_session() as s:
+                _relocate_one_file(s, settings, file_id, target_backend_id, target_backend, mode)
+    except Exception as exc:
+        with base.sync_session() as s:
+            jobs.mark_failed(s, job_id, str(exc))
+        raise
+
+    # Mark done in its OWN try (same posture as app.tasks.migrate): every
+    # file that verified is already durably committed by this point, so a
+    # post-success hiccup here must not misreport a genuinely-successful
+    # relocate as failed.
+    try:
+        with base.sync_session() as s:
+            jobs.mark_done(s, job_id)
+    except Exception:
+        logger.warning(
+            "relocate %s: succeeded but marking done failed", job_id, exc_info=True
+        )
+
+
+def _relocate_one_file(
+    s: Session,
+    settings: Settings,
+    file_id: int,
+    target_backend_id: int,
+    target_backend: StorageBackend,
+    mode: str,
+) -> None:
+    file = s.get(File, file_id)
+    if file is None:
+        return  # deleted since the job was enqueued -- nothing left to relocate
+
+    if file.backend_id is not None:
+        current_backend_id = file.backend_id
+        source_backend = backend_for_id_sync(s, settings, current_backend_id)
+    else:
+        # NULL backend_id pre-seed safety net (mirrors
+        # `resolve_backend_for_file_sync`) -- default.
+        source_backend, current_backend_id = resolve_default_backend_sync(s, settings)
+
+    if current_backend_id == target_backend_id:
+        return  # already primary on the target: nothing to move/replicate
+
+    storage_path = file.storage_path
+    expected_hash = file.blob_hash
+
+    location = s.get(FileLocation, (file.id, target_backend_id))
+    if location is None or location.verified_at is None:
+        # Same streaming-copy shape as `app.tasks.migrate`'s `_chunks`
+        # closure: `source_backend.read` is consumed lazily, one generator,
+        # fed straight into `dest.write`, which hashes (blake3) as it writes
+        # (`StorageBackend.write`'s own contract) and hands back that hash in
+        # `result.hash` -- no second read of either side needed. Unlike
+        # `migrate.py` (which only has two backends to compare against each
+        # other), a relocated file's KNOWN-GOOD hash is already sitting right
+        # there in `files.blob_hash`, so this checks against that instead of
+        # a second independently-computed source-side hash -- a strictly
+        # stronger check, since it also catches a source object that was
+        # already corrupt before this copy ever started.
+        def _chunks(source_backend=source_backend, storage_path=storage_path):
+            yield from source_backend.read(storage_path)
+
+        result = target_backend.write(storage_path, _chunks())
+        if result.hash != expected_hash:
+            # Aborts THIS file only -- the source is untouched (see
+            # module docstring) -- but propagates to fail the whole job
+            # (dead-letter/retry per `app.services.jobs`), same as
+            # `app.tasks.migrate`'s hash-mismatch handling. Files already
+            # relocated earlier in this loop stay relocated; a retry skips
+            # them (their `file_locations` row already verified) and
+            # resumes from here.
+            raise RuntimeError(f"hash mismatch relocating file {file.id} ({storage_path!r})")
+        now = datetime.now(UTC)
+        if location is None:
+            s.add(FileLocation(file_id=file.id, backend_id=target_backend_id, verified_at=now))
+        else:
+            location.verified_at = now
+        s.commit()
+
+    if mode == "move":
+        # ONLY after the target copy verified and committed above: cut the
+        # primary pointer over and drop the source's bookkeeping row in ONE
+        # atomic commit, THEN physically delete the source object. A crash
+        # between the commit and the physical delete just leaves a harmless
+        # extra copy sitting on the source backend with no DB row pointing
+        # at it -- never a lost file, never a dangling reference.
+        file.backend_id = target_backend_id
+        source_location = s.get(FileLocation, (file.id, current_backend_id))
+        if source_location is not None:
+            s.delete(source_location)
+        s.commit()
+        source_backend.delete(storage_path)

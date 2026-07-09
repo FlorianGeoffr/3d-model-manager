@@ -137,6 +137,18 @@ async def retry_job(db: AsyncSession, settings: Settings, job_id: uuid.UUID) -> 
             status.HTTP_409_CONFLICT, "migrations are re-run from Settings, not retried"
         )
 
+    if job.type == "relocate_model_storage":
+        # Same reasoning as `migrate_storage` above: the job row has no
+        # payload column to stash `target_backend_id`/`mode` in, so there's
+        # nothing to re-dispatch with. A relocate is also naturally re-runnable
+        # from scratch (Workstream C task C3: already-relocated files are
+        # skipped as no-ops), so pointing the operator back at the model's
+        # own relocate action costs nothing beyond an extra click.
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "relocations are re-run from the model's Move/Copy action, not retried",
+        )
+
     # Local import: app.tasks.pipeline imports app.services.jobs (for the
     # mark_*/create_job_sync helpers), so importing it back at module level
     # here would be a circular import -- same reasoning as

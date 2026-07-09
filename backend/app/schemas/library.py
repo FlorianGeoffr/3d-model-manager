@@ -44,6 +44,18 @@ class ModelPatch(BaseModel):
     review_state: str | None = None
 
 
+class ModelRelocateIn(BaseModel):
+    """``POST /models/{slug}/relocate`` payload (Workstream C task C3):
+    dispatches ``app.tasks.relocate.relocate_model_storage`` to move or
+    replicate every file of the model, across all its revisions, onto
+    ``target_backend_id``. ``mode`` being a ``Literal`` means an invalid
+    value 422s here, before a job row is ever created.
+    """
+
+    target_backend_id: int
+    mode: Literal["move", "replicate"]
+
+
 class ModelSummary(BaseModel):
     """Gallery list item (Task 5 interface decision; Task 7 adds
     ``print_time_s``/``has_sliced`` and makes ``cover`` a real URL).

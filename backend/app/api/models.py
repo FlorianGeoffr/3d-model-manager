@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import uuid
+
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_storage_backend
 from app.config import Settings, get_settings
 from app.db import get_db
-from app.schemas.library import GalleryPage, ModelCreate, ModelDetail, ModelPatch
+from app.schemas.jobs import JobOut
+from app.schemas.library import GalleryPage, ModelCreate, ModelDetail, ModelPatch, ModelRelocateIn
+from app.services import jobs as jobs_service
 from app.services import library
+from app.services import storage_backends as storage_backends_service
 from app.storage.base import StorageBackend
+from app.tasks.relocate import relocate_model_storage
 
 router = APIRouter(prefix="/models", tags=["models"])
 
@@ -79,3 +85,40 @@ async def patch_model(
 async def archive_model(slug: str, db: AsyncSession = Depends(get_db)) -> None:
     model = await library.get_model_by_slug(db, slug)
     await library.archive_model(db, model)
+
+
+@router.post("/{slug}/relocate", response_model=JobOut)
+async def relocate_model(
+    slug: str,
+    payload: ModelRelocateIn,
+    db: AsyncSession = Depends(get_db),
+) -> JobOut:
+    """Dispatch ``app.tasks.relocate.relocate_model_storage`` (Workstream C
+    task C3) to move or replicate every file of this model, across all its
+    revisions, onto ``payload.target_backend_id``. ``mode`` is already
+    constrained to ``{"move", "replicate"}`` at the schema boundary
+    (``ModelRelocateIn``); a nonexistent target backend 404s here (via
+    ``get_backend_row``) before a job row is ever created.
+    """
+    model = await library.get_model_by_slug(db, slug)
+    await storage_backends_service.get_backend_row(db, payload.target_backend_id)
+
+    job = await jobs_service.create_job(
+        db,
+        id=uuid.uuid4(),
+        type="relocate_model_storage",
+        subject_type="model",
+        subject_id=model.id,
+    )
+    relocate_model_storage.apply_async(
+        args=[str(job.id), model.id, payload.target_backend_id, payload.mode],
+        task_id=str(job.id),
+    )
+
+    # Under the test suite's eager Celery mode, the line above already ran
+    # the whole relocate inline through its own SYNC session -- refresh so
+    # this (separate, async) session's identity map doesn't hand back the
+    # stale "queued" snapshot from right after the insert (same reasoning as
+    # app.api.settings.migrate_storage_settings).
+    await db.refresh(job)
+    return JobOut.from_model(job)

@@ -8,6 +8,7 @@ produced via ``redacted()`` on the way out.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel
@@ -20,6 +21,8 @@ from app.schemas.imports import NonEmptyStr
 BambuRegion = Literal["global", "china"]
 
 if TYPE_CHECKING:
+    from app.config import Settings
+    from app.models import StorageBackendRow
     from app.storage.config import StorageConfig
 
 
@@ -43,6 +46,59 @@ class ConnectionTestOut(BaseModel):
     ok: bool
     detail: str
     latency_ms: int
+
+
+# ---------------------------------------------------------------------------
+# Multi-backend storage CRUD (Workstream C task C3; see
+# app.services.storage_backends and app.models.storage.StorageBackendRow).
+# Unlike `StorageConfigIn`/`StorageConfigOut` above (the legacy single-
+# backend shim's flat `{backend, config}` shape), `config` here carries its
+# own `backend` discriminator field INSIDE it (the same shape
+# `parse_storage_config`/`StorageBackendRow.config` already use), since these
+# endpoints operate on a specific backend ROW rather than "the" active
+# config.
+# ---------------------------------------------------------------------------
+
+
+class StorageBackendCreateIn(BaseModel):
+    name: NonEmptyStr
+    config: dict
+
+
+class StorageBackendUpdateIn(BaseModel):
+    """All fields optional; only the ones present are applied. A `config`
+    with no stored secret to merge against (see `_merge_backend_secrets` in
+    `app.api.settings`) 422s on a blank/`"***"` secret same as the legacy
+    `PUT /settings/storage` path.
+    """
+
+    name: NonEmptyStr | None = None
+    config: dict | None = None
+
+
+class StorageBackendOut(BaseModel):
+    id: int
+    name: str
+    scheme: str
+    is_default: bool
+    config: dict  # secret fields masked -- see `app.storage.config.redacted`
+    created_at: datetime
+
+    @classmethod
+    def from_row(cls, row: StorageBackendRow, settings: Settings) -> StorageBackendOut:
+        from app.services.storage_config import decrypt_config_row
+        from app.storage.config import parse_storage_config, redacted
+
+        data, _ = decrypt_config_row(settings, dict(row.config))
+        parsed = parse_storage_config(data)
+        return cls(
+            id=row.id,
+            name=row.name,
+            scheme=row.scheme,
+            is_default=row.is_default,
+            config=redacted(parsed),
+            created_at=row.created_at,
+        )
 
 
 # Bambu Lab account connect flow (Workstream B task B2; SPEC full-design

@@ -46,6 +46,7 @@ _PATH_PARAM_VALUES = {
     "id": "1",
     "printer_id": "1",
     "import_id": "1",
+    "backend_id": "1",
 }
 
 

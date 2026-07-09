@@ -12,6 +12,7 @@ verify, then cut over" path is ``POST /migrate`` (``app.tasks.migrate``).
 from __future__ import annotations
 
 import uuid
+from typing import TYPE_CHECKING
 
 import anyio
 import pydantic
@@ -28,15 +29,22 @@ from app.schemas.settings import (
     BambuStatusOut,
     BambuVerifyIn,
     ConnectionTestOut,
+    StorageBackendCreateIn,
+    StorageBackendOut,
+    StorageBackendUpdateIn,
     StorageConfigIn,
     StorageConfigOut,
 )
 from app.services import bambu_auth, import_tokens, storage_config
 from app.services import jobs as jobs_service
+from app.services import storage_backends as storage_backends_service
 from app.services.storage_probe import probe_backend
 from app.storage.config import SECRET_FIELD_BY_BACKEND, StorageConfig, parse_storage_config
 from app.storage.registry import get_backend
 from app.tasks.migrate import migrate_storage
+
+if TYPE_CHECKING:
+    from app.models import StorageBackendRow
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -173,6 +181,148 @@ async def migrate_storage_settings(
     # app.api.scan.trigger_scan).
     await db.refresh(job)
     return JobOut.from_model(job)
+
+
+# ---------------------------------------------------------------------------
+# Multi-backend storage CRUD (Workstream C task C3; see
+# app.services.storage_backends). The endpoints above manage the LEGACY
+# single-backend shim (the default `storage_backends` row); these manage the
+# full `storage_backends` table -- add/edit/remove backends, flip which one
+# is the write-default, and test/relocate against any of them.
+# ---------------------------------------------------------------------------
+
+
+def _parse_backend_config(config: dict) -> StorageConfig:
+    """Like ``_parse`` above, but for a ``config`` dict that already carries
+    its own ``backend`` discriminator field (the shape
+    ``StorageBackendRow.config``/``parse_storage_config`` use directly)
+    rather than the legacy flat ``{backend, config}`` split.
+    """
+    try:
+        return parse_storage_config(config)
+    except pydantic.ValidationError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+
+
+def _reject_sentinel_secret(config: dict) -> None:
+    """A brand-new backend (``POST``) has no stored secret to merge the
+    ``"***"`` redaction sentinel against -- unlike ``PUT``
+    (``_merge_backend_secrets`` below), there's nothing to substitute, so
+    reject it outright rather than silently persisting the literal
+    placeholder as a credential.
+    """
+    secret_field = SECRET_FIELD_BY_BACKEND.get(config.get("backend"))
+    if secret_field and config.get(secret_field) == _REDACTED_SENTINEL:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f'Cannot set {secret_field!r} to the redaction placeholder "***"; '
+            "enter the real secret.",
+        )
+
+
+def _merge_backend_secrets(settings: Settings, row: StorageBackendRow, config: dict) -> dict:
+    """``PUT``-time secret-merge scoped to THIS backend row -- mirrors
+    ``_merge_stored_secrets`` above (which is scoped to the legacy "active"
+    config) but reads the stored secret straight off ``row`` instead of a
+    fresh DB round trip, since the caller already has it loaded (hence a
+    plain sync function -- unlike ``_merge_stored_secrets``, there's no
+    ``await`` left once the DB round trip is gone). Same reasoning: GET
+    never returns a real secret, so editing e.g. an SMB backend's ``host``
+    without resending its ``password`` would otherwise 422 (validation) or
+    persist the ``"***"`` sentinel as the "secret" unless the stored value
+    is substituted back in for a blank/sentinel incoming one -- and the
+    sentinel is still rejected outright when there's no stored secret of the
+    SAME backend type to substitute.
+    """
+    backend_name = config.get("backend", row.scheme)
+    secret_field = SECRET_FIELD_BY_BACKEND.get(backend_name)
+    if secret_field is None:
+        return config
+    incoming = config.get(secret_field) or ""
+    if incoming not in ("", _REDACTED_SENTINEL):
+        return config
+    stored_value = ""
+    if row.scheme == backend_name:
+        stored_data, _ = storage_config.decrypt_config_row(settings, dict(row.config))
+        stored_value = stored_data.get(secret_field) or ""
+    if stored_value:
+        return {**config, secret_field: stored_value}
+    if incoming == _REDACTED_SENTINEL:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f'Cannot set {secret_field!r} to the redaction placeholder "***"; '
+            "enter the real secret.",
+        )
+    return config
+
+
+@router.get("/storage/backends", response_model=list[StorageBackendOut])
+async def list_storage_backends(
+    db: AsyncSession = Depends(get_db), settings: Settings = Depends(get_settings)
+) -> list[StorageBackendOut]:
+    rows = await storage_backends_service.list_backends(db)
+    return [StorageBackendOut.from_row(row, settings) for row in rows]
+
+
+@router.post(
+    "/storage/backends", status_code=status.HTTP_201_CREATED, response_model=StorageBackendOut
+)
+async def create_storage_backend(
+    payload: StorageBackendCreateIn,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> StorageBackendOut:
+    _reject_sentinel_secret(payload.config)
+    config = _parse_backend_config(payload.config)
+    row = await storage_backends_service.create_backend(db, settings, payload.name, config)
+    return StorageBackendOut.from_row(row, settings)
+
+
+@router.put("/storage/backends/{backend_id}", response_model=StorageBackendOut)
+async def update_storage_backend(
+    backend_id: int,
+    payload: StorageBackendUpdateIn,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> StorageBackendOut:
+    row = await storage_backends_service.get_backend_row(db, backend_id)
+    config: StorageConfig | None = None
+    if payload.config is not None:
+        merged = _merge_backend_secrets(settings, row, payload.config)
+        config = _parse_backend_config(merged)
+    row = await storage_backends_service.update_backend(
+        db, settings, backend_id, name=payload.name, config=config
+    )
+    return StorageBackendOut.from_row(row, settings)
+
+
+@router.delete("/storage/backends/{backend_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_storage_backend(backend_id: int, db: AsyncSession = Depends(get_db)) -> None:
+    # 409s via app.services.storage_backends.delete_backend's own guardrails
+    # (last backend, default backend, or one file_locations still
+    # references) -- nothing extra to enforce here.
+    await storage_backends_service.delete_backend(db, backend_id)
+
+
+@router.post("/storage/backends/{backend_id}/test", response_model=ConnectionTestOut)
+async def test_storage_backend(
+    backend_id: int,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> ConnectionTestOut:
+    backend = await storage_backends_service.backend_for_id(db, settings, backend_id)
+    ok, detail, latency_ms = await anyio.to_thread.run_sync(probe_backend, backend)
+    return ConnectionTestOut(ok=ok, detail=detail, latency_ms=latency_ms)
+
+
+@router.post("/storage/backends/{backend_id}/default", response_model=StorageBackendOut)
+async def set_default_storage_backend(
+    backend_id: int,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> StorageBackendOut:
+    row = await storage_backends_service.set_default_backend(db, backend_id)
+    return StorageBackendOut.from_row(row, settings)
 
 
 @router.get("/import-tokens", response_model=ImportTokensOut)

@@ -10,6 +10,7 @@ from app.models.base import Base
 from app.models.library import Blob, File, Model, Note, Revision, Tag, model_tags
 from app.models.printing import Printer, PrintJob
 from app.models.processing import AssemblyThumb, BlobMeta, Derivative
+from app.models.storage import FileLocation, StorageBackendRow
 from app.models.system import Import, Job, ScanRun, Setting
 
 __all__ = [
@@ -19,6 +20,7 @@ __all__ = [
     "BlobMeta",
     "Derivative",
     "File",
+    "FileLocation",
     "Import",
     "Job",
     "Model",
@@ -29,6 +31,7 @@ __all__ = [
     "ScanRun",
     "Session",
     "Setting",
+    "StorageBackendRow",
     "Tag",
     "User",
     "model_tags",

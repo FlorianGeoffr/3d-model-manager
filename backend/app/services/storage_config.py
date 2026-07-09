@@ -2,10 +2,21 @@
 registry docstring's "M3 ... `get_backend` will read the active scheme/config
 from the DB").
 
-The active backend's connection config lives in the ``settings`` table under
-key ``"storage"`` (Global Constraints "Backend selection is DB-driven"),
-validated per-backend by ``app.storage.config``'s pydantic models. Absent
-row -> ``LocalConfig()``, so a fresh install behaves exactly as M1/M2.
+Pre-Workstream-C, the active backend's connection config lived in the
+``settings`` table under key ``"storage"`` (Global Constraints "Backend
+selection is DB-driven"), validated per-backend by ``app.storage.config``'s
+pydantic models. Workstream C (multi-backend storage) moves the source of
+truth to the ``storage_backends`` table (``app.models.storage`` /
+``app.services.storage_backends``) -- ``get_active_config``/
+``resolve_backend`` below are now a SHIM over the DEFAULT backend row, kept
+working so the pre-Workstream-C settings GET/PUT/migrate endpoints and the
+``migrate_storage`` task keep functioning until task C2 rewires them onto
+the new CRUD directly. The legacy ``settings`` row is still consulted as a
+fallback when ``storage_backends`` is EMPTY -- true for a genuinely
+pre-Workstream-C install that hasn't been migrated yet, and also (in tests)
+right after ``storage_backends`` gets truncated between test functions,
+which wipes out the migration's data-seed. Absent both -> ``LocalConfig()``,
+so a fresh install behaves exactly as M1/M2.
 
 M6 A1: the backend's secret field (SMB ``password`` / S3 ``secret_key``) is
 Fernet-encrypted before it ever reaches the DB, using the same
@@ -22,12 +33,13 @@ async/sync split already established by ``app.tasks.base``.
 from __future__ import annotations
 
 from cryptography.fernet import InvalidToken
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.crypto import decrypt_secret, encrypt_secret
-from app.models import Setting
+from app.models import Setting, StorageBackendRow
 from app.storage.base import StorageBackend
 from app.storage.config import (  # noqa: F401 -- S3Config/LocalConfig re-exported for callers
     SECRET_FIELD_BY_BACKEND,
@@ -79,6 +91,15 @@ def decrypt_config_row(settings: Settings, data: dict) -> tuple[dict, bool]:
 
 
 async def get_active_config(db: AsyncSession, settings: Settings) -> StorageConfig:
+    # Workstream C shim: the default `storage_backends` row is the real
+    # source of truth once seeded -- fall back to the legacy `settings` row
+    # only when that table is empty (see module docstring).
+    default_row = (
+        await db.execute(select(StorageBackendRow).where(StorageBackendRow.is_default.is_(True)))
+    ).scalar_one_or_none()
+    if default_row is not None:
+        data, _ = decrypt_config_row(settings, dict(default_row.config))
+        return parse_storage_config(data)
     row = await db.get(Setting, SETTINGS_KEY)
     if row is None:
         return LocalConfig()
@@ -89,6 +110,12 @@ async def get_active_config(db: AsyncSession, settings: Settings) -> StorageConf
 
 
 def get_active_config_sync(session: Session, settings: Settings) -> StorageConfig:
+    default_row = session.execute(
+        select(StorageBackendRow).where(StorageBackendRow.is_default.is_(True))
+    ).scalar_one_or_none()
+    if default_row is not None:
+        data, _ = decrypt_config_row(settings, dict(default_row.config))
+        return parse_storage_config(data)
     row = session.get(Setting, SETTINGS_KEY)
     if row is None:
         return LocalConfig()

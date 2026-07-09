@@ -205,5 +205,14 @@ class File(Base):
     storage_path: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     mtime: Mapped[datetime | None]
     verified_at: Mapped[datetime | None]
+    # PRIMARY backend to read this file's bytes from (SPEC "Workstream C
+    # multi-backend storage"); NULL only transiently on a pre-migration row
+    # mid-migration -- the data-seed backfills every existing file to the
+    # seeded default backend, and every write path (Workstream C task C2)
+    # sets it going forward. `file_locations` (app.models.storage) holds ALL
+    # locations (incl. this primary one) for replication bookkeeping.
+    backend_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("storage_backends.id"), index=True
+    )
 
     blob: Mapped["Blob"] = relationship()

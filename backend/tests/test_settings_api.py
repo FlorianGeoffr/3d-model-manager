@@ -25,7 +25,7 @@ async def test_get_default_storage_settings_is_local(
     response = await authenticated_client.get("/api/settings/storage")
 
     assert response.status_code == 200
-    assert response.json() == {"backend": "local", "config": {"backend": "local"}}
+    assert response.json() == {"backend": "local", "config": {"backend": "local", "root": ""}}
 
 
 async def test_put_s3_config_then_get_redacts_secret(

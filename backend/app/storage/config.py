@@ -17,6 +17,11 @@ from pydantic import BaseModel, Field, SecretStr, TypeAdapter, field_serializer
 
 class LocalConfig(BaseModel):
     backend: Literal["local"] = "local"
+    # POSIX path used as this backend's root; "" (the default) falls back to
+    # `settings.library_root` (back-comparable with pre-Workstream-C
+    # configs). A distinct, non-empty root lets multiple `local` backends
+    # point at different directories (see `app.storage.registry`).
+    root: str = ""
 
 
 class SmbConfig(BaseModel):

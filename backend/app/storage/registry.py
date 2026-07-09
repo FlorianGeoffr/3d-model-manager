@@ -13,6 +13,7 @@ caller resolved from the DB instead of a bare scheme name.
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 
 from app.config import Settings
 from app.storage.base import StorageBackend
@@ -39,6 +40,13 @@ def register(scheme: str) -> Callable[[_BackendFactory], _BackendFactory]:
 
 @register("local")
 def _build_local_backend(settings: Settings, config: StorageConfig) -> StorageBackend:
+    # `config.root` (Workstream C multi-backend storage) lets more than one
+    # `local` backend point at different directories; "" (unset, the
+    # pre-Workstream-C default) keeps the single env-configured library
+    # root.
+    assert isinstance(config, LocalConfig)
+    if config.root:
+        return LocalStorageBackend(Path(config.root))
     return LocalStorageBackend(settings.library_root)
 
 

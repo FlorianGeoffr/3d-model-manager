@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
-from app.importers.base import SEARCH_PAGE_SIZE, SearchResult
+from app.importers.base import SEARCH_PAGE_SIZE, RemoteList, SearchResult
 from app.importers.registry import (
     build_importer_for_url,
     deferred_site_for_url,
@@ -29,6 +29,7 @@ from app.models.system import Import
 from app.schemas.imports import (
     ImportCreate,
     ImportOut,
+    RemoteListOut,
     SearchResponse,
     SearchResultOut,
     SiteSearchStatus,
@@ -110,6 +111,52 @@ async def search_imports(
                 )
             )
     return SearchResponse(results=results, per_site=per_site)
+
+
+@router.get("/lists", response_model=list[RemoteListOut])
+async def list_remote_lists(
+    site: Annotated[list[ImportSite] | None, Query()] = None,
+) -> list[RemoteListOut]:
+    """The signed-in user's collections + likes across sites (M8 H). Fans out
+    concurrently like ``/search``; a site whose authenticated session isn't
+    wired up yet simply contributes nothing, and one failing upstream can't sink
+    the others. Declared BEFORE ``/{import_id}`` so "lists" isn't parsed as an id.
+    """
+    sites = list(dict.fromkeys(site)) if site else registered_sites()
+
+    lists_by_site: dict[ImportSite, list[RemoteList]] = {}
+
+    async def run_one(target: ImportSite) -> None:
+        importer = get_importer(target)
+        if importer is None:
+            return
+        try:
+            lists_by_site[target] = await anyio.to_thread.run_sync(importer.list_user_lists)
+        except Exception:  # noqa: BLE001 -- isolate one upstream's failure
+            lists_by_site[target] = []
+
+    async with anyio.create_task_group() as tg:
+        for target in sites:
+            tg.start_soon(run_one, target)
+
+    return [
+        RemoteListOut.from_dataclass(remote)
+        for target in sites
+        for remote in lists_by_site.get(target, [])
+    ]
+
+
+@router.get("/lists/{site}/{list_id}/items", response_model=list[SearchResultOut])
+async def list_remote_list_items(
+    site: ImportSite, list_id: str, page: int = 1
+) -> list[SearchResultOut]:
+    """The models inside one remote list. Same blocking-importer offload as
+    ``/search`` (see its comment)."""
+    importer = get_importer(site)
+    if importer is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"{site.value} isn't available")
+    items = await anyio.to_thread.run_sync(importer.list_list_items, list_id, page)
+    return [SearchResultOut.from_dataclass(item) for item in items]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=ImportOut)

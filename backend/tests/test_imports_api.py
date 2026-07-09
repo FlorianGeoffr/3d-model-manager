@@ -202,6 +202,73 @@ async def test_search_imports_422_when_site_has_no_registered_importer(
 
 
 @pytest.mark.asyncio
+async def test_lists_endpoints_fan_out_and_return_items(
+    authenticated_client, library_root, data_dir, monkeypatch
+):
+    """M8 H seam: `GET /imports/lists` merges each site's collections/likes and
+    `GET /imports/lists/{site}/{list_id}/items` returns that list's models. Real
+    importers return [] until their authenticated session is wired, so drive it
+    with a stub that actually has lists."""
+    from app.importers.base import RemoteList, SearchResult
+    from app.models.enums import ImportSite
+
+    class Stub:
+        site = ImportSite.PRINTABLES
+
+        def list_user_lists(self) -> list[RemoteList]:
+            return [
+                RemoteList(
+                    site=ImportSite.PRINTABLES,
+                    list_id="7",
+                    kind="collection",
+                    title="Desk stuff",
+                    count=2,
+                )
+            ]
+
+        def list_list_items(self, list_id: str, page: int = 1) -> list[SearchResult]:
+            assert list_id == "7"
+            return [
+                SearchResult(
+                    site=ImportSite.PRINTABLES,
+                    external_id="1",
+                    title="Cable clip",
+                    url="https://www.printables.com/model/1",
+                )
+            ]
+
+    monkeypatch.setattr(
+        "app.importers.registry.IMPORTER_REGISTRY", {ImportSite.PRINTABLES: Stub()}, raising=True
+    )
+
+    lists = await authenticated_client.get("/api/imports/lists")
+    assert lists.status_code == 200, lists.text
+    assert lists.json() == [
+        {
+            "site": "printables",
+            "list_id": "7",
+            "kind": "collection",
+            "title": "Desk stuff",
+            "count": 2,
+        }
+    ]
+
+    items = await authenticated_client.get("/api/imports/lists/printables/7/items")
+    assert items.status_code == 200, items.text
+    assert [i["external_id"] for i in items.json()] == ["1"]
+
+
+@pytest.mark.asyncio
+async def test_lists_endpoint_is_empty_when_no_site_has_an_authenticated_session(
+    authenticated_client, library_root, data_dir
+):
+    """The real importers all return [] until their site auth lands -- the
+    endpoint must degrade to an empty list, never an error."""
+    r = await authenticated_client.get("/api/imports/lists")
+    assert r.status_code == 200 and r.json() == []
+
+
+@pytest.mark.asyncio
 async def test_search_imports_federates_across_sites_and_isolates_errors(
     authenticated_client, library_root, data_dir, monkeypatch
 ):

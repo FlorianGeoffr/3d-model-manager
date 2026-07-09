@@ -76,6 +76,20 @@ class SearchResult:
     thumbnail_url: str | None = None
 
 
+@dataclass(frozen=True)
+class RemoteList:
+    """One of the signed-in user's lists on a site (M8 H): a collection, or the
+    site's "likes"/favourites pseudo-list. ``list_id`` is whatever identifier
+    that site uses (a numeric collection id, or a sentinel like ``"likes"``);
+    it round-trips back into ``list_list_items``."""
+
+    site: ImportSite
+    list_id: str
+    kind: str  # "collection" | "likes"
+    title: str
+    count: int | None = None
+
+
 def safe_filename(name: str) -> str:
     """Reduce a remote filename to a safe single-segment rel_path: strip any
     directory prefix and leading dots so a hostile ``../`` name can't escape
@@ -103,4 +117,18 @@ class SiteImporter(Protocol):
         can't search (or have no query terms to work with) may return an
         empty list rather than raise -- an unsearchable site is not an
         error, just nothing to show."""
+        ...
+
+    def list_user_lists(self) -> list[RemoteList]:
+        """The signed-in user's collections + likes on this site (M8 H).
+        Same convention as ``search``: a site that can't (no credentials
+        configured, or no authenticated session implemented yet) returns an
+        empty list rather than raising -- "nothing to show", not an error."""
+        ...
+
+    def list_list_items(self, list_id: str, page: int = 1) -> list[SearchResult]:
+        """The models inside one of ``list_user_lists``'s lists (M8 H).
+        Returns the same ``SearchResult`` shape as ``search`` -- whose ``url``
+        round-trips straight through ``POST /imports`` -- so "sync a followed
+        list" is just "list its items, import the ones we don't have"."""
         ...

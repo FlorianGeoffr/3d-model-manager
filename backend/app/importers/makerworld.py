@@ -42,6 +42,7 @@ import httpx
 from app.importers.base import (
     ImportFile,
     ImportMetadata,
+    RemoteList,
     ResolvedDownload,
     SearchResult,
     safe_filename,
@@ -295,6 +296,22 @@ class MakerWorldImporter:
                 )
             )
         return results
+
+    # -- saved collections / likes (M8 H) ---------------------------------
+    # The seam is live (the API + the periodic sync task call through it), but
+    # the authenticated calls are NOT wired yet. We DO hold a user-scoped Bambu
+    # access token (`_bambu_session`), yet no MakerWorld collections/likes
+    # endpoint is mapped anywhere -- and the one authed endpoint we do have is
+    # already flagged documented-not-verified. Guessing a second one would
+    # compound that; it lands once a real logged-in request can be captured.
+    # Returning [] is the "nothing to show, not an error" convention `search`
+    # uses.
+
+    def list_user_lists(self) -> list[RemoteList]:
+        return []
+
+    def list_list_items(self, list_id: str, page: int = 1) -> list[SearchResult]:
+        return []
 
 
 register_importer(MakerWorldImporter())

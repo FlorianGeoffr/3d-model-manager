@@ -15,6 +15,7 @@ import httpx
 from app.importers.base import (
     ImportFile,
     ImportMetadata,
+    RemoteList,
     ResolvedDownload,
     SearchResult,
     safe_filename,
@@ -159,6 +160,22 @@ class ThingiverseImporter:
                 )
             )
         return results
+
+    # -- saved collections / likes (M8 H) ---------------------------------
+    # The seam is live (the API + the periodic sync task call through it), but
+    # the authenticated calls are NOT wired yet. Thingiverse is the most ready
+    # of the three: the `_client(token)` Bearer seam above already exists and
+    # the official endpoints (`/users/{u}/collections`,
+    # `/collections/{id}/things`, `/users/{u}/likes`) are documented -- what's
+    # missing is a configured app token to capture their real response shape
+    # against, rather than guessing it (the M6 `zip_data` lesson). Returning []
+    # is the same "nothing to show, not an error" convention `search` uses.
+
+    def list_user_lists(self) -> list[RemoteList]:
+        return []
+
+    def list_list_items(self, list_id: str, page: int = 1) -> list[SearchResult]:
+        return []
 
 
 register_importer(ThingiverseImporter())

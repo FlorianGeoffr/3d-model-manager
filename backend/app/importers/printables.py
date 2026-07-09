@@ -16,6 +16,7 @@ import httpx
 from app.importers.base import (
     ImportFile,
     ImportMetadata,
+    RemoteList,
     ResolvedDownload,
     SearchResult,
     safe_filename,
@@ -196,6 +197,22 @@ class PrintablesImporter:
                 )
             )
         return results
+
+    # -- saved collections / likes (M8 H) ---------------------------------
+    # The seam is live (the API + the periodic sync task call through it), but
+    # Printables is the FURTHEST from ready: this importer has no authenticated
+    # session at all -- `_client()` above is anonymous, there is no stored
+    # credential, and the user's collections/liked prints require a signed-in
+    # Prusa Account (OAuth -> GraphQL Bearer) behind Cloudflare. Building that
+    # login blind would be guesswork; it lands once a real logged-in flow can
+    # be captured. Returning [] is the "nothing to show, not an error"
+    # convention `search` uses.
+
+    def list_user_lists(self) -> list[RemoteList]:
+        return []
+
+    def list_list_items(self, list_id: str, page: int = 1) -> list[SearchResult]:
+        return []
 
 
 register_importer(PrintablesImporter())

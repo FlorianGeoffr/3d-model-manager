@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Annotated
 from pydantic import BaseModel, StringConstraints
 
 if TYPE_CHECKING:
-    from app.importers.base import SearchResult
+    from app.importers.base import RemoteList, SearchResult
     from app.models.system import Import
 
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -65,6 +65,21 @@ class SearchResultOut(BaseModel):
             author=r.author,
             thumbnail_url=r.thumbnail_url,
         )
+
+
+class RemoteListOut(BaseModel):
+    """One of the signed-in user's lists on a site (M8 H), mirroring
+    ``app.importers.base.RemoteList``."""
+
+    site: str
+    list_id: str
+    kind: str
+    title: str
+    count: int | None = None
+
+    @classmethod
+    def from_dataclass(cls, r: RemoteList) -> RemoteListOut:
+        return cls(site=r.site.value, list_id=r.list_id, kind=r.kind, title=r.title, count=r.count)
 
 
 class SiteSearchStatus(BaseModel):

@@ -1,18 +1,35 @@
 import { useNavigate } from "@tanstack/react-router";
+import { FileStackIcon } from "lucide-react";
 
 import { useArchiveModel, usePatchModel } from "@/api/library";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { InlineEdit } from "@/components/InlineEdit";
+import { modelFilaments, revisionFormats } from "@/components/model-detail/modelSpec";
 import { ProvenanceBlock } from "@/components/model-detail/ProvenanceBlock";
 import { StorageLocationBar } from "@/components/model-detail/StorageLocationBar";
 import { TagEditor } from "@/components/model-detail/TagEditor";
 import { Button } from "@/components/ui/button";
+import { FilamentChip } from "@/components/ui/filament-chip";
+import { SpecRow, type SpecItem } from "@/components/ui/spec-row";
+import { formatDate } from "@/lib/format";
+import { FORMAT_LABELS } from "@/lib/formatMeta";
 import type { ModelDetail } from "@/api/types";
 
 export function ModelHeader({ model }: { model: ModelDetail }) {
   const navigate = useNavigate();
   const patchModel = usePatchModel(model.slug);
   const archiveModel = useArchiveModel(model.slug);
+
+  const filaments = modelFilaments(model);
+  const formats = revisionFormats(model);
+  const fileCount = model.current_revision?.files.length ?? 0;
+  const specItems: Array<SpecItem | null> = [
+    fileCount > 0
+      ? { icon: <FileStackIcon />, label: `${fileCount} ${fileCount === 1 ? "file" : "files"}` }
+      : null,
+    formats.length > 0 ? { label: formats.map((format) => FORMAT_LABELS[format]).join(" / ") } : null,
+    { label: `Updated ${formatDate(model.updated_at)}` },
+  ];
 
   return (
     <div className="space-y-3 border-b border-border pb-4">
@@ -53,6 +70,22 @@ export function ModelHeader({ model }: { model: ModelDetail }) {
           }
         />
       </div>
+
+      <div className="space-y-2">
+        <SpecRow items={specItems} />
+        {filaments.length > 0 && (
+          <div className="flex flex-wrap gap-2" data-testid="filament-strip">
+            {filaments.map((filament, index) => (
+              <FilamentChip
+                key={`${filament.color ?? ""}-${filament.material ?? ""}-${index}`}
+                color={filament.color ?? undefined}
+                material={filament.material ?? undefined}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
       <TagEditor model={model} />
       <ProvenanceBlock model={model} />
       <StorageLocationBar model={model} />

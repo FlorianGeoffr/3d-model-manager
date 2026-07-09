@@ -58,6 +58,38 @@ vi.mock("@/components/ui/select", () => ({
   ),
 }));
 
+// Radix Tabs switches on focus/pointer, not a bare `fireEvent.click`, so tab
+// activation is unreliable under jsdom (same class of limitation as the Select
+// mock above). Swap it for a minimal stateful mock that renders only the
+// active panel (so cards on different tabs don't collide, e.g. the SMB
+// password field vs. the Bambu login password) and switches on a click.
+vi.mock("@/components/ui/tabs", async () => {
+  const React = await vi.importActual<typeof import("react")>("react");
+  const TabsCtx = React.createContext<{ value: string; setValue: (value: string) => void }>({
+    value: "",
+    setValue: () => {},
+  });
+  return {
+    Tabs: ({ defaultValue, children }: { defaultValue?: string; children?: ReactNode }) => {
+      const [value, setValue] = React.useState(defaultValue ?? "");
+      return <TabsCtx.Provider value={{ value, setValue }}>{children}</TabsCtx.Provider>;
+    },
+    TabsList: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+    TabsTrigger: ({ value, children }: { value: string; children?: ReactNode }) => {
+      const ctx = React.useContext(TabsCtx);
+      return (
+        <button role="tab" type="button" onClick={() => ctx.setValue(value)}>
+          {children}
+        </button>
+      );
+    },
+    TabsContent: ({ value, children }: { value: string; children?: ReactNode }) => {
+      const ctx = React.useContext(TabsCtx);
+      return ctx.value === value ? <div>{children}</div> : null;
+    },
+  };
+});
+
 function localConfig(): StorageConfigOut {
   return { backend: "local", config: { backend: "local" } };
 }
@@ -247,10 +279,12 @@ describe("SettingsPage", () => {
     expect(await screen.findByText(/Migration running/)).toBeInTheDocument();
   });
 
-  it("renders the Bambu account card alongside the other settings cards", async () => {
+  it("renders the Bambu account card in the Imports tab", async () => {
     mockGet(localConfig());
 
     renderSettingsPage();
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Imports" }));
 
     expect(await screen.findByText("Bambu Lab account")).toBeInTheDocument();
     expect(await screen.findByLabelText("Email")).toBeInTheDocument();

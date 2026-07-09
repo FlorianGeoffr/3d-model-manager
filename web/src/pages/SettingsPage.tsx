@@ -2,7 +2,13 @@ import { useEffect, useState } from "react";
 
 import { ApiError } from "@/api/client";
 import { useJob } from "@/api/jobs";
-import { useMigrateStorage, useStorageConfig, useTestConnection, useUpdateStorageConfig } from "@/api/settings";
+import {
+  useMigrateStorage,
+  useStorageBackends,
+  useStorageConfig,
+  useTestConnection,
+  useUpdateStorageConfig,
+} from "@/api/settings";
 import type { StorageConfigIn, StorageConfigOut } from "@/api/types";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
@@ -19,48 +25,89 @@ import { StorageBackendsCard } from "@/components/settings/StorageBackendsCard";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 export function SettingsPage() {
-  const configQuery = useStorageConfig();
+  // The page shell now gates on the multi-backend list (the legacy
+  // single-backend config query is owned by StorageSettingsCard itself), so
+  // removing that legacy card later doesn't strand the page loader.
+  const backendsQuery = useStorageBackends();
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
       <div>
         <h1 className="text-lg font-semibold text-foreground">Settings</h1>
-        <p className="text-sm text-muted-foreground">Configure where the library&apos;s files are stored.</p>
+        <p className="text-sm text-muted-foreground">
+          Storage backends, printer, import accounts, and library scans.
+        </p>
       </div>
 
-      {configQuery.isLoading ? (
+      {backendsQuery.isLoading ? (
         <Skeleton className="h-72 w-full rounded-xl" />
-      ) : configQuery.isError ? (
+      ) : backendsQuery.isError ? (
         <Card className="mx-auto mt-12 max-w-md">
           <CardHeader className="items-center text-center">
-            <CardTitle>Couldn&apos;t load storage settings</CardTitle>
+            <CardTitle>Couldn&apos;t load settings</CardTitle>
             <CardDescription>
-              {configQuery.error instanceof ApiError ? configQuery.error.detail : "Something went wrong."}
+              {backendsQuery.error instanceof ApiError ? backendsQuery.error.detail : "Something went wrong."}
             </CardDescription>
           </CardHeader>
           <div className="flex justify-center pb-4">
-            <Button type="button" onClick={() => void configQuery.refetch()}>
+            <Button type="button" onClick={() => void backendsQuery.refetch()}>
               Retry
             </Button>
           </div>
         </Card>
-      ) : configQuery.data ? (
-        <>
-          <StorageSettingsCard active={configQuery.data} />
-          <StorageBackendsCard />
-          <ScanReport />
-          <PrinterSetupCard />
-          <SiteTokensCard />
-          <BambuAccountCard />
-        </>
-      ) : null}
+      ) : (
+        <Tabs defaultValue="storage">
+          <TabsList>
+            <TabsTrigger value="storage">Storage</TabsTrigger>
+            <TabsTrigger value="printer">Printer</TabsTrigger>
+            <TabsTrigger value="imports">Imports</TabsTrigger>
+            <TabsTrigger value="scan">Scan</TabsTrigger>
+          </TabsList>
+          <TabsContent value="storage" className="space-y-6">
+            <StorageSettingsCard />
+            <StorageBackendsCard />
+          </TabsContent>
+          <TabsContent value="printer" className="space-y-6">
+            <PrinterSetupCard />
+          </TabsContent>
+          <TabsContent value="imports" className="space-y-6">
+            <SiteTokensCard />
+            <BambuAccountCard />
+          </TabsContent>
+          <TabsContent value="scan" className="space-y-6">
+            <ScanReport />
+          </TabsContent>
+        </Tabs>
+      )}
     </div>
   );
 }
 
-function StorageSettingsCard({ active }: { active: StorageConfigOut }) {
+/** Legacy single-backend storage form. Self-fetches its config so the page
+ * shell no longer depends on ``useStorageConfig`` (Workstream F removes this
+ * card entirely, leaving the multi-backend ``StorageBackendsCard``). */
+function StorageSettingsCard() {
+  const configQuery = useStorageConfig();
+
+  if (!configQuery.data) {
+    // No title text here: the loaded form owns the "Storage backend" heading,
+    // so callers awaiting that heading wait for the real form, not this stub.
+    return (
+      <Card>
+        <CardContent className="py-6">
+          <Skeleton className="h-40 w-full rounded-lg" />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return <StorageSettingsForm active={configQuery.data} />;
+}
+
+function StorageSettingsForm({ active }: { active: StorageConfigOut }) {
   const [draft, setDraft] = useState<StorageConfigIn>(() => seedDraft(active));
   const [migrateJobId, setMigrateJobId] = useState<string | undefined>(undefined);
 

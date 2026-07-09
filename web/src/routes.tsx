@@ -10,6 +10,7 @@ import { LoginPage } from "@/pages/LoginPage";
 import { ModelDetailPage } from "@/pages/ModelDetailPage";
 import { PrinterPage } from "@/pages/PrinterPage";
 import { SettingsPage } from "@/pages/SettingsPage";
+import { ViewerWindowPage } from "@/pages/ViewerWindowPage";
 
 export interface RouterContext {
   queryClient: QueryClient;
@@ -39,6 +40,29 @@ const authenticatedRoute = createRoute({
     }
   },
   component: AppShell,
+});
+
+// Standalone viewer window (M8 G1): session-guarded but OUTSIDE the AppShell
+// layout (no nav rail) so `window.open('/viewer/$slug?ids=&bg=&colors=')`
+// renders a bare, self-contained canvas.
+const viewerWindowRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/viewer/$slug",
+  beforeLoad: async ({ context }) => {
+    try {
+      await context.queryClient.ensureQueryData(authQueryOptions);
+    } catch {
+      throw redirect({ to: "/login" });
+    }
+  },
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { ids?: string; bg?: string; colors?: string } => ({
+    ids: typeof search.ids === "string" ? search.ids : undefined,
+    bg: typeof search.bg === "string" ? search.bg : undefined,
+    colors: typeof search.colors === "string" ? search.colors : undefined,
+  }),
+  component: ViewerWindowPage,
 });
 
 const libraryRoute = createRoute({
@@ -99,6 +123,7 @@ const settingsRoute = createRoute({
 
 export const routeTree = rootRoute.addChildren([
   loginRoute,
+  viewerWindowRoute,
   authenticatedRoute.addChildren([
     libraryRoute,
     modelDetailRoute,

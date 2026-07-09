@@ -3,7 +3,7 @@ import type { ImportSite } from "@/api/types";
 export interface DetectedSite {
   site: ImportSite | null;
   label: string;
-  supported: boolean; // false for makerworld (deferred) and null (unknown)
+  supported: boolean; // all three known sites are supported; false only for an unknown host
 }
 
 const HOSTS: Record<string, { site: ImportSite; label: string; supported: boolean }> = {

@@ -9,6 +9,7 @@ a friendly 422, never a crash; an unsupported one always does."""
 
 from __future__ import annotations
 
+import anyio
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,7 +32,13 @@ async def search_imports(site: ImportSite, q: str, page: int = 1) -> list[Search
     importer = get_importer(site)
     if importer is None:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"{site.value} isn't available")
-    results = importer.search(q, page)
+    # Every importer's `search()` is fully BLOCKING (a sync httpx.Client with
+    # a 30s timeout; Thingiverse/MakerWorld also open a blocking sync DB
+    # session for their token, and MakerWorld may do a blocking Bambu token
+    # refresh). Running it inline on the event loop would freeze EVERY client
+    # while one slow upstream hangs -- offload to a worker thread, same
+    # pattern as POST /settings/bambu/login and storage's probe_backend.
+    results = await anyio.to_thread.run_sync(importer.search, q, page)
     return [SearchResultOut.from_dataclass(r) for r in results]
 
 

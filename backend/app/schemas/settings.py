@@ -8,11 +8,16 @@ produced via ``redacted()`` on the way out.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel
 
 from app.schemas.imports import NonEmptyStr
+
+# Bambu account region (global = api.bambulab.com, china = api.bambulab.cn) --
+# constrained at the schema boundary so a bogus region 422s here rather than
+# silently defaulting inside bambu_auth (matches the frontend's own union).
+BambuRegion = Literal["global", "china"]
 
 if TYPE_CHECKING:
     from app.storage.config import StorageConfig
@@ -52,13 +57,13 @@ class ConnectionTestOut(BaseModel):
 class BambuLoginIn(BaseModel):
     account: NonEmptyStr
     password: NonEmptyStr
-    region: str = "global"
+    region: BambuRegion = "global"
 
 
 class BambuVerifyIn(BaseModel):
     account: NonEmptyStr
     code: NonEmptyStr
-    region: str = "global"
+    region: BambuRegion = "global"
     mfa_context: dict = {}
 
 

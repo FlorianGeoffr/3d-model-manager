@@ -109,6 +109,34 @@ def test_verify_code_rejected_raises(monkeypatch):
         bambu_auth.verify_code("a@b.com", "999999", "global", {})
 
 
+def test_mfa_context_strips_token_like_keys_but_keeps_continuation(monkeypatch):
+    # An MFA challenge that (per the UNVERIFIED shape) also carries some
+    # token-like values must NOT leak them into mfa_context (which flows to
+    # the browser), while the real continuation fields (tfaKey, loginType)
+    # must survive so verify still works.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "loginType": "verifyCode",
+                "tfaKey": "ctx-123",
+                "sessionToken": "leak-me-1",
+                "accessToken": "leak-me-2",  # present but not paired w/ refresh -> not "connected"
+                "password": "leak-me-3",
+                "secret": "leak-me-4",
+            },
+        )
+
+    monkeypatch.setattr(bambu_auth, "_client", _mock_client(handler))
+    result = bambu_auth.login("a@b.com", "hunter2")
+    assert result.status == "mfa_required"
+    # Continuation kept (note: tfaKey ends in "Key" -- must survive).
+    assert result.mfa_context == {"loginType": "verifyCode", "tfaKey": "ctx-123"}
+    # Nothing token-like remains anywhere in the returned context.
+    serialized = json.dumps(result.mfa_context)
+    assert "leak-me" not in serialized
+
+
 def test_refresh_returns_new_access_token(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v1/user-service/user/refreshtoken"

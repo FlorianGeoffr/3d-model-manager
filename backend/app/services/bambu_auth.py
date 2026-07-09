@@ -167,18 +167,33 @@ def _post_login(body: dict, region: str) -> dict:
     return r.json()
 
 
+def _strip_secretish_keys(body: dict) -> dict:
+    """Defense-in-depth for the MFA continuation context. The login-success/
+    MFA-challenge shape is UNVERIFIED (see module docstring), so an
+    unrecognized-but-still-sensitive value (a session/temp token under a key
+    name not in our recognized set) could otherwise ride ``mfa_context`` all
+    the way to the browser -- violating "no token ever leaves the backend".
+    Drop any key whose lowercased name CONTAINS "token", or EQUALS
+    "password"/"secret"/"access"/"accesstoken", while KEEPING the MFA
+    continuation fields (``tfaKey``, ``loginType``, ...) the verify step
+    needs. Deliberately NOT a blanket "*key*" match: ``tfaKey`` ends in
+    "Key" and must survive."""
+    dropped = {"password", "secret", "access", "accesstoken"}
+    return {k: v for k, v in body.items() if "token" not in k.lower() and k.lower() not in dropped}
+
+
 def _parse_login_response(body: dict) -> BambuLoginResult:
     """DOCUMENTED, NOT LIVE-CAPTURED (see module docstring) -- tolerant of
     several candidate field-name casings. Any recognized access+refresh
-    token pair means success; otherwise the whole body becomes the opaque
-    MFA continuation context."""
+    token pair means success; otherwise the (secret-stripped) body becomes
+    the opaque MFA continuation context."""
     access = body.get("accessToken") or body.get("access_token") or body.get("token")
     refresh_token = body.get("refreshToken") or body.get("refresh_token")
     if access and refresh_token:
         return BambuLoginResult(
             status="connected", access_token=access, refresh_token=refresh_token
         )
-    return BambuLoginResult(status="mfa_required", mfa_context=dict(body))
+    return BambuLoginResult(status="mfa_required", mfa_context=_strip_secretish_keys(body))
 
 
 def login(account: str, password: str, region: str = "global") -> BambuLoginResult:

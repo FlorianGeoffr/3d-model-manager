@@ -57,6 +57,18 @@ async def test_login_success_connects_and_never_returns_a_token(
     assert decrypt_secret(get_settings(), row.value["refresh_token"]) == "RT-secret"
 
 
+async def test_login_rejects_bogus_region_at_schema_boundary(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    # `region` is constrained to Literal["global","china"] -- a bogus value
+    # 422s before any Bambu call is attempted.
+    r = await authenticated_client.post(
+        "/api/settings/bambu/login",
+        json={"account": "a@b.com", "password": "hunter2", "region": "mars"},
+    )
+    assert r.status_code == 422
+
+
 async def test_login_mfa_required_does_not_connect(
     authenticated_client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

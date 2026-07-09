@@ -38,7 +38,6 @@ from app.printers.registry import build_adapter
 from app.services import derivatives
 from app.services.events import publish_print_job_event_sync
 from app.services.printer_state import preflight_ok, read_state_sync
-from app.services.storage_config import resolve_backend_sync
 from app.tasks import base
 from app.tasks.celery_app import celery_app
 
@@ -133,8 +132,10 @@ def _send_to_printer(
                 "Is printerd running and the printer online and idle?"
             )
         with tempfile.TemporaryDirectory() as tmp, base.sync_session() as s2:
-            backend = resolve_backend_sync(s2, settings)
-            path = derivatives.fetch_blob_to_temp(s2, backend, blob_hash, Path(tmp), ".gcode.3mf")
+            # Workstream C task C2: resolves the specific verified File's own
+            # backend internally (a blob can have verified copies on more
+            # than one backend) rather than a caller-supplied default.
+            path = derivatives.fetch_blob_to_temp(s2, settings, blob_hash, Path(tmp), ".gcode.3mf")
             try:
                 gcode3mf.assert_plate_available(path.read_bytes(), options["plate"])
             except gcode3mf.NotSendableError as e:

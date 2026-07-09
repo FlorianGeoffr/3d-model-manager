@@ -35,7 +35,7 @@ from sqlalchemy.orm import Session
 from app.config import Settings
 from app.models import AssemblyThumb, Derivative, File
 from app.models.enums import DerivativeKind, DerivativeStatus
-from app.storage.base import StorageBackend
+from app.services.storage_backends import resolve_backend_for_file_sync
 
 logger = logging.getLogger(__name__)
 
@@ -256,7 +256,7 @@ def mark_assembly_thumb(
 
 def fetch_blob_to_temp(
     session: Session,
-    backend: StorageBackend,
+    settings: Settings,
     blob_hash: str,
     dest_dir: Path,
     suffix: str,
@@ -270,9 +270,12 @@ def fetch_blob_to_temp(
     Picks the ``id``-ordered first ``File`` row for this blob with
     ``verified_at IS NOT NULL``; since a blob is content-addressed, any
     verified copy has identical bytes, so which one is picked doesn't matter
-    beyond making the choice deterministic. Raises ``LookupError`` if no
-    verified copy exists (e.g. every file pointing at this blob is still
-    mid-upload).
+    beyond making the choice deterministic (Workstream C task C2: DOES matter
+    for which BACKEND to read from, though -- resolved from that specific
+    file's own ``backend_id`` via ``resolve_backend_for_file_sync``, not a
+    caller-supplied default, since two verified copies of the same blob can
+    live on two different backends). Raises ``LookupError`` if no verified
+    copy exists (e.g. every file pointing at this blob is still mid-upload).
     """
     file = (
         session.execute(
@@ -286,6 +289,7 @@ def fetch_blob_to_temp(
     if file is None:
         raise LookupError("no stored copy of blob")
 
+    backend = resolve_backend_for_file_sync(session, settings, file)
     dest = dest_dir / f"blob{suffix}"
     with dest.open("wb") as fh:
         for chunk in backend.read(file.storage_path):

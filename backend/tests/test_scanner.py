@@ -17,15 +17,19 @@ import os
 import time
 from collections.abc import Awaitable, Callable, Iterator
 from datetime import UTC, datetime
+from pathlib import Path
 
+import blake3
 import pytest
 from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.models import Blob, File, Job, Model, Revision, ScanRun
-from app.services import layout, scanner
+from app.models import Blob, File, FileLocation, Job, Model, Revision, ScanRun
+from app.models.enums import BlobFormat, BlobKind
+from app.services import layout, scanner, storage_backends
 from app.storage.base import EntryInfo
+from app.storage.config import LocalConfig
 from app.storage.errors import StorageKeyNotFound
 from app.storage.local import LocalStorageBackend
 from app.tasks import base
@@ -541,6 +545,139 @@ async def test_unreadable_file_recorded_as_error_and_scan_continues(
     await db_session.refresh(ok_file)
     assert ok_file.verified_at is not None
     assert scan_run.report["verified"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Workstream C task C2: multi-backend reconcile (`run_scan_all_backends`,
+# the entrypoint `app.tasks.scan.scan_library` actually calls). `run_scan`
+# itself (exercised by every test above) keeps its original single-backend
+# signature/behavior unchanged for backward compatibility.
+# ---------------------------------------------------------------------------
+
+
+def _run_scan_all_backends() -> ScanRun:
+    settings = get_settings()
+    scan_run_id = _create_scan_run()
+    with base.sync_session() as session:
+        scanner.run_scan_all_backends(session, settings, scan_run_id)
+    with base.sync_session() as session:
+        scan_run = session.get(ScanRun, scan_run_id)
+        session.expunge(scan_run)
+        return scan_run
+
+
+async def test_multi_backend_scan_does_not_mark_other_backends_files_missing(
+    db_session: AsyncSession,
+    backend: LocalStorageBackend,
+    tmp_path: Path,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    """With two backends configured, each gets its OWN reconcile pass scoped
+    to its own files (``_reconcile_against_backend``'s ``missing_candidates``
+    is built only from that backend's rows) -- a file that lives only on
+    backend B must not be reported ``missing`` just because backend A's walk
+    (which never even sees B's tree) doesn't turn it up, and vice versa.
+    """
+    settings = get_settings()
+    other_root = tmp_path / "backend-b"
+    other_root.mkdir()
+    other_backend = LocalStorageBackend(other_root)
+
+    with base.sync_session() as session:
+        default_row = storage_backends.create_backend_sync(
+            session, settings, "A", LocalConfig(), is_default=True
+        )
+        other_row = storage_backends.create_backend_sync(
+            session, settings, "B", LocalConfig(root=str(other_root))
+        )
+        default_id, other_id = default_row.id, other_row.id
+
+    # A file on the DEFAULT backend (A) -- bytes written through the shared
+    # `backend` fixture (rooted at `library_root`, same as A's config).
+    model_a, rev_a = await _create_model_and_revision(db_session, "widget-a", "Widget A")
+    file_a = await seed_file(model_a, rev_a, "part.stl", b"backend-a-bytes")
+    await _sync_mtime(db_session, backend, file_a)
+    file_a.backend_id = default_id
+    await db_session.commit()
+
+    # A file that lives ONLY on the OTHER backend (B) -- bytes never written
+    # anywhere under `library_root` at all.
+    model_b, rev_b = await _create_model_and_revision(db_session, "widget-b", "Widget B")
+    content_b = b"backend-b-bytes"
+    storage_path_b = f"{model_b.slug}/{rev_b.dir_name}/part.stl"
+    other_backend.write(storage_path_b, [content_b])
+    blob_b = Blob(
+        hash=blake3.blake3(content_b).hexdigest(),
+        size=len(content_b),
+        kind=BlobKind.MESH,
+        format=BlobFormat.STL,
+    )
+    db_session.add(blob_b)
+    await db_session.flush()
+    file_b = File(
+        revision_id=rev_b.id,
+        blob_hash=blob_b.hash,
+        rel_path="part.stl",
+        storage_path=storage_path_b,
+        mtime=other_backend.stat(storage_path_b).mtime,
+        verified_at=None,
+        backend_id=other_id,
+    )
+    db_session.add(file_b)
+    await db_session.commit()
+
+    scan_run = _run_scan_all_backends()
+
+    assert scan_run.state == "done"
+    # Neither file is missing -- each was found on its OWN backend's walk.
+    assert scan_run.missing == 0
+    assert scan_run.report["missing"] == []
+    assert scan_run.files_seen == 2
+    assert scan_run.report["verified"] == 2
+
+    await db_session.refresh(file_a)
+    await db_session.refresh(file_b)
+    assert file_a.verified_at is not None
+    assert file_a.backend_id == default_id
+    assert file_b.verified_at is not None
+    assert file_b.backend_id == other_id
+
+
+async def test_multi_backend_scan_adopts_orphan_file_onto_the_backend_it_was_found_on(
+    db_session: AsyncSession,
+    backend: LocalStorageBackend,
+    tmp_path: Path,
+) -> None:
+    """An orphan file discovered on a NON-default backend (no matching DB
+    row anywhere) is adopted with `backend_id` pointing at the backend it
+    was actually found on, plus a `file_locations` row for it -- not the
+    default.
+    """
+    settings = get_settings()
+    other_root = tmp_path / "backend-b-orphan"
+    other_root.mkdir()
+    other_backend = LocalStorageBackend(other_root)
+
+    with base.sync_session() as session:
+        storage_backends.create_backend_sync(session, settings, "A", LocalConfig(), is_default=True)
+        other_row = storage_backends.create_backend_sync(
+            session, settings, "B", LocalConfig(root=str(other_root))
+        )
+        other_id = other_row.id
+
+    other_backend.write("dropped-folder/orphan.stl", [b"orphan-bytes-on-b"])
+
+    scan_run = _run_scan_all_backends()
+
+    assert scan_run.state == "done"
+    assert scan_run.adopted == 1
+    assert len(scan_run.report["adopted"]) == 1
+
+    with base.sync_session() as session:
+        adopted_file = session.execute(select(File)).scalars().one()
+        assert adopted_file.backend_id == other_id
+        location = session.get(FileLocation, (adopted_file.id, other_id))
+        assert location is not None
 
 
 # ---------------------------------------------------------------------------

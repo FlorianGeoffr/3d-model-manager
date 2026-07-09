@@ -49,6 +49,24 @@ A single unreadable file (``report["errors"]``: TOCTOU deletion between
 ``walk`` and ``read``, or a transient SMB/S3 read error) is recorded and
 skipped rather than aborting the whole run -- see ``_record_error``.
 
+**Multi-backend (Workstream C task C2):** ``run_scan_all_backends`` -- the
+entrypoint ``app.tasks.scan.scan_library`` actually calls -- loops every
+configured ``storage_backends`` row and runs the algorithm above ONCE PER
+BACKEND via ``_reconcile_against_backend``, scoped to the ``files`` rows
+whose ``backend_id`` matches that backend (default backend also covers any
+NULL ``backend_id``, the pre-migration-seed safety net). Each backend's
+``missing_candidates`` set is therefore built from ONLY that backend's own
+files, so a file that simply lives on a *different* backend is never
+reported missing just because it wasn't on THIS backend's walk; adopted and
+relinked files are stamped with the currently-walked backend's id and get a
+``file_locations`` row. ``run_scan`` itself keeps its original single-backend
+signature (``backend`` passed in directly, no DB backend lookup) for
+backward compatibility with direct callers/tests that inject a backend
+object of their own (e.g. the synthetic in-memory harnesses in
+``tests/test_scanner.py``) -- called with no backend scoping (the historical
+behavior), it reconciles every ``files`` row unfiltered, same as before this
+task.
+
 Implementation decisions not spelled out verbatim by the SPEC table (documented
 here rather than guessed silently, per the task's "stop on genuine ambiguity"
 instruction -- none of these affect data-integrity, only report/adoption
@@ -82,12 +100,13 @@ from datetime import UTC, datetime
 from pathlib import PurePosixPath
 
 from blake3 import blake3
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.config import Settings
-from app.models import Blob, File, Model, Revision, ScanRun
+from app.models import Blob, File, FileLocation, Model, Revision, ScanRun, StorageBackendRow
 from app.services import layout
+from app.services import storage_backends as storage_backends_service
 from app.storage.base import EntryInfo, StorageBackend
 from app.storage.s3 import S3StorageBackend
 
@@ -126,7 +145,137 @@ def run_scan(
     session: Session, settings: Settings, backend: StorageBackend, scan_run_id: int
 ) -> None:
     """The whole reconcile pass against ``scan_run_id`` (must already exist,
-    created by the caller). Synchronous end to end.
+    created by the caller), against a single, CALLER-SUPPLIED backend.
+    Synchronous end to end.
+
+    Kept at this original (pre-Workstream-C) signature for backward
+    compatibility with direct callers/tests that inject their own backend
+    object (e.g. the synthetic in-memory harnesses in
+    ``tests/test_scanner.py``) rather than one resolved from a
+    ``storage_backends`` DB row -- ``settings`` is accepted but unused here
+    for exactly that reason. Reconciles every ``files`` row UNFILTERED (no
+    ``backend_id`` scoping, and adopted/relinked files are left with
+    ``backend_id=NULL``), i.e. the historical single-backend behavior.
+    ``run_scan_all_backends`` below is what ``app.tasks.scan.scan_library``
+    actually calls -- it loops every configured backend and calls
+    ``_reconcile_against_backend`` (this function's extracted body) once per
+    backend, scoped, then finalizes the ``ScanRun`` row once at the end.
+
+    See ``_reconcile_against_backend``'s docstring for the two-pass
+    algorithm itself.
+    """
+    scan_run = session.get(ScanRun, scan_run_id)
+    if scan_run is None:
+        raise LookupError(f"scan run {scan_run_id} not found")
+
+    now = datetime.now(UTC)
+    counters = {"files_seen": 0, "files_hashed": 0, "relinked": 0, "adopted": 0}
+    report: dict[str, object] = {
+        "adopted": [],
+        "relinked": [],
+        "changed": [],
+        "missing": [],
+        "errors": [],
+        "verified": 0,
+    }
+
+    _reconcile_against_backend(session, backend, None, now, counters, report)
+
+    scan_run.files_seen = counters["files_seen"]
+    scan_run.files_hashed = counters["files_hashed"]
+    scan_run.relinked = counters["relinked"]
+    scan_run.adopted = counters["adopted"]
+    scan_run.missing = len(report["missing"])
+    scan_run.report = report
+    scan_run.state = "done"
+    scan_run.finished_at = datetime.now(UTC)
+    session.commit()
+
+
+def run_scan_all_backends(session: Session, settings: Settings, scan_run_id: int) -> None:
+    """The REAL entrypoint (Workstream C task C2): every configured
+    ``storage_backends`` row gets its own full two-pass reconcile
+    (``_reconcile_against_backend``), scoped to the ``files`` rows whose
+    ``backend_id`` points at that row -- a file that simply lives on a
+    DIFFERENT backend is never reported missing just because it wasn't on
+    THIS backend's walk (each backend's ``missing_candidates`` is built from
+    only its own files). Adopted/relinked files are stamped with the
+    currently-walked backend's id and get a ``file_locations`` row.
+
+    Self-heals a missing default backend row first (mirrors
+    ``storage_backends.resolve_default_backend_sync``'s own self-heal): a
+    scan must never find zero backends to walk (that would silently scan
+    nothing and report every file missing).
+    """
+    scan_run = session.get(ScanRun, scan_run_id)
+    if scan_run is None:
+        raise LookupError(f"scan run {scan_run_id} not found")
+
+    storage_backends_service.resolve_default_backend_sync(session, settings)
+    backend_rows = storage_backends_service.list_backends_sync(session)
+
+    now = datetime.now(UTC)
+    counters = {"files_seen": 0, "files_hashed": 0, "relinked": 0, "adopted": 0}
+    report: dict[str, object] = {
+        "adopted": [],
+        "relinked": [],
+        "changed": [],
+        "missing": [],
+        "errors": [],
+        "verified": 0,
+    }
+
+    for row in backend_rows:
+        backend = storage_backends_service.backend_for_id_sync(session, settings, row.id)
+        _reconcile_against_backend(session, backend, row, now, counters, report)
+
+    scan_run.files_seen = counters["files_seen"]
+    scan_run.files_hashed = counters["files_hashed"]
+    scan_run.relinked = counters["relinked"]
+    scan_run.adopted = counters["adopted"]
+    scan_run.missing = len(report["missing"])
+    scan_run.report = report
+    scan_run.state = "done"
+    scan_run.finished_at = datetime.now(UTC)
+    session.commit()
+
+
+def _touch_location(session: Session, file_id: int, backend_id: int, verified_at: datetime) -> None:
+    """Get-or-create the ``(file_id, backend_id)`` ``file_locations`` row and
+    stamp its ``verified_at``: self-healing (a location row absent for a
+    file this backend's walk just confirmed present -- e.g. a pre-Workstream-
+    C write path, or a row lost to some earlier bug -- is created rather than
+    left missing) as well as the normal "this backend's copy is still there"
+    confirmation for a row that already exists.
+    """
+    loc = session.get(FileLocation, (file_id, backend_id))
+    if loc is None:
+        session.add(FileLocation(file_id=file_id, backend_id=backend_id, verified_at=verified_at))
+    else:
+        loc.verified_at = verified_at
+
+
+def _reconcile_against_backend(
+    session: Session,
+    backend: StorageBackend,
+    backend_row: StorageBackendRow | None,
+    now: datetime,
+    counters: dict[str, int],
+    report: dict[str, object],
+) -> None:
+    """One backend's full two-pass reconcile, mutating ``counters``/``report``
+    in place (the caller -- ``run_scan``/``run_scan_all_backends`` -- owns
+    finalizing the ``ScanRun`` row, so more than one backend's counts can be
+    accumulated before that happens).
+
+    ``backend_row`` is ``None`` for ``run_scan``'s legacy single-backend
+    callers (no ``backend_id`` scoping/stamping at all -- see that
+    function's docstring) or the ``storage_backends`` row this pass is
+    scoped to otherwise: its ``files`` snapshot only includes rows whose
+    ``backend_id`` matches (plus NULL ``backend_id`` rows too, when this is
+    the DEFAULT backend -- the pre-migration-seed safety net), and every
+    known/adopted/relinked file this pass touches is stamped with
+    ``backend_row.id`` plus a confirmed ``file_locations`` row.
 
     Runs in TWO PASSES over the walked tree (Task 5 fix-wave Finding 1):
     pass 1 resolves every on-disk entry that matches a known
@@ -147,26 +296,17 @@ def run_scan(
     chunk's data). None of this moves any work earlier than the full pass-1
     walk above; it only changes how pass 2's own DB round trips are batched.
     """
-    scan_run = session.get(ScanRun, scan_run_id)
-    if scan_run is None:
-        raise LookupError(f"scan run {scan_run_id} not found")
-
-    now = datetime.now(UTC)
+    backend_id = backend_row.id if backend_row is not None else None
     size_only = isinstance(backend, S3StorageBackend)
 
+    files_stmt = select(File).options(joinedload(File.blob))
+    if backend_row is not None:
+        scope = File.backend_id == backend_row.id
+        if backend_row.is_default:
+            scope = or_(scope, File.backend_id.is_(None))
+        files_stmt = files_stmt.where(scope)
     files_by_path: dict[str, File] = {
-        f.storage_path: f
-        for f in session.execute(select(File).options(joinedload(File.blob))).unique().scalars()
-    }
-
-    counters = {"files_seen": 0, "files_hashed": 0, "relinked": 0, "adopted": 0}
-    report: dict[str, object] = {
-        "adopted": [],
-        "relinked": [],
-        "changed": [],
-        "missing": [],
-        "errors": [],
-        "verified": 0,
+        f.storage_path: f for f in session.execute(files_stmt).unique().scalars()
     }
 
     seen: set[str] = set()
@@ -184,6 +324,9 @@ def run_scan(
         file = files_by_path.get(entry.key)
         if file is not None:
             _reconcile_known(session, backend, file, entry, size_only, now, counters, report)
+            if backend_id is not None:
+                file.backend_id = backend_id
+                _touch_location(session, file.id, backend_id, now)
             seen.add(entry.key)
             continue
 
@@ -223,6 +366,7 @@ def run_scan(
             now,
             counters,
             report,
+            backend_id,
         )
         # Checkpoint: a crash partway through a large scan keeps every
         # already-processed chunk's data rather than rolling the whole run
@@ -240,16 +384,6 @@ def run_scan(
                 "model_slug": slug_by_file_id.get(file.id, "?"),
             }
         )
-
-    scan_run.files_seen = counters["files_seen"]
-    scan_run.files_hashed = counters["files_hashed"]
-    scan_run.relinked = counters["relinked"]
-    scan_run.adopted = counters["adopted"]
-    scan_run.missing = len(missing_files)
-    scan_run.report = report
-    scan_run.state = "done"
-    scan_run.finished_at = datetime.now(UTC)
-    session.commit()
 
 
 def _slugs_for_files(session: Session, file_ids: list[int]) -> dict[int, str]:
@@ -488,6 +622,7 @@ def _attach_adopted_file(
     now: datetime,
     counters: dict[str, int],
     report: dict[str, object],
+    backend_id: int | None,
 ) -> File:
     """Resolve where ``entry`` attaches and stage its ``File`` row.
 
@@ -498,7 +633,11 @@ def _attach_adopted_file(
     updated immediately (a plain in-memory set, no DB round trip) so a
     later file in the SAME chunk sees this attachment right away -- mirrors
     the live-DB-visibility a per-file ``_rel_path_taken`` query used to give
-    for free.
+    for free. ``backend_id`` (Workstream C task C2) is stamped onto the new
+    row directly -- ``None`` for ``run_scan``'s legacy unscoped callers,
+    otherwise the backend currently being walked; the caller adds this
+    file's ``file_locations`` row once the chunk's flush has assigned it an
+    id.
     """
     model, revision, rel_path = _resolve_adopt_target(
         session, backend, entry.key, draft_models, models_by_slug, revisions_by_key, taken
@@ -511,6 +650,7 @@ def _attach_adopted_file(
         storage_path=entry.key,
         mtime=entry.mtime,
         verified_at=now,
+        backend_id=backend_id,
     )
     session.add(file)
     taken.add((revision.id, rel_path))
@@ -533,6 +673,7 @@ def _reconcile_unknown_chunk(
     now: datetime,
     counters: dict[str, int],
     report: dict[str, object],
+    backend_id: int | None,
 ) -> None:
     """Reconcile one ``_CHUNK``-sized slice of pass 2's deferred (unknown-
     path) entries (D2, M6 Task 6), batching what used to be a handful of DB
@@ -576,6 +717,7 @@ def _reconcile_unknown_chunk(
 
     new_blobs: list[Blob] = []
     pending_dispatch: list[tuple[File, str]] = []
+    pending_locations: list[File] = []
 
     for entry, digest in hashed:
         if digest in known_hashes:
@@ -590,9 +732,12 @@ def _reconcile_unknown_chunk(
                     {"file_id": candidate.id, "from": old_path, "to": entry.key, "hash": digest}
                 )
                 missing_candidates.pop(candidate.id, None)
+                if backend_id is not None:
+                    candidate.backend_id = backend_id
+                    _touch_location(session, candidate.id, backend_id, now)
                 continue
 
-            _attach_adopted_file(
+            file = _attach_adopted_file(
                 session,
                 backend,
                 entry,
@@ -605,7 +750,9 @@ def _reconcile_unknown_chunk(
                 now,
                 counters,
                 report,
+                backend_id,
             )
+            pending_locations.append(file)
             continue
 
         kind, format_ = layout.infer_blob_kind_format(entry.key)
@@ -624,12 +771,22 @@ def _reconcile_unknown_chunk(
             now,
             counters,
             report,
+            backend_id,
         )
         pending_dispatch.append((file, digest))
+        pending_locations.append(file)
 
     if new_blobs:
         session.add_all(new_blobs)
     session.flush()
+
+    if backend_id is not None:
+        session.add_all(
+            [
+                FileLocation(file_id=f.id, backend_id=backend_id, verified_at=now)
+                for f in pending_locations
+            ]
+        )
 
     for file, digest in pending_dispatch:
         _best_effort_pipeline(session, blob_hash=digest, file_id=file.id)

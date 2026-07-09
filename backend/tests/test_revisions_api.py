@@ -5,6 +5,7 @@ layer" -> "New revision", "Data model" -> "Revision diff").
 
 import uuid
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 import blake3
@@ -13,9 +14,12 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Blob, File, Model, Revision
+from app.config import get_settings
+from app.models import Blob, File, FileLocation, Model, Revision
 from app.models.enums import BlobFormat, BlobKind
 from app.services import jobs as jobs_service
+from app.services import storage_backends as sb
+from app.storage.config import LocalConfig
 from app.storage.local import LocalStorageBackend
 
 pytestmark = pytest.mark.usefixtures("library_root")
@@ -101,6 +105,66 @@ async def test_create_revision_snapshot_copies_all_files_on_disk(
     assert b"".join(backend.read("snapshot-test/rev-002_rev/nested/sub.stl")) == b"stl-bytes-two"
     # Original revision's files are untouched.
     assert b"".join(backend.read("snapshot-test/rev-001_initial/part.stl")) == b"stl-bytes-one"
+
+
+async def test_create_revision_copy_inherits_source_files_own_backend(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    """Workstream C task C2: ``backend.copy()`` is a same-backend-only
+    operation -- a source file that lives on a NON-default backend gets
+    copied on THAT backend (never silently onto the API's default write
+    backend), and the new revision's file inherits the source's
+    ``backend_id`` plus gets its own ``file_locations`` row.
+    """
+    settings = get_settings()
+    default_root = tmp_path / "default-root"
+    other_root = tmp_path / "other-root"
+    await sb.create_backend(
+        db_session, settings, "Default", LocalConfig(root=str(default_root)), is_default=True
+    )
+    other = await sb.create_backend(
+        db_session, settings, "Other", LocalConfig(root=str(other_root))
+    )
+    other_backend = LocalStorageBackend(other_root)
+
+    created = await _create_model(authenticated_client, "Cross Backend Snapshot")
+    model, rev1 = await _load_model_and_current_revision(db_session, created["id"])
+
+    content = b"other-backend-bytes"
+    digest = blake3.blake3(content).hexdigest()
+    blob = Blob(hash=digest, size=len(content), kind=BlobKind.MESH, format=BlobFormat.STL)
+    db_session.add(blob)
+    await db_session.flush()
+    storage_path = f"{model.slug}/{rev1.dir_name}/part.stl"
+    other_backend.write(storage_path, [content])
+    source_file = File(
+        revision_id=rev1.id,
+        blob_hash=digest,
+        rel_path="part.stl",
+        storage_path=storage_path,
+        verified_at=datetime.now(UTC),
+        backend_id=other.id,
+    )
+    db_session.add(source_file)
+    await db_session.commit()
+
+    response = await authenticated_client.post(f"/api/models/{created['id']}/revisions", json={})
+
+    assert response.status_code == 201, response.text
+    new_key = f"{model.slug}/rev-002_rev/part.stl"
+    # The copy landed on the SOURCE's own backend (other_root), never the
+    # default one.
+    assert b"".join(other_backend.read(new_key)) == content
+    assert not (default_root / new_key).exists()
+
+    new_file_id = response.json()["files"][0]["id"]
+    new_file = await db_session.get(File, new_file_id)
+    assert new_file.backend_id == other.id
+
+    location = await db_session.get(FileLocation, (new_file.id, other.id))
+    assert location is not None
 
 
 async def test_create_revision_with_unsettled_current_file_is_409_before_touching_disk(

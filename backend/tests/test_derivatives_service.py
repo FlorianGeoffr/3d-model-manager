@@ -16,7 +16,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import Settings
+from app.config import Settings, get_settings
 from app.models import Blob, Derivative, File, Model, Revision
 from app.models.enums import BlobFormat, BlobKind, DerivativeKind, DerivativeStatus
 from app.services import derivatives
@@ -289,7 +289,9 @@ async def test_fetch_blob_to_temp_streams_verified_copy(
     file = await seed_file(model, revision, "box.stl", content)
 
     with sync_session() as session:
-        fetched = derivatives.fetch_blob_to_temp(session, backend, file.blob_hash, tmp_path, ".stl")
+        fetched = derivatives.fetch_blob_to_temp(
+            session, get_settings(), file.blob_hash, tmp_path, ".stl"
+        )
 
     assert fetched == tmp_path / "blob.stl"
     assert fetched.read_bytes() == content
@@ -314,4 +316,4 @@ async def test_fetch_blob_to_temp_raises_when_only_unverified_copies_exist(
     await db_session.commit()
 
     with sync_session() as session, pytest.raises(LookupError, match="no stored copy of blob"):
-        derivatives.fetch_blob_to_temp(session, backend, BLOB_HASH, tmp_path, ".stl")
+        derivatives.fetch_blob_to_temp(session, get_settings(), BLOB_HASH, tmp_path, ".stl")

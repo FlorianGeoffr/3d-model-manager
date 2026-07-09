@@ -64,7 +64,7 @@ from app.importers.registry import IMPORTER_REGISTRY
 from app.models.enums import ImportState
 from app.models.system import Import
 from app.services import events, library
-from app.services.storage_config import resolve_backend_sync
+from app.services.storage_backends import resolve_default_backend_sync
 from app.tasks import base
 from app.tasks.celery_app import celery_app
 
@@ -181,7 +181,12 @@ def import_from_url(import_id: int) -> None:
                 ) from None
 
         with base.sync_session() as s:
-            backend = resolve_backend_sync(s, settings)
+            # Workstream C task C2: the model directory + sidecar (this is
+            # the only DIRECT storage write in this task -- every imported
+            # file's own bytes are written by the shared `store_to_backend`
+            # task below, which resolves + stamps the default backend for
+            # each File itself) always lands on the DEFAULT backend.
+            backend, _default_backend_id = resolve_default_backend_sync(s, settings)
             model = library.create_imported_model_sync(
                 s,
                 backend,

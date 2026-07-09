@@ -159,13 +159,38 @@ async def backend_for_id(db: AsyncSession, settings: Settings, backend_id: int) 
     return get_backend(settings, parse_storage_config(data))
 
 
+async def _ensure_default_backend_row(db: AsyncSession, settings: Settings) -> StorageBackendRow:
+    """Self-heal: ``storage_backends`` should never be empty once the app has
+    been migrated (the migration itself seeds exactly one default row) --
+    an empty table here means something wiped it out from under a running
+    install, or (in tests) the autouse truncation fixture between test
+    functions. Every C2 write call site (``ingest``/``importing``/
+    ``library``/the scanner) needs a REAL row to stamp ``files.backend_id``/
+    ``file_locations.backend_id`` against, so -- unlike
+    ``storage_config.get_active_config``'s read-only shim, which can just
+    return an ad hoc ``LocalConfig()`` -- this must actually persist one.
+    Reuses ``storage_config.get_active_config`` (same legacy-``settings``-row-
+    or-``LocalConfig()`` fallback the shim already implements) as the
+    source config, so a still-configured legacy install carries its real
+    backend across rather than silently reverting to local disk.
+    """
+    row = await get_default_backend_row(db)
+    if row is not None:
+        return row
+    from app.services.storage_config import get_active_config
+
+    config = await get_active_config(db, settings)
+    return await create_backend(db, settings, "Default", config, is_default=True)
+
+
 async def resolve_default_backend(
     db: AsyncSession, settings: Settings
 ) -> tuple[StorageBackend, int]:
     """The write target: the default backend + its id (for stamping
-    ``files.backend_id``/inserting a ``file_locations`` row).
+    ``files.backend_id``/inserting a ``file_locations`` row). Self-heals a
+    missing default row first (see ``_ensure_default_backend_row``).
     """
-    row = await get_default_backend(db)
+    row = await _ensure_default_backend_row(db, settings)
     data, _ = decrypt_config_row(settings, dict(row.config))
     return get_backend(settings, parse_storage_config(data)), row.id
 
@@ -288,10 +313,24 @@ def backend_for_id_sync(session: Session, settings: Settings, backend_id: int) -
     return get_backend(settings, parse_storage_config(data))
 
 
+def _ensure_default_backend_row_sync(session: Session, settings: Settings) -> StorageBackendRow:
+    """Sync twin of ``_ensure_default_backend_row`` (worker world)."""
+    row = get_default_backend_row_sync(session)
+    if row is not None:
+        return row
+    from app.services.storage_config import get_active_config_sync
+
+    config = get_active_config_sync(session, settings)
+    return create_backend_sync(session, settings, "Default", config, is_default=True)
+
+
 def resolve_default_backend_sync(
     session: Session, settings: Settings
 ) -> tuple[StorageBackend, int]:
-    row = get_default_backend_sync(session)
+    """Sync twin of ``resolve_default_backend`` -- self-heals a missing
+    default row first (see ``_ensure_default_backend_row``).
+    """
+    row = _ensure_default_backend_row_sync(session, settings)
     data, _ = decrypt_config_row(settings, dict(row.config))
     return get_backend(settings, parse_storage_config(data)), row.id
 

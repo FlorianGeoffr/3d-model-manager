@@ -36,6 +36,7 @@ from app.config import Settings
 from app.models.enums import BlobFormat, BlobKind, DerivativeKind, DerivativeStatus
 from app.models.library import Blob, File, Model, Note, Revision, Tag, model_tags
 from app.models.processing import AssemblyThumb, BlobMeta, Derivative
+from app.models.storage import FileLocation
 from app.models.system import Job
 from app.schemas.library import (
     BlobMetaOut,
@@ -55,6 +56,11 @@ from app.schemas.library import (
 from app.services import derivatives, layout
 from app.services import jobs as jobs_service
 from app.services.cursor import decode_cursor, encode_cursor
+from app.services.storage_backends import (
+    backend_for_id,
+    resolve_backend_for_file,
+    resolve_default_backend,
+)
 from app.storage.base import StorageBackend
 from app.storage.errors import StorageKeyNotFound
 
@@ -756,6 +762,7 @@ async def create_revision(
     db: AsyncSession,
     backend: StorageBackend,
     model: Model,
+    settings: Settings,
     *,
     name: str | None,
     note: str | None,
@@ -764,6 +771,14 @@ async def create_revision(
     (SPEC "Storage layer" -> "New revision"): mkdirs -> ``backend.copy()``
     each file, reusing blob hashes (no re-hash) -> insert ``files`` rows ->
     bump ``current_revision_id``.
+
+    Workstream C task C2: ``copy``/``move`` are same-backend-only operations,
+    so each old file is copied on ITS OWN primary backend (resolved up
+    front, below) rather than the caller's ``backend`` (the API's
+    dependency-injected DEFAULT backend -- correct only when every old file
+    also happens to live there, e.g. the pre-Workstream-C single-backend
+    case). ``backend`` is still used as the mkdirs target for a fresh, empty
+    revision (no old files to inherit a backend from).
     """
     max_number = await db.scalar(
         select(func.max(Revision.number)).where(Revision.model_id == model.id)
@@ -792,6 +807,25 @@ async def create_revision(
                 "files in the current revision are still processing; retry once stored",
             )
 
+    # Resolve every old file's own primary backend BEFORE creating the new
+    # revision row or touching disk (async, off the DB -- `backend_for_id`/
+    # `resolve_default_backend` need the session, which the sync thread
+    # below can't touch). Grouped by backend id so `_snapshot_copy` mkdirs
+    # each backend actually involved exactly once.
+    old_file_backend_id: dict[int, int] = {}
+    backend_by_id: dict[int, StorageBackend] = {}
+    for old_file in old_files:
+        if old_file.backend_id is not None:
+            bid = old_file.backend_id
+            if bid not in backend_by_id:
+                backend_by_id[bid] = await backend_for_id(db, settings, bid)
+        else:
+            # NULL backend_id pre-seed safety net (mirrors
+            # `resolve_backend_for_file`) -- default.
+            default_backend, bid = await resolve_default_backend(db, settings)
+            backend_by_id.setdefault(bid, default_backend)
+        old_file_backend_id[old_file.id] = bid
+
     new_revision = Revision(
         model_id=model.id, number=next_number, name=name, note=note, dir_name=dir_name
     )
@@ -799,26 +833,45 @@ async def create_revision(
     await db.flush()
 
     def _snapshot_copy() -> None:
-        backend.mkdirs(layout.revision_dir_key(model.slug, dir_name))
+        if not old_files:
+            # Nothing to inherit a backend from -- an empty new revision
+            # still needs its directory to exist on the default write
+            # backend.
+            backend.mkdirs(layout.revision_dir_key(model.slug, dir_name))
+            return
+        for be in backend_by_id.values():
+            be.mkdirs(layout.revision_dir_key(model.slug, dir_name))
         for old_file in old_files:
+            be = backend_by_id[old_file_backend_id[old_file.id]]
             new_key = layout.file_key(model.slug, dir_name, old_file.rel_path)
-            backend.copy(old_file.storage_path, new_key)
+            be.copy(old_file.storage_path, new_key)
 
     await anyio.to_thread.run_sync(_snapshot_copy)
 
+    new_files: list[File] = []
     for old_file in old_files:
-        db.add(
-            File(
-                revision_id=new_revision.id,
-                blob_hash=old_file.blob_hash,
-                rel_path=old_file.rel_path,
-                storage_path=layout.file_key(model.slug, dir_name, old_file.rel_path),
-                # Unverified until a scan (SPEC "Rescan/reconcile") touches
-                # it -- the copy itself is trusted, but nothing has stat'd
-                # the resulting file yet.
-                verified_at=None,
-            )
+        new_file = File(
+            revision_id=new_revision.id,
+            blob_hash=old_file.blob_hash,
+            rel_path=old_file.rel_path,
+            storage_path=layout.file_key(model.slug, dir_name, old_file.rel_path),
+            # Unverified until a scan (SPEC "Rescan/reconcile") touches
+            # it -- the copy itself is trusted, but nothing has stat'd
+            # the resulting file yet.
+            verified_at=None,
+            backend_id=old_file_backend_id[old_file.id],
         )
+        db.add(new_file)
+        new_files.append(new_file)
+
+    if new_files:
+        await db.flush()  # assigns new_file.id, needed for file_locations below
+        for new_file in new_files:
+            db.add(
+                FileLocation(
+                    file_id=new_file.id, backend_id=new_file.backend_id, verified_at=None
+                )
+            )
 
     model.current_revision_id = new_revision.id
     await db.commit()
@@ -1055,9 +1108,14 @@ async def finalize_upload(
     return file
 
 
-async def delete_file(db: AsyncSession, backend: StorageBackend, file_id: int) -> None:
+async def delete_file(db: AsyncSession, settings: Settings, file_id: int) -> None:
     """File ops apply only to the model's CURRENT revision (Task 5 brief);
     409 otherwise.
+
+    Workstream C task C2: deletes off ``file``'s OWN primary backend
+    (``resolve_backend_for_file``), not the caller's default -- a file
+    relocated (or adopted) onto a non-default backend must be deleted from
+    where its bytes actually are.
     """
     file = await db.get(File, file_id)
     if file is None:
@@ -1077,6 +1135,7 @@ async def delete_file(db: AsyncSession, backend: StorageBackend, file_id: int) -
         # the ingest task might still be about to touch.
         raise HTTPException(status.HTTP_409_CONFLICT, "file is still processing; retry once stored")
 
+    backend = await resolve_backend_for_file(db, settings, file)
     # Already absent from the backend (e.g. the write never landed, or a
     # previous delete attempt crashed after removing the object but before
     # this commit) is tolerated, not an error: treating it as one would

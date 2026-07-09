@@ -379,6 +379,13 @@ def run_step(job_id: str, blob_hash: str, step: str, fn: StepFn) -> None:
             jobs.mark_failed(session, job_id, f"blob {blob_hash} not found")
             return
         fmt = blob.format
+        # Workstream C task C2: no step function actually reads through this
+        # anymore -- every step that needs a blob's bytes fetches them via
+        # `derivatives.fetch_blob_to_temp(session, settings, ...)`, which
+        # resolves the SPECIFIC file/backend it picks internally (a blob can
+        # have verified copies on more than one backend). Kept only to avoid
+        # churning the `StepFn` signature/every call site for a param that
+        # would otherwise still need threading through for free.
         backend = resolve_backend_sync(session, settings)
 
     try:
@@ -508,17 +515,17 @@ def _extract_metadata_step(
     if fmt in _MESH_FORMATS:
         with tempfile.TemporaryDirectory(prefix="tdmm-pipe-") as tmp:
             path = derivatives.fetch_blob_to_temp(
-                session, backend, blob.hash, Path(tmp), f".{fmt.value}"
+                session, settings, blob.hash, Path(tmp), f".{fmt.value}"
             )
             mesh, tool = meshload.load_mesh(path, fmt)
         meta = _mesh_blob_meta(blob.hash, mesh, tool)
     elif fmt is BlobFormat.GCODE_3MF:
         with tempfile.TemporaryDirectory(prefix="tdmm-pipe-") as tmp:
-            path = derivatives.fetch_blob_to_temp(session, backend, blob.hash, Path(tmp), ".3mf")
+            path = derivatives.fetch_blob_to_temp(session, settings, blob.hash, Path(tmp), ".3mf")
             meta = _sliced_blob_meta(blob.hash, slicedmeta.parse_gcode_3mf(path))
     elif fmt is BlobFormat.GCODE:
         with tempfile.TemporaryDirectory(prefix="tdmm-pipe-") as tmp:
-            path = derivatives.fetch_blob_to_temp(session, backend, blob.hash, Path(tmp), ".gcode")
+            path = derivatives.fetch_blob_to_temp(session, settings, blob.hash, Path(tmp), ".gcode")
             meta = _gcode_blob_meta(blob.hash, slicedmeta.parse_gcode_header(path))
     elif fmt in _CAD_FORMATS:
         meta = _cad_blob_meta(session, settings, blob)
@@ -657,7 +664,7 @@ def _extract_embedded_thumbs_step(
         return "skipped"
 
     with tempfile.TemporaryDirectory(prefix="tdmm-pipe-") as tmp:
-        path = derivatives.fetch_blob_to_temp(session, backend, blob.hash, Path(tmp), ".3mf")
+        path = derivatives.fetch_blob_to_temp(session, settings, blob.hash, Path(tmp), ".3mf")
         with zipfile.ZipFile(path) as zf:
             plates = _resolve_plate_thumbnails(zf)
             plate_bytes = {index: zf.read(member) for index, member in plates}
@@ -725,7 +732,7 @@ def _convert_to_glb_step(
     try:
         with tempfile.TemporaryDirectory(prefix="tdmm-pipe-") as tmp:
             src = derivatives.fetch_blob_to_temp(
-                session, backend, blob.hash, Path(tmp), f".{blob.format.value}"
+                session, settings, blob.hash, Path(tmp), f".{blob.format.value}"
             )
             tool = convert.convert_to_glb_file(src, blob.format, tmp_path)
     except Exception as exc:
@@ -932,7 +939,7 @@ def _render_thumb_step(
     if blob.format in _IMAGE_FORMATS:
         with tempfile.TemporaryDirectory(prefix="tdmm-pipe-") as tmp:
             path = derivatives.fetch_blob_to_temp(
-                session, backend, blob.hash, Path(tmp), f".{blob.format.value}"
+                session, settings, blob.hash, Path(tmp), f".{blob.format.value}"
             )
             _publish_image_thumbs(session, settings, blob.hash, path, "pillow")
         return "done"

@@ -34,7 +34,6 @@ from app.config import get_settings
 from app.models import ScanRun
 from app.services import scanner
 from app.services.events import publish_scan_event_sync
-from app.services.storage_config import resolve_backend_sync
 from app.tasks import base
 from app.tasks.celery_app import celery_app
 
@@ -80,8 +79,9 @@ def scan_library(scan_run_id: int) -> None:
         with base.sync_session() as s:
             scanner.mark_scan_state(s, scan_run_id, "running")
             publish_scan_event_sync(settings.redis_url, scan_run_id, "running")
-            backend = resolve_backend_sync(s, settings)
-            scanner.run_scan(s, settings, backend, scan_run_id)  # sets state=done, finished_at
+            # Every configured storage backend, not just the default one
+            # (Workstream C task C2) -- sets state=done, finished_at.
+            scanner.run_scan_all_backends(s, settings, scan_run_id)
             publish_scan_event_sync(settings.redis_url, scan_run_id, "done")
     except Exception:
         with base.sync_session() as s:

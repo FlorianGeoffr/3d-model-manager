@@ -48,7 +48,7 @@ async def create_revision(
 ) -> RevisionDetail:
     model = await library.get_model_by_id(db, model_id)
     revision = await library.create_revision(
-        db, backend, model, name=payload.name, note=payload.note
+        db, backend, model, settings, name=payload.name, note=payload.note
     )
     return await library.build_revision_detail(db, revision, settings)
 

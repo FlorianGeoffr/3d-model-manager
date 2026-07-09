@@ -21,9 +21,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from app.config import get_settings
-from app.models import File
+from app.models import File, FileLocation
 from app.services import jobs
-from app.services.storage_config import resolve_backend_sync
+from app.services.storage_backends import resolve_default_backend_sync
 from app.tasks import base, pipeline
 from app.tasks.celery_app import celery_app
 
@@ -45,7 +45,10 @@ def _spool_chunks(path: Path) -> Iterator[bytes]:
 def store_to_backend(job_id: str, file_id: int, spool_path: str) -> None:
     settings = get_settings()
     with base.sync_session() as session:
-        backend = resolve_backend_sync(session, settings)
+        # Workstream C task C2: new writes always land on the DEFAULT
+        # backend (reads later resolve per-file via `files.backend_id`,
+        # which this task stamps below once the write verifies).
+        backend, default_backend_id = resolve_default_backend_sync(session, settings)
     path = Path(spool_path)
 
     try:
@@ -98,6 +101,17 @@ def store_to_backend(job_id: str, file_id: int, spool_path: str) -> None:
             now = datetime.now(UTC)
             file.mtime = now
             file.verified_at = now
+            file.backend_id = default_backend_id
+            # Get-or-create (upsert-safe): a retry of this same job re-runs
+            # the whole write, so a location row from an earlier attempt may
+            # already exist for this (file_id, backend_id) pair.
+            location = session.get(FileLocation, (file.id, default_backend_id))
+            if location is None:
+                session.add(
+                    FileLocation(file_id=file.id, backend_id=default_backend_id, verified_at=now)
+                )
+            else:
+                location.verified_at = now
             session.commit()
             jobs.mark_done(session, job_id)
             # Kick off this blob's processing pipeline (Task 2). A blob

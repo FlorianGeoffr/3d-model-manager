@@ -102,3 +102,12 @@ class ImportState(StrEnum):
     DOWNLOADING = "downloading"
     DONE = "done"
     FAILED = "failed"
+
+
+class CollectionSyncMode(StrEnum):
+    """What a periodic collection sync does with a NEWLY discovered item
+    (M8 H). Chosen per followed list, so a trusted collection can auto-import
+    while a noisy one only queues items for approval."""
+
+    AUTO = "auto"  # import it straight into the library
+    REVIEW = "review"  # queue it in `pending_imports` for one-click approval

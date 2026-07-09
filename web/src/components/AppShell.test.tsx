@@ -67,4 +67,12 @@ describe("AppShell nav", () => {
 
     expect(await screen.findByRole("link", { name: /Printer/ })).toBeInTheDocument();
   });
+
+  it("exposes a single global Add action instead of separate Upload/Import nav items", async () => {
+    renderShell();
+
+    expect(await screen.findByRole("link", { name: /Add to library/ })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /^Upload$/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /^Import$/ })).not.toBeInTheDocument();
+  });
 });

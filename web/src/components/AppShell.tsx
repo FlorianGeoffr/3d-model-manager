@@ -1,13 +1,5 @@
 import { Link, Outlet, useNavigate } from "@tanstack/react-router";
-import {
-  FolderInput,
-  ListChecks,
-  LogOut,
-  Printer,
-  Settings,
-  SquareLibrary,
-  Upload,
-} from "lucide-react";
+import { ListChecks, LogOut, Plus, Printer, Settings, SquareLibrary } from "lucide-react";
 
 import { useAuth, useLogout } from "@/api/auth";
 import { useFeatures } from "@/api/features";
@@ -15,10 +7,11 @@ import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { EventsProvider } from "@/hooks/useEvents";
 
+// Upload + Import used to be separate nav items; they now live behind the
+// single global "Add to library" action (Workstream E consolidates them onto
+// /add — until then this points at /upload).
 const NAV_ITEMS = [
   { to: "/", label: "Library", icon: SquareLibrary },
-  { to: "/upload", label: "Upload", icon: Upload },
-  { to: "/import", label: "Import", icon: FolderInput },
   { to: "/printer", label: "Printer", icon: Printer },
   { to: "/jobs", label: "Jobs", icon: ListChecks },
   { to: "/settings", label: "Settings", icon: Settings },
@@ -41,7 +34,14 @@ export function AppShell() {
     <EventsProvider>
       <div className="flex min-h-svh">
         <aside className="flex w-56 shrink-0 flex-col border-r border-border bg-card">
-          <div className="px-4 py-4 text-base font-semibold">3D Model Manager</div>
+          <div className="px-4 py-4 text-base font-semibold tracking-tight">3D Model Manager</div>
+          <div className="px-2 pb-2">
+            <Button asChild className="w-full justify-start gap-2">
+              <Link to="/upload">
+                <Plus className="size-4" /> Add to library
+              </Link>
+            </Button>
+          </div>
           <nav className="flex flex-1 flex-col gap-1 px-2">
             {navItems.map(({ to, label, icon: Icon }) => (
               <Link
@@ -50,7 +50,7 @@ export function AppShell() {
                 activeOptions={{ exact: to === "/" }}
                 className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                 activeProps={{
-                  className: "bg-muted text-foreground",
+                  className: "bg-muted font-medium text-foreground",
                 }}
               >
                 <Icon className="size-4" />

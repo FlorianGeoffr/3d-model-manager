@@ -13,7 +13,11 @@ import pytest
 from app.models import Model
 from app.models.enums import ImportSite, ImportState
 from app.models.system import Import
-from app.services.import_dedup import find_live_import, find_live_import_sync
+from app.services.import_dedup import (
+    find_active_import_sync,
+    find_live_import,
+    find_live_import_sync,
+)
 
 
 async def _add_import(db_session, *, state: ImportState, model_id: int | None) -> Import:
@@ -74,6 +78,39 @@ async def test_scopes_by_site_and_external_id(db_session) -> None:
     assert await find_live_import(db_session, ImportSite.THINGIVERSE, "8") is None
     # a site whose canonicalize found no id can never match
     assert await find_live_import(db_session, ImportSite.THINGIVERSE, None) is None
+
+
+def test_find_active_import_sync_matches_in_flight_but_not_terminal_states() -> None:
+    """The periodic sync must skip an item whose import is still IN FLIGHT --
+    under real (non-eager) Celery the row it just dispatched is only `pending`,
+    so a model in two followed lists would otherwise be imported twice. A
+    `failed` import is NOT active, so it stays retryable.
+    """
+    from app.tasks import base
+
+    with base.sync_session() as session:
+        for state, external_id in (
+            (ImportState.PENDING, "1"),
+            (ImportState.FETCHING, "2"),
+            (ImportState.DOWNLOADING, "3"),
+            (ImportState.FAILED, "4"),
+            (ImportState.DONE, "5"),
+        ):
+            session.add(
+                Import(
+                    url=f"https://fake.test/thing/{external_id}",
+                    site=ImportSite.THINGIVERSE,
+                    external_id=external_id,
+                    state=state,
+                )
+            )
+        session.commit()
+
+        for external_id in ("1", "2", "3"):
+            assert find_active_import_sync(session, ImportSite.THINGIVERSE, external_id) is not None
+        for external_id in ("4", "5"):  # terminal states are not "in flight"
+            assert find_active_import_sync(session, ImportSite.THINGIVERSE, external_id) is None
+        assert find_active_import_sync(session, ImportSite.THINGIVERSE, None) is None
 
 
 def test_sync_twin_mirrors_the_async_lookup() -> None:

@@ -66,3 +66,35 @@ def find_live_import_sync(
     if not external_id:
         return None
     return session.execute(_live_import_stmt(site, external_id)).scalars().first()
+
+
+# States an import passes through before it either produces a Model or fails.
+_ACTIVE_STATES = (ImportState.PENDING, ImportState.FETCHING, ImportState.DOWNLOADING)
+
+
+def find_active_import_sync(
+    session: SyncSession, site: ImportSite, external_id: str | None
+) -> Import | None:
+    """An import of this pair that is still IN FLIGHT.
+
+    ``find_live_import_sync`` only matches a ``done`` import, which is enough
+    for the API (it commits its row before answering). The periodic sync is
+    different: under real (non-eager) Celery the import it just dispatched is
+    still ``pending`` when the next followed list is walked, so a model that
+    appears in TWO followed lists would be dispatched -- and imported -- twice.
+    Skipping anything already in flight closes that. A ``failed`` import is not
+    active, so it stays retryable on the next run.
+    """
+    if not external_id:
+        return None
+    stmt = (
+        select(Import)
+        .where(
+            Import.site == site,
+            Import.external_id == external_id,
+            Import.state.in_(_ACTIVE_STATES),
+        )
+        .order_by(Import.id)
+        .limit(1)
+    )
+    return session.execute(stmt).scalars().first()

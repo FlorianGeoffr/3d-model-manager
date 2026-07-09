@@ -31,7 +31,7 @@ from app.models.enums import CollectionSyncMode, ImportState
 from app.models.system import Import
 from app.services import collections as collections_svc
 from app.services import jobs
-from app.services.import_dedup import find_live_import_sync
+from app.services.import_dedup import find_active_import_sync, find_live_import_sync
 from app.tasks import base
 from app.tasks.celery_app import celery_app
 from app.tasks.importing import import_from_url
@@ -62,9 +62,14 @@ def _sync_one(session, collection: FollowedCollection) -> None:
         return
 
     for item in _walk_list_items(importer, collection.list_id):
-        if find_live_import_sync(session, item.site, item.external_id) is not None:
-            # Already in the library: make sure it isn't still sitting in the
-            # review queue from an earlier run.
+        already = find_live_import_sync(session, item.site, item.external_id) is not None
+        # ...or still in flight: under real (non-eager) Celery the import this
+        # run just dispatched is only `pending`, so a model that appears in two
+        # followed lists would otherwise be imported twice.
+        in_flight = find_active_import_sync(session, item.site, item.external_id) is not None
+        if already or in_flight:
+            # Landing (or landed) in the library: make sure it isn't still
+            # sitting in the review queue from an earlier run.
             collections_svc.drop_pending_sync(session, collection, item.external_id)
             continue
 

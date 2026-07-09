@@ -47,6 +47,11 @@ _PATH_PARAM_VALUES = {
     "printer_id": "1",
     "import_id": "1",
     "backend_id": "1",
+    # M8 H: followed collections / review queue / remote list browsing.
+    "site": "thingiverse",
+    "list_id": "1",
+    "collection_id": "1",
+    "pending_id": "1",
 }
 
 

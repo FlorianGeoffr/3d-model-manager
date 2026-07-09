@@ -42,6 +42,22 @@ export function encodePartColors(colors: PartColors): string {
     .join(",");
 }
 
+/** Map ordered part ids onto AMS tray colors (M8 G3 "sync from printer"),
+ * cycling the loaded trays if there are more parts than slots. Trays with no
+ * color are dropped from the cycle; returns {} when nothing is loaded. */
+export function traysToPartColors(
+  partIds: number[],
+  trays: Array<{ color: string | null }>,
+): PartColors {
+  const colored = trays.map((tray) => tray.color).filter((color): color is string => !!color);
+  const out: PartColors = {};
+  if (colored.length === 0) return out;
+  partIds.forEach((id, index) => {
+    out[id] = colored[index % colored.length];
+  });
+  return out;
+}
+
 export function decodePartColors(encoded: string | null | undefined): PartColors {
   if (!encoded) return {};
   const out: PartColors = {};

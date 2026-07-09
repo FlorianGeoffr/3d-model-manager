@@ -73,6 +73,15 @@ class ProbeOut(BaseModel):
     gcode_state: str | None = None
 
 
+class AmsTrayOut(BaseModel):
+    """One loaded AMS filament slot (M8 G3 color sync). ``color`` is
+    ``#RRGGBB`` (alpha already stripped) or None for an empty/unknown slot."""
+
+    slot: int
+    color: str | None = None
+    material: str | None = None
+
+
 class PrinterStatusOut(BaseModel):
     online: bool
     gcode_state: str | None = None
@@ -85,6 +94,7 @@ class PrinterStatusOut(BaseModel):
     bed_temper: float | None = None
     subtask_name: str | None = None
     wifi_signal: str | None = None
+    trays: list[AmsTrayOut] = Field(default_factory=list)
 
 
 class PrintRequest(BaseModel):

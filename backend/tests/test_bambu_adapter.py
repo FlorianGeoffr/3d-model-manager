@@ -243,6 +243,56 @@ def test_dump_get_reads_nested_print_dict():
     assert bambu._dump_get({}, "gcode_state") is None  # neither present -> None, never raises
 
 
+def test_hex6_strips_ams_alpha_and_tolerates_garbage():
+    assert bambu._hex6("00FF00FF") == "#00FF00"  # RRGGBBAA -> #RRGGBB
+    assert bambu._hex6("#abcdef") == "#ABCDEF"
+    assert bambu._hex6("FFF") is None  # too short
+    assert bambu._hex6("zzzzzz") is None
+    assert bambu._hex6(None) is None
+    assert bambu._hex6("") is None
+
+
+def test_ams_trays_parses_loaded_slots_and_tolerates_missing_ams():
+    dump = {
+        "print": {
+            "ams": {
+                "ams": [
+                    {
+                        "tray": [
+                            {"tray_color": "FF0000FF", "tray_type": "PLA"},
+                            {"tray_color": "00FF00FF", "tray_type": "PETG"},
+                            {"tray_color": "", "tray_type": ""},  # empty slot -> skipped
+                        ]
+                    }
+                ]
+            }
+        }
+    }
+    assert bambu._ams_trays(dump) == [
+        {"slot": 0, "color": "#FF0000", "material": "PLA"},
+        {"slot": 1, "color": "#00FF00", "material": "PETG"},
+    ]
+    # no AMS / unexpected shape -> [] (never raises)
+    assert bambu._ams_trays({}) == []
+    assert bambu._ams_trays({"print": {"ams": {}}}) == []
+    assert bambu._ams_trays({"print": {"ams": {"ams": "nope"}}}) == []
+
+
+def test_snapshot_includes_ams_trays(monkeypatch):
+    a, stub = _stub_adapter(monkeypatch)
+    stub.mqtt_dump = lambda: {
+        "print": {"ams": {"ams": [{"tray": [{"tray_color": "112233FF", "tray_type": "PLA"}]}]}}
+    }
+    assert a._snapshot()["trays"] == [{"slot": 0, "color": "#112233", "material": "PLA"}]
+
+
+def test_public_state_carries_ams_trays():
+    ps = BambuLanAdapter(CONN).public_state(
+        {"trays": [{"slot": 0, "color": "#ff0000", "material": "PLA"}]}
+    )
+    assert ps.trays == [{"slot": 0, "color": "#ff0000", "material": "PLA"}]
+
+
 def test_test_connection_skips_unknown_state_then_succeeds(monkeypatch):
     # The probe's poll loop must SKIP the truthy-but-meaningless UNKNOWN
     # state (bambulabs_api's GcodeState._missing_ fallback) and keep waiting

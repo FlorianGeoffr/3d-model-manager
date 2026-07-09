@@ -31,6 +31,14 @@ const { modelViewerMock, platePanelMock, defaultModelViewerImpl } = vi.hoisted((
 vi.mock("@/components/viewer/ModelViewer", () => ({ default: modelViewerMock }));
 vi.mock("@/components/model-detail/PlatePanel", () => ({ PlatePanel: platePanelMock }));
 
+// MeshSection queries printers for the AMS color-sync (M8 G3); these tests
+// render ViewerTab without a QueryClientProvider, so stub the hooks to "no
+// printer" (AMS section then never mounts, and no useQuery runs).
+vi.mock("@/api/printers", () => ({
+  usePrinters: () => ({ data: [] }),
+  usePrinterStatus: () => ({ data: undefined }),
+}));
+
 // Radix's Select never reaches an interactive open state under jsdom (same
 // floating-ui/dismissable-layer limitation as Popover -- see the inline
 // mock in UploadPage.test.tsx) -- swap it for a native <select> so it can be

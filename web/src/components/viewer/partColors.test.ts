@@ -5,6 +5,7 @@ import {
   encodePartColors,
   loadPartColors,
   savePartColors,
+  traysToPartColors,
 } from "@/components/viewer/partColors";
 
 afterEach(() => localStorage.clear());
@@ -24,6 +25,31 @@ describe("encode/decode part colors", () => {
     expect(decodePartColors("1:zzz,2:00ff00,bad")).toEqual({ 2: "#00ff00" });
     expect(decodePartColors("")).toEqual({});
     expect(decodePartColors(null)).toEqual({});
+  });
+});
+
+describe("traysToPartColors (AMS sync)", () => {
+  it("maps parts onto tray colors in order", () => {
+    const trays = [{ color: "#ff0000" }, { color: "#00ff00" }];
+    expect(traysToPartColors([10, 20], trays)).toEqual({ 10: "#ff0000", 20: "#00ff00" });
+  });
+
+  it("cycles trays when there are more parts than slots", () => {
+    const trays = [{ color: "#ff0000" }, { color: "#00ff00" }];
+    expect(traysToPartColors([1, 2, 3], trays)).toEqual({
+      1: "#ff0000",
+      2: "#00ff00",
+      3: "#ff0000",
+    });
+  });
+
+  it("skips colorless trays and returns {} when nothing is loaded", () => {
+    expect(traysToPartColors([1, 2], [{ color: null }, { color: "#0000ff" }])).toEqual({
+      1: "#0000ff",
+      2: "#0000ff",
+    });
+    expect(traysToPartColors([1], [{ color: null }])).toEqual({});
+    expect(traysToPartColors([], [{ color: "#ff0000" }])).toEqual({});
   });
 });
 

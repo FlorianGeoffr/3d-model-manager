@@ -230,7 +230,13 @@ async def printer_status(
         await client.aclose()
     if state is None:
         return PrinterStatusOut(online=False)
-    return PrinterStatusOut(online=True, **{k: state.get(k) for k in _STATE_FIELDS})
+    # `trays` (M8 G3) is a list, not a scalar -- pass it explicitly and coerce a
+    # missing/None value (older state written before this field existed) to [].
+    return PrinterStatusOut(
+        online=True,
+        trays=state.get("trays") or [],
+        **{k: state.get(k) for k in _STATE_FIELDS},
+    )
 
 
 async def _publish_command(settings: Settings, printer_id: int, command: str) -> None:

@@ -71,6 +71,10 @@ class PrinterPublicState:
     bed_temper: float | None = None
     subtask_name: str | None = None
     wifi_signal: str | None = None
+    # Loaded AMS filament slots (M8 G3): [{"slot": int, "color": "#RRGGBB"|None,
+    # "material": str|None}]. Plain dicts (not a nested dataclass) so
+    # `dataclasses.asdict` -> `json.dumps` round-trips them into Redis unchanged.
+    trays: list[dict] = field(default_factory=list)
 
 
 def state_key(printer_id: int) -> str:

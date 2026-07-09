@@ -8,12 +8,15 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { usePrinters, usePrinterStatus } from "@/api/printers";
+import { FilamentChip } from "@/components/ui/filament-chip";
 import { PlatePanel } from "@/components/model-detail/PlatePanel";
 import { BACKGROUND_PRESET_LABELS, BACKGROUND_PRESET_ORDER, useViewerBackground, type BackgroundPreset } from "@/components/viewer/background";
 import {
   encodePartColors,
   loadPartColors,
   savePartColors,
+  traysToPartColors,
   type PartColors,
 } from "@/components/viewer/partColors";
 import { glbFiles, glbUrl, pickViewerFiles } from "@/components/viewer/viewable";
@@ -145,6 +148,43 @@ function BackgroundPicker({
   );
 }
 
+/** AMS filament legend + "Sync colors from printer" (M8 G3). Rendered only
+ * when a printer is configured, so its `usePrinterStatus` poll (which has no
+ * `enabled` gate) always has a real id. Maps the checked parts onto the loaded
+ * trays in order, cycling if there are more parts than trays. */
+function AmsSync({
+  printerId,
+  partIds,
+  onApply,
+}: {
+  printerId: number;
+  partIds: number[];
+  onApply: (colors: PartColors) => void;
+}) {
+  const status = usePrinterStatus(printerId);
+  const trays = (status.data?.trays ?? []).filter((tray) => tray.color);
+  if (trays.length === 0) return null;
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-3 py-2">
+      <span className="text-xs font-medium text-muted-foreground">Loaded filament</span>
+      {trays.map((tray) => (
+        <FilamentChip key={tray.slot} color={tray.color ?? undefined} material={tray.material ?? undefined} />
+      ))}
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        disabled={partIds.length === 0}
+        onClick={() => onApply(traysToPartColors(partIds, trays))}
+        className="ml-auto"
+      >
+        Sync colors from printer
+      </Button>
+    </div>
+  );
+}
+
 /** Multi-part combined view: a checklist of the model's ready GLB parts
  * rendered together in one scene, a prominent toolbar (background + recolor +
  * window pop-outs), and an "Expand" pop-out. State is lifted here so the
@@ -155,6 +195,8 @@ function MeshSection({ files, slug }: { files: FileOut[]; slug: string }) {
   const [expanded, setExpanded] = useState(false);
   const [colors, setColors] = useState<PartColors>(() => loadPartColors(slug));
   const { preset, custom, color, setPreset, setCustom } = useViewerBackground();
+  const printers = usePrinters();
+  const printerId = printers.data?.[0]?.id;
 
   useEffect(() => {
     savePartColors(slug, colors);
@@ -244,6 +286,14 @@ function MeshSection({ files, slug }: { files: FileOut[]; slug: string }) {
           </Button>
         </div>
       </div>
+
+      {printerId !== undefined && (
+        <AmsSync
+          printerId={printerId}
+          partIds={checkedList}
+          onApply={(map) => setColors((prev) => ({ ...prev, ...map }))}
+        />
+      )}
 
       <div className="space-y-1.5">
         {files.map((file) => {

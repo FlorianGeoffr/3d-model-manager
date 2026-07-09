@@ -77,6 +77,44 @@ def _dump_get(dump: dict, key: str):
     return None
 
 
+def _hex6(color) -> str | None:
+    """AMS ``tray_color`` is 8-hex ``RRGGBBAA`` (the lib appends an alpha) --
+    strip it to a plain ``#RRGGBB`` the viewer/CSS can use. Tolerant: returns
+    None for anything that isn't at least 6 hex digits."""
+    if not isinstance(color, str):
+        return None
+    hexpart = color.strip().lstrip("#")
+    if len(hexpart) < 6 or any(ch not in "0123456789abcdefABCDEF" for ch in hexpart[:6]):
+        return None
+    return f"#{hexpart[:6].upper()}"
+
+
+def _ams_trays(dump: dict) -> list[dict]:
+    """Loaded AMS filament slots from the raw mqtt dump (M8 G3). Path (per the
+    installed bambulabs_api): ``dump["print"]["ams"]["ams"][unit]["tray"][slot]``
+    with ``tray_color`` (8-hex) + ``tray_type``. Fully tolerant -- a printer
+    with no AMS (or an unexpected shape) yields ``[]``, never raises. Slots are
+    numbered sequentially across all AMS units. DOCUMENTED-not-live-verified
+    (no physical A1+AMS in CI): isolated here so a real capture can correct the
+    path/field names in one place."""
+    section = dump.get("print") if isinstance(dump.get("print"), dict) else dump
+    ams_units = ((section or {}).get("ams") or {}).get("ams")
+    if not isinstance(ams_units, list):
+        return []
+    trays: list[dict] = []
+    slot = 0
+    for unit in ams_units:
+        for tray in (unit.get("tray") or []) if isinstance(unit, dict) else []:
+            if not isinstance(tray, dict):
+                continue
+            color = _hex6(tray.get("tray_color"))
+            material = tray.get("tray_type") or None
+            if color is not None or material is not None:
+                trays.append({"slot": slot, "color": color, "material": material})
+            slot += 1
+    return trays
+
+
 @register_adapter
 class BambuLanAdapter(PrinterAdapter):
     kind: ClassVar[PrinterKind] = PrinterKind.BAMBU_LAN
@@ -112,6 +150,7 @@ class BambuLanAdapter(PrinterAdapter):
             "bed_temper": p.get_bed_temperature(),
             "subtask_name": p.subtask_name() or p.get_file_name() or None,
             "wifi_signal": _dump_get(dump, "wifi_signal"),
+            "trays": _ams_trays(dump),
         }
 
     def merge_report(self, prev: dict | None, report: dict) -> dict:
@@ -131,6 +170,7 @@ class BambuLanAdapter(PrinterAdapter):
             bed_temper=merged.get("bed_temper"),
             subtask_name=merged.get("subtask_name"),
             wifi_signal=merged.get("wifi_signal"),
+            trays=merged.get("trays") or [],
         )
 
     def job_state(self, public: PrinterPublicState) -> PrintJobState | None:

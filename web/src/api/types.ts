@@ -428,6 +428,14 @@ export interface ProbeOut {
   gcode_state: string | null;
 }
 
+// One loaded AMS filament slot (M8 G3): `color` is `#RRGGBB` (alpha stripped)
+// or null for an empty/unknown slot.
+export interface AmsTray {
+  slot: number;
+  color: string | null;
+  material: string | null;
+}
+
 export interface PrinterStatusOut {
   online: boolean;
   gcode_state: string | null;
@@ -440,6 +448,7 @@ export interface PrinterStatusOut {
   bed_temper: number | null;
   subtask_name: string | null;
   wifi_signal: string | null;
+  trays: AmsTray[];
 }
 
 export type PrintJobState =

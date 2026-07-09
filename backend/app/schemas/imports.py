@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Annotated
 from pydantic import BaseModel, StringConstraints
 
 if TYPE_CHECKING:
+    from app.importers.base import SearchResult
     from app.models.system import Import
 
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -40,6 +41,29 @@ class ImportOut(BaseModel):
             meta=imp.meta,
             created_at=imp.created_at,
             updated_at=imp.updated_at,
+        )
+
+
+class SearchResultOut(BaseModel):
+    """Mirrors ``app.importers.base.SearchResult`` (Workstream B task B1,
+    ``GET /imports/search``)."""
+
+    site: str
+    external_id: str
+    title: str
+    url: str
+    author: str | None = None
+    thumbnail_url: str | None = None
+
+    @classmethod
+    def from_dataclass(cls, r: SearchResult) -> SearchResultOut:
+        return cls(
+            site=r.site.value,
+            external_id=r.external_id,
+            title=r.title,
+            url=r.url,
+            author=r.author,
+            thumbnail_url=r.thumbnail_url,
         )
 
 

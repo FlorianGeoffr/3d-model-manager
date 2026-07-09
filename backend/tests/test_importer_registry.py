@@ -4,6 +4,7 @@ from app.importers.registry import (
     IMPORTER_REGISTRY,
     build_importer_for_url,
     deferred_site_for_url,
+    get_importer,
     register_importer,
 )
 from app.models.enums import ImportSite
@@ -21,10 +22,20 @@ def test_build_importer_for_url_unknown_is_none():
     assert build_importer_for_url("https://example.com/whatever") is None
 
 
-def test_makerworld_url_is_detected_as_deferred_not_crashing():
-    assert build_importer_for_url("https://makerworld.com/en/models/123") is None
-    assert deferred_site_for_url("https://makerworld.com/en/models/123") is ImportSite.MAKERWORLD
+def test_makerworld_url_is_supported_not_deferred():
+    # MakerWorld shipped its anonymous half (Workstream B task B1) and is no
+    # longer in `_DEFERRED_HOSTS` -- its URL now resolves to the real
+    # registered importer, not None.
+    importer = build_importer_for_url("https://makerworld.com/en/models/123-slug")
+    assert importer is not None and importer.site is ImportSite.MAKERWORLD
+    assert deferred_site_for_url("https://makerworld.com/en/models/123") is None
     assert deferred_site_for_url("https://www.thingiverse.com/thing:763622") is None
+
+
+def test_get_importer_looks_up_by_site(monkeypatch):
+    fake = FakeImporter()
+    monkeypatch.setitem(IMPORTER_REGISTRY, ImportSite.THINGIVERSE, fake)
+    assert get_importer(ImportSite.THINGIVERSE) is fake
 
 
 def test_register_importer_keys_on_site(monkeypatch):

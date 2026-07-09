@@ -1,9 +1,10 @@
 """The SiteImporter contract (SPEC "Gallery importers"; FULL line 218
 ``class SiteImporter(Protocol):``). A structural Protocol -- concrete
-importers (Thingiverse/Printables) do not subclass it; they just satisfy
-the four methods and declare ``site`` for registry keying. The three frozen
-dataclasses are the normalized shapes the orchestration task (Task 3)
-speaks, so no importer leaks a site-specific dict past this boundary."""
+importers (Thingiverse/Printables/MakerWorld) do not subclass it; they just
+satisfy the five methods and declare ``site`` for registry keying. The four
+frozen dataclasses are the normalized shapes the orchestration task (Task 3)
+and the in-app search endpoint (Workstream B task B1) speak, so no importer
+leaks a site-specific dict past this boundary."""
 
 from __future__ import annotations
 
@@ -53,6 +54,22 @@ class ResolvedDownload:
     headers: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class SearchResult:
+    """One in-app search hit (Workstream B task B1, ``GET /imports/search``).
+    ``url`` is a canonical model URL that the existing ``POST /imports``
+    accepts as-is -- it round-trips through the same ``canonicalize`` the
+    importer already implements, so search-then-import is just "pick a
+    result, POST its url"."""
+
+    site: ImportSite
+    external_id: str
+    title: str
+    url: str
+    author: str | None = None
+    thumbnail_url: str | None = None
+
+
 def safe_filename(name: str) -> str:
     """Reduce a remote filename to a safe single-segment rel_path: strip any
     directory prefix and leading dots so a hostile ``../`` name can't escape
@@ -74,3 +91,10 @@ class SiteImporter(Protocol):
     def fetch_metadata(self, external_id: str) -> ImportMetadata: ...
     def list_files(self, external_id: str) -> list[ImportFile]: ...
     def resolve_download(self, external_id: str, file: ImportFile) -> ResolvedDownload: ...
+
+    def search(self, query: str, page: int = 1) -> list[SearchResult]:
+        """In-app keyword search (Workstream B task B1). Importers that
+        can't search (or have no query terms to work with) may return an
+        empty list rather than raise -- an unsearchable site is not an
+        error, just nothing to show."""
+        ...

@@ -81,6 +81,52 @@ def test_resolve_download_uses_public_cdn_url():
     assert out.headers == {}
 
 
+def test_search_without_a_token_returns_empty_list(monkeypatch):
+    # No app token configured -- Thingiverse's search endpoint is
+    # token-gated like everything else on this API, so search() must
+    # degrade to [] rather than raise (SPEC "importers that can't search
+    # may return []"). Assert it doesn't even try to build a client.
+    monkeypatch.setattr(thingiverse, "_token", lambda: None)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("search() must not make a request with no token")
+
+    monkeypatch.setattr(
+        thingiverse,
+        "_client",
+        lambda token=None: httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    assert ThingiverseImporter().search(fx.SEARCH_TERM) == []
+
+
+def test_search_maps_hits_to_search_results(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == f"/search/{fx.SEARCH_TERM}"
+        params = dict(request.url.params)
+        assert params == {"type": "things", "per_page": "20", "page": "1"}
+        return httpx.Response(200, json=fx.SEARCH_MARVIN)
+
+    monkeypatch.setattr(thingiverse, "_token", lambda: "tok")
+    monkeypatch.setattr(
+        thingiverse,
+        "_client",
+        lambda token=None: httpx.Client(
+            base_url="https://api.thingiverse.com", transport=httpx.MockTransport(handler)
+        ),
+    )
+    results = ThingiverseImporter().search(fx.SEARCH_TERM)
+    assert [r.title for r in results] == ["Marvin (keychain)", "Marvin the Robot"]
+    first = results[0]
+    assert first.site is ImportSite.THINGIVERSE and first.external_id == "763622"
+    assert first.url == "https://www.thingiverse.com/thing:763622"
+    assert first.author == "makerbot"
+    assert first.thumbnail_url == "https://cdn.thingiverse.com/renders/cover.jpg"
+
+
+def test_search_empty_query_returns_empty_list():
+    assert ThingiverseImporter().search("") == []
+
+
 @pytest.mark.live_importer
 def test_live_thingiverse_metadata():
     """Deferred/manual live smoke (SPEC "one live smoke"). Excluded from the

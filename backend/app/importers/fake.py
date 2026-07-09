@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import ClassVar
 
-from app.importers.base import ImportFile, ImportMetadata, ResolvedDownload
+from app.importers.base import ImportFile, ImportMetadata, ResolvedDownload, SearchResult
 from app.models.enums import ImportSite
 
 FAKE_BASE = "https://fake.test/thing/"
@@ -56,3 +56,17 @@ class FakeImporter:
 
     def resolve_download(self, external_id: str, file: ImportFile) -> ResolvedDownload:
         return ResolvedDownload(url=file.url or f"{FAKE_DL}{file.filename}", filename=file.filename)
+
+    def search(self, query: str, page: int = 1) -> list[SearchResult]:
+        if not query:
+            return []
+        return [
+            SearchResult(
+                site=self.site,
+                external_id=self.external_id,
+                title=self.title,
+                url=f"{FAKE_BASE}{self.external_id}",
+                author=self.author,
+                thumbnail_url=self.cover_url,
+            )
+        ]

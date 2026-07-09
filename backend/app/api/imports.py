@@ -1,8 +1,11 @@
 """Gallery import endpoints (SPEC "API surface": imports (create/poll)).
 POST detects the site from the URL, creates a ``pending`` Import row, and
 dispatches ``import_from_url``; GET/{id} + list poll the row (the primary
-read path -- richer than the generic jobs row). A MakerWorld URL yields a
-friendly 422 (deferred), never a crash."""
+read path -- richer than the generic jobs row). ``GET /search`` (Workstream
+B task B1) dispatches to a single registered importer's ``search`` so the
+UI can browse-then-import instead of needing a URL up front. A deferred
+site's URL (currently none -- see ``registry._DEFERRED_HOSTS``) would yield
+a friendly 422, never a crash; an unsupported one always does."""
 
 from __future__ import annotations
 
@@ -11,13 +14,25 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
-from app.importers.registry import build_importer_for_url, deferred_site_for_url
+from app.importers.registry import build_importer_for_url, deferred_site_for_url, get_importer
 from app.models.enums import ImportSite, ImportState
 from app.models.system import Import
-from app.schemas.imports import ImportCreate, ImportOut
+from app.schemas.imports import ImportCreate, ImportOut, SearchResultOut
 from app.tasks.importing import import_from_url
 
 router = APIRouter(prefix="/imports", tags=["imports"])
+
+
+@router.get("/search", response_model=list[SearchResultOut])
+async def search_imports(site: ImportSite, q: str, page: int = 1) -> list[SearchResultOut]:
+    q = q.strip()
+    if not q:
+        return []
+    importer = get_importer(site)
+    if importer is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"{site.value} isn't available")
+    results = importer.search(q, page)
+    return [SearchResultOut.from_dataclass(r) for r in results]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=ImportOut)
@@ -25,14 +40,15 @@ async def create_import(payload: ImportCreate, db: AsyncSession = Depends(get_db
     url = payload.url
     importer = build_importer_for_url(url)
     if importer is None:
-        if deferred_site_for_url(url) is ImportSite.MAKERWORLD:
+        deferred = deferred_site_for_url(url)
+        if deferred is not None:
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_CONTENT,
-                "MakerWorld import isn't available yet.",
+                f"{deferred.value} import isn't available yet.",
             )
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
-            "Unsupported URL -- paste a Thingiverse or Printables model link.",
+            "Unsupported URL -- paste a Thingiverse, Printables, or MakerWorld model link.",
         )
     external_id = importer.canonicalize(url)
     imp = Import(url=url, site=importer.site, external_id=external_id, state=ImportState.PENDING)

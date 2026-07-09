@@ -12,7 +12,13 @@ from urllib.parse import urlparse
 
 import httpx
 
-from app.importers.base import ImportFile, ImportMetadata, ResolvedDownload, safe_filename
+from app.importers.base import (
+    ImportFile,
+    ImportMetadata,
+    ResolvedDownload,
+    SearchResult,
+    safe_filename,
+)
 from app.importers.registry import register_importer
 from app.models.enums import ImportSite
 
@@ -20,6 +26,7 @@ _BASE_URL = "https://api.thingiverse.com"
 _ALLOWED_HOSTS = {"thingiverse.com", "www.thingiverse.com"}
 _ID_RE = re.compile(r"(?:thing:|.*?[?&]thing=)(\d+)", re.IGNORECASE)
 _UA = "3d-model-manager/1.0 (+https://github.com/metril/3d-model-manager)"
+_SEARCH_PAGE_SIZE = 20
 
 # Manual license map (FULL line 228). Falls back to the raw string.
 _LICENSE_MAP = {
@@ -111,6 +118,47 @@ class ThingiverseImporter:
         # the CDN. (GET /things/{id}/files, which carries id/size/download_url
         # + a token-gated /v2/files/{id}/download, is the documented fallback.)
         return ResolvedDownload(url=file.url or "", filename=file.filename)
+
+    def search(self, query: str, page: int = 1) -> list[SearchResult]:
+        if not query:
+            return []
+        token = _token()
+        if not token:
+            # Thingiverse's search endpoint is token-gated like everything
+            # else on this API -- no app token configured means no search,
+            # not a crash (SPEC "importers that can't search may return []").
+            return []
+        with _client(token) as c:
+            r = c.get(
+                f"/search/{query}",
+                params={"type": "things", "per_page": _SEARCH_PAGE_SIZE, "page": page},
+            )
+            r.raise_for_status()
+            body = r.json()
+        # Documented shape (developer.thingiverse.com "Search a term" --
+        # GET /search/{term}), NOT captured live: no TDMM_THINGIVERSE_TOKEN
+        # is configured in this environment to verify against the real
+        # token-gated endpoint (grounding note: "Thingiverse search
+        # live-verify may be deferred if no token is configured"). The
+        # documented response is `{"total": int, "hits": [...]}` where each
+        # hit is a thing summary: {id, name, creator: {name}, thumbnail,
+        # public_url, ...}.
+        results = []
+        for hit in body.get("hits", []):
+            tid = hit.get("id")
+            if not tid:
+                continue
+            results.append(
+                SearchResult(
+                    site=self.site,
+                    external_id=str(tid),
+                    title=hit.get("name") or f"thing {tid}",
+                    url=f"https://www.thingiverse.com/thing:{tid}",
+                    author=(hit.get("creator") or {}).get("name"),
+                    thumbnail_url=hit.get("thumbnail"),
+                )
+            )
+        return results
 
 
 register_importer(ThingiverseImporter())

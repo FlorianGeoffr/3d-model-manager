@@ -9,9 +9,14 @@ from app.models.enums import ImportSite
 from tests.cassettes import printables_fixtures as fx
 
 
-def _mock_client(print_body, link_body=None):
+def _mock_client(print_body, link_body=None, search_body=None):
     def handler(request: httpx.Request) -> httpx.Response:
         payload = request.read().decode()
+        if "searchPrints2" in payload:
+            variables = json.loads(payload)["variables"]
+            assert variables["query"] == fx.SEARCH_QUERY
+            assert variables["limit"] == 20 and variables["offset"] == 0
+            return httpx.Response(200, json=search_body or fx.SEARCH_PRINTS_BENCHY)
         if "getDownloadLink" in payload:
             # Guard the live getDownloadLink signature (it drifted once, and
             # the mock happily returns a link regardless of what we send): the
@@ -74,6 +79,31 @@ def test_resolve_download_returns_cdn_link(monkeypatch):
         fx.MODEL_ID, ImportFile(remote_id="90001", filename="3DBenchy.stl")
     )
     assert out.url.startswith("https://files.printables.com/media/dl/3161/3DBenchy.stl")
+
+
+def test_search_maps_hits_to_search_results(monkeypatch):
+    monkeypatch.setattr(printables, "_client", lambda: _mock_client(fx.PRINT_3161))
+    results = PrintablesImporter().search(fx.SEARCH_QUERY)
+    assert [r.title for r in results] == ["3D BENCHY", "All Terrain Assault Benchy"]
+    first = results[0]
+    assert first.site is ImportSite.PRINTABLES and first.external_id == "3161"
+    assert first.url == "https://www.printables.com/model/3161"
+    assert first.author == "Prusa Research"
+    assert first.thumbnail_url.endswith("media/prints/3161/images/20206_70fde6a0/benchy.jpg")
+
+
+def test_search_empty_query_returns_empty_list_without_a_request(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("search() must not make a request for an empty query")
+
+    monkeypatch.setattr(
+        printables,
+        "_client",
+        lambda: httpx.Client(
+            base_url="https://api.printables.com/graphql/", transport=httpx.MockTransport(handler)
+        ),
+    )
+    assert PrintablesImporter().search("") == []
 
 
 @pytest.mark.live_importer

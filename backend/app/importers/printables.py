@@ -13,7 +13,13 @@ from urllib.parse import urlparse
 
 import httpx
 
-from app.importers.base import ImportFile, ImportMetadata, ResolvedDownload, safe_filename
+from app.importers.base import (
+    ImportFile,
+    ImportMetadata,
+    ResolvedDownload,
+    SearchResult,
+    safe_filename,
+)
 from app.importers.registry import register_importer
 from app.models.enums import ImportSite
 
@@ -40,6 +46,23 @@ query PrintProfile($id: ID!) {
   }
 }
 """.strip()
+
+# Discovered live (Workstream B task B1) via GraphQL introspection on the
+# anonymous endpoint: the root Query type has no field literally named
+# "search" -- `searchPrints2(query:, offset:, limit:)` is the one that
+# actually text-filters (confirmed: query="benchy" returns Benchy-relevant
+# hits, a nonsense query returns none). `quickSearchPrints` also exists (the
+# omnibox typeahead) but takes no offset/limit, so it can't page.
+SEARCH_QUERY = """
+query SearchPrints($query: String!, $limit: Int, $offset: Int) {
+  searchPrints2(query: $query, limit: $limit, offset: $offset) {
+    totalCount
+    items { id name image { filePath } user { publicUsername } }
+  }
+}
+""".strip()
+
+_SEARCH_PAGE_SIZE = 20
 
 DOWNLOAD_MUTATION = """
 mutation GetDownloadLink(
@@ -145,6 +168,34 @@ class PrintablesImporter:
         if not link:
             raise RuntimeError(f"Printables returned no download link for file {file.remote_id}")
         return ResolvedDownload(url=link, filename=file.filename)
+
+    def search(self, query: str, page: int = 1) -> list[SearchResult]:
+        if not query:
+            return []
+        offset = max(page - 1, 0) * _SEARCH_PAGE_SIZE
+        with _client() as c:
+            data = _post(
+                c, SEARCH_QUERY, {"query": query, "limit": _SEARCH_PAGE_SIZE, "offset": offset}
+            )
+        items = (data.get("searchPrints2") or {}).get("items") or []
+        results = []
+        for item in items:
+            pid = item.get("id")
+            if not pid:
+                continue
+            image = item.get("image") or {}
+            cover = f"{_IMG_BASE}{image['filePath']}" if image.get("filePath") else None
+            results.append(
+                SearchResult(
+                    site=self.site,
+                    external_id=str(pid),
+                    title=item.get("name") or f"print {pid}",
+                    url=f"https://www.printables.com/model/{pid}",
+                    author=(item.get("user") or {}).get("publicUsername"),
+                    thumbnail_url=cover,
+                )
+            )
+        return results
 
 
 register_importer(PrintablesImporter())

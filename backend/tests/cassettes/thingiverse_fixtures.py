@@ -26,3 +26,30 @@ THING_763622 = {
         ],
     },
 }
+
+SEARCH_TERM = "marvin"
+
+# Documented (developer.thingiverse.com "Search a term" -- GET /search/{term})
+# shape, NOT captured live: no TDMM_THINGIVERSE_TOKEN is configured in this
+# environment to verify against the real token-gated endpoint. Hand-built to
+# the documented `{"total": int, "hits": [...]}` response, each hit a thing
+# summary carrying only the lightweight fields search needs.
+SEARCH_MARVIN = {
+    "total": 2,
+    "hits": [
+        {
+            "id": 763622,
+            "name": "Marvin (keychain)",
+            "creator": {"name": "makerbot"},
+            "thumbnail": "https://cdn.thingiverse.com/renders/cover.jpg",
+            "public_url": "https://www.thingiverse.com/thing:763622",
+        },
+        {
+            "id": 12345,
+            "name": "Marvin the Robot",
+            "creator": {"name": "someone"},
+            "thumbnail": "https://cdn.thingiverse.com/renders/marvin2.jpg",
+            "public_url": "https://www.thingiverse.com/thing:12345",
+        },
+    ],
+}

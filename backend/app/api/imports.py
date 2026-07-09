@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Annotated
 
 import anyio
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,6 +33,7 @@ from app.schemas.imports import (
     SearchResultOut,
     SiteSearchStatus,
 )
+from app.services.import_dedup import find_live_import
 from app.tasks.importing import import_from_url
 
 router = APIRouter(prefix="/imports", tags=["imports"])
@@ -112,7 +113,9 @@ async def search_imports(
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=ImportOut)
-async def create_import(payload: ImportCreate, db: AsyncSession = Depends(get_db)) -> ImportOut:
+async def create_import(
+    payload: ImportCreate, response: Response, db: AsyncSession = Depends(get_db)
+) -> ImportOut:
     url = payload.url
     importer = build_importer_for_url(url)
     if importer is None:
@@ -127,6 +130,16 @@ async def create_import(payload: ImportCreate, db: AsyncSession = Depends(get_db
             "Unsupported URL -- paste a Thingiverse, Printables, or MakerWorld model link.",
         )
     external_id = importer.canonicalize(url)
+
+    # Already in the library? Hand back the existing import rather than minting
+    # a duplicate Model (M8 H) -- 200, because nothing was created. This is what
+    # makes a repeated collection sync (and a double-click on "Add to library")
+    # idempotent across imports, not just across Celery redeliveries.
+    existing = await find_live_import(db, importer.site, external_id)
+    if existing is not None:
+        response.status_code = status.HTTP_200_OK
+        return ImportOut.from_model(existing)
+
     imp = Import(url=url, site=importer.site, external_id=external_id, state=ImportState.PENDING)
     db.add(imp)
     await db.commit()

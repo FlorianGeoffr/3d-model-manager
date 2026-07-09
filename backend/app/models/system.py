@@ -5,7 +5,7 @@ and app settings (SPEC ``imports``, ``jobs``, ``scan_runs``, ``settings``).
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, ForeignKey, Identity, Integer, String, Text, Uuid, func
+from sqlalchemy import BigInteger, ForeignKey, Identity, Index, Integer, String, Text, Uuid, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -19,6 +19,13 @@ class Import(Base):
     """
 
     __tablename__ = "imports"
+    __table_args__ = (
+        # M8 H: the cross-import dedup guard (app.services.import_dedup) looks a
+        # remote model up by its identity pair on every manual import AND on
+        # every periodic collection-sync item. Deliberately NOT unique -- see
+        # that module's docstring (pre-guard installs may hold duplicates).
+        Index("ix_imports_site_external_id", "site", "external_id"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
     url: Mapped[str] = mapped_column(Text, nullable=False)

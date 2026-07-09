@@ -92,6 +92,55 @@ async def test_rejected_import_leaves_no_model(
 
 
 @pytest.mark.asyncio
+async def test_reimporting_the_same_model_returns_the_existing_import(
+    authenticated_client, library_root, data_dir, fake_import
+):
+    """M8 H cross-import dedup: a second import of the same (site, external_id)
+    hands back the existing import (200, nothing created) instead of minting a
+    duplicate Model -- without this a periodic collection sync would duplicate
+    every followed model on every run."""
+    fake_import.files = {"cube.stl": corpus.box_stl()}
+    first = await authenticated_client.post(
+        "/api/imports", json={"url": "https://fake.test/thing/42"}
+    )
+    assert first.status_code == 201, first.text
+    first_body = first.json()
+    assert first_body["state"] == "done" and first_body["model_id"] is not None
+
+    second = await authenticated_client.post(
+        "/api/imports", json={"url": "https://fake.test/thing/42"}
+    )
+    assert second.status_code == 200, second.text  # 200: nothing was created
+    assert second.json()["id"] == first_body["id"]
+    assert second.json()["model_id"] == first_body["model_id"]
+
+    gallery = await authenticated_client.get("/api/models")
+    assert len(gallery.json()["items"]) == 1  # still exactly one model
+
+
+@pytest.mark.asyncio
+async def test_a_failed_import_does_not_block_retrying_the_same_model(
+    authenticated_client, library_root, data_dir, fake_import
+):
+    """Only a DONE import that still points at a live Model blocks a re-import;
+    a failed (or model-deleted) one must stay retryable."""
+    fake_import.reject_reason = "This is a paid model and can't be imported"
+    fake_import.files = {"cube.stl": corpus.box_stl()}
+    first = await authenticated_client.post(
+        "/api/imports", json={"url": "https://fake.test/thing/42"}
+    )
+    assert first.status_code == 201 and first.json()["state"] == "failed"
+
+    fake_import.reject_reason = None
+    second = await authenticated_client.post(
+        "/api/imports", json={"url": "https://fake.test/thing/42"}
+    )
+    assert second.status_code == 201, second.text  # a NEW import row was created
+    assert second.json()["id"] != first.json()["id"]
+    assert second.json()["state"] == "done"
+
+
+@pytest.mark.asyncio
 async def test_search_imports_dispatches_to_the_sites_importer(
     authenticated_client, library_root, data_dir, fake_import
 ):

@@ -9,12 +9,12 @@ export interface DetectedSite {
 const HOSTS: Record<string, { site: ImportSite; label: string; supported: boolean }> = {
   "thingiverse.com": { site: "thingiverse", label: "Thingiverse", supported: true },
   "printables.com": { site: "printables", label: "Printables", supported: true },
-  "makerworld.com": { site: "makerworld", label: "MakerWorld", supported: false },
+  "makerworld.com": { site: "makerworld", label: "MakerWorld", supported: true },
 };
 
-/** Client-side site detection for the /import preview. A MakerWorld URL is
- * recognized (so we can show a friendly "not available yet") but not
- * supported; anything else is unknown. Mirrors the backend's registry. */
+/** Client-side site detection for the /import preview. All three sites are
+ * recognized and supported (MakerWorld as of Workstream B); anything else is
+ * unknown. Mirrors the backend's registry. */
 export function detectSite(rawUrl: string): DetectedSite {
   let host = "";
   try {

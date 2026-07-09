@@ -11,6 +11,7 @@ import {
   StorageBackendForm,
   stripBlankSecrets,
 } from "@/components/settings/StorageBackendForm";
+import { BambuAccountCard } from "@/components/settings/BambuAccountCard";
 import { PrinterSetupCard } from "@/components/settings/PrinterSetupCard";
 import { ScanReport } from "@/components/settings/ScanReport";
 import { SiteTokensCard } from "@/components/settings/SiteTokensCard";
@@ -50,6 +51,7 @@ export function SettingsPage() {
           <ScanReport />
           <PrinterSetupCard />
           <SiteTokensCard />
+          <BambuAccountCard />
         </>
       ) : null}
     </div>

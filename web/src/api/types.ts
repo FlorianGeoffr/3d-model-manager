@@ -479,3 +479,52 @@ export interface ImportTokensOut {
 // Imports reuse the existing `job.updated` shape (JobUpdatedEvent above) --
 // no new event type; only useEvents.tsx's handler gains an
 // `import_from_url` branch.
+
+// `GET /imports/search` (Workstream B task B1) -- browse-then-import search
+// results for a single site.
+export interface SearchResult {
+  site: ImportSite;
+  external_id: string;
+  title: string;
+  url: string;
+  author: string | null;
+  thumbnail_url: string | null;
+}
+
+// -- Bambu Lab account (backend/app/schemas/settings.py, Workstream B task
+// B2) -- connecting an account powers MakerWorld's authenticated search +
+// file downloads; anonymous MakerWorld access only sees trending results
+// and can't download files (see backend/app/services/bambu_auth.py).
+// NEITHER request nor response type below ever carries a token.
+
+export type BambuRegion = "global" | "china";
+
+export interface BambuStatusOut {
+  connected: boolean;
+  account: string | null;
+  region: BambuRegion;
+}
+
+export interface BambuLoginIn {
+  account: string;
+  password: string;
+  region: BambuRegion;
+}
+
+export interface BambuVerifyIn {
+  account: string;
+  code: string;
+  region: BambuRegion;
+  mfa_context: Record<string, unknown>;
+}
+
+// Shared by both /settings/bambu/login and /settings/bambu/verify --
+// `status` is "connected" or "mfa_required"; `mfa_context` is the opaque
+// continuation to echo back into a follow-up verify call when MFA is
+// required (never a secret value itself).
+export interface BambuLoginOut {
+  status: "connected" | "mfa_required";
+  account: string | null;
+  region: BambuRegion | null;
+  mfa_context: Record<string, unknown> | null;
+}

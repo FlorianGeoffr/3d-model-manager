@@ -92,6 +92,10 @@ function mockGet(storage: StorageConfigOut, jobs: JobOut[] = []) {
   getMock.mockImplementation((path: string) => {
     if (path === "/settings/storage") return Promise.resolve(storage);
     if (path.startsWith("/jobs")) return Promise.resolve(jobs);
+    // BambuAccountCard's status query -- not under test here, just needs a
+    // well-shaped response so the card renders its not-connected form
+    // instead of dangling on an indefinite/garbage response.
+    if (path === "/settings/bambu") return Promise.resolve({ connected: false, account: null, region: "global" });
     return Promise.resolve([]);
   });
 }
@@ -220,5 +224,14 @@ describe("SettingsPage", () => {
       }),
     );
     expect(await screen.findByText(/Migration running/)).toBeInTheDocument();
+  });
+
+  it("renders the Bambu account card alongside the other settings cards", async () => {
+    mockGet(localConfig());
+
+    renderSettingsPage();
+
+    expect(await screen.findByText("Bambu Lab account")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Email")).toBeInTheDocument();
   });
 });

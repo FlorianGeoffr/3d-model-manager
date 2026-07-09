@@ -196,7 +196,6 @@ function SearchPanel({ onImportStarted }: { onImportStarted: (id: number) => voi
     [search.data],
   );
   const perSite = search.data?.pages.at(-1)?.per_site ?? [];
-  const makerworldSelected = selectedSites.includes("makerworld");
 
   function toggleSite(site: ImportSite) {
     setSelectedSites((prev) => (prev.includes(site) ? prev.filter((s) => s !== site) : [...prev, site]));
@@ -247,16 +246,6 @@ function SearchPanel({ onImportStarted }: { onImportStarted: (id: number) => voi
             onChange={(event) => setQuery(event.target.value)}
           />
         </div>
-
-        {makerworldSelected && (
-          <p className="text-sm text-muted-foreground">
-            MakerWorld results may be trending until a Bambu account is connected (
-            <Link to="/settings" className="underline">
-              Settings
-            </Link>
-            ).
-          </p>
-        )}
 
         {perSite
           .filter((s) => s.status === "error")

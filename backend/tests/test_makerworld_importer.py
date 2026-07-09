@@ -27,17 +27,36 @@ def _mock_design_client(body, status=200):
     )
 
 
-def _mock_search_client(body):
+def _mock_web_client(designs, *, build_id="TESTBUILD123", stale_id=None):
+    """Mock the Next.js SSR search seam: `/en` yields a buildId, and
+    `/_next/data/<buildId>/en/search/models.json` returns pageProps.designs.
+    Passing `stale_id` makes the data route 404 for THAT id once (a deploy
+    since the id was cached), exercising the refresh-and-retry path."""
+
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/api/v1/search-service/select/design"
-        params = dict(request.url.params)
-        assert params["q"] == fx.SEARCH_QUERY
-        assert params["limit"] == "20" and params["offset"] == "0"
-        return httpx.Response(200, json=body)
+        path = request.url.path
+        if path == "/en":
+            return httpx.Response(200, text=f'<script>{{"buildId":"{build_id}"}}</script>')
+        if path.startswith("/_next/data/") and path.endswith("/en/search/models.json"):
+            used = path.split("/_next/data/", 1)[1].split("/", 1)[0]
+            params = dict(request.url.params)
+            assert params["keyword"] == fx.SEARCH_QUERY
+            assert params["offset"] == "0" and params["limit"] == "20"
+            if stale_id is not None and used == stale_id:
+                return httpx.Response(404, json={"pageProps": {}})
+            return httpx.Response(200, json={"pageProps": {"designs": designs, "total": 3545}})
+        return httpx.Response(404, text="unexpected path")
 
     return httpx.Client(
-        base_url="https://makerworld.com/api/v1", transport=httpx.MockTransport(handler)
+        base_url="https://makerworld.com", transport=httpx.MockTransport(handler)
     )
+
+
+@pytest.fixture(autouse=True)
+def _clear_build_id_cache():
+    makerworld._BUILD_ID.clear()
+    yield
+    makerworld._BUILD_ID.clear()
 
 
 def _raise_not_connected():
@@ -82,10 +101,11 @@ def test_paid_model_is_rejected_with_clear_message(monkeypatch):
     assert meta.reject_reason and "paid" in meta.reject_reason.lower()
 
 
-def test_search_maps_hits_to_search_results(monkeypatch):
-    # Not connected (explicit, DB-free) -- anonymous search, no Bearer header.
-    monkeypatch.setattr(makerworld, "_bambu_session_or_none", lambda: None)
-    monkeypatch.setattr(makerworld, "_client", lambda: _mock_search_client(fx.SEARCH_DESIGN_BENCHY))
+def test_search_maps_designs_to_search_results(monkeypatch):
+    # Anonymous (no Bambu account, no DB) -- the Next.js data route needs none.
+    monkeypatch.setattr(
+        makerworld, "_web_client", lambda: _mock_web_client(fx.SEARCH_DESIGNS_BENCHY)
+    )
     results = MakerWorldImporter().search(fx.SEARCH_QUERY)
     assert [r.title for r in results] == [
         "NASA Fabric: Pokeball (No AMS Needed)",
@@ -95,7 +115,38 @@ def test_search_maps_hits_to_search_results(monkeypatch):
     assert first.site is ImportSite.MAKERWORLD and first.external_id == "3018898"
     assert first.url == "https://www.makerworld.com/en/models/3018898"
     assert first.author == "MeasureOnce"
-    assert first.thumbnail_url == fx.SEARCH_DESIGN_BENCHY["hits"][0]["cover"]
+    assert first.thumbnail_url == fx.SEARCH_DESIGNS_BENCHY[0]["cover"]
+
+
+def test_search_refreshes_a_stale_build_id(monkeypatch):
+    # A deploy since the id was cached: the data route 404s on the stale id,
+    # and search must re-read /en for the fresh one and retry (not just fail).
+    makerworld._BUILD_ID["value"] = "STALEBUILD"
+    monkeypatch.setattr(
+        makerworld,
+        "_web_client",
+        lambda: _mock_web_client(
+            fx.SEARCH_DESIGNS_BENCHY, build_id="FRESHBUILD", stale_id="STALEBUILD"
+        ),
+    )
+    results = MakerWorldImporter().search(fx.SEARCH_QUERY)
+    assert [r.external_id for r in results] == ["3018898", "3012887"]
+
+
+def test_search_surfaces_a_cloudflare_challenge_clearly(monkeypatch):
+    def _challenged():
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                403, headers={"cf-mitigated": "challenge"}, text="<title>Just a moment...</title>"
+            )
+
+        return httpx.Client(
+            base_url="https://makerworld.com", transport=httpx.MockTransport(handler)
+        )
+
+    monkeypatch.setattr(makerworld, "_web_client", _challenged)
+    with pytest.raises(RuntimeError, match="rate-limiting"):
+        MakerWorldImporter().search(fx.SEARCH_QUERY)
 
 
 def test_search_empty_query_returns_empty_list():
@@ -158,24 +209,3 @@ def test_resolve_download_hits_authed_endpoint_and_returns_presigned_url(monkeyp
     # No Bearer forwarded to the presigned CDN URL itself (Thingiverse
     # posture: never leak the app/account token to a public/signed asset URL).
     assert out.headers == {}
-
-
-def test_search_sends_bearer_token_when_connected(monkeypatch):
-    monkeypatch.setattr(
-        makerworld, "_bambu_session_or_none", lambda: ("test-access-token", "global")
-    )
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.headers.get("Authorization") == "Bearer test-access-token"
-        assert dict(request.url.params)["q"] == fx.SEARCH_QUERY
-        return httpx.Response(200, json=fx.SEARCH_DESIGN_BENCHY)
-
-    monkeypatch.setattr(
-        makerworld,
-        "_client",
-        lambda: httpx.Client(
-            base_url="https://makerworld.com/api/v1", transport=httpx.MockTransport(handler)
-        ),
-    )
-    results = MakerWorldImporter().search(fx.SEARCH_QUERY)
-    assert len(results) == 2

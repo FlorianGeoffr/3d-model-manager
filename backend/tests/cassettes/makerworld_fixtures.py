@@ -50,34 +50,31 @@ DESIGN_PAID = {
 
 SEARCH_QUERY = "benchy"
 
-# Recorded shape for search-service/select/design (grounding probe, real HTTP
-# 200): {"total": int, "hits": [{id, title, slug, cover, designCreator:
-# {uid, name}, likeCount, downloadCount, ...}]}. NOTE (live caveat, not a
-# fixture-accuracy issue): anonymous requests were observed to ignore `q`
-# entirely and always return this same trending/default page regardless of
-# query text -- the SHAPE below is real and verified, but keyword filtering
-# itself could not be confirmed working without a session. See
-# app/importers/makerworld.py's module docstring.
-SEARCH_DESIGN_BENCHY = {
-    "total": 10000,
-    "hits": [
-        {
-            "id": 3018898,
-            "title": "NASA Fabric: Pokeball (No AMS Needed)",
-            "slug": "nasa-fabric-pokeball-no-ams-needed",
-            "cover": "https://makerworld.bblmw.com/makerworld/model/US1efdb154b59848/746db.gif",
-            "designCreator": {"uid": 2225712507, "name": "MeasureOnce"},
-            "likeCount": 664,
-            "downloadCount": 351,
-        },
-        {
-            "id": 3012887,
-            "title": "12-in-1 Ultimate Multi Fidget Toy (Print in Place)",
-            "slug": "12-in-1-ultimate-multi-fidget-toy",
-            "cover": "https://makerworld.bblmw.com/cover2.gif",
-            "designCreator": {"uid": 111, "name": "someone"},
-            "likeCount": 10,
-            "downloadCount": 5,
-        },
-    ],
-}
+# LIVE-CAPTURED shape of MakerWorld's real keyword search: the Next.js SSR data
+# route `/_next/data/<buildId>/en/search/models.json?keyword=<q>`, whose JSON is
+# `{"pageProps": {"designs": [<item>...], "total": int, ...}, "__N_SSP": true}`.
+# Each item: {id, title, slug, cover, designCreator: {uid, name, ...}, ...}.
+# Reached ANONYMOUSLY -- keyword filtering was confirmed working against the
+# live account (real "benchy" designs returned). The earlier
+# `search-service/select/design` endpoint was a trending handler that ignored
+# the keyword; see app/importers/makerworld.py's module docstring.
+SEARCH_DESIGNS_BENCHY = [
+    {
+        "id": 3018898,
+        "title": "NASA Fabric: Pokeball (No AMS Needed)",
+        "slug": "nasa-fabric-pokeball-no-ams-needed",
+        "cover": "https://makerworld.bblmw.com/makerworld/model/US1efdb154b59848/746db.gif",
+        "designCreator": {"uid": 2225712507, "name": "MeasureOnce"},
+        "likeCount": 664,
+        "downloadCount": 351,
+    },
+    {
+        "id": 3012887,
+        "title": "12-in-1 Ultimate Multi Fidget Toy (Print in Place)",
+        "slug": "12-in-1-ultimate-multi-fidget-toy",
+        "cover": "https://makerworld.bblmw.com/cover2.gif",
+        "designCreator": {"uid": 111, "name": "someone"},
+        "likeCount": 10,
+        "downloadCount": 5,
+    },
+]

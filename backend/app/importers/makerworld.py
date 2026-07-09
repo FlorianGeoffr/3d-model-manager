@@ -12,10 +12,12 @@ monkeypatch for the anonymous calls (same contract as
 ``printables._client``/``thingiverse._client``); ``_authed_client`` is the
 analogous seam for the Bearer-authenticated download call.
 
-Cloudflare note (grounding probe): `makerworld.com/en/...` HTML pages ARE
-Cloudflare-challenged (403 `cf-mitigated: challenge`), but the `/api/v1/...`
-JSON endpoints used below are reachable by plain httpx with a browser UA --
-never scrape HTML here.
+Cloudflare note (live-verified): the `/api/v1/...` JSON endpoints and the
+Next.js SSR data route (`/_next/data/<buildId>/...json`) + the `/en` shell HTML
+that carries the current buildId are all reachable by plain httpx with a browser
+UA; Cloudflare only intermittently 403s under rapid repeat requests. `search`
+uses the Next data route (see its own comment) because `/api/v1/search-service/
+select/design` is a TRENDING handler that ignores the keyword entirely.
 
 Reject-rule note (live-verified, deliberately NOT a literal reading of
 "paidSetting is set" / "isExclusive is true"): a 200-design live sample
@@ -73,6 +75,45 @@ def _client() -> httpx.Client:
     )
 
 
+_WEB_BASE_URL = "https://makerworld.com"
+
+
+def _web_client() -> httpx.Client:
+    """Client rooted at the SITE (not `/api/v1`) for the Next.js SSR data route
+    that backs keyword search + the buildId lookup. Separate httpx seam so tests
+    can monkeypatch search independently of the `/api/v1` calls."""
+    return httpx.Client(
+        base_url=_WEB_BASE_URL, timeout=30.0, follow_redirects=True, headers={"User-Agent": _UA}
+    )
+
+
+# MakerWorld's Next.js build id changes on every deploy and namespaces the SSR
+# data route (`/_next/data/<buildId>/...`). Discovered at runtime from the `/en`
+# shell HTML and cached for the process; a stale id makes the data route 404,
+# which `search` detects and refreshes once.
+_BUILD_ID: dict[str, str] = {}
+
+
+def _makerworld_build_id(client: httpx.Client, *, force: bool = False) -> str:
+    if not force and _BUILD_ID.get("value"):
+        return _BUILD_ID["value"]
+    response = client.get("/en")
+    match = re.search(r'"buildId":"([^"]+)"', response.text)
+    if not match:
+        challenged = (
+            response.headers.get("cf-mitigated") == "challenge"
+            or "Just a moment" in response.text[:200]
+        )
+        if challenged:
+            raise RuntimeError(
+                "MakerWorld is temporarily rate-limiting requests (Cloudflare challenge) -- "
+                "try again shortly"
+            )
+        raise RuntimeError("could not determine MakerWorld build id (site markup changed?)")
+    _BUILD_ID["value"] = match.group(1)
+    return match.group(1)
+
+
 def _authed_client(token: str, region: str = "global") -> httpx.Client:
     """The Bearer-authenticated seam (mirrors ``thingiverse._client(token)``)
     -- used ONLY by ``_fetch_authed_download_url`` for the token-gated
@@ -103,17 +144,6 @@ def _bambu_session() -> tuple[str, str]:
     with sync_session() as s:
         region = get_bambu_auth_sync(s, settings).region
         return get_access_token_sync(s, settings), region
-
-
-def _bambu_session_or_none() -> tuple[str, str] | None:
-    """Soft variant for ``search()``: not being connected is not an error,
-    just anonymous behavior."""
-    from app.services.bambu_auth import BambuAuthError
-
-    try:
-        return _bambu_session()
-    except BambuAuthError:
-        return None
 
 
 def _require_bambu_session() -> tuple[str, str]:
@@ -264,38 +294,49 @@ class MakerWorldImporter:
         if not query:
             return []
         offset = max(page - 1, 0) * _SEARCH_PAGE_SIZE
-        # Anonymous search ignores `q` and returns trending regardless
-        # (grounding note, `tests/cassettes/makerworld_fixtures.py`) --
-        # sending the Bearer token when a Bambu account is connected lets an
-        # authenticated request respect the query instead. Not connected is
-        # NOT an error here (unlike list_files/resolve_download): search
-        # still works anonymously, just degraded to trending.
-        session = _bambu_session_or_none()
-        headers = {"Authorization": f"Bearer {session[0]}"} if session else None
-        with _client() as c:
-            r = c.get(
-                "/search-service/select/design",
-                params={"q": query, "limit": _SEARCH_PAGE_SIZE, "offset": offset},
-                headers=headers,
-            )
-            r.raise_for_status()
-            body = r.json()
+        # MakerWorld's REAL keyword search is its Next.js SSR data route
+        # (`/_next/data/<buildId>/en/search/models.json?keyword=`), reached
+        # ANONYMOUSLY -- live-captured from the site. The `/api/v1/search-service/
+        # select/design` endpoint the first cut used is a trending/browse handler
+        # that ignores the keyword entirely (verified: `q`/`query`/`keyword`/
+        # `sort=score`/`q=title:benchy` all return the identical top list), and
+        # the Bambu Bearer it attached was for `api.bambulab.com`, never honored
+        # here. Results live at `pageProps.designs`.
+        with _web_client() as c:
+            build_id = _makerworld_build_id(c)
+            response = self._search_page(c, build_id, query, offset)
+            if response.status_code == 404:
+                # A deploy since we cached the buildId -> refresh once and retry.
+                build_id = _makerworld_build_id(c, force=True)
+                response = self._search_page(c, build_id, query, offset)
+            response.raise_for_status()
+            designs = ((response.json() or {}).get("pageProps") or {}).get("designs") or []
         results = []
-        for hit in body.get("hits", []):
-            mid = hit.get("id")
+        for design in designs:
+            mid = design.get("id")
             if not mid:
                 continue
             results.append(
                 SearchResult(
                     site=self.site,
                     external_id=str(mid),
-                    title=hit.get("title") or f"model {mid}",
+                    title=design.get("title") or f"model {mid}",
                     url=f"https://www.makerworld.com/en/models/{mid}",
-                    author=(hit.get("designCreator") or {}).get("name"),
-                    thumbnail_url=hit.get("cover"),
+                    author=(design.get("designCreator") or {}).get("name"),
+                    thumbnail_url=design.get("cover"),
                 )
             )
         return results
+
+    @staticmethod
+    def _search_page(
+        client: httpx.Client, build_id: str, query: str, offset: int
+    ) -> httpx.Response:
+        return client.get(
+            f"/_next/data/{build_id}/en/search/models.json",
+            params={"keyword": query, "offset": offset, "limit": _SEARCH_PAGE_SIZE},
+            headers={"x-nextjs-data": "1"},
+        )
 
     # -- saved collections / likes (M8 H) ---------------------------------
     # The seam is live (the API + the periodic sync task call through it), but

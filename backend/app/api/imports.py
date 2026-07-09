@@ -19,12 +19,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
 from app.importers.base import SEARCH_PAGE_SIZE, RemoteList, SearchResult
 from app.importers.registry import (
-    build_importer_for_url,
-    deferred_site_for_url,
     get_importer,
     registered_sites,
 )
-from app.models.enums import ImportSite, ImportState
+from app.models.enums import ImportSite
 from app.models.system import Import
 from app.schemas.imports import (
     ImportCreate,
@@ -34,8 +32,7 @@ from app.schemas.imports import (
     SearchResultOut,
     SiteSearchStatus,
 )
-from app.services.import_dedup import find_live_import
-from app.tasks.importing import import_from_url
+from app.services.imports import start_import
 
 router = APIRouter(prefix="/imports", tags=["imports"])
 
@@ -163,42 +160,14 @@ async def list_remote_list_items(
 async def create_import(
     payload: ImportCreate, response: Response, db: AsyncSession = Depends(get_db)
 ) -> ImportOut:
-    url = payload.url
-    importer = build_importer_for_url(url)
-    if importer is None:
-        deferred = deferred_site_for_url(url)
-        if deferred is not None:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_CONTENT,
-                f"{deferred.value} import isn't available yet.",
-            )
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT,
-            "Unsupported URL -- paste a Thingiverse, Printables, or MakerWorld model link.",
-        )
-    external_id = importer.canonicalize(url)
-
-    # Already in the library? Hand back the existing import rather than minting
-    # a duplicate Model (M8 H) -- 200, because nothing was created. This is what
-    # makes a repeated collection sync (and a double-click on "Add to library")
-    # idempotent across imports, not just across Celery redeliveries.
-    existing = await find_live_import(db, importer.site, external_id)
-    if existing is not None:
+    # Already in the library? `start_import` hands back the EXISTING import
+    # rather than minting a duplicate Model (M8 H) -- answer 200, because
+    # nothing was created. This is what makes a repeated collection sync (and a
+    # double-click on "Add to library") idempotent across imports, not just
+    # across Celery redeliveries.
+    imp, created = await start_import(db, payload.url)
+    if not created:
         response.status_code = status.HTTP_200_OK
-        return ImportOut.from_model(existing)
-
-    imp = Import(url=url, site=importer.site, external_id=external_id, state=ImportState.PENDING)
-    db.add(imp)
-    await db.commit()
-    await db.refresh(imp)
-
-    import_from_url.apply_async(args=[imp.id], task_id=f"import-{imp.id}")
-
-    # Under eager Celery (tests) the line above ran the whole import inline
-    # through its own SYNC session, driving the row to done/failed -- refresh
-    # so this async session hands back the terminal state, not the stale
-    # "pending" snapshot (same reasoning as app.api.settings.migrate).
-    await db.refresh(imp)
     return ImportOut.from_model(imp)
 
 

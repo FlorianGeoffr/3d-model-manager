@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from fastapi import HTTPException, status
+from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session as SyncSession
@@ -117,6 +118,20 @@ def mark_synced_sync(
 ) -> None:
     collection.last_synced_at = datetime.now(UTC)
     collection.last_error = error
+    session.commit()
+
+
+def drop_pending_sync(
+    session: SyncSession, collection: FollowedCollection, external_id: str
+) -> None:
+    """Un-queue an item that has since landed in the library (imported from
+    search, or approved elsewhere) so a later sync doesn't keep showing it."""
+    session.execute(
+        sa_delete(PendingImport).where(
+            PendingImport.collection_id == collection.id,
+            PendingImport.external_id == external_id,
+        )
+    )
     session.commit()
 
 

@@ -1,0 +1,114 @@
+"""Followed remote collections + review queue (M8 H).
+
+Follow a site's collection/likes list, choose per-list whether a sync
+auto-imports new items or queues them for approval, run the sync on demand, and
+approve/dismiss whatever a ``review`` list queued up.
+
+Literal segments (``/sync``, ``/pending``) are declared BEFORE
+``/{collection_id}`` so they aren't parsed as an id.
+"""
+
+from __future__ import annotations
+
+import uuid
+
+from fastapi import APIRouter, Depends, Response, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db import get_db
+from app.schemas.collections import (
+    CollectionModeIn,
+    FollowCollectionIn,
+    FollowedCollectionOut,
+    PendingImportOut,
+)
+from app.schemas.imports import ImportOut
+from app.schemas.jobs import JobOut
+from app.services import collections as collections_svc
+from app.services import jobs as jobs_service
+from app.services.imports import start_import
+from app.tasks.sync_collections import sync_all
+
+router = APIRouter(prefix="/collections", tags=["collections"])
+
+
+@router.post("/sync", response_model=JobOut)
+async def sync_collections_now(db: AsyncSession = Depends(get_db)) -> JobOut:
+    """Run the periodic sync immediately (the beat schedule is opt-in via
+    ``TDMM_COLLECTION_SYNC_INTERVAL_S``; this button always works). Tracked as a
+    Job so it shows up on the Jobs page like any other background work."""
+    job = await jobs_service.create_job(
+        db, id=uuid.uuid4(), type="sync_collections", subject_type=None, subject_id=None
+    )
+    sync_all.apply_async(args=[str(job.id)], task_id=str(job.id))
+    # Eager Celery (tests) already ran it inline through its own sync session.
+    await db.refresh(job)
+    return JobOut.from_model(job)
+
+
+@router.get("/pending", response_model=list[PendingImportOut])
+async def list_pending_imports(
+    collection_id: int | None = None, db: AsyncSession = Depends(get_db)
+) -> list[PendingImportOut]:
+    rows = await collections_svc.list_pending(db, collection_id)
+    return [PendingImportOut.from_model(row) for row in rows]
+
+
+@router.post(
+    "/pending/{pending_id}/approve",
+    status_code=status.HTTP_201_CREATED,
+    response_model=ImportOut,
+)
+async def approve_pending_import(
+    pending_id: int, response: Response, db: AsyncSession = Depends(get_db)
+) -> ImportOut:
+    """Import a queued item, then un-queue it. Goes through the same
+    dedup-guarded ``start_import`` as ``POST /imports``, so approving something
+    that arrived some other way answers 200 and creates nothing."""
+    pending = await collections_svc.get_pending(db, pending_id)
+    imp, created = await start_import(db, pending.url)
+    await collections_svc.delete_pending(db, pending_id)
+    if not created:
+        response.status_code = status.HTTP_200_OK
+    return ImportOut.from_model(imp)
+
+
+@router.delete("/pending/{pending_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def dismiss_pending_import(pending_id: int, db: AsyncSession = Depends(get_db)) -> None:
+    await collections_svc.delete_pending(db, pending_id)
+
+
+@router.get("", response_model=list[FollowedCollectionOut])
+async def list_followed_collections(
+    db: AsyncSession = Depends(get_db),
+) -> list[FollowedCollectionOut]:
+    rows = await collections_svc.list_followed(db)
+    return [FollowedCollectionOut.from_model(row) for row in rows]
+
+
+@router.post("", status_code=status.HTTP_201_CREATED, response_model=FollowedCollectionOut)
+async def follow_collection(
+    payload: FollowCollectionIn, db: AsyncSession = Depends(get_db)
+) -> FollowedCollectionOut:
+    row = await collections_svc.follow(
+        db,
+        site=payload.site,
+        list_id=payload.list_id,
+        kind=payload.kind,
+        title=payload.title,
+        mode=payload.mode,
+    )
+    return FollowedCollectionOut.from_model(row)
+
+
+@router.patch("/{collection_id}", response_model=FollowedCollectionOut)
+async def set_collection_mode(
+    collection_id: int, payload: CollectionModeIn, db: AsyncSession = Depends(get_db)
+) -> FollowedCollectionOut:
+    row = await collections_svc.set_mode(db, collection_id, payload.mode)
+    return FollowedCollectionOut.from_model(row)
+
+
+@router.delete("/{collection_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def unfollow_collection(collection_id: int, db: AsyncSession = Depends(get_db)) -> None:
+    await collections_svc.unfollow(db, collection_id)

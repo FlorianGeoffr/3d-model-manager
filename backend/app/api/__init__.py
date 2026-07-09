@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends
 from app.api import (
     auth,
     blobs,
+    collections,
     events,
     features,
     files,
@@ -53,5 +54,6 @@ protected_router.include_router(features.router)
 protected_router.include_router(printers.router)
 protected_router.include_router(print_jobs.router)
 protected_router.include_router(imports.router)
+protected_router.include_router(collections.router)
 
 api_router.include_router(protected_router)

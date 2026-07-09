@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     # (the default) means OFF -- see `app.tasks.celery_app`'s conditional
     # `beat_schedule`.
     scan_interval_s: int = 0
+    # Opt-in periodic sync of followed remote collections/favourites (M8 H):
+    # seconds between automatic `sync_collections.sync_all` runs via Celery
+    # beat. `0` (the default) means OFF -- the "Sync now" button still works.
+    collection_sync_interval_s: int = 0
     # Printer integration (SPEC "Printer integration"; M4). OFF by default:
     # the whole app is fully functional without it -- the printers API 503s,
     # printerd idles, and the frontend greys the Printer nav.

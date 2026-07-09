@@ -559,6 +559,43 @@ export interface SearchResponse {
   per_site: SiteSearchStatus[];
 }
 
+// -- followed collections + review queue (M8 H) ----------------------------
+
+export type CollectionSyncMode = "auto" | "review";
+
+/** One of the signed-in user's lists on a site (`GET /imports/lists`). */
+export interface RemoteList {
+  site: ImportSite;
+  list_id: string;
+  kind: string;
+  title: string;
+  count: number | null;
+}
+
+export interface FollowedCollection {
+  id: number;
+  site: ImportSite;
+  list_id: string;
+  kind: string;
+  title: string;
+  mode: CollectionSyncMode;
+  last_synced_at: string | null;
+  last_error: string | null;
+  created_at: string;
+}
+
+/** An item a `review`-mode sync found but didn't import. */
+export interface PendingImport {
+  id: number;
+  collection_id: number;
+  site: ImportSite;
+  external_id: string;
+  title: string;
+  url: string;
+  thumbnail_url: string | null;
+  created_at: string;
+}
+
 // -- Bambu Lab account (backend/app/schemas/settings.py, Workstream B task
 // B2) -- connecting an account powers MakerWorld's authenticated search +
 // file downloads; anonymous MakerWorld access only sees trending results

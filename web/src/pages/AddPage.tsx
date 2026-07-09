@@ -6,6 +6,7 @@ import { ImageIcon } from "lucide-react";
 import { ApiError } from "@/api/client";
 import { useCreateImport, useImport, useImportSearch } from "@/api/imports";
 import { useCreateModel } from "@/api/library";
+import { SavedPanel } from "@/components/collections/SavedPanel";
 import { UploadDropzone, type UploadTarget } from "@/components/upload/UploadDropzone";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -48,6 +49,7 @@ export function AddPage() {
           <TabsTrigger value="upload">Upload files</TabsTrigger>
           <TabsTrigger value="url">Import from URL</TabsTrigger>
           <TabsTrigger value="search">Search galleries</TabsTrigger>
+          <TabsTrigger value="saved">Saved</TabsTrigger>
         </TabsList>
         <TabsContent value="upload">
           <UploadPanel />
@@ -57,6 +59,9 @@ export function AddPage() {
         </TabsContent>
         <TabsContent value="search">
           <SearchPanel onImportStarted={setActiveImportId} />
+        </TabsContent>
+        <TabsContent value="saved">
+          <SavedPanel />
         </TabsContent>
       </Tabs>
 

@@ -125,11 +125,12 @@ beforeEach(() => {
 });
 
 describe("AddPage", () => {
-  it("offers Upload / Import URL / Search tabs", async () => {
+  it("offers Upload / Import URL / Search / Saved tabs", async () => {
     renderAddPage();
     expect(await screen.findByRole("tab", { name: "Upload files" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Import from URL" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Search galleries" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Saved" })).toBeInTheDocument();
   });
 
   it("creates the new model once and reuses it for a second upload batch", async () => {

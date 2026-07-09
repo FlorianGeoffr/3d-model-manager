@@ -275,6 +275,18 @@ class RevisionDetail(BaseModel):
     notes: list[NoteOut]
 
 
+class ModelBackendOut(BaseModel):
+    """One storage backend holding at least one of the model's
+    current-revision files (Workstream C task C4) -- the DISTINCT set of
+    ``files.backend_id`` values across the current revision, resolved to
+    ``{id, name}``. Computed by ``app.services.library._model_backends_summary``
+    from the already-loaded revision files (no per-file extra query).
+    """
+
+    id: int
+    name: str
+
+
 class ModelDetail(BaseModel):
     id: int
     slug: str
@@ -293,6 +305,7 @@ class ModelDetail(BaseModel):
     current_revision: RevisionDetail | None
     notes: list[NoteOut]
     review_state: str | None = None
+    backends: list[ModelBackendOut] = []
 
 
 # -- diff -------------------------------------------------------------

@@ -60,6 +60,7 @@ function fakeModel(files: FileOut[]): ModelDetail {
     updated_at: "2026-06-01T12:00:00Z",
     tags: [],
     notes: [],
+    backends: [],
     current_revision: {
       id: 1,
       model_id: 1,

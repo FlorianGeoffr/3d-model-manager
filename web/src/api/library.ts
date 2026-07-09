@@ -8,9 +8,11 @@ import { api } from "@/api/client";
 import type {
   DiffResponse,
   GalleryPage,
+  JobOut,
   ModelCreate,
   ModelDetail,
   ModelPatch,
+  ModelRelocateIn,
   NoteCreate,
   NoteOut,
   RevisionCreate,
@@ -100,6 +102,19 @@ export function useArchiveModel(slug: string) {
       queryClient.removeQueries({ queryKey: modelQueryOptions(slug).queryKey });
       void queryClient.invalidateQueries({ queryKey: ["models", "list"] });
     },
+  });
+}
+
+/** Dispatches `POST /models/{slug}/relocate` (Workstream C task C3/C4) to
+ * move or replicate every file of this model, across all its revisions,
+ * onto another configured backend. Returns the tracked `JobOut` -- no
+ * explicit invalidation here: `useEvents.tsx`'s `job.updated` handler
+ * already invalidates `["models"]` on every job's terminal state, which is
+ * how `model.backends` (Part 1) picks up a completed "move". */
+export function useRelocateModel(slug: string) {
+  return useMutation({
+    mutationFn: (payload: ModelRelocateIn) =>
+      api.post<JobOut>(`/models/${encodeURIComponent(slug)}/relocate`, payload),
   });
 }
 

@@ -124,6 +124,7 @@ function fakeModel(overrides: Partial<ModelDetail> = {}): ModelDetail {
       notes: [],
     },
     notes: [],
+    backends: [],
     ...overrides,
   };
 }

@@ -37,6 +37,22 @@ export interface ModelPatch {
   review_state?: string | null;
 }
 
+// Multi-backend storage (backend/app/schemas/library.py, Workstream C task
+// C3/C4) -- `POST /models/{slug}/relocate` moves or replicates every file of
+// a model onto another configured backend.
+export interface ModelRelocateIn {
+  target_backend_id: number;
+  mode: "move" | "replicate";
+}
+
+// The DISTINCT storage backends holding a model's current-revision files
+// (`files.backend_id`, PRIMARY location only -- see
+// `app.services.library._model_backends_summary`).
+export interface ModelBackendOut {
+  id: number;
+  name: string;
+}
+
 export interface ModelSummary {
   id: number;
   slug: string;
@@ -183,6 +199,7 @@ export interface ModelDetail {
   current_revision: RevisionDetail | null;
   notes: NoteOut[];
   review_state?: string | null;
+  backends: ModelBackendOut[];
 }
 
 // -- diff ----------------------------------------------------------
@@ -264,6 +281,32 @@ export interface ConnectionTestOut {
   ok: boolean;
   detail: string;
   latency_ms: number;
+}
+
+// -- multi-backend storage CRUD (backend/app/schemas/settings.py, Workstream
+// C task C3) -- unlike `StorageConfigIn`/`StorageConfigOut` above (the
+// legacy single-backend shim), these operate on a specific
+// `storage_backends` row; `config` carries its own `backend` discriminator
+// field inside it (same shape `StorageConfigOut.config` already uses since
+// both come from the same `redacted()` call server-side).
+
+export interface StorageBackendOut {
+  id: number;
+  name: string;
+  scheme: StorageScheme;
+  is_default: boolean;
+  config: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface StorageBackendCreateIn {
+  name: string;
+  config: Record<string, unknown>;
+}
+
+export interface StorageBackendUpdateIn {
+  name?: string;
+  config?: Record<string, unknown>;
 }
 
 // -- scan (backend/app/schemas/scan.py, Task 8) ----------------------------

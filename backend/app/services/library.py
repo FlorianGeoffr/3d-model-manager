@@ -36,7 +36,7 @@ from app.config import Settings
 from app.models.enums import BlobFormat, BlobKind, DerivativeKind, DerivativeStatus
 from app.models.library import Blob, File, Model, Note, Revision, Tag, model_tags
 from app.models.processing import AssemblyThumb, BlobMeta, Derivative
-from app.models.storage import FileLocation
+from app.models.storage import FileLocation, StorageBackendRow
 from app.models.system import Job
 from app.schemas.library import (
     BlobMetaOut,
@@ -45,6 +45,7 @@ from app.schemas.library import (
     DiffResponse,
     FileEnrichment,
     FileOut,
+    ModelBackendOut,
     ModelDetail,
     ModelSummary,
     NoteOut,
@@ -707,12 +708,42 @@ async def build_revision_detail(
     )
 
 
+async def _model_backends_summary(
+    db: AsyncSession, settings: Settings, files: Iterable[File]
+) -> list[ModelBackendOut]:
+    """Distinct storage backends holding ``files``' bytes (Workstream C task
+    C4 UI exposure): each file's PRIMARY backend (``file.backend_id``), NOT
+    every backend a file has been replicated onto (``file_locations`` -- a
+    ``mode="replicate"`` relocate never changes ``backend_id``, by design;
+    see ``app.tasks.relocate``). A NULL ``backend_id`` (pre-migration-seed
+    safety net, mirrors ``resolve_backend_for_file``) resolves to the
+    current default. One query for every distinct id involved, never one
+    per file.
+    """
+    backend_ids = {f.backend_id for f in files if f.backend_id is not None}
+    if any(f.backend_id is None for f in files):
+        _, default_id = await resolve_default_backend(db, settings)
+        backend_ids.add(default_id)
+    if not backend_ids:
+        return []
+    rows = (
+        await db.execute(
+            select(StorageBackendRow.id, StorageBackendRow.name)
+            .where(StorageBackendRow.id.in_(backend_ids))
+            .order_by(StorageBackendRow.id)
+        )
+    ).all()
+    return [ModelBackendOut(id=row.id, name=row.name) for row in rows]
+
+
 async def build_model_detail(db: AsyncSession, model: Model, settings: Settings) -> ModelDetail:
     notes = await _list_notes(db, model_id=model.id, revision_id=None)
     current_revision = None
+    backends: list[ModelBackendOut] = []
     if model.current_revision_id is not None:
         revision = await get_revision_or_404(db, model.current_revision_id)
         current_revision = await build_revision_detail(db, revision, settings)
+        backends = await _model_backends_summary(db, settings, revision.files)
     return ModelDetail(
         id=model.id,
         slug=model.slug,
@@ -731,6 +762,7 @@ async def build_model_detail(db: AsyncSession, model: Model, settings: Settings)
         current_revision=current_revision,
         notes=notes,
         review_state=model.review_state,
+        backends=backends,
     )
 
 

@@ -15,6 +15,7 @@ import { BambuAccountCard } from "@/components/settings/BambuAccountCard";
 import { PrinterSetupCard } from "@/components/settings/PrinterSetupCard";
 import { ScanReport } from "@/components/settings/ScanReport";
 import { SiteTokensCard } from "@/components/settings/SiteTokensCard";
+import { StorageBackendsCard } from "@/components/settings/StorageBackendsCard";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -48,6 +49,7 @@ export function SettingsPage() {
       ) : configQuery.data ? (
         <>
           <StorageSettingsCard active={configQuery.data} />
+          <StorageBackendsCard />
           <ScanReport />
           <PrinterSetupCard />
           <SiteTokensCard />

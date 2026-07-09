@@ -705,3 +705,118 @@ async def test_relocate_unknown_model_is_404(
     )
 
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# detail: backends summary (Workstream C task C4) -- ModelDetail.backends is
+# the DISTINCT set of storage backends holding the model's current-revision
+# files, computed from `files.backend_id` (the PRIMARY location) only --
+# NOT every backend a file has been replicated onto (`file_locations`; see
+# `app.tasks.relocate` -- `mode="replicate"` never touches `backend_id`).
+# ---------------------------------------------------------------------------
+
+
+async def _upload(
+    client: httpx.AsyncClient, *, model_id: int, revision_id: int, rel_path: str, content: bytes
+) -> httpx.Response:
+    return await client.put(
+        "/api/uploads",
+        params={"model_id": model_id, "revision_id": revision_id, "rel_path": rel_path},
+        content=content,
+    )
+
+
+async def test_model_detail_reports_default_backend_after_upload(
+    authenticated_client: httpx.AsyncClient, backend: LocalStorageBackend
+) -> None:
+    created = await _create_model(authenticated_client, "Backend Summary Model")
+    revision_id = created["current_revision"]["id"]
+
+    upload = await _upload(
+        authenticated_client,
+        model_id=created["id"],
+        revision_id=revision_id,
+        rel_path="part.stl",
+        content=b"hello-world",
+    )
+    assert upload.status_code == 201, upload.text
+
+    detail = await authenticated_client.get(f"/api/models/{created['slug']}")
+    assert detail.status_code == 200
+    body = detail.json()
+    assert len(body["backends"]) == 1
+    assert body["backends"][0]["name"] == "Default"
+
+
+async def test_model_detail_reports_target_backend_after_move_relocate(
+    authenticated_client: httpx.AsyncClient, db_session: AsyncSession, tmp_path
+) -> None:
+    settings = get_settings()
+    target = await sb.create_backend(
+        db_session, settings, "Target", LocalConfig(root=str(tmp_path / "target"))
+    )
+    created = await _create_model(authenticated_client, "Relocate Backend Summary")
+    revision_id = created["current_revision"]["id"]
+    upload = await _upload(
+        authenticated_client,
+        model_id=created["id"],
+        revision_id=revision_id,
+        rel_path="part.stl",
+        content=b"hello-world",
+    )
+    assert upload.status_code == 201, upload.text
+
+    relocate = await authenticated_client.post(
+        f"/api/models/{created['slug']}/relocate",
+        json={"target_backend_id": target.id, "mode": "move"},
+    )
+    assert relocate.status_code == 200, relocate.text
+
+    detail = await authenticated_client.get(f"/api/models/{created['slug']}")
+    assert detail.json()["backends"] == [{"id": target.id, "name": "Target"}]
+
+
+async def test_model_detail_backends_unchanged_by_replicate_relocate(
+    authenticated_client: httpx.AsyncClient, db_session: AsyncSession, tmp_path
+) -> None:
+    """`mode="replicate"` copies bytes onto the target backend but never
+    flips `files.backend_id` -- the PRIMARY-backend-only summary must still
+    report only the ORIGINAL (default) backend afterward.
+    """
+    settings = get_settings()
+    target = await sb.create_backend(
+        db_session, settings, "Replica Target", LocalConfig(root=str(tmp_path / "target"))
+    )
+    created = await _create_model(authenticated_client, "Replicate Backend Summary")
+    revision_id = created["current_revision"]["id"]
+    upload = await _upload(
+        authenticated_client,
+        model_id=created["id"],
+        revision_id=revision_id,
+        rel_path="part.stl",
+        content=b"hello-world",
+    )
+    assert upload.status_code == 201, upload.text
+
+    relocate = await authenticated_client.post(
+        f"/api/models/{created['slug']}/relocate",
+        json={"target_backend_id": target.id, "mode": "replicate"},
+    )
+    assert relocate.status_code == 200, relocate.text
+
+    detail = await authenticated_client.get(f"/api/models/{created['slug']}")
+    body = detail.json()
+    assert len(body["backends"]) == 1
+    assert body["backends"][0]["name"] == "Default"
+
+
+async def test_model_detail_backends_empty_without_current_revision(
+    authenticated_client: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    created = await _create_model(authenticated_client, "No Revision Backend Summary")
+    model = await db_session.get(Model, created["id"])
+    model.current_revision_id = None
+    await db_session.commit()
+
+    detail = await authenticated_client.get(f"/api/models/{created['slug']}")
+    assert detail.json()["backends"] == []

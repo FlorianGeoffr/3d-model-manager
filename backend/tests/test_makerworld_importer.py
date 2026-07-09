@@ -5,6 +5,7 @@ from app.importers import makerworld
 from app.importers.base import ImportFile
 from app.importers.makerworld import MakerWorldImporter
 from app.models.enums import ImportSite
+from app.services.bambu_auth import BambuAuthError
 from app.tasks.importing import ImportRejected
 from tests.cassettes import makerworld_fixtures as fx
 
@@ -37,6 +38,10 @@ def _mock_search_client(body):
     return httpx.Client(
         base_url="https://makerworld.com/api/v1", transport=httpx.MockTransport(handler)
     )
+
+
+def _raise_not_connected():
+    raise BambuAuthError("no Bambu account is connected -- connect one in Settings.")
 
 
 @pytest.mark.parametrize(
@@ -78,6 +83,8 @@ def test_paid_model_is_rejected_with_clear_message(monkeypatch):
 
 
 def test_search_maps_hits_to_search_results(monkeypatch):
+    # Not connected (explicit, DB-free) -- anonymous search, no Bearer header.
+    monkeypatch.setattr(makerworld, "_bambu_session_or_none", lambda: None)
     monkeypatch.setattr(makerworld, "_client", lambda: _mock_search_client(fx.SEARCH_DESIGN_BENCHY))
     results = MakerWorldImporter().search(fx.SEARCH_QUERY)
     assert [r.title for r in results] == [
@@ -95,13 +102,80 @@ def test_search_empty_query_returns_empty_list():
     assert MakerWorldImporter().search("") == []
 
 
-def test_list_files_raises_bambu_auth_required():
+def test_list_files_raises_bambu_auth_required_when_not_connected(monkeypatch):
+    monkeypatch.setattr(makerworld, "_bambu_session", lambda: _raise_not_connected())
     with pytest.raises(ImportRejected, match="Bambu"):
         MakerWorldImporter().list_files(fx.DESIGN_ID)
 
 
-def test_resolve_download_raises_bambu_auth_required():
+def test_resolve_download_raises_bambu_auth_required_when_not_connected(monkeypatch):
+    monkeypatch.setattr(makerworld, "_bambu_session", lambda: _raise_not_connected())
     with pytest.raises(ImportRejected, match="Bambu"):
         MakerWorldImporter().resolve_download(
             fx.DESIGN_ID, ImportFile(remote_id="x", filename="x.stl")
         )
+
+
+def test_list_files_with_connected_account_maps_zip_stl_instances(monkeypatch):
+    monkeypatch.setattr(makerworld, "_bambu_session", lambda: ("test-access-token", "global"))
+    monkeypatch.setattr(makerworld, "_client", lambda: _mock_design_client(fx.DESIGN_3018898))
+    files = MakerWorldImporter().list_files(fx.DESIGN_ID)
+    assert len(files) == 1
+    # profileId from the one hasZipStl instance in the fixture.
+    assert files[0].remote_id == "12345"
+    assert files[0].filename == "Default-3391581.zip"
+
+
+def test_resolve_download_hits_authed_endpoint_and_returns_presigned_url(monkeypatch):
+    # NOTE: this authenticated download response shape is DOCUMENTED-NOT-
+    # LIVE-CAPTURED (see MakerWorldImporter._fetch_authed_download_url's
+    # docstring) -- the fixture body below is a best guess, not a recorded
+    # real response, and must be reconciled against a real Bambu account at
+    # acceptance.
+    monkeypatch.setattr(makerworld, "_bambu_session", lambda: ("test-access-token", "global"))
+    monkeypatch.setattr(makerworld, "_client", lambda: _mock_design_client(fx.DESIGN_3018898))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/iot-service/api/user/profile/12345"
+        assert dict(request.url.params) == {"model_id": fx.DESIGN_3018898["modelId"]}
+        assert request.headers.get("Authorization") == "Bearer test-access-token"
+        return httpx.Response(200, json={"url": "https://makerworld.bblmw.com/signed/file.zip"})
+
+    monkeypatch.setattr(
+        makerworld,
+        "_authed_client",
+        lambda token, region="global": httpx.Client(
+            base_url="https://api.bambulab.com/v1",
+            headers={"Authorization": f"Bearer {token}"},
+            transport=httpx.MockTransport(handler),
+        ),
+    )
+    out = MakerWorldImporter().resolve_download(
+        fx.DESIGN_ID, ImportFile(remote_id="12345", filename="Default-3391581.zip")
+    )
+    assert out.url == "https://makerworld.bblmw.com/signed/file.zip"
+    assert out.filename == "Default-3391581.zip"
+    # No Bearer forwarded to the presigned CDN URL itself (Thingiverse
+    # posture: never leak the app/account token to a public/signed asset URL).
+    assert out.headers == {}
+
+
+def test_search_sends_bearer_token_when_connected(monkeypatch):
+    monkeypatch.setattr(
+        makerworld, "_bambu_session_or_none", lambda: ("test-access-token", "global")
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers.get("Authorization") == "Bearer test-access-token"
+        assert dict(request.url.params)["q"] == fx.SEARCH_QUERY
+        return httpx.Response(200, json=fx.SEARCH_DESIGN_BENCHY)
+
+    monkeypatch.setattr(
+        makerworld,
+        "_client",
+        lambda: httpx.Client(
+            base_url="https://makerworld.com/api/v1", transport=httpx.MockTransport(handler)
+        ),
+    )
+    results = MakerWorldImporter().search(fx.SEARCH_QUERY)
+    assert len(results) == 2

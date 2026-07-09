@@ -22,8 +22,16 @@ from app.config import Settings, get_settings
 from app.db import get_db
 from app.schemas.imports import ImportTokensIn, ImportTokensOut
 from app.schemas.jobs import JobOut
-from app.schemas.settings import ConnectionTestOut, StorageConfigIn, StorageConfigOut
-from app.services import import_tokens, storage_config
+from app.schemas.settings import (
+    BambuLoginIn,
+    BambuLoginOut,
+    BambuStatusOut,
+    BambuVerifyIn,
+    ConnectionTestOut,
+    StorageConfigIn,
+    StorageConfigOut,
+)
+from app.services import bambu_auth, import_tokens, storage_config
 from app.services import jobs as jobs_service
 from app.services.storage_probe import probe_backend
 from app.storage.config import SECRET_FIELD_BY_BACKEND, StorageConfig, parse_storage_config
@@ -201,3 +209,87 @@ async def put_import_tokens_settings(
         value = incoming
     await import_tokens.set_thingiverse_token(db, settings, value)
     return ImportTokensOut(thingiverse_token=_REDACTED_SENTINEL if value else "")
+
+
+# ---------------------------------------------------------------------------
+# Bambu Lab account connect flow (Workstream B task B2). Unlike the storage/
+# import-token settings above, this isn't a raw PUT of an operator-typed
+# secret -- login/verify each make a real outbound call to Bambu
+# (app.services.bambu_auth), so they run the blocking httpx client on a
+# worker thread via anyio.to_thread.run_sync (same pattern as
+# test_storage_settings' probe_backend call). No response here EVER carries
+# a token (see BambuLoginOut/BambuStatusOut) -- only "connected"/"mfa_
+# required" plus the account/region the operator already knows.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/bambu", response_model=BambuStatusOut)
+async def get_bambu_status(
+    db: AsyncSession = Depends(get_db), settings: Settings = Depends(get_settings)
+) -> BambuStatusOut:
+    state = await bambu_auth.get_bambu_auth(db, settings)
+    return BambuStatusOut(
+        connected=bool(state.refresh_token), account=state.account, region=state.region
+    )
+
+
+@router.post("/bambu/login", response_model=BambuLoginOut)
+async def post_bambu_login(
+    payload: BambuLoginIn,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> BambuLoginOut:
+    try:
+        result = await anyio.to_thread.run_sync(
+            bambu_auth.login, payload.account, payload.password, payload.region
+        )
+    except bambu_auth.BambuAuthError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    if result.status == "connected":
+        await bambu_auth.set_bambu_auth(
+            db,
+            settings,
+            account=payload.account,
+            region=payload.region,
+            refresh_token=result.refresh_token or "",
+        )
+        return BambuLoginOut(status="connected", account=payload.account, region=payload.region)
+    return BambuLoginOut(
+        status="mfa_required",
+        account=payload.account,
+        region=payload.region,
+        mfa_context=result.mfa_context,
+    )
+
+
+@router.post("/bambu/verify", response_model=BambuLoginOut)
+async def post_bambu_verify(
+    payload: BambuVerifyIn,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> BambuLoginOut:
+    try:
+        result = await anyio.to_thread.run_sync(
+            bambu_auth.verify_code,
+            payload.account,
+            payload.code,
+            payload.region,
+            payload.mfa_context,
+        )
+    except bambu_auth.BambuAuthError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    await bambu_auth.set_bambu_auth(
+        db,
+        settings,
+        account=payload.account,
+        region=payload.region,
+        refresh_token=result.refresh_token or "",
+    )
+    return BambuLoginOut(status="connected", account=payload.account, region=payload.region)
+
+
+@router.delete("/bambu", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_bambu_auth(
+    db: AsyncSession = Depends(get_db), settings: Settings = Depends(get_settings)
+) -> None:
+    await bambu_auth.clear_bambu_auth(db, settings)

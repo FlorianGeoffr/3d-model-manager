@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
+from app.schemas.imports import NonEmptyStr
+
 if TYPE_CHECKING:
     from app.storage.config import StorageConfig
 
@@ -36,3 +38,38 @@ class ConnectionTestOut(BaseModel):
     ok: bool
     detail: str
     latency_ms: int
+
+
+# Bambu Lab account connect flow (Workstream B task B2; SPEC full-design
+# line 230 "Connect Bambu account" flow) -- see app.services.bambu_auth for
+# the login/MFA/refresh contract and app.api.settings for the endpoints.
+# NEITHER schema ever carries a token: login/verify accept only what the
+# operator/browser types (account/password/code) or echoes back
+# (mfa_context, an opaque continuation payload with no secret value of its
+# own); the outputs below never include accessToken/refreshToken.
+
+
+class BambuLoginIn(BaseModel):
+    account: NonEmptyStr
+    password: NonEmptyStr
+    region: str = "global"
+
+
+class BambuVerifyIn(BaseModel):
+    account: NonEmptyStr
+    code: NonEmptyStr
+    region: str = "global"
+    mfa_context: dict = {}
+
+
+class BambuLoginOut(BaseModel):
+    status: str  # "connected" | "mfa_required" -- never a token field
+    account: str | None = None
+    region: str | None = None
+    mfa_context: dict | None = None
+
+
+class BambuStatusOut(BaseModel):
+    connected: bool
+    account: str | None = None
+    region: str = "global"

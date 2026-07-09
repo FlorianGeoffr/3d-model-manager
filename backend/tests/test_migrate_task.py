@@ -16,8 +16,8 @@ import uuid
 import pytest
 
 from app.config import get_settings
-from app.models import Setting
 from app.services import jobs as jobs_service
+from app.services.storage_backends import get_default_backend_row
 from app.services.storage_config import get_active_config_sync
 from app.storage.base import WriteResult
 from app.storage.local import LocalStorageBackend
@@ -71,10 +71,12 @@ async def test_migrate_copies_verifies_and_cuts_over(
     assert active.bucket == target["bucket"]
     assert active.secret_key.get_secret_value() == target["secret_key"]
 
-    # M6 A1.5.2: the target travels encrypted over the broker and the
-    # cutover writes it back to the settings row encrypted too.
-    row = await db_session.get(Setting, "storage")
-    assert row.value["secret_key"] != target["secret_key"]
+    # M6 A1.5.2 + Workstream C: the target travels encrypted over the broker
+    # and the cutover writes it back (encrypted) to the DEFAULT storage_backends
+    # row -- the source of truth get_active_config now reads.
+    default_row = await get_default_backend_row(db_session)
+    assert default_row is not None
+    assert default_row.config["secret_key"] != target["secret_key"]
 
     job = await jobs_service.get_job_or_404(db_session, uuid.UUID(job_id))
     await db_session.refresh(job)

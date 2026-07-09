@@ -124,23 +124,27 @@ def get_active_config_sync(session: Session, settings: Settings) -> StorageConfi
 
 
 async def set_active_config(db: AsyncSession, settings: Settings, config: StorageConfig) -> None:
-    value = encrypt_config_secret(settings, config)
-    row = await db.get(Setting, SETTINGS_KEY)
-    if row is None:
-        db.add(Setting(key=SETTINGS_KEY, value=value))
-    else:
-        row.value = value
-    await db.commit()
+    # Workstream C: the DEFAULT `storage_backends` row is what `get_active_config`
+    # (and every read path) consults, so the write must land THERE. Writing the
+    # legacy `settings["storage"]` row -- which nothing reads once the table is
+    # seeded -- made PUT /settings/storage a silent no-op and, worse, made the
+    # `migrate_storage` cutover a no-op (the job reported "done" while reads kept
+    # hitting the old backend; an operator then deleting the source per the
+    # migrate docs would lose the only live copy). Repoint onto the default row.
+    from app.services.storage_backends import _ensure_default_backend_row, update_backend
+
+    row = await _ensure_default_backend_row(db, settings)
+    await update_backend(db, settings, row.id, config=config)
 
 
 def set_active_config_sync(session: Session, settings: Settings, config: StorageConfig) -> None:
-    value = encrypt_config_secret(settings, config)
-    row = session.get(Setting, SETTINGS_KEY)
-    if row is None:
-        session.add(Setting(key=SETTINGS_KEY, value=value))
-    else:
-        row.value = value
-    session.commit()
+    from app.services.storage_backends import (
+        _ensure_default_backend_row_sync,
+        update_backend_sync,
+    )
+
+    row = _ensure_default_backend_row_sync(session, settings)
+    update_backend_sync(session, settings, row.id, config=config)
 
 
 async def resolve_backend(db: AsyncSession, settings: Settings) -> StorageBackend:

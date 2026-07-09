@@ -11,6 +11,7 @@ from app.config import get_settings
 from app.models import Setting
 from app.services import storage_config
 from app.services.secrets_at_rest import reencrypt_secrets_at_rest
+from app.services.storage_backends import get_default_backend_row
 from app.storage.config import SmbConfig
 
 
@@ -19,8 +20,11 @@ async def test_set_active_config_writes_ciphertext_not_plaintext(db_session):
     s = get_settings()
     cfg = SmbConfig(host="h", share="sh", username="u", password="hunter2")
     await storage_config.set_active_config(db_session, s, cfg)
-    row = await db_session.get(Setting, "storage")
-    assert row.value["password"] != "hunter2"  # ciphertext at rest
+    # Workstream C: set_active_config now writes the DEFAULT storage_backends
+    # row (what get_active_config reads), not settings["storage"].
+    default_row = await get_default_backend_row(db_session)
+    assert default_row is not None
+    assert default_row.config["password"] != "hunter2"  # ciphertext at rest
     back = await storage_config.get_active_config(db_session, s)
     assert back.password.get_secret_value() == "hunter2"  # decrypts on read
 

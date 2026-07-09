@@ -309,6 +309,27 @@ def _reconcile_against_backend(
         f.storage_path: f for f in session.execute(files_stmt).unique().scalars()
     }
 
+    # Replicated copies: a file whose PRIMARY backend is a different one but
+    # whose bytes ALSO live here via a `file_locations` row (relocate mode
+    # "replicate"). `backend.walk("")` returns those bytes too, so without
+    # recognizing them they'd look like orphans and get adopted as a phantom
+    # "adopted" duplicate model. Add them to `files_by_path` for RECOGNITION
+    # only -- they must never enter `missing_candidates` (a missing replica
+    # isn't a missing file) and their primary `backend_id` must not be
+    # overwritten when seen. `replica_paths` marks them for both.
+    replica_paths: set[str] = set()
+    if backend_row is not None:
+        replica_stmt = (
+            select(File)
+            .options(joinedload(File.blob))
+            .join(FileLocation, FileLocation.file_id == File.id)
+            .where(FileLocation.backend_id == backend_row.id)
+        )
+        for f in session.execute(replica_stmt).unique().scalars():
+            if f.storage_path not in files_by_path:
+                files_by_path[f.storage_path] = f
+                replica_paths.add(f.storage_path)
+
     seen: set[str] = set()
     deferred: list[EntryInfo] = []
 
@@ -325,7 +346,10 @@ def _reconcile_against_backend(
         if file is not None:
             _reconcile_known(session, backend, file, entry, size_only, now, counters, report)
             if backend_id is not None:
-                file.backend_id = backend_id
+                # A replica seen on this backend: confirm its location, but
+                # leave its primary `backend_id` on the OTHER backend untouched.
+                if entry.key not in replica_paths:
+                    file.backend_id = backend_id
                 _touch_location(session, file.id, backend_id, now)
             seen.add(entry.key)
             continue
@@ -337,7 +361,9 @@ def _reconcile_against_backend(
     # set -- popped as each relink claims one, so the same origin row can
     # never be relinked twice in one scan.
     missing_candidates: dict[int, File] = {
-        f.id: f for path, f in files_by_path.items() if path not in seen
+        f.id: f
+        for path, f in files_by_path.items()
+        if path not in seen and path not in replica_paths
     }
 
     adopted_index: dict[tuple[int, int], dict] = {}

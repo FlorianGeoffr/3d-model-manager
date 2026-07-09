@@ -136,17 +136,25 @@ async def delete_backend(db: AsyncSession, backend_id: int) -> None:
 
 
 async def set_default_backend(db: AsyncSession, backend_id: int) -> StorageBackendRow:
-    """Flip the single-default invariant atomically: a single ``UPDATE``
-    that sets ``is_default`` true for ``backend_id`` and false for every
-    other row in the same statement, so the partial unique index on
-    ``is_default`` never sees two ``true`` rows at once (Postgres evaluates
-    a multi-row ``UPDATE`` against a single pre-statement snapshot, so
-    setting-while-clearing in one statement can't self-conflict the way two
-    separate statements could).
+    """Flip the single-default invariant with a clear-then-set pair inside one
+    transaction: first drop the current default, then set the target.
+
+    NOT a single ``UPDATE ... SET is_default=(id==:id)``: the partial unique
+    index ``uq_storage_backends_is_default`` is NON-deferrable, so a multi-row
+    UPDATE checks uniqueness per row as it scans. If the target row is set
+    ``true`` before the old default is set ``false`` (which happens whenever
+    the target's id sorts before the current default's), two ``true`` rows
+    momentarily coexist and Postgres raises a duplicate-key error. Two
+    statements never hold two ``true`` rows at any instant.
     """
     row = await get_backend_row(db, backend_id)
     await db.execute(
-        update(StorageBackendRow).values(is_default=(StorageBackendRow.id == backend_id))
+        update(StorageBackendRow)
+        .where(StorageBackendRow.is_default.is_(True))
+        .values(is_default=False)
+    )
+    await db.execute(
+        update(StorageBackendRow).where(StorageBackendRow.id == backend_id).values(is_default=True)
     )
     await db.commit()
     await db.refresh(row)
@@ -298,9 +306,17 @@ def delete_backend_sync(session: Session, backend_id: int) -> None:
 
 
 def set_default_backend_sync(session: Session, backend_id: int) -> StorageBackendRow:
+    # Clear-then-set (see set_default_backend): the partial unique index is
+    # non-deferrable, so a single SET is_default=(id==:id) can transiently
+    # hold two true rows and 500 on a duplicate key.
     row = get_backend_row_sync(session, backend_id)
     session.execute(
-        update(StorageBackendRow).values(is_default=(StorageBackendRow.id == backend_id))
+        update(StorageBackendRow)
+        .where(StorageBackendRow.is_default.is_(True))
+        .values(is_default=False)
+    )
+    session.execute(
+        update(StorageBackendRow).where(StorageBackendRow.id == backend_id).values(is_default=True)
     )
     session.commit()
     session.refresh(row)

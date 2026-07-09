@@ -3,7 +3,7 @@ import json
 import pytest
 
 from app.config import get_settings
-from app.models import Setting
+from app.services.storage_backends import get_default_backend_row
 from app.services.storage_config import (
     SETTINGS_KEY,
     get_active_config,
@@ -84,13 +84,18 @@ async def test_set_then_get_round_trips(db_session):
 
 @pytest.mark.usefixtures("library_root")
 async def test_set_active_config_writes_ciphertext_at_rest(db_session):
-    """M6 A1: the stored secret must not be the plaintext we wrote."""
+    """M6 A1: the stored secret must not be the plaintext we wrote.
+
+    Workstream C: set_active_config now writes the DEFAULT storage_backends
+    row (the source of truth get_active_config reads), not settings["storage"].
+    """
     settings = get_settings()
     await set_active_config(
         db_session, settings, S3Config(bucket="b", access_key="AK", secret_key="super-secret")
     )
-    row = await db_session.get(Setting, SETTINGS_KEY)
-    assert row.value["secret_key"] != "super-secret"
+    default_row = await get_default_backend_row(db_session)
+    assert default_row is not None
+    assert default_row.config["secret_key"] != "super-secret"
 
 
 @pytest.mark.usefixtures("library_root")

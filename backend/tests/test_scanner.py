@@ -680,6 +680,62 @@ async def test_multi_backend_scan_adopts_orphan_file_onto_the_backend_it_was_fou
         assert location is not None
 
 
+async def test_multi_backend_scan_recognizes_replicas_and_does_not_adopt_them(
+    db_session: AsyncSession,
+    backend: LocalStorageBackend,
+    tmp_path: Path,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    """A file replicated onto backend B (primary stays on A, plus a
+    ``file_locations`` row for B) must be RECOGNIZED when B is walked -- its B
+    location touched -- not mistaken for an orphan and adopted as a phantom
+    duplicate model. Its primary ``backend_id`` must remain A.
+    """
+    settings = get_settings()
+    other_root = tmp_path / "backend-b-replica"
+    other_root.mkdir()
+    other_backend = LocalStorageBackend(other_root)
+
+    with base.sync_session() as session:
+        default_row = storage_backends.create_backend_sync(
+            session, settings, "A", LocalConfig(), is_default=True
+        )
+        other_row = storage_backends.create_backend_sync(
+            session, settings, "B", LocalConfig(root=str(other_root))
+        )
+        default_id, other_id = default_row.id, other_row.id
+
+    # Primary file on A (bytes via the shared `backend` fixture, rooted at A).
+    model, rev = await _create_model_and_revision(db_session, "widget", "Widget")
+    file = await seed_file(model, rev, "part.stl", b"replicated-bytes")
+    await _sync_mtime(db_session, backend, file)
+    file.backend_id = default_id
+    # Replicate the SAME bytes onto B at the same storage_path, with an
+    # un-verified `file_locations` row for B (proves the scan touches it).
+    other_backend.write(file.storage_path, [b"replicated-bytes"])
+    db_session.add(FileLocation(file_id=file.id, backend_id=other_id, verified_at=None))
+    await db_session.commit()
+
+    scan_run = _run_scan_all_backends()
+
+    assert scan_run.state == "done"
+    # The replica on B is recognized, not adopted as a phantom model.
+    assert scan_run.adopted == 0
+    assert scan_run.report["adopted"] == []
+    with base.sync_session() as session:
+        phantom = (
+            session.execute(select(Model).where(Model.review_state == "adopted"))
+            .scalars()
+            .all()
+        )
+        assert phantom == []
+        refreshed = session.get(File, file.id)
+        assert refreshed.backend_id == default_id  # primary unchanged
+        loc_b = session.get(FileLocation, (file.id, other_id))
+        assert loc_b is not None
+        assert loc_b.verified_at is not None  # the B replica was verified by the scan
+
+
 # ---------------------------------------------------------------------------
 # D2 (M6 Task 6): pass-2 N+1 batching + per-chunk checkpoint commits.
 #

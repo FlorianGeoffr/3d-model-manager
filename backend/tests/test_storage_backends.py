@@ -134,6 +134,24 @@ async def test_set_default_backend_idempotent_on_already_default(db_session) -> 
     assert result.is_default is True
 
 
+async def test_set_default_backend_re_default_to_lower_id_does_not_conflict(db_session) -> None:
+    # Regression: a single `UPDATE ... SET is_default=(id==:id)` transiently held
+    # two `true` rows against the NON-deferrable partial unique index whenever the
+    # new default's id sorted BEFORE the current default's, raising a duplicate-key
+    # 500. Clear-then-set must handle re-defaulting back to a LOWER id.
+    settings = get_settings()
+    a = await sb.create_backend(db_session, settings, "A", LocalConfig(), is_default=True)
+    b = await sb.create_backend(db_session, settings, "B", LocalConfig())
+
+    await sb.set_default_backend(db_session, b.id)  # move default up to the higher id
+    result = await sb.set_default_backend(db_session, a.id)  # ...and back down to the lower id
+
+    assert result.is_default is True
+    await db_session.refresh(b)
+    assert b.is_default is False
+    assert (await sb.get_default_backend(db_session)).id == a.id
+
+
 # -- delete guardrails ---------------------------------------------------
 
 

@@ -14,7 +14,7 @@ import httpx
 import pytest
 
 from app.config import get_settings
-from app.models import Setting
+from app.services.storage_backends import get_default_backend_row
 
 pytestmark = pytest.mark.usefixtures("library_root", "data_dir")
 
@@ -51,9 +51,12 @@ async def test_put_s3_config_then_get_redacts_secret(
     assert put_body["config"]["secret_key"] == "***"
     assert put_body["config"]["access_key"] == "AKIAEXAMPLE"
 
-    # M6 A1: the secret must be Fernet-encrypted at rest, not stored plaintext.
-    row = await db_session.get(Setting, "storage")
-    assert row.value["secret_key"] != "super-secret-value"
+    # M6 A1 + Workstream C: PUT now writes the DEFAULT storage_backends row
+    # (not the legacy settings["storage"] row); the secret must be
+    # Fernet-encrypted at rest there, not stored plaintext.
+    default_row = await get_default_backend_row(db_session)
+    assert default_row is not None
+    assert default_row.config["secret_key"] != "super-secret-value"
 
     get_response = await authenticated_client.get("/api/settings/storage")
 

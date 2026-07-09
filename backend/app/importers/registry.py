@@ -49,6 +49,12 @@ def get_importer(site: ImportSite) -> SiteImporter | None:
     return IMPORTER_REGISTRY.get(site)
 
 
+def registered_sites() -> list[ImportSite]:
+    """Every site with a registered importer, in registration order -- the
+    fan-out set for a federated (no-``site``) ``GET /imports/search``."""
+    return list(IMPORTER_REGISTRY.keys())
+
+
 from app.importers import makerworld as _makerworld  # noqa: E402,F401  (registers makerworld)
 from app.importers import printables as _printables  # noqa: E402,F401  (registers printables)
 from app.importers import thingiverse as _thingiverse  # noqa: E402,F401  (registers thingiverse)

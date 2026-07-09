@@ -13,6 +13,12 @@ from typing import ClassVar, Protocol, runtime_checkable
 
 from app.models.enums import ImportSite
 
+# Shared search page size (one call returns at most this many hits per site).
+# Centralized so the federated `GET /imports/search` can infer each site's
+# `has_more` ("came back full => probably another page") without reaching into
+# each importer's private constant.
+SEARCH_PAGE_SIZE = 20
+
 
 @dataclass(frozen=True)
 class ImportMetadata:

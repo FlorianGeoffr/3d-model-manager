@@ -103,7 +103,8 @@ async def test_search_imports_dispatches_to_the_sites_importer(
         "/api/imports/search", params={"site": "thingiverse", "q": "fake"}
     )
     assert r.status_code == 200, r.text
-    assert r.json() == [
+    body = r.json()
+    assert body["results"] == [
         {
             "site": "thingiverse",
             "external_id": "77",
@@ -112,6 +113,9 @@ async def test_search_imports_dispatches_to_the_sites_importer(
             "author": "fakeuser",
             "thumbnail_url": "https://fake.test/cover.png",
         }
+    ]
+    assert body["per_site"] == [
+        {"site": "thingiverse", "count": 1, "has_more": False, "status": "ok", "detail": None}
     ]
 
 
@@ -123,7 +127,8 @@ async def test_search_imports_empty_query_returns_empty_list(
         "/api/imports/search", params={"site": "thingiverse", "q": "   "}
     )
     assert r.status_code == 200
-    assert r.json() == []
+    body = r.json()
+    assert body["results"] == [] and body["per_site"] == []
 
 
 @pytest.mark.asyncio
@@ -145,3 +150,50 @@ async def test_search_imports_422_when_site_has_no_registered_importer(
         "/api/imports/search", params={"site": "printables", "q": "benchy"}
     )
     assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_search_imports_federates_across_sites_and_isolates_errors(
+    authenticated_client, library_root, data_dir, monkeypatch
+):
+    """No ``site`` fans out to every registered importer concurrently: results
+    merge, and one upstream raising becomes that site's ``error`` status rather
+    than a 500 for the whole search."""
+    from app.importers.base import SearchResult
+    from app.importers.registry import IMPORTER_REGISTRY
+    from app.models.enums import ImportSite
+
+    class OkImporter:
+        site = ImportSite.PRINTABLES
+
+        def search(self, query: str, page: int = 1) -> list[SearchResult]:
+            return [
+                SearchResult(
+                    site=ImportSite.PRINTABLES,
+                    external_id="1",
+                    title="P1",
+                    url="https://www.printables.com/model/1",
+                )
+            ]
+
+    class BoomImporter:
+        site = ImportSite.MAKERWORLD
+
+        def search(self, query: str, page: int = 1) -> list[SearchResult]:
+            raise RuntimeError("upstream down")
+
+    monkeypatch.setattr(
+        "app.importers.registry.IMPORTER_REGISTRY",
+        {ImportSite.PRINTABLES: OkImporter(), ImportSite.MAKERWORLD: BoomImporter()},
+        raising=True,
+    )
+    assert IMPORTER_REGISTRY  # sanity: patched dict is non-empty
+
+    r = await authenticated_client.get("/api/imports/search", params={"q": "benchy"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert [hit["external_id"] for hit in body["results"]] == ["1"]
+    statuses = {row["site"]: row for row in body["per_site"]}
+    assert statuses["printables"]["status"] == "ok" and statuses["printables"]["count"] == 1
+    assert statuses["makerworld"]["status"] == "error"
+    assert "upstream down" in statuses["makerworld"]["detail"]

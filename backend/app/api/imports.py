@@ -1,9 +1,9 @@
 """Gallery import endpoints (SPEC "API surface": imports (create/poll)).
 POST detects the site from the URL, creates a ``pending`` Import row, and
 dispatches ``import_from_url``; GET/{id} + list poll the row (the primary
-read path -- richer than the generic jobs row). ``GET /search`` (Workstream
-B task B1) dispatches to a single registered importer's ``search`` so the
-UI can browse-then-import instead of needing a URL up front. A deferred
+read path -- richer than the generic jobs row). ``GET /search`` searches one
+site or, with no ``site``, ALL registered sites concurrently (federated), so
+the UI can browse-then-import instead of needing a URL up front. A deferred
 site's URL (currently none -- see ``registry._DEFERRED_HOSTS``) would yield
 a friendly 422, never a crash; an unsupported one always does."""
 
@@ -15,31 +15,91 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
-from app.importers.registry import build_importer_for_url, deferred_site_for_url, get_importer
+from app.importers.base import SEARCH_PAGE_SIZE, SearchResult
+from app.importers.registry import (
+    build_importer_for_url,
+    deferred_site_for_url,
+    get_importer,
+    registered_sites,
+)
 from app.models.enums import ImportSite, ImportState
 from app.models.system import Import
-from app.schemas.imports import ImportCreate, ImportOut, SearchResultOut
+from app.schemas.imports import (
+    ImportCreate,
+    ImportOut,
+    SearchResponse,
+    SearchResultOut,
+    SiteSearchStatus,
+)
 from app.tasks.importing import import_from_url
 
 router = APIRouter(prefix="/imports", tags=["imports"])
 
 
-@router.get("/search", response_model=list[SearchResultOut])
-async def search_imports(site: ImportSite, q: str, page: int = 1) -> list[SearchResultOut]:
+@router.get("/search", response_model=SearchResponse)
+async def search_imports(q: str, site: ImportSite | None = None, page: int = 1) -> SearchResponse:
+    """Search one site (``?site=``) or, when ``site`` is omitted, ALL registered
+    sites at once (federated). Each site is queried on its own worker thread so
+    one slow or failing upstream can't stall or sink the others; results are
+    merged and a per-site status row reports counts, likely-more, and errors."""
     q = q.strip()
     if not q:
-        return []
-    importer = get_importer(site)
-    if importer is None:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"{site.value} isn't available")
-    # Every importer's `search()` is fully BLOCKING (a sync httpx.Client with
-    # a 30s timeout; Thingiverse/MakerWorld also open a blocking sync DB
-    # session for their token, and MakerWorld may do a blocking Bambu token
-    # refresh). Running it inline on the event loop would freeze EVERY client
-    # while one slow upstream hangs -- offload to a worker thread, same
-    # pattern as POST /settings/bambu/login and storage's probe_backend.
-    results = await anyio.to_thread.run_sync(importer.search, q, page)
-    return [SearchResultOut.from_dataclass(r) for r in results]
+        return SearchResponse(results=[], per_site=[])
+
+    if site is not None:
+        # An explicit site with no importer stays a hard 422 (asking for a
+        # specific unavailable site is an error); the federated path below
+        # instead just omits unregistered sites.
+        if get_importer(site) is None:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, f"{site.value} isn't available"
+            )
+        sites = [site]
+    else:
+        sites = registered_sites()
+
+    # Every importer's `search()` is fully BLOCKING (a sync httpx.Client with a
+    # 30s timeout; Thingiverse/MakerWorld also open a blocking sync DB session
+    # for their token, and MakerWorld may do a blocking Bambu token refresh).
+    # Fan out one worker thread per site under a task group so a slow upstream
+    # only delays itself, and catch per-site so one failure doesn't 500 the lot.
+    hits_by_site: dict[ImportSite, list[SearchResult]] = {}
+    errors_by_site: dict[ImportSite, str] = {}
+
+    async def run_one(target: ImportSite) -> None:
+        importer = get_importer(target)
+        if importer is None:
+            return
+        try:
+            hits_by_site[target] = await anyio.to_thread.run_sync(importer.search, q, page)
+        except Exception as exc:  # noqa: BLE001 -- isolate one upstream's failure
+            errors_by_site[target] = str(exc) or exc.__class__.__name__
+
+    async with anyio.create_task_group() as tg:
+        for target in sites:
+            tg.start_soon(run_one, target)
+
+    results: list[SearchResultOut] = []
+    per_site: list[SiteSearchStatus] = []
+    for target in sites:  # stable, site-grouped order
+        hits = hits_by_site.get(target, [])
+        results.extend(SearchResultOut.from_dataclass(r) for r in hits)
+        if target in errors_by_site:
+            per_site.append(
+                SiteSearchStatus(
+                    site=target.value, count=0, has_more=False, status="error",
+                    detail=errors_by_site[target],
+                )
+            )
+        else:
+            per_site.append(
+                SiteSearchStatus(
+                    site=target.value,
+                    count=len(hits),
+                    has_more=len(hits) >= SEARCH_PAGE_SIZE,
+                )
+            )
+    return SearchResponse(results=results, per_site=per_site)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=ImportOut)

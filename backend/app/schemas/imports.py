@@ -67,6 +67,26 @@ class SearchResultOut(BaseModel):
         )
 
 
+class SiteSearchStatus(BaseModel):
+    """Per-site outcome for a federated search (``GET /imports/search`` with no
+    ``site``), so the UI can show which sites answered, which errored, and
+    which likely have another page. ``status`` is ``ok`` | ``error``."""
+
+    site: str
+    count: int
+    has_more: bool
+    status: str = "ok"
+    detail: str | None = None
+
+
+class SearchResponse(BaseModel):
+    """Federated search payload: merged results across the queried sites plus a
+    per-site status row. A single-``site`` query returns one ``per_site`` entry."""
+
+    results: list[SearchResultOut]
+    per_site: list[SiteSearchStatus]
+
+
 class ImportTokensIn(BaseModel):
     thingiverse_token: str = ""
 

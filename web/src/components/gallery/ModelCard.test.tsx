@@ -93,27 +93,29 @@ describe("ModelCard", () => {
     expect(screen.queryByText(/^\+\d+$/)).not.toBeInTheDocument();
   });
 
-  it("shows a Sliced badge and humanized print time when both are set", async () => {
+  it("shows a Sliced marker and humanized print time in the spec row when both are set", async () => {
     renderCard({ ...MODEL, has_sliced: true, print_time_s: 5400 });
 
-    const statusBadges = within(await screen.findByTestId("status-badges"));
-    expect(statusBadges.getByText("Sliced")).toBeInTheDocument();
-    expect(statusBadges.getByText("1h 30m")).toBeInTheDocument();
+    const spec = within(await screen.findByTestId("model-spec"));
+    expect(spec.getByText("Sliced")).toBeInTheDocument();
+    expect(spec.getByText("1h 30m")).toBeInTheDocument();
   });
 
-  it("shows only the print-time badge when the model isn't sliced", async () => {
+  it("shows the print time but no Sliced marker when the model isn't sliced", async () => {
     renderCard({ ...MODEL, has_sliced: false, print_time_s: 2700 });
 
-    const statusBadges = within(await screen.findByTestId("status-badges"));
-    expect(statusBadges.queryByText("Sliced")).not.toBeInTheDocument();
-    expect(statusBadges.getByText("45m")).toBeInTheDocument();
+    const spec = within(await screen.findByTestId("model-spec"));
+    expect(spec.queryByText("Sliced")).not.toBeInTheDocument();
+    expect(spec.getByText("45m")).toBeInTheDocument();
   });
 
-  it("renders no status badges when the model has no sliced file and no print time", async () => {
+  it("omits print time and the Sliced marker when the model has neither", async () => {
     renderCard(MODEL);
 
-    expect(await screen.findByText("Articulated Dragon")).toBeInTheDocument();
-    expect(screen.queryByTestId("status-badges")).not.toBeInTheDocument();
+    const spec = within(await screen.findByTestId("model-spec"));
+    expect(spec.queryByText("Sliced")).not.toBeInTheDocument();
+    // the file count is still shown (spec row renders only present fields)
+    expect(spec.getByText("3 files")).toBeInTheDocument();
   });
 
   it("shows a source badge when the model was imported, none for a manual model", async () => {

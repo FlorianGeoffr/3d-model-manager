@@ -80,27 +80,27 @@ describe("LibraryPage", () => {
     });
   });
 
-  it("filters by a single format via the honest radio group, clearing back to All", async () => {
+  it("filters by a single format via the chip facet, clearing back to All", async () => {
     mockGalleryOk();
     renderLibraryPage();
     await screen.findByText("No models yet");
 
-    fireEvent.click(screen.getByRole("radio", { name: "STL" }));
+    fireEvent.click(screen.getByRole("button", { name: "STL" }));
     await waitFor(() => expect(lastModelsCall()).toContain("format=stl"));
 
-    fireEvent.click(screen.getByRole("radio", { name: "All" }));
+    fireEvent.click(screen.getByRole("button", { name: "All" }));
     await waitFor(() => expect(lastModelsCall()).not.toContain("format="));
   });
 
-  it("only lets one format be active at a time (radio semantics, not independent checkboxes)", async () => {
+  it("only lets one format be active at a time (single-select chips)", async () => {
     mockGalleryOk();
     renderLibraryPage();
     await screen.findByText("No models yet");
 
-    fireEvent.click(screen.getByRole("radio", { name: "STL" }));
+    fireEvent.click(screen.getByRole("button", { name: "STL" }));
     await waitFor(() => expect(lastModelsCall()).toContain("format=stl"));
 
-    fireEvent.click(screen.getByRole("radio", { name: "3MF" }));
+    fireEvent.click(screen.getByRole("button", { name: "3MF" }));
     await waitFor(() => expect(lastModelsCall()).toContain("format=3mf"));
     expect(lastModelsCall()).not.toContain("format=stl");
   });

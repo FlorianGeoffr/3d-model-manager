@@ -292,3 +292,34 @@ async def test_connection_test_unknown_backend_is_404(
     response = await authenticated_client.post("/api/settings/storage/backends/999999/test")
 
     assert response.status_code == 404
+
+
+# -- "Move all models here" (M8 F: bulk relocate replacing legacy migrate) ----
+
+
+async def test_migrate_library_to_backend_sets_default_and_runs_a_job(
+    authenticated_client: httpx.AsyncClient, tmp_path
+) -> None:
+    primary = await _create_local(authenticated_client, "Primary", str(tmp_path / "p"))
+    await authenticated_client.post(f"/api/settings/storage/backends/{primary['id']}/default")
+    spare = await _create_local(authenticated_client, "Spare", str(tmp_path / "s"))
+
+    response = await authenticated_client.post(
+        f"/api/settings/storage/backends/{spare['id']}/migrate"
+    )
+    assert response.status_code == 200, response.text
+    job = response.json()
+    assert job["type"] == "relocate_all"
+
+    listing = (await authenticated_client.get("/api/settings/storage/backends")).json()
+    by_id = {b["id"]: b for b in listing}
+    assert by_id[spare["id"]]["is_default"] is True
+    assert by_id[primary["id"]]["is_default"] is False
+
+
+async def test_migrate_library_to_unknown_backend_is_404(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    response = await authenticated_client.post("/api/settings/storage/backends/999999/migrate")
+
+    assert response.status_code == 404

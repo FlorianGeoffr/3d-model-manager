@@ -12,7 +12,6 @@ import type {
   StorageBackendCreateIn,
   StorageBackendOut,
   StorageBackendUpdateIn,
-  StorageConfigIn,
   StorageConfigOut,
 } from "@/api/types";
 
@@ -23,29 +22,6 @@ export const storageConfigQueryOptions = queryOptions({
 
 export function useStorageConfig() {
   return useQuery(storageConfigQueryOptions);
-}
-
-/** Direct set (`PUT`) -- for pointing at an already-populated or empty
- * backend with no copy needed. `useMigrateStorage` below is the safe
- * "copy the existing library across, verify, then cut over" path. */
-export function useUpdateStorageConfig() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (payload: StorageConfigIn) => api.put<StorageConfigOut>("/settings/storage", payload),
-    onSuccess: (data) => queryClient.setQueryData(storageConfigQueryOptions.queryKey, data),
-  });
-}
-
-export function useTestConnection() {
-  return useMutation({
-    mutationFn: (payload: StorageConfigIn) => api.post<ConnectionTestOut>("/settings/storage/test", payload),
-  });
-}
-
-export function useMigrateStorage() {
-  return useMutation({
-    mutationFn: (payload: StorageConfigIn) => api.post<JobOut>("/settings/storage/migrate", payload),
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -94,8 +70,7 @@ export function useDeleteBackend() {
   });
 }
 
-/** Probes `id`'s connection -- mirrors `useTestConnection` above, scoped to
- * an already-saved backend row instead of an unsaved candidate config. */
+/** Probes an already-saved backend row's connection by id. */
 export function useTestBackend() {
   return useMutation({
     mutationFn: (id: number) => api.post<ConnectionTestOut>(`/settings/storage/backends/${id}/test`),
@@ -106,6 +81,17 @@ export function useSetDefaultBackend() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: number) => api.post<StorageBackendOut>(`/settings/storage/backends/${id}/default`),
+    onSuccess: () => invalidateBackends(queryClient),
+  });
+}
+
+/** "Move all models here" (M8 F): sets this backend as the write-default AND
+ * relocates the whole library onto it (a job), replacing the legacy
+ * whole-library migrate. */
+export function useMigrateToBackend() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => api.post<JobOut>(`/settings/storage/backends/${id}/migrate`),
     onSuccess: () => invalidateBackends(queryClient),
   });
 }

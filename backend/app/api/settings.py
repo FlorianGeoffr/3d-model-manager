@@ -42,6 +42,7 @@ from app.services.storage_probe import probe_backend
 from app.storage.config import SECRET_FIELD_BY_BACKEND, StorageConfig, parse_storage_config
 from app.storage.registry import get_backend
 from app.tasks.migrate import migrate_storage
+from app.tasks.relocate import relocate_all_models
 
 if TYPE_CHECKING:
     from app.models import StorageBackendRow
@@ -323,6 +324,27 @@ async def set_default_storage_backend(
 ) -> StorageBackendOut:
     row = await storage_backends_service.set_default_backend(db, backend_id)
     return StorageBackendOut.from_row(row, settings)
+
+
+@router.post("/storage/backends/{backend_id}/migrate", response_model=JobOut)
+async def migrate_library_to_backend(
+    backend_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> JobOut:
+    """"Move all models here" (M8 F): set this backend as the write-default AND
+    relocate the whole library onto it. The multi-backend replacement for the
+    legacy whole-library migrate -- reuses the per-file relocate path so
+    ``files.backend_id`` and ``file_locations`` stay accurate."""
+    await storage_backends_service.get_backend_row(db, backend_id)  # 404 if unknown
+    await storage_backends_service.set_default_backend(db, backend_id)
+    job = await jobs_service.create_job(
+        db, id=uuid.uuid4(), type="relocate_all", subject_type=None, subject_id=None
+    )
+    relocate_all_models.apply_async(args=[str(job.id), backend_id, "move"], task_id=str(job.id))
+    # Eager Celery (tests) already ran the relocate inline through its own sync
+    # session -- refresh so this async session returns the terminal job state.
+    await db.refresh(job)
+    return JobOut.from_model(job)
 
 
 @router.get("/import-tokens", response_model=ImportTokensOut)

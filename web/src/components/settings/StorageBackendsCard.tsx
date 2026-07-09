@@ -1,8 +1,8 @@
 /**
- * Storage backends list (Workstream C task C4): the full `storage_backends`
- * table, evolved from the single-backend `StorageSettingsCard` still above
- * it on the Settings page. Each row: name, scheme, a "Default" badge, and
- * Test/Set default/Edit/Delete actions. Add/Edit reuse `StorageBackendForm`
+ * Storage backends list: the full `storage_backends` table -- the SOLE
+ * storage UI (the legacy single-backend `StorageSettingsCard` was removed in
+ * M8 F). Each row: name, scheme, a "Default" badge, and Test/Set default/Move
+ * all here/Edit/Delete actions. Add/Edit reuse `StorageBackendForm`
  * (+ its `seedDraft`/`missingRequiredFields`/`stripBlankSecrets` helpers) in
  * a `Dialog`, same shape as the legacy card's own form -- just scoped to one
  * `storage_backends` row instead of "the" active config. Delete goes through
@@ -16,6 +16,7 @@ import { ApiError } from "@/api/client";
 import {
   useCreateBackend,
   useDeleteBackend,
+  useMigrateToBackend,
   useSetDefaultBackend,
   useStorageBackends,
   useTestBackend,
@@ -169,6 +170,7 @@ function BackendRow({ backend }: { backend: StorageBackendOut }) {
   const testBackend = useTestBackend();
   const setDefaultBackend = useSetDefaultBackend();
   const deleteBackend = useDeleteBackend();
+  const migrateBackend = useMigrateToBackend();
 
   const testingThis = testBackend.isPending && testBackend.variables === backend.id;
   const testResultForThis = (testBackend.isSuccess || testBackend.isError) && testBackend.variables === backend.id;
@@ -176,6 +178,8 @@ function BackendRow({ backend }: { backend: StorageBackendOut }) {
   const defaultErrorForThis = setDefaultBackend.isError && setDefaultBackend.variables === backend.id;
   const deletingThis = deleteBackend.isPending && deleteBackend.variables === backend.id;
   const deleteErrorForThis = deleteBackend.isError && deleteBackend.variables === backend.id;
+  const migratingThis = migrateBackend.isPending && migrateBackend.variables === backend.id;
+  const migrateErrorForThis = migrateBackend.isError && migrateBackend.variables === backend.id;
 
   return (
     <TableRow>
@@ -203,6 +207,19 @@ function BackendRow({ backend }: { backend: StorageBackendOut }) {
             >
               {settingDefaultThis ? "Setting..." : "Set default"}
             </Button>
+          ) : null}
+          {!backend.is_default ? (
+            <ConfirmDialog
+              trigger={
+                <Button type="button" size="sm" variant="outline" disabled={migratingThis}>
+                  {migratingThis ? "Moving..." : "Move all here"}
+                </Button>
+              }
+              title={`Move the whole library to "${backend.name}"?`}
+              description="Makes this backend the default and moves every model's files onto it (copy, verify, then remove the source). Runs as a job you can watch on the Jobs page."
+              confirmLabel="Move all here"
+              onConfirm={() => migrateBackend.mutate(backend.id)}
+            />
           ) : null}
           <BackendFormDialog
             backend={backend}
@@ -244,6 +261,11 @@ function BackendRow({ backend }: { backend: StorageBackendOut }) {
         {defaultErrorForThis ? (
           <p role="alert" className="mt-1 text-xs text-destructive">
             {setDefaultBackend.error instanceof ApiError ? setDefaultBackend.error.detail : "Could not set default backend"}
+          </p>
+        ) : null}
+        {migrateErrorForThis ? (
+          <p role="alert" className="mt-1 text-xs text-destructive">
+            {migrateBackend.error instanceof ApiError ? migrateBackend.error.detail : "Could not move the library"}
           </p>
         ) : null}
         {deleteErrorForThis ? (

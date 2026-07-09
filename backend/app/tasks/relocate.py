@@ -115,6 +115,44 @@ def relocate_model_storage(job_id: str, model_id: int, target_backend_id: int, m
         )
 
 
+@celery_app.task(name="app.tasks.relocate.relocate_all_models")
+def relocate_all_models(job_id: str, target_backend_id: int, mode: str = "move") -> None:
+    """Bulk "move the whole library onto backend X" (M8 F): the correct
+    multi-backend replacement for the legacy ``migrate_storage`` -- relocates
+    EVERY file across every model to the target using the exact same
+    per-file, verify-before-delete, retryable path as
+    ``relocate_model_storage`` (so ``files.backend_id`` + ``file_locations``
+    stay accurate, unlike migrate which only flipped the default row's
+    config). Files already primary on the target are skipped. The caller
+    (``POST /settings/storage/backends/{id}/migrate``) sets the target as the
+    write-default before dispatching, so new uploads also land there."""
+    settings = get_settings()
+    with base.sync_session() as s:
+        jobs.mark_running(s, job_id)
+
+    try:
+        if mode not in MODES:
+            raise ValueError(f"unknown relocate mode: {mode!r}; expected one of {sorted(MODES)}")
+
+        with base.sync_session() as s:
+            file_ids = list(s.execute(select(File.id).order_by(File.id)).scalars())
+            target_backend = backend_for_id_sync(s, settings, target_backend_id)
+
+        for file_id in file_ids:
+            with base.sync_session() as s:
+                _relocate_one_file(s, settings, file_id, target_backend_id, target_backend, mode)
+    except Exception as exc:
+        with base.sync_session() as s:
+            jobs.mark_failed(s, job_id, str(exc))
+        raise
+
+    try:
+        with base.sync_session() as s:
+            jobs.mark_done(s, job_id)
+    except Exception:
+        logger.warning("relocate_all %s: succeeded but marking done failed", job_id, exc_info=True)
+
+
 def _relocate_one_file(
     s: Session,
     settings: Settings,

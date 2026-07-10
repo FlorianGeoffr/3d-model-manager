@@ -71,7 +71,7 @@ export function PlatePanel({ file }: { file: FileOut }) {
   const header = headerLine(file);
 
   return (
-    <div className="mx-auto max-w-3xl space-y-3">
+    <div className="space-y-3">
       {header ? <p className="text-sm text-muted-foreground">{header}</p> : null}
       {plates.length === 0 ? (
         <p className="py-8 text-center text-sm text-muted-foreground">No plate details available yet.</p>

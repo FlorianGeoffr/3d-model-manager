@@ -208,6 +208,26 @@ export function RevisionsTab({ model }: { model: ModelDetail }) {
   const [diffB, setDiffB] = useState<number>();
   const diffQuery = useRevisionDiff(diffA, diffB);
 
+  const historyList = (
+    <ol className="space-y-4 border-l border-border pl-4">
+      {revisions.map((revision) => (
+        <li key={revision.id} className="relative">
+          <span className="absolute top-1.5 -left-[21px] size-2.5 rounded-full bg-primary" />
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-medium">#{revision.number}</span>
+            {revision.name ? <span className="text-sm">{revision.name}</span> : null}
+            {model.current_revision?.id === revision.id ? <Badge>Current</Badge> : null}
+          </div>
+          {revision.note ? <p className="text-sm text-muted-foreground">{revision.note}</p> : null}
+          <p className="text-xs text-muted-foreground">
+            {formatDateTime(revision.created_at)} · {revision.file_count} files
+          </p>
+          <RevisionNotes revision={revision} modelId={model.id} />
+        </li>
+      ))}
+    </ol>
+  );
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -215,34 +235,21 @@ export function RevisionsTab({ model }: { model: ModelDetail }) {
         <NewRevisionDialog model={model} />
       </div>
 
-      <ol className="space-y-4 border-l border-border pl-4">
-        {revisions.map((revision) => (
-          <li key={revision.id} className="relative">
-            <span className="absolute top-1.5 -left-[21px] size-2.5 rounded-full bg-primary" />
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="font-medium">#{revision.number}</span>
-              {revision.name ? <span className="text-sm">{revision.name}</span> : null}
-              {model.current_revision?.id === revision.id ? <Badge>Current</Badge> : null}
+      {revisions.length >= 2 ? (
+        <div className="grid gap-6 xl:grid-cols-[2fr_1fr]">
+          {historyList}
+          <div className="space-y-3 rounded-lg border border-border p-4">
+            <h4 className="text-sm font-semibold">Compare revisions</h4>
+            <div className="flex items-center gap-2">
+              <RevisionSelect revisions={revisions} value={diffA} onChange={setDiffA} label="From" />
+              <span className="text-muted-foreground">→</span>
+              <RevisionSelect revisions={revisions} value={diffB} onChange={setDiffB} label="To" />
             </div>
-            {revision.note ? <p className="text-sm text-muted-foreground">{revision.note}</p> : null}
-            <p className="text-xs text-muted-foreground">
-              {formatDateTime(revision.created_at)} · {revision.file_count} files
-            </p>
-            <RevisionNotes revision={revision} modelId={model.id} />
-          </li>
-        ))}
-      </ol>
-
-      {revisions.length >= 2 && (
-        <div className="space-y-3 rounded-lg border border-border p-4">
-          <h4 className="text-sm font-semibold">Compare revisions</h4>
-          <div className="flex items-center gap-2">
-            <RevisionSelect revisions={revisions} value={diffA} onChange={setDiffA} label="From" />
-            <span className="text-muted-foreground">→</span>
-            <RevisionSelect revisions={revisions} value={diffB} onChange={setDiffB} label="To" />
+            {diffQuery.data ? <DiffView diff={diffQuery.data} /> : null}
           </div>
-          {diffQuery.data ? <DiffView diff={diffQuery.data} /> : null}
         </div>
+      ) : (
+        historyList
       )}
     </div>
   );

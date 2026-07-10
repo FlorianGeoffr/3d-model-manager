@@ -15,6 +15,7 @@ import type { JobOut, JobState } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { PageContainer } from "@/components/ui/page-container";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -65,7 +66,7 @@ export function JobsPage() {
   const jobs = filter === "attention" ? allJobs.filter((job) => NEEDS_ATTENTION.has(job.state)) : allJobs;
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
+    <PageContainer width="default">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h1 className="text-lg font-semibold text-foreground">Jobs</h1>
@@ -127,7 +128,7 @@ export function JobsPage() {
           )}
         </CardContent>
       </Card>
-    </div>
+    </PageContainer>
   );
 }
 

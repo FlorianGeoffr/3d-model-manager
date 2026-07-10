@@ -143,7 +143,10 @@ function ReviewQueue({ items, loading }: { items: PendingImport[]; loading: bool
         ) : items.length === 0 ? (
           <p className="text-sm text-muted-foreground">Nothing waiting for review.</p>
         ) : (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3" data-testid="review-queue">
+          <div
+            className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
+            data-testid="review-queue"
+          >
             {items.map((item) => (
               <Card key={item.id} className="gap-2 overflow-hidden" size="sm">
                 <div className="relative flex aspect-square items-center justify-center bg-muted">

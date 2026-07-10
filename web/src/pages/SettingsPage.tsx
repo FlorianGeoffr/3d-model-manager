@@ -8,6 +8,7 @@ import { SiteTokensCard } from "@/components/settings/SiteTokensCard";
 import { StorageBackendsCard } from "@/components/settings/StorageBackendsCard";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { PageContainer } from "@/components/ui/page-container";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
@@ -18,7 +19,7 @@ export function SettingsPage() {
   const backendsQuery = useStorageBackends();
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6">
+    <PageContainer width="default">
       <div>
         <h1 className="text-lg font-semibold text-foreground">Settings</h1>
         <p className="text-sm text-muted-foreground">
@@ -56,9 +57,11 @@ export function SettingsPage() {
           <TabsContent value="printer" className="space-y-6">
             <PrinterSetupCard />
           </TabsContent>
-          <TabsContent value="imports" className="space-y-6">
+          <TabsContent value="imports" className="grid gap-6 xl:grid-cols-2">
             <SiteTokensCard />
-            <BambuAccountCard />
+            {/* The Bambu login form is itself two columns wide (email/region +
+                password) -- it needs the full row rather than half of it. */}
+            <BambuAccountCard className="xl:col-span-2" />
             <PrintablesAccountCard />
           </TabsContent>
           <TabsContent value="scan" className="space-y-6">
@@ -66,6 +69,6 @@ export function SettingsPage() {
           </TabsContent>
         </Tabs>
       )}
-    </div>
+    </PageContainer>
   );
 }

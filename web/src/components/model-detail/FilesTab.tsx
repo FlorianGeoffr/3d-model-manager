@@ -128,7 +128,7 @@ export function FilesTab({ model }: { model: ModelDetail }) {
                   <TableCell>
                     <FileThumb file={file} />
                   </TableCell>
-                  <TableCell className="max-w-64 font-mono text-xs">
+                  <TableCell className="max-w-[28rem] font-mono text-xs 2xl:max-w-none">
                     <div className="truncate" title={file.rel_path}>
                       {file.rel_path}
                     </div>

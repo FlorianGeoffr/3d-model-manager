@@ -28,11 +28,11 @@ const REGIONS: ReadonlyArray<{ value: BambuRegion; label: string }> = [
   { value: "china", label: "China" },
 ];
 
-export function BambuAccountCard() {
+export function BambuAccountCard({ className }: { className?: string }) {
   const status = useBambuStatus();
 
   return (
-    <Card>
+    <Card className={className}>
       <CardHeader>
         <CardTitle>Bambu Lab account</CardTitle>
         <CardDescription>

@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PageContainer } from "@/components/ui/page-container";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { detectSite } from "@/lib/importSites";
@@ -36,7 +37,7 @@ export function AddPage() {
   const active = useImport(activeImportId);
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6">
+    <PageContainer width="fluid">
       <div>
         <h1 className="text-lg font-semibold text-foreground">Add to library</h1>
         <p className="text-sm text-muted-foreground">
@@ -66,7 +67,7 @@ export function AddPage() {
       </Tabs>
 
       {active.data && <ImportProgress importId={active.data.id} />}
-    </div>
+    </PageContainer>
   );
 }
 
@@ -98,7 +99,7 @@ function UploadPanel() {
   }
 
   return (
-    <Card>
+    <Card className="max-w-3xl">
       <CardHeader>
         <CardTitle>Upload files</CardTitle>
         <CardDescription>Name the new model, then add files to the queue.</CardDescription>
@@ -140,7 +141,7 @@ function UrlImportCard({ onImportStarted }: { onImportStarted: (id: number) => v
   }
 
   return (
-    <Card>
+    <Card className="max-w-3xl">
       <CardHeader>
         <CardTitle>Model URL</CardTitle>
         <CardDescription>The site is detected automatically.</CardDescription>
@@ -237,7 +238,7 @@ function SearchPanel({ onImportStarted }: { onImportStarted: (id: number) => voi
           })}
         </div>
 
-        <div className="flex flex-col gap-1.5">
+        <div className="flex max-w-3xl flex-col gap-1.5">
           <Label htmlFor="search-query">Search query</Label>
           <Input
             id="search-query"
@@ -260,7 +261,7 @@ function SearchPanel({ onImportStarted }: { onImportStarted: (id: number) => voi
             {noSites ? "Select at least one site to search." : "Type to search."}
           </p>
         ) : search.isLoading ? (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
             {Array.from({ length: 6 }, (_, i) => (
               <Skeleton key={i} className="h-44 w-full rounded-lg" />
             ))}
@@ -273,7 +274,7 @@ function SearchPanel({ onImportStarted }: { onImportStarted: (id: number) => voi
           <p className="text-sm text-muted-foreground">No results for &quot;{debouncedQuery}&quot;.</p>
         ) : (
           <>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
               {results.map((result) => (
                 <SearchResultCard
                   key={`${result.site}-${result.external_id}`}

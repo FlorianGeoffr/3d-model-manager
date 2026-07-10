@@ -12,6 +12,7 @@ import { usePrinters } from "@/api/printers";
 import { PrintJobHistory } from "@/components/printer/PrintJobHistory";
 import { PrinterStatusPanel } from "@/components/printer/PrinterStatusPanel";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { PageContainer } from "@/components/ui/page-container";
 import { Skeleton } from "@/components/ui/skeleton";
 
 export function PrinterPage() {
@@ -35,7 +36,7 @@ export function PrinterPage() {
     );
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6">
+    <PageContainer width="narrow">
       <h1 className="text-lg font-semibold">Printer</h1>
       {printers.isLoading ? (
         <Skeleton className="h-40 w-full rounded-xl" />
@@ -59,6 +60,6 @@ export function PrinterPage() {
           .
         </p>
       )}
-    </div>
+    </PageContainer>
   );
 }

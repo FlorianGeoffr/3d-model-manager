@@ -416,7 +416,7 @@ function ViewerStage({
                       onCheckedChange={(next) => onToggleFile(file.id, next === true)}
                       aria-label={file.rel_path}
                     />
-                    <label className="relative inline-flex shrink-0 cursor-pointer items-center">
+                    <label className="relative inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full focus-within:ring-2 focus-within:ring-ring/50">
                       <FilamentChip color={partColor ?? "#cccccc"} />
                       <input
                         type="color"
@@ -434,7 +434,7 @@ function ViewerStage({
                         type="button"
                         aria-label={`Reset color for ${file.rel_path}`}
                         onClick={() => onClearPartColor(file.id)}
-                        className="shrink-0 text-muted-foreground hover:text-foreground"
+                        className="inline-flex size-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
                       >
                         <RotateCcwIcon className="size-3.5" />
                       </button>

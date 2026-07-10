@@ -184,6 +184,32 @@ def test_list_list_items_for_a_collection_maps_things(monkeypatch):
     assert result.thumbnail_url == fx.COLLECTION_THINGS[0]["thumbnail"]
 
 
+def test_list_list_items_url_uses_public_url_or_falls_back_to_canonical(monkeypatch):
+    # Review fix: a hit without public_url must not map to url="" (which
+    # silently fails canonicalize() when the SearchResult round-trips through
+    # POST /imports) -- it must fall back to the canonical thing: URL form.
+    # A hit WITH public_url must keep using that value verbatim (existing
+    # behavior, unchanged) -- proven here with a public_url that differs from
+    # the bare canonical form, so a stray "always recompute" regression would
+    # also be caught.
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/collections/44156217/things"
+        return httpx.Response(200, json=fx.COLLECTION_THINGS_MIXED_PUBLIC_URL)
+
+    monkeypatch.setattr(thingiverse, "_token", lambda: "tok")
+    monkeypatch.setattr(
+        thingiverse,
+        "_client",
+        lambda token=None: httpx.Client(
+            base_url="https://api.thingiverse.com", transport=httpx.MockTransport(handler)
+        ),
+    )
+    results = ThingiverseImporter().list_list_items("44156217")
+    assert len(results) == 2
+    assert results[0].url == "https://www.thingiverse.com/thing:7378379?ref=collection"
+    assert results[1].url == "https://www.thingiverse.com/thing:9988776"
+
+
 def test_list_list_items_likes_routes_to_the_likes_endpoint(monkeypatch):
     paths = []
 

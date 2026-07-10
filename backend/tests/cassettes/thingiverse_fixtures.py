@@ -102,3 +102,25 @@ LIKES_TERMINALFOO = [
         "creator": {"name": "Adamow"},
     },
 ]
+
+# Not a real capture -- two things exercising list_list_items' public_url
+# handling (review fix): one carries a public_url that differs from the
+# bare canonical form (proving it's used verbatim, not recomputed), the
+# other lacks public_url entirely (proving the fallback kicks in instead of
+# emitting url="", which silently fails canonicalize() on POST /imports
+# round-trip).
+COLLECTION_THINGS_MIXED_PUBLIC_URL = [
+    {
+        "id": 7378379,
+        "name": "Flight radar (no soldering)",
+        "public_url": "https://www.thingiverse.com/thing:7378379?ref=collection",
+        "thumbnail": "https://cdn.thingiverse.com/assets/bf/19/54/a7/4b/IMG_7467.jpeg",
+        "creator": {"name": "Adamow"},
+    },
+    {
+        "id": 9988776,
+        "name": "No Public URL Thing",
+        "thumbnail": "https://cdn.thingiverse.com/assets/aa/bb/no-url.jpeg",
+        "creator": {"name": "Adamow"},
+    },
+]

@@ -240,7 +240,7 @@ class ThingiverseImporter:
                     site=self.site,
                     external_id=str(tid),
                     title=t.get("name") or f"thing {tid}",
-                    url=t.get("public_url") or "",
+                    url=t.get("public_url") or f"https://www.thingiverse.com/thing:{tid}",
                     author=(t.get("creator") or {}).get("name"),
                     thumbnail_url=t.get("thumbnail"),
                 )

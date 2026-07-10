@@ -46,6 +46,7 @@ function fakeStatus(overrides: Partial<PrinterStatusOut> = {}): PrinterStatusOut
     bed_temper: 60,
     subtask_name: "benchy.gcode",
     wifi_signal: "-50dBm",
+    trays: [],
     ...overrides,
   };
 }

@@ -81,7 +81,7 @@ describe("ViewerWindowPage", () => {
     const viewer = await screen.findByTestId("model-viewer");
     expect(viewer).toHaveAttribute("data-background", "#a1a1aa");
     const parts = modelViewerMock.mock.calls.at(-1)?.[0].parts;
-    expect(parts.map((part: { id: number }) => part.id)).toEqual([1, 2]);
+    expect((parts ?? []).map((part: { id: number }) => part.id)).toEqual([1, 2]);
   });
 
   it("shows a not-found message when the model is missing", async () => {

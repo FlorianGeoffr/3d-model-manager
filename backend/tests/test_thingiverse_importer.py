@@ -2,7 +2,7 @@ import httpx
 import pytest
 
 from app.importers import thingiverse
-from app.importers.base import ImportFile
+from app.importers.base import ImportFile, RemoteList
 from app.importers.thingiverse import ThingiverseImporter
 from app.models.enums import ImportSite
 from tests.cassettes import thingiverse_fixtures as fx
@@ -125,6 +125,110 @@ def test_search_maps_hits_to_search_results(monkeypatch):
 
 def test_search_empty_query_returns_empty_list():
     assert ThingiverseImporter().search("") == []
+
+
+def test_list_user_lists_maps_collections_and_appends_likes(monkeypatch):
+    paths = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if request.url.path == "/users/me/":
+            return httpx.Response(200, json=fx.ME_TERMINALFOO)
+        assert request.url.path == f"/users/{fx.USERNAME}/collections"
+        return httpx.Response(200, json=fx.COLLECTIONS_TERMINALFOO)
+
+    monkeypatch.setattr(thingiverse, "_token", lambda: "tok")
+    monkeypatch.setattr(
+        thingiverse,
+        "_client",
+        lambda token=None: httpx.Client(
+            base_url="https://api.thingiverse.com", transport=httpx.MockTransport(handler)
+        ),
+    )
+    lists = ThingiverseImporter().list_user_lists()
+    assert paths == ["/users/me/", f"/users/{fx.USERNAME}/collections"]
+    assert [item.kind for item in lists] == ["collection", "likes"]
+    collection = lists[0]
+    assert collection.site is ImportSite.THINGIVERSE
+    assert collection.list_id == "44156217"
+    assert collection.title == "Things to Make"
+    assert collection.count == 1
+    assert lists[1] == RemoteList(
+        site=ImportSite.THINGIVERSE, list_id="likes", kind="likes", title="Liked things", count=None
+    )
+
+
+def test_list_list_items_for_a_collection_maps_things(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/collections/44156217/things"
+        params = dict(request.url.params)
+        assert params == {"page": "1", "per_page": "20"}
+        return httpx.Response(200, json=fx.COLLECTION_THINGS)
+
+    monkeypatch.setattr(thingiverse, "_token", lambda: "tok")
+    monkeypatch.setattr(
+        thingiverse,
+        "_client",
+        lambda token=None: httpx.Client(
+            base_url="https://api.thingiverse.com", transport=httpx.MockTransport(handler)
+        ),
+    )
+    results = ThingiverseImporter().list_list_items("44156217")
+    assert len(results) == 1
+    result = results[0]
+    assert result.site is ImportSite.THINGIVERSE
+    assert result.external_id == "7378379"
+    assert result.title == "Flight radar (no soldering)"
+    assert result.url == "https://www.thingiverse.com/thing:7378379"
+    assert result.author == "Adamow"
+    assert result.thumbnail_url == fx.COLLECTION_THINGS[0]["thumbnail"]
+
+
+def test_list_list_items_likes_routes_to_the_likes_endpoint(monkeypatch):
+    paths = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        if request.url.path == "/users/me/":
+            return httpx.Response(200, json=fx.ME_TERMINALFOO)
+        assert request.url.path == f"/users/{fx.USERNAME}/likes"
+        params = dict(request.url.params)
+        assert params == {"page": "1", "per_page": "20"}
+        return httpx.Response(200, json=fx.LIKES_TERMINALFOO)
+
+    monkeypatch.setattr(thingiverse, "_token", lambda: "tok")
+    monkeypatch.setattr(
+        thingiverse,
+        "_client",
+        lambda token=None: httpx.Client(
+            base_url="https://api.thingiverse.com", transport=httpx.MockTransport(handler)
+        ),
+    )
+    results = ThingiverseImporter().list_list_items("likes")
+    assert paths == ["/users/me/", f"/users/{fx.USERNAME}/likes"]
+    assert len(results) == 1
+    assert results[0].external_id == "7378379"
+    assert results[0].thumbnail_url == fx.LIKES_TERMINALFOO[0]["thumbnail"]
+
+
+def test_saved_collections_without_a_token_return_empty_list(monkeypatch):
+    # Same convention as search(): no app token configured -- both methods
+    # must degrade to [] rather than raise, and must not even try to build a
+    # client (username resolution needs a token too).
+    monkeypatch.setattr(thingiverse, "_token", lambda: None)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("must not make a request with no token")
+
+    monkeypatch.setattr(
+        thingiverse,
+        "_client",
+        lambda token=None: httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    importer = ThingiverseImporter()
+    assert importer.list_user_lists() == []
+    assert importer.list_list_items("44156217") == []
+    assert importer.list_list_items("likes") == []
 
 
 @pytest.mark.live_importer

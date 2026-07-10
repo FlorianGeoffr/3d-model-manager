@@ -53,3 +53,52 @@ SEARCH_MARVIN = {
         },
     ],
 }
+
+# -- saved collections / likes (M9 A3) ---------------------------------
+# Trimmed from REAL response bodies live-captured 2026-07-10 against the
+# official api.thingiverse.com developer API, app-token account
+# @terminalfoo (user id 9772422). Kept to only the fields
+# list_user_lists()/list_list_items() actually read -- the real bodies also
+# carry description_html, is_editable, is_liked, tags[], comment_count,
+# rank, moderation, ... which the importer never touches.
+
+USERNAME = "terminalfoo"
+
+# GET /users/me/ -> {"name": "<username>"} (there is no per-user OAuth on a
+# static app token, but this "who am I" resource still resolves off it).
+ME_TERMINALFOO = {"name": USERNAME}
+
+# GET /users/terminalfoo/collections -- the live account's one real
+# collection ("Things to Make", id 44156217, count 1).
+COLLECTIONS_TERMINALFOO = [
+    {"id": 44156217, "name": "Things to Make", "count": 1},
+]
+
+# GET /collections/44156217/things -- the one real thing inside it.
+COLLECTION_THINGS = [
+    {
+        "id": 7378379,
+        "name": "Flight radar (no soldering)",
+        "public_url": "https://www.thingiverse.com/thing:7378379",
+        "thumbnail": "https://cdn.thingiverse.com/assets/bf/19/54/a7/4b/IMG_7467.jpeg",
+        "creator": {"name": "Adamow"},
+    },
+]
+
+# GET /users/terminalfoo/likes -- same real thing, liked. The likes
+# endpoint's `thumbnail` is a resize.thingiverse.com-wrapped URL (distinct
+# from the collection-things one above) -- preserved as captured rather than
+# normalized, since that's a real shape difference between the two
+# endpoints, not an inconsistency in this fixture.
+LIKES_TERMINALFOO = [
+    {
+        "id": 7378379,
+        "name": "Flight radar (no soldering)",
+        "public_url": "https://www.thingiverse.com/thing:7378379",
+        "thumbnail": (
+            "https://resize.thingiverse.com/?url=https://cdn.thingiverse.com/assets/"
+            "bf/19/54/a7/4b/IMG_7467.jpeg&w=1024&h=1024&fit=contain&cbg=white&n=-1"
+        ),
+        "creator": {"name": "Adamow"},
+    },
+]

@@ -63,6 +63,17 @@ def _token() -> str | None:
         return get_import_tokens_sync(s, settings).thingiverse_token
 
 
+def _username(token: str) -> str | None:
+    # There's no per-user OAuth for a static app token, but the API still
+    # exposes a "who am I" resource -- GET /users/me/ (Bearer) -> {"name":
+    # ..., ...} -- so collections/likes (which are keyed by username, not
+    # the token) can be reached without asking Settings for a second field.
+    with _client(token) as c:
+        r = c.get("/users/me/")
+        r.raise_for_status()
+        return (r.json() or {}).get("name")
+
+
 class ThingiverseImporter:
     site: ClassVar[ImportSite] = ImportSite.THINGIVERSE
 
@@ -162,20 +173,79 @@ class ThingiverseImporter:
         return results
 
     # -- saved collections / likes (M8 H) ---------------------------------
-    # The seam is live (the API + the periodic sync task call through it), but
-    # the authenticated calls are NOT wired yet. Thingiverse is the most ready
-    # of the three: the `_client(token)` Bearer seam above already exists and
-    # the official endpoints (`/users/{u}/collections`,
-    # `/collections/{id}/things`, `/users/{u}/likes`) are documented -- what's
-    # missing is a configured app token to capture their real response shape
-    # against, rather than guessing it (the M6 `zip_data` lesson). Returning []
-    # is the same "nothing to show, not an error" convention `search` uses.
+    # Official developer API, `_client(token)` Bearer seam above, all three
+    # endpoints live-verified (Phase 0, app-token account @terminalfoo):
+    #   GET /users/{username}/collections             -> collection objects
+    #   GET /collections/{collectionId}/things?page&per_page -> thing objects
+    #   GET /users/{username}/likes?page&per_page      -> thing objects (same
+    #     shape as collection things) -- surfaced as a synthetic "likes" list
+    #     since Thingiverse has no real collection wrapping favourites.
+    # All three are bare JSON arrays (no envelope). No token configured -> []
+    # (same "nothing to show, not an error" convention `search` uses).
 
     def list_user_lists(self) -> list[RemoteList]:
-        return []
+        token = _token()
+        if not token:
+            return []
+        username = _username(token)
+        if not username:
+            return []
+        with _client(token) as c:
+            r = c.get(f"/users/{username}/collections")
+            r.raise_for_status()
+            body = r.json()
+        lists: list[RemoteList] = []
+        for coll in body:
+            cid = coll.get("id")
+            if not cid:
+                continue
+            lists.append(
+                RemoteList(
+                    site=self.site,
+                    list_id=str(cid),
+                    kind="collection",
+                    title=coll.get("name") or f"collection {cid}",
+                    count=coll.get("count"),
+                )
+            )
+        lists.append(
+            RemoteList(
+                site=self.site, list_id="likes", kind="likes", title="Liked things", count=None
+            )
+        )
+        return lists
 
     def list_list_items(self, list_id: str, page: int = 1) -> list[SearchResult]:
-        return []
+        token = _token()
+        if not token:
+            return []
+        if list_id == "likes":
+            username = _username(token)
+            if not username:
+                return []
+            path = f"/users/{username}/likes"
+        else:
+            path = f"/collections/{list_id}/things"
+        with _client(token) as c:
+            r = c.get(path, params={"page": page, "per_page": _SEARCH_PAGE_SIZE})
+            r.raise_for_status()
+            body = r.json()
+        results: list[SearchResult] = []
+        for t in body:
+            tid = t.get("id")
+            if not tid:
+                continue
+            results.append(
+                SearchResult(
+                    site=self.site,
+                    external_id=str(tid),
+                    title=t.get("name") or f"thing {tid}",
+                    url=t.get("public_url") or "",
+                    author=(t.get("creator") or {}).get("name"),
+                    thumbnail_url=t.get("thumbnail"),
+                )
+            )
+        return results
 
 
 register_importer(ThingiverseImporter())

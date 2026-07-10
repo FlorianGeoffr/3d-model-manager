@@ -163,9 +163,11 @@ describe("SavedPanel", () => {
     expect(dismissMock).toHaveBeenCalledWith(11);
   });
 
-  it("explains that browsing your lists needs a signed-in site session", async () => {
+  it("explains how to connect each site when no collections are found", async () => {
     renderPanel();
-    expect(await screen.findByText(/needs a signed-in session for that site/)).toBeInTheDocument();
+    expect(await screen.findByText(/No collections found yet/)).toBeInTheDocument();
+    expect(screen.getByText(/paste your web\s+token/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /settings/i })).toBeInTheDocument();
   });
 
   it("follows a browsable remote list", async () => {

@@ -23,9 +23,9 @@ import { formatDate } from "@/lib/format";
 
 /** "Saved" surface (M8 H): the remote collections/likes you follow, what a sync
  * should do with each (auto-import vs review), the review queue, and a manual
- * "Sync now". Browsing a site's lists needs that site's authenticated session,
- * which isn't wired up yet -- hence the explicit empty state rather than a
- * silently blank list. */
+ * "Sync now". Browsing a site's lists needs that site's credential connected in
+ * Settings (MakerWorld web token / Thingiverse App Token / Printables account);
+ * a site without one contributes nothing, hence the explicit empty state. */
 export function SavedPanel() {
   const followed = useFollowedCollections();
   const pending = usePendingImports();
@@ -208,14 +208,29 @@ function BrowseLists() {
         {lists.isLoading ? (
           <Skeleton className="h-20 w-full rounded-lg" />
         ) : (lists.data ?? []).length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No collections found. Reading your saved models needs a signed-in session for that
-            site — connect your Thingiverse token or Bambu account in{" "}
-            <Link to="/settings" className="underline">
-              Settings
-            </Link>
-            . (Printables sign-in isn&apos;t available yet.)
-          </p>
+          <div className="space-y-2 text-sm text-muted-foreground">
+            <p>
+              No collections found yet. To sync your saved models, connect each site in{" "}
+              <Link to="/settings" className="underline">
+                Settings
+              </Link>{" "}
+              → Imports:
+            </p>
+            <ul className="list-disc space-y-1 pl-5">
+              <li>
+                <span className="font-medium text-foreground">MakerWorld</span> — paste your web
+                token under Gallery site tokens.
+              </li>
+              <li>
+                <span className="font-medium text-foreground">Thingiverse</span> — paste your App
+                Token under Gallery site tokens.
+              </li>
+              <li>
+                <span className="font-medium text-foreground">Printables</span> — connect your
+                account.
+              </li>
+            </ul>
+          </div>
         ) : (
           <div className="space-y-2">
             {(lists.data ?? []).map((list: RemoteList) => {

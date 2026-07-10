@@ -194,6 +194,21 @@ describe("ViewerTab", () => {
     expect(screen.getByTestId("model-viewer")).not.toHaveTextContent("hashA");
   });
 
+  it("shows the checked/total part count in the panel header, updating as parts are checked", async () => {
+    const fileA = fakeFile({ id: 1, rel_path: "a.stl", blob_hash: "hashA", glb_status: "ok" });
+    const fileB = fakeFile({ id: 2, rel_path: "b.stl", blob_hash: "hashB", glb_status: "ok" });
+    const fileC = fakeFile({ id: 3, rel_path: "c.stl", blob_hash: "hashC", glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([fileA, fileB, fileC])} />);
+    await screen.findByTestId("model-viewer");
+
+    // Only the first part is checked by default.
+    expect(screen.getByText("1 of 3")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "b.stl" }));
+
+    expect(await screen.findByText("2 of 3")).toBeInTheDocument();
+  });
+
   it("shows a hint instead of an empty canvas when every part is unchecked", async () => {
     const file = fakeFile({ glb_status: "ok" });
     render(<ViewerTab model={fakeModel([file])} />);

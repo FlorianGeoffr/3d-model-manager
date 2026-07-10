@@ -385,9 +385,14 @@ function ViewerStage({
         {panelOpen && (
           <div className="flex w-full shrink-0 flex-col gap-4 rounded-lg border border-border bg-card p-3 lg:w-72">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-                Parts <span className="tracking-normal normal-case">{checkedList.length}</span>
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+                  Parts
+                </span>
+                <span className="text-xs text-muted-foreground tabular-nums">
+                  {checkedList.length} of {files.length}
+                </span>
+              </div>
               <Button
                 type="button"
                 variant="ghost"

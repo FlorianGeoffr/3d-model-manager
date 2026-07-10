@@ -8,13 +8,20 @@ import type { FileOut, ModelDetail } from "@/api/types";
 // `ModelViewer` is a `React.lazy` chunk that mounts an R3F `<Canvas>`, which
 // jsdom can't run (no WebGL) -- stub it so ViewerTab's branching logic can
 // be exercised without ever touching three.js. It now takes multiple parts
-// (Workstream A "multi-part combined view"), each `{ id, url }`, plus a
-// resolved background color -- render the joined urls + the color onto the
-// stub so tests can assert on them (same joined-url shape as before).
-type ViewerPart = { id: number; url: string };
+// (Workstream A "multi-part combined view"), each `{ id, url, color? }`, plus
+// a resolved background color -- render the joined urls + the color onto the
+// stub so tests can assert on them (same joined-url shape as before). The
+// joined `data-colors` (B1 "per-part recolor via the FilamentChip swatch")
+// lets recolor tests assert per-part colors reach the viewer without a real
+// mock per test.
+type ViewerPart = { id: number; url: string; color?: string };
 const { modelViewerMock, platePanelMock, defaultModelViewerImpl } = vi.hoisted(() => {
-  const defaultModelViewerImpl = ({ parts, background }: { parts: { id: number; url: string }[]; background: string }) => (
-    <div data-testid="model-viewer" data-background={background}>
+  const defaultModelViewerImpl = ({ parts, background }: { parts: ViewerPart[]; background: string }) => (
+    <div
+      data-testid="model-viewer"
+      data-background={background}
+      data-colors={parts.map((part) => part.color ?? "").join(",")}
+    >
       {parts.map((part) => part.url).join(",")}
     </div>
   );
@@ -40,15 +47,15 @@ vi.mock("@/api/printers", () => ({
 }));
 
 // Radix's Select never reaches an interactive open state under jsdom (same
-// floating-ui/dismissable-layer limitation as Popover -- see the inline
-// mock in UploadPage.test.tsx) -- swap it for a native <select> so it can be
-// driven with a plain change event. ViewerTab now renders two independent
-// `<Select>`s (the non-mesh file picker and the background picker); each
-// carries its accessible name via `<SelectTrigger aria-label=...>`, so this
-// mock pulls that label off whichever child element declares it and puts it
-// on the native `<select>` -- letting `getByRole("combobox", { name })`
-// (or the old `container.querySelector("select")` for the lone-select
-// tests) tell the two apart.
+// floating-ui/dismissable-layer limitation as Popover, which is why B1's
+// redesigned background control is a `role="radiogroup"` of plain buttons
+// instead of a `<Select>` or a `<Popover>` -- see `BackgroundSegmentedControl`
+// in ViewerTab.tsx) -- swap the remaining `<Select>` (the non-mesh file
+// picker) for a native <select> so it can be driven with a plain change
+// event. It carries its accessible name via `<SelectTrigger aria-label=...>`,
+// so this mock pulls that label off whichever child element declares it and
+// puts it on the native `<select>` -- letting `getByRole("combobox", { name
+// })` find it.
 function ariaLabelOf(children: ReactNode): string | undefined {
   let label: string | undefined;
   Children.forEach(children, (child) => {
@@ -195,6 +202,9 @@ describe("ViewerTab", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: file.rel_path }));
 
     expect(await screen.findByText("Select a part to preview")).toBeInTheDocument();
+    // B1: the checklist moved into the side panel, so "above" is no longer
+    // accurate copy.
+    expect(screen.getByText("Select a part in the panel to render it.")).toBeInTheDocument();
     expect(screen.queryByTestId("model-viewer")).not.toBeInTheDocument();
   });
 
@@ -203,7 +213,7 @@ describe("ViewerTab", () => {
     render(<ViewerTab model={fakeModel([file])} />);
     await screen.findByTestId("model-viewer");
 
-    fireEvent.change(screen.getByRole("combobox", { name: "Background" }), { target: { value: "white" } });
+    fireEvent.click(screen.getByRole("radio", { name: "White" }));
 
     await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-background", "#ffffff"));
     expect(JSON.parse(localStorage.getItem("viewer-bg") ?? "{}")).toMatchObject({ preset: "white" });
@@ -222,22 +232,87 @@ describe("ViewerTab", () => {
     render(<ViewerTab model={fakeModel([file])} />);
     await screen.findByTestId("model-viewer");
 
-    fireEvent.change(screen.getByRole("combobox", { name: "Background" }), { target: { value: "custom" } });
+    // The custom color well only appears once the Custom segment is selected.
+    expect(screen.queryByLabelText("Custom background color")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("radio", { name: "Custom" }));
     const colorInput = await screen.findByLabelText("Custom background color");
     fireEvent.change(colorInput, { target: { value: "#123456" } });
 
     await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-background", "#123456"));
   });
 
-  it("clicking Expand mounts a dialog containing the same combined viewer", async () => {
+  it("recolors a part via its swatch, persists it, and doesn't bleed onto the other part", async () => {
+    const fileA = fakeFile({ id: 1, rel_path: "a.stl", blob_hash: "hashA", glb_status: "ok" });
+    const fileB = fakeFile({ id: 2, rel_path: "b.stl", blob_hash: "hashB", glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([fileA, fileB])} />);
+    await screen.findByTestId("model-viewer");
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "b.stl" }));
+    await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveTextContent("hashB"));
+
+    fireEvent.change(screen.getByLabelText("Color for a.stl"), { target: { value: "#123456" } });
+
+    await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-colors", "#123456,"));
+    expect(JSON.parse(localStorage.getItem("viewer-colors:test-model") ?? "{}")).toMatchObject({ "1": "#123456" });
+  });
+
+  it("Reset colors clears every part's color; the per-part reset clears only its own", async () => {
+    const fileA = fakeFile({ id: 1, rel_path: "a.stl", blob_hash: "hashA", glb_status: "ok" });
+    const fileB = fakeFile({ id: 2, rel_path: "b.stl", blob_hash: "hashB", glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([fileA, fileB])} />);
+    await screen.findByTestId("model-viewer");
+    fireEvent.click(screen.getByRole("checkbox", { name: "b.stl" }));
+    await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveTextContent("hashB"));
+
+    fireEvent.change(screen.getByLabelText("Color for a.stl"), { target: { value: "#111111" } });
+    fireEvent.change(screen.getByLabelText("Color for b.stl"), { target: { value: "#222222" } });
+    await waitFor(() =>
+      expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-colors", "#111111,#222222"),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Reset color for a.stl" }));
+    await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-colors", ",#222222"));
+    expect(screen.queryByRole("button", { name: "Reset color for a.stl" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reset colors" }));
+    await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-colors", ","));
+    expect(screen.queryByRole("button", { name: "Reset colors" })).not.toBeInTheDocument();
+  });
+
+  it("collapsing the parts panel hides it; the reopen control restores it", async () => {
     const file = fakeFile({ glb_status: "ok" });
     render(<ViewerTab model={fakeModel([file])} />);
+    await screen.findByTestId("model-viewer");
+
+    expect(screen.getByRole("checkbox", { name: file.rel_path })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Collapse panel" }));
+
+    expect(screen.queryByRole("checkbox", { name: file.rel_path })).not.toBeInTheDocument();
+    const reopen = screen.getByRole("button", { name: "Expand panel" });
+    expect(reopen).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(reopen);
+    expect(await screen.findByRole("checkbox", { name: file.rel_path })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Collapse panel" })).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("clicking Expand mounts a dialog containing the same combined viewer, with all its controls", async () => {
+    const fileA = fakeFile({ id: 1, rel_path: "a.stl", blob_hash: "hash1", glb_status: "ok" });
+    const fileB = fakeFile({ id: 2, rel_path: "b.stl", blob_hash: "hash2", glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([fileA, fileB])} />);
     await screen.findByTestId("model-viewer");
 
     fireEvent.click(screen.getByRole("button", { name: "Expand" }));
 
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByTestId("model-viewer")).toHaveTextContent("/api/blobs/hash1/glb");
+    // The regression B1 exists to fix: Expand used to strip every control.
+    expect(within(dialog).getByRole("radiogroup", { name: "Background" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("checkbox", { name: "a.stl" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("checkbox", { name: "b.stl" })).toBeInTheDocument();
+    // Already expanded -- no point offering Expand again inside the dialog.
+    expect(within(dialog).queryByRole("button", { name: "Expand" })).not.toBeInTheDocument();
   });
 
   it("shows a preparing-preview card while the GLB conversion job is pending", () => {

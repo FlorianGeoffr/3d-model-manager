@@ -1,3 +1,5 @@
+import contextlib
+
 import httpx
 import pytest
 
@@ -5,7 +7,9 @@ from app.importers import makerworld
 from app.importers.base import ImportFile
 from app.importers.makerworld import MakerWorldImporter
 from app.models.enums import ImportSite
+from app.services import import_tokens as import_tokens_service
 from app.services.bambu_auth import BambuAuthError
+from app.tasks import base as tasks_base
 from app.tasks.importing import ImportRejected
 from tests.cassettes import makerworld_fixtures as fx
 
@@ -233,14 +237,62 @@ def _challenged_web_client():
     return httpx.Client(base_url="https://makerworld.com", transport=httpx.MockTransport(handler))
 
 
-def test_list_user_lists_none_when_no_bambu_account(monkeypatch):
+def test_list_user_lists_none_when_no_token_stored(monkeypatch):
     monkeypatch.setattr(makerworld, "_makerworld_web_token", lambda: None)
     assert MakerWorldImporter().list_user_lists() == []
 
 
-def test_list_list_items_none_when_no_bambu_account(monkeypatch):
+def test_list_list_items_none_when_no_token_stored(monkeypatch):
     monkeypatch.setattr(makerworld, "_makerworld_web_token", lambda: None)
     assert MakerWorldImporter().list_list_items("3054026541") == []
+
+
+def _forbidden_client(*args, **kwargs):
+    raise AssertionError("must not make an HTTP call when no MakerWorld token is stored")
+
+
+def test_list_user_lists_makes_no_http_call_when_no_token_stored(monkeypatch):
+    # A missing token must short-circuit BEFORE touching either httpx seam
+    # `list_user_lists` otherwise uses (`_favorites_client` for `_profile`,
+    # `_web_client` for the named-collections SSR route) -- a wrong/expired
+    # token silently comes back HTTP 200 `{"hits":[],"total":0}`
+    # (task A5), so this must never even attempt the call.
+    monkeypatch.setattr(makerworld, "_makerworld_web_token", lambda: None)
+    monkeypatch.setattr(makerworld, "_favorites_client", _forbidden_client)
+    monkeypatch.setattr(makerworld, "_web_client", _forbidden_client)
+    assert MakerWorldImporter().list_user_lists() == []
+
+
+def test_list_list_items_makes_no_http_call_when_no_token_stored(monkeypatch):
+    monkeypatch.setattr(makerworld, "_makerworld_web_token", lambda: None)
+    monkeypatch.setattr(makerworld, "_favorites_client", _forbidden_client)
+    assert MakerWorldImporter().list_list_items("3054026541") == []
+
+
+def test_makerworld_web_token_reads_stored_token_not_bambu(monkeypatch):
+    """`_makerworld_web_token` reads the user-pasted MakerWorld web token via
+    the import_tokens service (task A5) -- NOT the Bambu account. Monkeypatch
+    the token-service seam directly (not `_bambu_session`) so this stays a
+    DB-free test like the rest of this module."""
+    monkeypatch.setattr(tasks_base, "sync_session", lambda: contextlib.nullcontext(None))
+    monkeypatch.setattr(
+        import_tokens_service,
+        "get_import_tokens_sync",
+        lambda session, settings: import_tokens_service.ImportTokens(
+            makerworld_token="AACB-stored-web-token"
+        ),
+    )
+    assert makerworld._makerworld_web_token() == "AACB-stored-web-token"
+
+
+def test_makerworld_web_token_none_when_nothing_stored(monkeypatch):
+    monkeypatch.setattr(tasks_base, "sync_session", lambda: contextlib.nullcontext(None))
+    monkeypatch.setattr(
+        import_tokens_service,
+        "get_import_tokens_sync",
+        lambda session, settings: import_tokens_service.ImportTokens(),
+    )
+    assert makerworld._makerworld_web_token() is None
 
 
 def test_list_user_lists_returns_aggregate_and_named_collections(monkeypatch):

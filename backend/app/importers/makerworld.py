@@ -181,42 +181,21 @@ def _favorites_client(token: str) -> httpx.Client:
     )
 
 
-# === UNVERIFIED: Bambu access token reused as the makerworld.com web ========
-# === session `token` cookie ==================================================
 def _makerworld_web_token() -> str | None:
-    """The single source of the MakerWorld web session `token` cookie every
-    read below needs (live-verified: an anonymous request to these endpoints
-    doesn't error, it just silently comes back `{"hits": [], "total": 0}` --
-    mw_capture_notes.md). We already hold a user-scoped, auto-refreshing
-    Bambu account access token via `_bambu_session()`; whether MakerWorld's
-    web backend actually ACCEPTS that Bambu access token (a JWT, `eyJ...`) as
-    its `token` cookie is UNVERIFIED. The one working cookie captured live
-    during grounding was a MakerWorld-web opaque token (`AACB...`), which may
-    come from a different auth flow entirely and could be rejected here.
+    """The makerworld.com web `token` cookie, user-supplied in Settings.
 
-    Verify this at live acceptance: if a connected Bambu account still comes
-    back with empty `list_user_lists`/`list_list_items` results (not the
-    "not connected" `[]` below, but genuinely-empty despite favorites
-    existing on the account), the Bambu JWT is being rejected as the cookie.
-    The fix is ISOLATED to this one function -- swap it to read a separately
-    stored, user-pasted `makerworld_token` credential instead (the same
-    posture as Thingiverse's app-token setting) rather than reusing the
-    Bambu session; nothing downstream of this function needs to change.
-
-    Returns None when no Bambu account is connected (caught `BambuAuthError`)
-    -- both callers below treat that as "nothing to show", the same
-    convention `search` uses for an unsearchable state.
+    NOT the Bambu access token: the web cookie is opaque (`AACB…`) while
+    Bambu issues JWTs (live-captured 2026-07-10). Reads are silently empty
+    rather than 401 when unauthenticated (HTTP 200 `{"hits":[],"total":0}`),
+    so a missing token must degrade to "nothing to show", never to an error.
     """
-    from app.services.bambu_auth import BambuAuthError
+    from app.config import get_settings
+    from app.services.import_tokens import get_import_tokens_sync
+    from app.tasks.base import sync_session
 
-    try:
-        access_token, _region = _bambu_session()
-    except BambuAuthError:
-        return None
-    return access_token
-
-
-# ==============================================================================
+    settings = get_settings()
+    with sync_session() as s:
+        return get_import_tokens_sync(s, settings).makerworld_token
 
 
 def _profile(token: str) -> tuple[int, str]:
@@ -412,10 +391,10 @@ class MakerWorldImporter:
         )
 
     # -- saved collections / likes (M8 H) ---------------------------------
-    # Auth is `_makerworld_web_token()` (see its docstring for the UNVERIFIED
-    # Bambu-token-as-cookie assumption). Both methods return [] when no Bambu
-    # account is connected -- the "nothing to show, not an error" convention
-    # `search` uses.
+    # Auth is `_makerworld_web_token()` -- a user-pasted MakerWorld web
+    # cookie stored in Settings (task A5), not the Bambu account. Both
+    # methods return [] when no token is stored -- the "nothing to show, not
+    # an error" convention `search` uses.
 
     def list_user_lists(self) -> list[RemoteList]:
         token = _makerworld_web_token()

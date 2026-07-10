@@ -28,15 +28,20 @@ async def reencrypt_secrets_at_rest(db: AsyncSession, settings: Settings) -> Non
             changed = True
     token_row = await db.get(Setting, "import_tokens")
     if token_row is not None:
-        token = (token_row.value or {}).get("thingiverse_token")
-        if token:
+        updates: dict = {}
+        for field in ("thingiverse_token", "makerworld_token"):
+            token = (token_row.value or {}).get(field)
+            if not token:
+                continue
             try:
                 decrypt_secret(settings, token)  # already ciphertext -> no-op
             except InvalidToken:
-                token_row.value = {
-                    **token_row.value,
-                    "thingiverse_token": encrypt_secret(settings, token),
-                }
-                changed = True
+                updates[field] = encrypt_secret(settings, token)
+        if updates:
+            # Preserve every key this pass doesn't manage (e.g. a future
+            # field) as well as the sibling token field this pass leaves
+            # untouched -- never collapse the row down to just what changed.
+            token_row.value = {**token_row.value, **updates}
+            changed = True
     if changed:
         await db.commit()

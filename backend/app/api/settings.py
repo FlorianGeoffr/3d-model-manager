@@ -351,12 +351,33 @@ async def migrate_library_to_backend(
     return JobOut.from_model(job)
 
 
+def _merge_import_token(incoming_raw: str, stored: str | None) -> str | None:
+    """Merge-on-blank/sentinel for ONE import-token field, mirroring
+    ``_merge_stored_secrets``: a blank or ``"***"`` submit keeps the stored
+    token; a bare ``"***"`` with nothing stored is rejected 422 (never
+    persist the placeholder as a credential); a real value replaces it."""
+    incoming = (incoming_raw or "").strip()
+    if incoming not in ("", _REDACTED_SENTINEL):
+        return incoming
+    if stored:
+        return stored
+    if incoming == _REDACTED_SENTINEL:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            'Cannot set the token to the redaction placeholder "***"; enter the real token.',
+        )
+    return None  # explicit clear when nothing stored + blank submit
+
+
 @router.get("/import-tokens", response_model=ImportTokensOut)
 async def get_import_tokens_settings(
     db: AsyncSession = Depends(get_db), settings: Settings = Depends(get_settings)
 ) -> ImportTokensOut:
     tokens = await import_tokens.get_import_tokens(db, settings)
-    return ImportTokensOut(thingiverse_token=_REDACTED_SENTINEL if tokens.thingiverse_token else "")
+    return ImportTokensOut(
+        thingiverse_token=_REDACTED_SENTINEL if tokens.thingiverse_token else "",
+        makerworld_token=_REDACTED_SENTINEL if tokens.makerworld_token else "",
+    )
 
 
 @router.put("/import-tokens", response_model=ImportTokensOut)
@@ -365,26 +386,18 @@ async def put_import_tokens_settings(
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> ImportTokensOut:
-    """Merge-on-blank/sentinel, mirroring ``_merge_stored_secrets``: a blank
-    or ``"***"`` submit keeps the stored token; a bare ``"***"`` with nothing
-    stored is rejected 422 (never persist the placeholder as a credential);
-    a real value replaces it."""
-    incoming = (payload.thingiverse_token or "").strip()
-    stored = (await import_tokens.get_import_tokens(db, settings)).thingiverse_token or ""
-    if incoming in ("", _REDACTED_SENTINEL):
-        if stored:
-            value: str | None = stored
-        elif incoming == _REDACTED_SENTINEL:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_CONTENT,
-                'Cannot set the token to the redaction placeholder "***"; enter the real token.',
-            )
-        else:
-            value = None  # explicit clear when nothing stored + blank submit
-    else:
-        value = incoming
-    await import_tokens.set_thingiverse_token(db, settings, value)
-    return ImportTokensOut(thingiverse_token=_REDACTED_SENTINEL if value else "")
+    """Per-field merge-on-blank/sentinel (``_merge_import_token``) applied
+    independently to each token so submitting one never clobbers the other."""
+    stored = await import_tokens.get_import_tokens(db, settings)
+    thingiverse_value = _merge_import_token(payload.thingiverse_token, stored.thingiverse_token)
+    makerworld_value = _merge_import_token(payload.makerworld_token, stored.makerworld_token)
+    await import_tokens.set_import_tokens(
+        db, settings, thingiverse_token=thingiverse_value, makerworld_token=makerworld_value
+    )
+    return ImportTokensOut(
+        thingiverse_token=_REDACTED_SENTINEL if thingiverse_value else "",
+        makerworld_token=_REDACTED_SENTINEL if makerworld_value else "",
+    )
 
 
 # ---------------------------------------------------------------------------

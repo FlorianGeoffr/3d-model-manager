@@ -104,7 +104,9 @@ class SearchResponse(BaseModel):
 
 class ImportTokensIn(BaseModel):
     thingiverse_token: str = ""
+    makerworld_token: str = ""
 
 
 class ImportTokensOut(BaseModel):
     thingiverse_token: str  # "***" when a token is stored, "" otherwise -- never the real value
+    makerworld_token: str  # "***" when a token is stored, "" otherwise -- never the real value

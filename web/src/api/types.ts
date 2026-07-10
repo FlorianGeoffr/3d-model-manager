@@ -521,11 +521,13 @@ export interface ImportCreate {
 
 export interface ImportTokensIn {
   thingiverse_token: string;
+  makerworld_token: string;
 }
 
 // "***" when set, "" otherwise
 export interface ImportTokensOut {
   thingiverse_token: string;
+  makerworld_token: string;
 }
 
 // Imports reuse the existing `job.updated` shape (JobUpdatedEvent above) --

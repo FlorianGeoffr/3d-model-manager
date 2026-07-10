@@ -1,15 +1,17 @@
-"""M6 A1: SMB/S3 storage secrets + the Thingiverse import token are
-Fernet-encrypted at rest (mirroring the M4 printer-access-code seam), with an
-eager, idempotent startup pass that upgrades any pre-M6 plaintext row. See
-``app.crypto`` for the shared key/seam and ``app.services.secrets_at_rest``
-for the startup pass.
+"""M6 A1: SMB/S3 storage secrets + the Thingiverse/MakerWorld import tokens
+(task A5 added the MakerWorld field) are Fernet-encrypted at rest (mirroring
+the M4 printer-access-code seam), with an eager, idempotent startup pass
+that upgrades any pre-M6 plaintext row. See ``app.crypto`` for the shared
+key/seam and ``app.services.secrets_at_rest`` for the startup pass.
 """
 
 import pytest
 
 from app.config import get_settings
+from app.crypto import encrypt_secret
 from app.models import Setting
 from app.services import storage_config
+from app.services.import_tokens import get_import_tokens
 from app.services.secrets_at_rest import reencrypt_secrets_at_rest
 from app.services.storage_backends import get_default_backend_row
 from app.storage.config import SmbConfig
@@ -61,6 +63,36 @@ async def test_legacy_plaintext_row_reads_and_gets_reencrypted(db_session):
 
 
 @pytest.mark.asyncio
+async def test_legacy_plaintext_makerworld_token_gets_reencrypted_without_dropping_thingiverse(
+    db_session,
+):
+    """A row holding a plaintext ``makerworld_token`` alongside an already-
+    encrypted ``thingiverse_token`` must have the makerworld field
+    re-encrypted WITHOUT the pass dropping the sibling field (task A5)."""
+    s = get_settings()
+    db_session.add(
+        Setting(
+            key="import_tokens",
+            value={
+                "thingiverse_token": encrypt_secret(s, "tv-secret"),
+                "makerworld_token": "plain-mw-secret",
+            },
+        )
+    )
+    await db_session.commit()
+
+    await reencrypt_secrets_at_rest(db_session, s)
+
+    row = await db_session.get(Setting, "import_tokens")
+    assert row.value["makerworld_token"] != "plain-mw-secret"  # now ciphertext
+    assert row.value["thingiverse_token"] != "plain-mw-secret"  # thingiverse untouched by the pass
+
+    decoded = await get_import_tokens(db_session, s)
+    assert decoded.makerworld_token == "plain-mw-secret"
+    assert decoded.thingiverse_token == "tv-secret"  # sibling untouched
+
+
+@pytest.mark.asyncio
 async def test_reencrypt_pass_is_idempotent(db_session):
     """A second startup pass over already-encrypted rows writes nothing."""
     s = get_settings()
@@ -79,7 +111,12 @@ async def test_reencrypt_pass_is_idempotent(db_session):
             },
         )
     )
-    db_session.add(Setting(key="import_tokens", value={"thingiverse_token": "plaintoken"}))
+    db_session.add(
+        Setting(
+            key="import_tokens",
+            value={"thingiverse_token": "plaintoken", "makerworld_token": "plainmwtoken"},
+        )
+    )
     await db_session.commit()
 
     await reencrypt_secrets_at_rest(db_session, s)
@@ -87,6 +124,7 @@ async def test_reencrypt_pass_is_idempotent(db_session):
     token_row = await db_session.get(Setting, "import_tokens")
     storage_ciphertext = storage_row.value["password"]
     token_ciphertext = token_row.value["thingiverse_token"]
+    makerworld_ciphertext = token_row.value["makerworld_token"]
 
     # Second pass over already-ciphertext rows must be a true no-op.
     await reencrypt_secrets_at_rest(db_session, s)
@@ -94,6 +132,7 @@ async def test_reencrypt_pass_is_idempotent(db_session):
     token_row_again = await db_session.get(Setting, "import_tokens")
     assert storage_row_again.value["password"] == storage_ciphertext
     assert token_row_again.value["thingiverse_token"] == token_ciphertext
+    assert token_row_again.value["makerworld_token"] == makerworld_ciphertext
 
 
 @pytest.mark.asyncio

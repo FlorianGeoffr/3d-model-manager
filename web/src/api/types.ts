@@ -633,3 +633,20 @@ export interface BambuLoginOut {
   region: BambuRegion | null;
   mfa_context: Record<string, unknown> | null;
 }
+
+// -- Printables account (backend/app/schemas/settings.py, Workstream A task
+// A1) -- connecting an account is what makes the Saved tab's Printables
+// collections/likes sync possible (see backend/app/services/
+// printables_auth.py). Printables has no login flow this app can drive
+// itself, so "connect" is pasting the browser's `auth.refresh_token` cookie
+// value. NEITHER request nor response type below ever carries a token.
+
+export interface PrintablesStatusOut {
+  connected: boolean;
+  username: string | null;
+  user_id: string | null;
+}
+
+export interface PrintablesConnectIn {
+  refresh_token: string;
+}

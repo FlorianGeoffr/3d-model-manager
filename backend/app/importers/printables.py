@@ -92,6 +92,65 @@ def _client() -> httpx.Client:
     )
 
 
+def _authed_client(token: str) -> httpx.Client:
+    """Bearer-authenticated GraphQL seam (Workstream A task A1; mirrors
+    ``makerworld._authed_client``) -- same as ``_client()`` plus the
+    ``Authorization`` header, kept as its own module-level function so tests
+    can monkeypatch it independently of the anonymous ``_client``. Used by
+    ``fetch_identity`` now, and by the A4 list/likes queries next."""
+    return httpx.Client(
+        base_url=_GRAPHQL_URL,
+        timeout=30.0,
+        follow_redirects=True,
+        headers={
+            "User-Agent": _UA,
+            "Content-Type": "application/json",
+            "Origin": "https://www.printables.com",
+            "Referer": "https://www.printables.com/",
+            "Authorization": f"Bearer {token}",
+        },
+    )
+
+
+def _printables_session() -> str:
+    """A currently-valid Printables access token for worker use (mirrors
+    ``makerworld._bambu_session()``'s pattern exactly: local imports of
+    ``get_settings``/``sync_session``/``get_access_token_sync`` so this
+    module stays importable without a DB/settings context at import time).
+    Raises ``app.services.printables_auth.PrintablesAuthError`` when no
+    account is connected (or its stored refresh token can no longer produce
+    an access token) -- callers decide how to handle that."""
+    from app.config import get_settings
+    from app.services import printables_auth
+    from app.tasks.base import sync_session
+
+    settings = get_settings()
+    with sync_session() as s:
+        return printables_auth.get_access_token_sync(s, settings)
+
+
+IDENTITY_QUERY = """
+{ me { id publicUsername } }
+""".strip()
+
+
+def fetch_identity(access_token: str) -> tuple[str | None, str | None]:
+    """``(user_id, publicUsername)`` for the connected Printables account
+    (Workstream A task A1; live-verified: ``POST /graphql/`` with
+    ``Authorization: Bearer <access_jwt>``, ``{"query":"{ me { id
+    publicUsername } }"}`` -> ``{"data":{"me":{"id":"5092991",
+    "publicUsername":"..."}}}``). The JWT's own ``sub`` claim is the *Prusa
+    account id*, NOT the Printables ``userId`` -- always resolve it via this
+    query rather than decoding the token. ALL GraphQL stays inside this
+    module (this file's own docstring's contract-test seam); this is why
+    ``app.api.settings`` imports ``fetch_identity`` from here rather than
+    querying Printables itself."""
+    with _authed_client(access_token) as c:
+        me = _post(c, IDENTITY_QUERY, {}).get("me") or {}
+    user_id = me.get("id")
+    return (str(user_id) if user_id is not None else None, me.get("publicUsername"))
+
+
 def _post(client: httpx.Client, query: str, variables: dict) -> dict:
     r = client.post("", json={"query": query, "variables": variables})
     r.raise_for_status()
@@ -199,14 +258,17 @@ class PrintablesImporter:
         return results
 
     # -- saved collections / likes (M8 H) ---------------------------------
-    # The seam is live (the API + the periodic sync task call through it), but
-    # Printables is the FURTHEST from ready: this importer has no authenticated
-    # session at all -- `_client()` above is anonymous, there is no stored
-    # credential, and the user's collections/liked prints require a signed-in
-    # Prusa Account (OAuth -> GraphQL Bearer) behind Cloudflare. Building that
-    # login blind would be guesswork; it lands once a real logged-in flow can
-    # be captured. Returning [] is the "nothing to show, not an error"
-    # convention `search` uses.
+    # The authenticated session now exists (Workstream A task A1,
+    # `app.services.printables_auth` + `_printables_session()`/
+    # `_authed_client` above) -- the user pastes a Printables
+    # `auth.refresh_token`, which is validated, rotated, and stored
+    # encrypted, and this module can mint a Bearer access token for it at
+    # any time. What's still missing is the GraphQL queries themselves (the
+    # collections/liked-prints lookups) -- that's the next task (A4), which
+    # consumes `_printables_session()` the same way `list_files`/
+    # `resolve_download` would if this site gated downloads behind login (it
+    # doesn't). Returning [] here is the "nothing to show, not an error"
+    # convention `search` uses, same as before A1 landed.
 
     def list_user_lists(self) -> list[RemoteList]:
         return []

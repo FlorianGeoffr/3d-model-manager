@@ -11,6 +11,7 @@ verify, then cut over" path is ``POST /migrate`` (``app.tasks.migrate``).
 
 from __future__ import annotations
 
+import contextlib
 import uuid
 from typing import TYPE_CHECKING
 
@@ -21,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.db import get_db
+from app.importers.printables import fetch_identity
 from app.schemas.imports import ImportTokensIn, ImportTokensOut
 from app.schemas.jobs import JobOut
 from app.schemas.settings import (
@@ -29,13 +31,15 @@ from app.schemas.settings import (
     BambuStatusOut,
     BambuVerifyIn,
     ConnectionTestOut,
+    PrintablesConnectIn,
+    PrintablesStatusOut,
     StorageBackendCreateIn,
     StorageBackendOut,
     StorageBackendUpdateIn,
     StorageConfigIn,
     StorageConfigOut,
 )
-from app.services import bambu_auth, import_tokens, storage_config
+from app.services import bambu_auth, import_tokens, printables_auth, storage_config
 from app.services import jobs as jobs_service
 from app.services import storage_backends as storage_backends_service
 from app.services.storage_probe import probe_backend
@@ -331,7 +335,7 @@ async def migrate_library_to_backend(
     backend_id: int,
     db: AsyncSession = Depends(get_db),
 ) -> JobOut:
-    """"Move all models here" (M8 F): set this backend as the write-default AND
+    """ "Move all models here" (M8 F): set this backend as the write-default AND
     relocate the whole library onto it. The multi-backend replacement for the
     legacy whole-library migrate -- reuses the per-file relocate path so
     ``files.backend_id`` and ``file_locations`` stay accurate."""
@@ -465,3 +469,58 @@ async def delete_bambu_auth(
     db: AsyncSession = Depends(get_db), settings: Settings = Depends(get_settings)
 ) -> None:
     await bambu_auth.clear_bambu_auth(db, settings)
+
+
+# ---------------------------------------------------------------------------
+# Printables account connect flow (Workstream A task A1). Unlike Bambu, there
+# is no login/MFA -- the operator pastes their browser's `auth.refresh_token`
+# cookie value, which `printables_auth.refresh` validates against Printables'
+# own refresh endpoint (a real outbound call, so it runs on a worker thread
+# via anyio.to_thread.run_sync, same as the Bambu flow above). No response
+# here EVER carries a token (see PrintablesConnectIn/PrintablesStatusOut) --
+# only "connected"/username/user_id, the identity `fetch_identity` looks up.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/printables", response_model=PrintablesStatusOut)
+async def get_printables_status(
+    db: AsyncSession = Depends(get_db), settings: Settings = Depends(get_settings)
+) -> PrintablesStatusOut:
+    state = await printables_auth.get_printables_auth(db, settings)
+    return PrintablesStatusOut(
+        connected=bool(state.refresh_token), username=state.username, user_id=state.user_id
+    )
+
+
+@router.post("/printables/connect", response_model=PrintablesStatusOut)
+async def post_printables_connect(
+    payload: PrintablesConnectIn,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> PrintablesStatusOut:
+    try:
+        token = await anyio.to_thread.run_sync(printables_auth.refresh, payload.refresh_token)
+    except printables_auth.PrintablesAuthError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    # The credential is proven good by the refresh call above -- a failure to
+    # look up the (cosmetic) username/user_id must not fail the connect, so
+    # the identity lookup is best-effort and the ROTATED token is stored
+    # either way (never the one the operator pasted; Printables rotates it
+    # on every refresh call -- see printables_auth's module docstring).
+    username: str | None = None
+    user_id: str | None = None
+    with contextlib.suppress(Exception):  # cosmetic lookup only, never fails the connect
+        user_id, username = await anyio.to_thread.run_sync(fetch_identity, token.access_token)
+
+    await printables_auth.set_printables_auth(
+        db, settings, username=username, user_id=user_id, refresh_token=token.refresh_token
+    )
+    return PrintablesStatusOut(connected=True, username=username, user_id=user_id)
+
+
+@router.delete("/printables", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_printables_auth(
+    db: AsyncSession = Depends(get_db), settings: Settings = Depends(get_settings)
+) -> None:
+    await printables_auth.clear_printables_auth(db, settings)

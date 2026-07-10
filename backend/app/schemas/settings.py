@@ -134,3 +134,21 @@ class BambuStatusOut(BaseModel):
     connected: bool
     account: str | None = None
     region: str = "global"
+
+
+# Printables account connect flow (Workstream A task A1; M9 saved-collections
+# follow-on) -- see app.services.printables_auth for the refresh/rotation
+# contract and app.api.settings for the endpoints. NEITHER schema below ever
+# carries a token: the input is only what the operator pastes (the
+# `auth.refresh_token` cookie value, never echoed back), and the output never
+# includes the access or refresh token.
+
+
+class PrintablesConnectIn(BaseModel):
+    refresh_token: NonEmptyStr
+
+
+class PrintablesStatusOut(BaseModel):
+    connected: bool
+    username: str | None = None
+    user_id: str | None = None

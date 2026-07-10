@@ -2,6 +2,7 @@ import { ApiError } from "@/api/client";
 import { useStorageBackends } from "@/api/settings";
 import { BambuAccountCard } from "@/components/settings/BambuAccountCard";
 import { PrinterSetupCard } from "@/components/settings/PrinterSetupCard";
+import { PrintablesAccountCard } from "@/components/settings/PrintablesAccountCard";
 import { ScanReport } from "@/components/settings/ScanReport";
 import { SiteTokensCard } from "@/components/settings/SiteTokensCard";
 import { StorageBackendsCard } from "@/components/settings/StorageBackendsCard";
@@ -58,6 +59,7 @@ export function SettingsPage() {
           <TabsContent value="imports" className="space-y-6">
             <SiteTokensCard />
             <BambuAccountCard />
+            <PrintablesAccountCard />
           </TabsContent>
           <TabsContent value="scan" className="space-y-6">
             <ScanReport />

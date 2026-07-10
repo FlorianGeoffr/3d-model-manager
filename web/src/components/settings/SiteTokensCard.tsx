@@ -22,7 +22,8 @@ export function SiteTokensCard() {
         <CardTitle>Gallery site tokens</CardTitle>
         <CardDescription>
           Thingiverse needs a personal App Token to download files. Create a &quot;Desktop app&quot; at
-          thingiverse.com/apps/create and paste the token here. Printables needs no token.
+          thingiverse.com/apps/create and paste the token here. Printables downloads still need no
+          token, but connecting a Printables account below unlocks syncing your saved collections.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">

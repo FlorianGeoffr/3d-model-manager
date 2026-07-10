@@ -219,6 +219,48 @@ describe("ViewerTab", () => {
     expect(JSON.parse(localStorage.getItem("viewer-bg") ?? "{}")).toMatchObject({ preset: "white" });
   });
 
+  it("pressing ArrowRight on the selected Background segment selects the next preset", async () => {
+    // Roving-tabindex contract (ARIA APG radiogroup): arrow keys move focus
+    // AND change the selection, not just focus. Default preset is Studio, so
+    // ArrowRight should land on White and resolve to #ffffff.
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file])} />);
+    await screen.findByTestId("model-viewer");
+
+    fireEvent.keyDown(screen.getByRole("radio", { name: "Studio" }), { key: "ArrowRight" });
+
+    const white = screen.getByRole("radio", { name: "White" });
+    await waitFor(() => expect(white).toHaveAttribute("aria-checked", "true"));
+    expect(white).toHaveFocus();
+    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-background", "#ffffff");
+  });
+
+  it("pressing ArrowLeft from the first segment wraps around to the last preset", async () => {
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file])} />);
+    await screen.findByTestId("model-viewer");
+
+    fireEvent.keyDown(screen.getByRole("radio", { name: "Studio" }), { key: "ArrowLeft" });
+
+    const custom = screen.getByRole("radio", { name: "Custom" });
+    await waitFor(() => expect(custom).toHaveAttribute("aria-checked", "true"));
+    expect(custom).toHaveFocus();
+  });
+
+  it("keeps only the selected Background segment in the tab order", async () => {
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file])} />);
+    await screen.findByTestId("model-viewer");
+
+    const radios = screen.getAllByRole("radio");
+    const tabbable = radios.filter((radio) => radio.tabIndex === 0);
+    expect(tabbable).toHaveLength(1);
+    expect(tabbable[0]).toHaveAccessibleName("Studio");
+    for (const radio of radios) {
+      if (radio !== tabbable[0]) expect(radio).toHaveAttribute("tabindex", "-1");
+    }
+  });
+
   it("restores a previously persisted background choice on mount", async () => {
     localStorage.setItem("viewer-bg", JSON.stringify({ preset: "dark", custom: "#a1a1aa" }));
     const file = fakeFile({ glb_status: "ok" });

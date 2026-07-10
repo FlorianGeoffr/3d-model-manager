@@ -1,4 +1,14 @@
-import { Component, Suspense, lazy, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  Component,
+  Suspense,
+  lazy,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import {
   ExternalLinkIcon,
   LoaderCircleIcon,
@@ -122,7 +132,16 @@ function MeshCanvas({
  * it can be driven under jsdom without mocking a Radix floating-UI open
  * state (see the inline mock comment in `ViewerTab.test.tsx`). A plain
  * `role="radiogroup"` of `role="radio"` buttons rather than the shadcn
- * `RadioGroup` primitive, which renders radio dots, not labelled segments. */
+ * `RadioGroup` primitive, which renders radio dots, not labelled segments.
+ *
+ * Implements the ARIA APG radiogroup keyboard contract via roving tabindex:
+ * the group is a single tab stop (only the selected segment has
+ * `tabIndex={0}`), and arrow keys both move focus *and* change the
+ * selection -- Left/Up to the previous preset, Right/Down to the next, both
+ * wrapping around `BACKGROUND_PRESET_ORDER`, plus Home/End for the first and
+ * last. Without this the control announces itself as a radiogroup but
+ * behaves like a plain button toolbar, which is worse than the `<Select>` it
+ * replaced. */
 function BackgroundSegmentedControl({
   preset,
   onChange,
@@ -130,17 +149,55 @@ function BackgroundSegmentedControl({
   preset: BackgroundPreset;
   onChange: (preset: BackgroundPreset) => void;
 }) {
+  const buttonRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  function moveTo(index: number) {
+    onChange(BACKGROUND_PRESET_ORDER[index]);
+    buttonRefs.current[index]?.focus();
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+    const last = BACKGROUND_PRESET_ORDER.length - 1;
+    switch (event.key) {
+      case "ArrowRight":
+      case "ArrowDown":
+        event.preventDefault();
+        moveTo(index === last ? 0 : index + 1);
+        break;
+      case "ArrowLeft":
+      case "ArrowUp":
+        event.preventDefault();
+        moveTo(index === 0 ? last : index - 1);
+        break;
+      case "Home":
+        event.preventDefault();
+        moveTo(0);
+        break;
+      case "End":
+        event.preventDefault();
+        moveTo(last);
+        break;
+      default:
+        break;
+    }
+  }
+
   return (
     <div role="radiogroup" aria-label="Background" className="flex items-center gap-0.5 rounded-md bg-muted p-0.5">
-      {BACKGROUND_PRESET_ORDER.map((option) => {
+      {BACKGROUND_PRESET_ORDER.map((option, index) => {
         const selected = preset === option;
         return (
           <button
             key={option}
+            ref={(el) => {
+              buttonRefs.current[index] = el;
+            }}
             type="button"
             role="radio"
             aria-checked={selected}
+            tabIndex={selected ? 0 : -1}
             onClick={() => onChange(option)}
+            onKeyDown={(event) => handleKeyDown(event, index)}
             className={cn(
               "h-7 rounded-sm px-2.5 text-xs font-medium whitespace-nowrap outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/50",
               selected ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
@@ -326,7 +383,7 @@ function ViewerStage({
         </div>
 
         {panelOpen && (
-          <div className="flex w-full shrink-0 flex-col gap-4 rounded-lg border border-border bg-card p-3 transition-[width] motion-reduce:transition-none lg:w-72">
+          <div className="flex w-full shrink-0 flex-col gap-4 rounded-lg border border-border bg-card p-3 lg:w-72">
             <div className="flex items-center justify-between">
               <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
                 Parts <span className="tracking-normal normal-case">{checkedList.length}</span>

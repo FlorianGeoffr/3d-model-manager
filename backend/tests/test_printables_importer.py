@@ -4,8 +4,10 @@ import httpx
 import pytest
 
 from app.importers import printables
+from app.importers.base import RemoteList
 from app.importers.printables import PrintablesImporter
 from app.models.enums import ImportSite
+from app.services.printables_auth import PrintablesAuthError
 from tests.cassettes import printables_fixtures as fx
 
 
@@ -104,6 +106,219 @@ def test_search_empty_query_returns_empty_list_without_a_request(monkeypatch):
         ),
     )
     assert PrintablesImporter().search("") == []
+
+
+def _mock_authed_client(handler, expected_token="test-token"):
+    def build(token: str) -> httpx.Client:
+        assert token == expected_token
+        return httpx.Client(
+            base_url="https://api.printables.com/graphql/", transport=httpx.MockTransport(handler)
+        )
+
+    return build
+
+
+def _stub_session_and_identity(monkeypatch, *, token="test-token", identity=("5092991", "someone")):
+    monkeypatch.setattr(printables, "_printables_session", lambda: token)
+    monkeypatch.setattr(printables, "fetch_identity", lambda access_token: identity)
+
+
+def test_list_user_lists_maps_collections_and_appends_likes(monkeypatch):
+    _stub_session_and_identity(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.read().decode())
+        assert "userCollections" in payload["query"]
+        assert payload["variables"] == {"userId": "5092991"}
+        return httpx.Response(200, json=fx.USER_COLLECTIONS)
+
+    monkeypatch.setattr(printables, "_authed_client", _mock_authed_client(handler))
+    lists = PrintablesImporter().list_user_lists()
+    assert [item.kind for item in lists] == ["collection", "likes"]
+    collection = lists[0]
+    assert collection.site is ImportSite.PRINTABLES
+    assert collection.list_id == "3585865"
+    assert collection.title == "Stuff"
+    assert collection.count == 1
+    assert lists[1] == RemoteList(
+        site=ImportSite.PRINTABLES, list_id="likes", kind="likes", title="Liked models", count=None
+    )
+
+
+def test_list_user_lists_not_connected_returns_empty_list(monkeypatch):
+    def raise_auth_error():
+        raise PrintablesAuthError("no Printables account is connected")
+
+    monkeypatch.setattr(printables, "_printables_session", raise_auth_error)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("must not make a request when not connected")
+
+    monkeypatch.setattr(printables, "_authed_client", _mock_authed_client(handler))
+    assert PrintablesImporter().list_user_lists() == []
+
+
+def test_list_list_items_for_a_collection_maps_search_results(monkeypatch):
+    _stub_session_and_identity(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.read().decode())
+        assert "moreCollectionModels" in payload["query"]
+        variables = payload["variables"]
+        assert variables["collectionId"] == "3585865"
+        assert variables["ordering"] == "added_to_collection"
+        return httpx.Response(200, json=fx.COLLECTION_MODELS)
+
+    monkeypatch.setattr(printables, "_authed_client", _mock_authed_client(handler))
+    results = PrintablesImporter().list_list_items("3585865")
+    assert len(results) == 1
+    result = results[0]
+    assert result.site is ImportSite.PRINTABLES
+    assert result.external_id == "605259"
+    assert result.title == "Dual Color Poker Chips With Numbers"
+    assert result.url == (
+        "https://www.printables.com/model/605259-dual-color-poker-chips-with-numbers"
+    )
+    assert result.author == "agepbiz"
+    assert result.thumbnail_url == (
+        "https://media.printables.com/media/prints/605259/images/abc123/poker_chips.jpg"
+    )
+
+
+def test_list_list_items_likes_routes_to_liked_models_query(monkeypatch):
+    _stub_session_and_identity(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.read().decode())
+        assert "moreLikedPrints2" in payload["query"]
+        variables = payload["variables"]
+        assert variables["userId"] == "5092991"
+        assert variables["printType"] == "all"
+        return httpx.Response(200, json=fx.LIKED_MODELS)
+
+    monkeypatch.setattr(printables, "_authed_client", _mock_authed_client(handler))
+    results = PrintablesImporter().list_list_items("likes")
+    assert len(results) == 1
+    assert results[0].external_id == "605259"
+
+
+def test_list_list_items_row_without_slug_falls_back_to_bare_url(monkeypatch):
+    _stub_session_and_identity(monkeypatch)
+    body = {
+        "data": {
+            "models": {
+                "cursor": "",
+                "items": [
+                    {
+                        "id": "9",
+                        "model": {
+                            "id": "9",
+                            "name": "No Slug Model",
+                            "slug": None,
+                            "user": None,
+                            "image": None,
+                        },
+                    }
+                ],
+            }
+        }
+    }
+    monkeypatch.setattr(
+        printables, "_authed_client", _mock_authed_client(lambda r: httpx.Response(200, json=body))
+    )
+    results = PrintablesImporter().list_list_items("3585865")
+    assert len(results) == 1
+    assert results[0].url == "https://www.printables.com/model/9"
+    assert results[0].author is None
+    assert results[0].thumbnail_url is None
+
+
+def test_list_list_items_row_without_model_is_skipped(monkeypatch):
+    _stub_session_and_identity(monkeypatch)
+    body = {
+        "data": {
+            "models": {
+                "cursor": "",
+                "items": [
+                    {"id": "9", "model": None},
+                    {"id": "10", "model": {"id": None, "name": "Broken"}},
+                ],
+            }
+        }
+    }
+    monkeypatch.setattr(
+        printables, "_authed_client", _mock_authed_client(lambda r: httpx.Response(200, json=body))
+    )
+    assert PrintablesImporter().list_list_items("3585865") == []
+
+
+def test_list_list_items_not_connected_returns_empty_list(monkeypatch):
+    def raise_auth_error():
+        raise PrintablesAuthError("no Printables account is connected")
+
+    monkeypatch.setattr(printables, "_printables_session", raise_auth_error)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("must not make a request when not connected")
+
+    monkeypatch.setattr(printables, "_authed_client", _mock_authed_client(handler))
+    assert PrintablesImporter().list_list_items("3585865") == []
+    assert PrintablesImporter().list_list_items("likes") == []
+
+
+def _paginated_item(i: int) -> dict:
+    return {
+        "id": str(i),
+        "model": {
+            "id": str(i),
+            "name": f"Model {i}",
+            "slug": f"model-{i}",
+            "user": {"publicUsername": "someone"},
+            "image": None,
+        },
+    }
+
+
+def test_list_list_items_page_2_requests_limit_40_and_returns_the_upper_window(monkeypatch):
+    _stub_session_and_identity(monkeypatch)
+    all_items = [_paginated_item(i) for i in range(40)]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        variables = json.loads(request.read().decode())["variables"]
+        assert variables["limit"] == 40
+        assert variables["cursor"] is None
+        return httpx.Response(200, json={"data": {"models": {"cursor": "", "items": all_items}}})
+
+    monkeypatch.setattr(printables, "_authed_client", _mock_authed_client(handler))
+    results = PrintablesImporter().list_list_items("3585865", page=2)
+    assert [r.external_id for r in results] == [str(i) for i in range(20, 40)]
+
+
+def test_list_list_items_follows_cursor_when_server_caps_limit(monkeypatch):
+    _stub_session_and_identity(monkeypatch)
+    first_batch = [_paginated_item(i) for i in range(20)]
+    second_batch = [_paginated_item(i) for i in range(20, 40)]
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        variables = json.loads(request.read().decode())["variables"]
+        calls.append(variables)
+        if variables["cursor"] is None:
+            # Server caps `limit` at 20 despite the 40 asked for, but says
+            # there's more via a non-empty cursor.
+            assert variables["limit"] == 40
+            return httpx.Response(
+                200,
+                json={"data": {"models": {"cursor": "cursor-1", "items": first_batch}}},
+            )
+        assert variables["cursor"] == "cursor-1"
+        assert variables["limit"] == 20
+        return httpx.Response(200, json={"data": {"models": {"cursor": "", "items": second_batch}}})
+
+    monkeypatch.setattr(printables, "_authed_client", _mock_authed_client(handler))
+    results = PrintablesImporter().list_list_items("3585865", page=2)
+    assert len(calls) == 2
+    assert [r.external_id for r in results] == [str(i) for i in range(20, 40)]
 
 
 @pytest.mark.live_importer

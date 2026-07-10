@@ -160,6 +160,70 @@ def _post(client: httpx.Client, query: str, variables: dict) -> dict:
     return body["data"]
 
 
+# -- saved collections / likes (M8 H / Workstream A task A4) -----------------
+# Live-verified 2026-07-10 against a real connected account. `userId` is NOT
+# the JWT `sub` -- always resolve it via `fetch_identity()`.
+
+USER_COLLECTIONS_QUERY = """
+query UserCollections($userId: ID!) {
+  collections: userCollections(userId: $userId) {
+    id name private likesCount modelsCount: printsCount
+  }
+}
+""".strip()
+
+# `ordering` is MANDATORY (live-verified: omitting it returns HTTP 200
+# carrying a GraphQL error -- "Cannot resolve keyword 'new_uploads' into
+# field" -- and `models: null`). We always pass "added_to_collection".
+COLLECTION_MODELS_QUERY = """
+query CollectionModels($collectionId: ID!, $limit: Int, $cursor: String,
+                       $ordering: CollectionPrintsOrderingEnum) {
+  models: moreCollectionModels(collectionId: $collectionId, limit: $limit,
+                               cursor: $cursor, ordering: $ordering) {
+    cursor items { id model: print { id name slug user { publicUsername } image { filePath } } }
+  }
+}
+""".strip()
+
+# `printType` is non-null in the schema; we always pass "all".
+LIKED_MODELS_QUERY = """
+query LikedModels($userId: ID!, $limit: Int, $cursor: String,
+                  $printType: PrintTypeOptionsEnum!) {
+  models: moreLikedPrints2(likedUserId: $userId, limit: $limit, cursor: $cursor,
+                           printType: $printType) {
+    cursor items { id model: print { id name slug user { publicUsername } image { filePath } } }
+  }
+}
+""".strip()
+
+
+def _fetch_page(client: httpx.Client, query: str, variables: dict) -> tuple[list[dict], str]:
+    """One page of a cursor-paginated list query (``moreCollectionModels`` /
+    ``moreLikedPrints2``) -- both alias their payload to ``models`` and both
+    return ``{cursor, items}``, so the two list-items queries share this."""
+    data = _post(client, query, variables)
+    models = data.get("models") or {}
+    return list(models.get("items") or []), models.get("cursor") or ""
+
+
+def _paged_items(client: httpx.Client, query: str, base_variables: dict, page: int) -> list[dict]:
+    """Printables pages by opaque cursor, the importer Protocol by number.
+    Ask for `page * _SEARCH_PAGE_SIZE` in one request and return the last
+    window of it. If the server caps `limit` -- it hands back fewer items
+    than asked WITH a non-empty cursor -- keep following the cursor until
+    the window is filled or the list ends (`cursor == ""`)."""
+    want = page * _SEARCH_PAGE_SIZE
+    items, cursor = _fetch_page(client, query, {**base_variables, "limit": want, "cursor": None})
+    while len(items) < want and cursor:
+        more, cursor = _fetch_page(
+            client, query, {**base_variables, "limit": want - len(items), "cursor": cursor}
+        )
+        if not more:
+            break  # server contradicted itself; don't spin
+        items.extend(more)
+    return items[(page - 1) * _SEARCH_PAGE_SIZE :]
+
+
 class PrintablesImporter:
     site: ClassVar[ImportSite] = ImportSite.PRINTABLES
 
@@ -258,23 +322,91 @@ class PrintablesImporter:
         return results
 
     # -- saved collections / likes (M8 H) ---------------------------------
-    # The authenticated session now exists (Workstream A task A1,
-    # `app.services.printables_auth` + `_printables_session()`/
-    # `_authed_client` above) -- the user pastes a Printables
-    # `auth.refresh_token`, which is validated, rotated, and stored
-    # encrypted, and this module can mint a Bearer access token for it at
-    # any time. What's still missing is the GraphQL queries themselves (the
-    # collections/liked-prints lookups) -- that's the next task (A4), which
-    # consumes `_printables_session()` the same way `list_files`/
-    # `resolve_download` would if this site gated downloads behind login (it
-    # doesn't). Returning [] here is the "nothing to show, not an error"
-    # convention `search` uses, same as before A1 landed.
+    # The authenticated session (Workstream A task A1, `app.services.
+    # printables_auth` + `_printables_session()`/`_authed_client` above)
+    # backs both queries below: `userCollections` for the named collections,
+    # and (Printables has no real "likes" collection, mirroring
+    # `thingiverse.py`'s synthetic list) `moreLikedPrints2` behind one
+    # synthetic "likes" pseudo-list. Not connected (`PrintablesAuthError`)
+    # -> [] for both -- the "nothing to show, not an error" convention
+    # `search` uses.
 
     def list_user_lists(self) -> list[RemoteList]:
-        return []
+        from app.services.printables_auth import PrintablesAuthError
+
+        try:
+            token = _printables_session()
+        except PrintablesAuthError:
+            return []
+        user_id, _ = fetch_identity(token)
+        if not user_id:
+            return []
+        with _authed_client(token) as c:
+            data = _post(c, USER_COLLECTIONS_QUERY, {"userId": user_id})
+        lists: list[RemoteList] = []
+        for coll in data.get("collections") or []:
+            cid = coll.get("id")
+            if not cid:
+                continue
+            lists.append(
+                RemoteList(
+                    site=self.site,
+                    list_id=str(cid),
+                    kind="collection",
+                    title=coll.get("name") or f"collection {cid}",
+                    count=coll.get("modelsCount"),
+                )
+            )
+        lists.append(
+            RemoteList(
+                site=self.site, list_id="likes", kind="likes", title="Liked models", count=None
+            )
+        )
+        return lists
 
     def list_list_items(self, list_id: str, page: int = 1) -> list[SearchResult]:
-        return []
+        from app.services.printables_auth import PrintablesAuthError
+
+        try:
+            token = _printables_session()
+        except PrintablesAuthError:
+            return []
+        if list_id == "likes":
+            user_id, _ = fetch_identity(token)
+            if not user_id:
+                return []
+            query = LIKED_MODELS_QUERY
+            base_variables: dict = {"userId": user_id, "printType": "all"}
+        else:
+            query = COLLECTION_MODELS_QUERY
+            base_variables = {"collectionId": list_id, "ordering": "added_to_collection"}
+        with _authed_client(token) as c:
+            items = _paged_items(c, query, base_variables, page)
+        results: list[SearchResult] = []
+        for item in items:
+            m = item.get("model") or {}
+            mid = m.get("id")
+            if not mid:
+                continue
+            slug = m.get("slug")
+            url = (
+                f"https://www.printables.com/model/{mid}-{slug}"
+                if slug
+                else f"https://www.printables.com/model/{mid}"
+            )
+            image = m.get("image") or {}
+            thumb = f"{_IMG_BASE}{image['filePath']}" if image.get("filePath") else None
+            results.append(
+                SearchResult(
+                    site=self.site,
+                    external_id=str(mid),
+                    title=m.get("name") or f"print {mid}",
+                    url=url,
+                    author=(m.get("user") or {}).get("publicUsername"),
+                    thumbnail_url=thumb,
+                )
+            )
+        return results
 
 
 register_importer(PrintablesImporter())

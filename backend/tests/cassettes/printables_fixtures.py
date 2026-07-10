@@ -53,17 +53,13 @@ SEARCH_PRINTS_BENCHY = {
                 {
                     "id": "3161",
                     "name": "3D BENCHY",
-                    "image": {
-                        "filePath": "media/prints/3161/images/20206_70fde6a0/benchy.jpg"
-                    },
+                    "image": {"filePath": "media/prints/3161/images/20206_70fde6a0/benchy.jpg"},
                     "user": {"publicUsername": "Prusa Research"},
                 },
                 {
                     "id": "1192178",
                     "name": "All Terrain Assault Benchy",
-                    "image": {
-                        "filePath": "media/prints/1192178/images/8960591_c320f4d9/img.jpeg"
-                    },
+                    "image": {"filePath": "media/prints/1192178/images/8960591_c320f4d9/img.jpeg"},
                     "user": {"publicUsername": "soozafone"},
                 },
             ],
@@ -76,6 +72,68 @@ DOWNLOAD_LINK_90001 = {
         "getDownloadLink": {
             "ok": True,
             "output": {"link": "https://files.printables.com/media/dl/3161/3DBenchy.stl?token=abc"},
+        }
+    }
+}
+
+# -- saved collections / likes (Workstream A task A4) -------------------------
+# Trimmed real bodies, live-captured 2026-07-10 against the user's own
+# Printables account (Bearer-authenticated `userCollections`/
+# `moreCollectionModels`/`moreLikedPrints2` queries -- see printables.py's
+# A4 comment block for the full contract).
+
+USER_ID = "5092991"
+
+USER_COLLECTIONS = {
+    "data": {
+        "collections": [
+            {
+                "id": "3585865",
+                "name": "Stuff",
+                "private": True,
+                "likesCount": 0,
+                "modelsCount": 1,
+            }
+        ]
+    }
+}
+
+COLLECTION_MODELS = {
+    "data": {
+        "models": {
+            "cursor": "",
+            "items": [
+                {
+                    "id": "605259",
+                    "model": {
+                        "id": "605259",
+                        "name": "Dual Color Poker Chips With Numbers",
+                        "slug": "dual-color-poker-chips-with-numbers",
+                        "user": {"publicUsername": "agepbiz"},
+                        "image": {"filePath": "media/prints/605259/images/abc123/poker_chips.jpg"},
+                    },
+                }
+            ],
+        }
+    }
+}
+
+LIKED_MODELS = {
+    "data": {
+        "models": {
+            "cursor": "",
+            "items": [
+                {
+                    "id": "605259",
+                    "model": {
+                        "id": "605259",
+                        "name": "Dual Color Poker Chips With Numbers",
+                        "slug": "dual-color-poker-chips-with-numbers",
+                        "user": {"publicUsername": "agepbiz"},
+                        "image": {"filePath": "media/prints/605259/images/abc123/poker_chips.jpg"},
+                    },
+                }
+            ],
         }
     }
 }

@@ -47,9 +47,7 @@ def _mock_web_client(designs, *, build_id="TESTBUILD123", stale_id=None):
             return httpx.Response(200, json={"pageProps": {"designs": designs, "total": 3545}})
         return httpx.Response(404, text="unexpected path")
 
-    return httpx.Client(
-        base_url="https://makerworld.com", transport=httpx.MockTransport(handler)
-    )
+    return httpx.Client(base_url="https://makerworld.com", transport=httpx.MockTransport(handler))
 
 
 @pytest.fixture(autouse=True)
@@ -175,6 +173,130 @@ def test_list_files_with_connected_account_maps_zip_stl_instances(monkeypatch):
     # profileId from the one hasZipStl instance in the fixture.
     assert files[0].remote_id == "12345"
     assert files[0].filename == "Default-3391581.zip"
+
+
+def _mock_favorites_client(token, *, profile=None, hits_by_list=None):
+    """Mock the cookie-authed `/api/v1` seam `_favorites_client` builds:
+    handles `/user-service/my/profile` and `/design-service/favorites/
+    designs/{listId}`, asserting the `token` cookie and `@{handle}` param
+    both callers below are expected to send."""
+    profile = profile or fx.PROFILE_TERMINALFOO
+    hits_by_list = hits_by_list or {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers.get("Cookie") == f"token={token}"
+        path = request.url.path
+        if path == "/api/v1/user-service/my/profile":
+            return httpx.Response(200, json=profile)
+        if path.startswith("/api/v1/design-service/favorites/designs/"):
+            list_id = path.rsplit("/", 1)[-1]
+            params = dict(request.url.params)
+            assert params.get("handle") == f"@{profile['name']}"
+            hits = hits_by_list.get(list_id, [])
+            return httpx.Response(200, json={"hits": hits, "total": len(hits), "seed": 1})
+        return httpx.Response(404, text="unexpected path")
+
+    return httpx.Client(
+        base_url="https://makerworld.com/api/v1",
+        headers={"Cookie": f"token={token}"},
+        transport=httpx.MockTransport(handler),
+    )
+
+
+def _mock_collections_client(
+    favorites_list, *, build_id="TESTBUILD123", handle="Terminalfoo", token="test-token"
+):
+    """Mock the SSR `collections.json` seam `list_user_lists` reads via
+    `_web_client`: `/en` yields a buildId, and `/_next/data/<buildId>/en/
+    @<handle>/collections.json` returns `pageProps.favoritesList`."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/en":
+            return httpx.Response(200, text=f'<script>{{"buildId":"{build_id}"}}</script>')
+        if path == f"/_next/data/{build_id}/en/@{handle}/collections.json":
+            assert dict(request.url.params) == {"handle": f"@{handle}"}
+            assert request.headers.get("x-nextjs-data") == "1"
+            assert request.headers.get("Cookie") == f"token={token}"
+            return httpx.Response(200, json={"pageProps": {"favoritesList": favorites_list}})
+        return httpx.Response(404, text="unexpected path")
+
+    return httpx.Client(base_url="https://makerworld.com", transport=httpx.MockTransport(handler))
+
+
+def _challenged_web_client():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403, headers={"cf-mitigated": "challenge"}, text="<title>Just a moment...</title>"
+        )
+
+    return httpx.Client(base_url="https://makerworld.com", transport=httpx.MockTransport(handler))
+
+
+def test_list_user_lists_none_when_no_bambu_account(monkeypatch):
+    monkeypatch.setattr(makerworld, "_makerworld_web_token", lambda: None)
+    assert MakerWorldImporter().list_user_lists() == []
+
+
+def test_list_list_items_none_when_no_bambu_account(monkeypatch):
+    monkeypatch.setattr(makerworld, "_makerworld_web_token", lambda: None)
+    assert MakerWorldImporter().list_list_items("3054026541") == []
+
+
+def test_list_user_lists_returns_aggregate_and_named_collections(monkeypatch):
+    monkeypatch.setattr(makerworld, "_makerworld_web_token", lambda: "test-token")
+    monkeypatch.setattr(
+        makerworld, "_favorites_client", lambda token: _mock_favorites_client(token)
+    )
+    monkeypatch.setattr(
+        makerworld, "_web_client", lambda: _mock_collections_client(fx.FAVORITES_LIST)
+    )
+    lists = MakerWorldImporter().list_user_lists()
+    # Aggregate first, keyed by uid from the (consulted) profile.
+    aggregate = lists[0]
+    assert aggregate.list_id == str(fx.PROFILE_TERMINALFOO["uid"])
+    assert aggregate.kind == "collection"
+    assert aggregate.title == "All collected models"
+    assert aggregate.count is None
+    # Named collections: title/count mapped, `status: 2` ("Trays") skipped.
+    named = {entry.list_id: entry for entry in lists[1:]}
+    assert set(named) == {"2155987", "18925823"}
+    assert named["2155987"].title == "Default Collection"
+    assert named["2155987"].count == 7
+    assert named["18925823"].title == "ESP32"
+    assert named["18925823"].count == 9
+
+
+def test_list_user_lists_still_returns_aggregate_when_collections_route_fails(monkeypatch):
+    # The SSR collections.json route Cloudflare-challenges from a server IP
+    # (intermittent, live-verified) -- must not take down the aggregate.
+    monkeypatch.setattr(makerworld, "_makerworld_web_token", lambda: "test-token")
+    monkeypatch.setattr(
+        makerworld, "_favorites_client", lambda token: _mock_favorites_client(token)
+    )
+    monkeypatch.setattr(makerworld, "_web_client", _challenged_web_client)
+    lists = MakerWorldImporter().list_user_lists()
+    assert len(lists) == 1
+    assert lists[0].list_id == str(fx.PROFILE_TERMINALFOO["uid"])
+    assert lists[0].title == "All collected models"
+
+
+def test_list_list_items_maps_hits_to_search_results(monkeypatch):
+    monkeypatch.setattr(makerworld, "_makerworld_web_token", lambda: "test-token")
+    list_id = str(fx.PROFILE_TERMINALFOO["uid"])
+    monkeypatch.setattr(
+        makerworld,
+        "_favorites_client",
+        lambda token: _mock_favorites_client(token, hits_by_list={list_id: fx.FAVORITE_DESIGNS}),
+    )
+    results = MakerWorldImporter().list_list_items(list_id)
+    assert [r.external_id for r in results] == ["2188414", "2603954"]
+    first = results[0]
+    assert first.site is ImportSite.MAKERWORLD
+    assert first.title == "ESP32-C6-Zigbee Gehäuse"
+    assert first.url == "https://www.makerworld.com/en/models/2188414"
+    assert first.author == "Jackstyle"
+    assert first.thumbnail_url == fx.FAVORITE_DESIGNS[0]["cover"]
 
 
 def test_resolve_download_hits_authed_endpoint_and_returns_presigned_url(monkeypatch):

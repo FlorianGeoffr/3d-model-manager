@@ -159,6 +159,79 @@ def _require_bambu_session() -> tuple[str, str]:
         raise ImportRejected(_BAMBU_AUTH_REQUIRED) from exc
 
 
+def _favorites_client(token: str) -> httpx.Client:
+    """The cookie-authenticated `/api/v1` seam for the profile/favorites reads
+    below (mirrors `_client`/`_authed_client` -- a monkeypatchable module
+    function tests swap independently of the anonymous `_client` and SSR
+    `_web_client` seams). Headers match the live-captured browser request
+    (mw_capture_notes.md's grounding); the `token` cookie is the actual auth."""
+    return httpx.Client(
+        base_url=_BASE_URL,
+        timeout=30.0,
+        follow_redirects=True,
+        headers={
+            "User-Agent": _UA,
+            "Content-Type": "application/json",
+            "x-bbl-app-source": "makerworld",
+            "x-bbl-client-name": "MakerWorld",
+            "x-bbl-client-type": "web",
+            "x-bbl-client-version": "00.00.00.01",
+            "Cookie": f"token={token}",
+        },
+    )
+
+
+# === UNVERIFIED: Bambu access token reused as the makerworld.com web ========
+# === session `token` cookie ==================================================
+def _makerworld_web_token() -> str | None:
+    """The single source of the MakerWorld web session `token` cookie every
+    read below needs (live-verified: an anonymous request to these endpoints
+    doesn't error, it just silently comes back `{"hits": [], "total": 0}` --
+    mw_capture_notes.md). We already hold a user-scoped, auto-refreshing
+    Bambu account access token via `_bambu_session()`; whether MakerWorld's
+    web backend actually ACCEPTS that Bambu access token (a JWT, `eyJ...`) as
+    its `token` cookie is UNVERIFIED. The one working cookie captured live
+    during grounding was a MakerWorld-web opaque token (`AACB...`), which may
+    come from a different auth flow entirely and could be rejected here.
+
+    Verify this at live acceptance: if a connected Bambu account still comes
+    back with empty `list_user_lists`/`list_list_items` results (not the
+    "not connected" `[]` below, but genuinely-empty despite favorites
+    existing on the account), the Bambu JWT is being rejected as the cookie.
+    The fix is ISOLATED to this one function -- swap it to read a separately
+    stored, user-pasted `makerworld_token` credential instead (the same
+    posture as Thingiverse's app-token setting) rather than reusing the
+    Bambu session; nothing downstream of this function needs to change.
+
+    Returns None when no Bambu account is connected (caught `BambuAuthError`)
+    -- both callers below treat that as "nothing to show", the same
+    convention `search` uses for an unsearchable state.
+    """
+    from app.services.bambu_auth import BambuAuthError
+
+    try:
+        access_token, _region = _bambu_session()
+    except BambuAuthError:
+        return None
+    return access_token
+
+
+# ==============================================================================
+
+
+def _profile(token: str) -> tuple[int, str]:
+    """`(uid, handle)` for the connected MakerWorld account (VERIFIED:
+    `GET /user-service/my/profile` -> `{"uid": ..., "name": ...}`). `uid` also
+    doubles as the id MakerWorld itself uses for the aggregate "all collected
+    models" list; `handle` (the account's `name`, e.g. "Terminalfoo") is what
+    the favorites/collections endpoints below expect as `@{handle}`."""
+    with _favorites_client(token) as c:
+        r = c.get("/user-service/my/profile")
+        r.raise_for_status()
+        body = r.json()
+    return int(body["uid"]), str(body["name"])
+
+
 class MakerWorldImporter:
     site: ClassVar[ImportSite] = ImportSite.MAKERWORLD
 
@@ -339,20 +412,111 @@ class MakerWorldImporter:
         )
 
     # -- saved collections / likes (M8 H) ---------------------------------
-    # The seam is live (the API + the periodic sync task call through it), but
-    # the authenticated calls are NOT wired yet. We DO hold a user-scoped Bambu
-    # access token (`_bambu_session`), yet no MakerWorld collections/likes
-    # endpoint is mapped anywhere -- and the one authed endpoint we do have is
-    # already flagged documented-not-verified. Guessing a second one would
-    # compound that; it lands once a real logged-in request can be captured.
-    # Returning [] is the "nothing to show, not an error" convention `search`
-    # uses.
+    # Auth is `_makerworld_web_token()` (see its docstring for the UNVERIFIED
+    # Bambu-token-as-cookie assumption). Both methods return [] when no Bambu
+    # account is connected -- the "nothing to show, not an error" convention
+    # `search` uses.
 
     def list_user_lists(self) -> list[RemoteList]:
-        return []
+        token = _makerworld_web_token()
+        if not token:
+            return []
+        uid, handle = _profile(token)
+        # Always emit the aggregate list -- it works headlessly off just the
+        # uid (VERIFIED: `{listId}` = uid -> "all collected models", total
+        # 101 for @Terminalfoo -- mw_capture_notes.md). `count=None` since
+        # getting a true total here means an extra items-page fetch just for
+        # a number the UI can compute once it lists items anyway.
+        lists = [
+            RemoteList(
+                site=self.site,
+                list_id=str(uid),
+                kind="collection",
+                title="All collected models",
+                count=None,
+            )
+        ]
+        # BEST-EFFORT named collections: the SSR `collections.json` route is
+        # intermittently Cloudflare-walled from a server IP (unlike the items
+        # endpoint above, which isn't) -- a failure here must not take down
+        # the aggregate list already built.
+        try:
+            with _web_client() as c:
+                c.cookies.set("token", token)
+                build_id = _makerworld_build_id(c)
+                response = self._collections_page(c, build_id, handle)
+                if response.status_code == 404:
+                    build_id = _makerworld_build_id(c, force=True)
+                    response = self._collections_page(c, build_id, handle)
+                response.raise_for_status()
+                page_props = (response.json() or {}).get("pageProps") or {}
+                favorites = page_props.get("favoritesList") or []
+            for coll in favorites:
+                if coll.get("status") != 1:
+                    continue
+                cid = coll.get("id")
+                if not cid:
+                    continue
+                lists.append(
+                    RemoteList(
+                        site=self.site,
+                        list_id=str(cid),
+                        kind="collection",
+                        title=coll.get("title") or f"collection {cid}",
+                        count=coll.get("designCnt"),
+                    )
+                )
+        except (RuntimeError, httpx.HTTPError, KeyError):
+            # RuntimeError: Cloudflare challenge (`_makerworld_build_id`).
+            # httpx.HTTPError: non-2xx (`raise_for_status`) / transport error.
+            # KeyError: unexpected pageProps shape. Any of these -> skip the
+            # named collections, keep the aggregate.
+            pass
+        return lists
+
+    @staticmethod
+    def _collections_page(client: httpx.Client, build_id: str, handle: str) -> httpx.Response:
+        # `token` rides along as a client-level cookie (set by the caller
+        # just above) rather than a per-request one -- httpx deprecated the
+        # latter, and the M1 gates require warning-free pytest output.
+        return client.get(
+            f"/_next/data/{build_id}/en/@{handle}/collections.json",
+            params={"handle": f"@{handle}"},
+            headers={"x-nextjs-data": "1"},
+        )
 
     def list_list_items(self, list_id: str, page: int = 1) -> list[SearchResult]:
-        return []
+        token = _makerworld_web_token()
+        if not token:
+            return []
+        _uid, handle = _profile(token)
+        offset = max(page - 1, 0) * _SEARCH_PAGE_SIZE
+        # VERIFIED: works for both the aggregate list (listId=uid) and a
+        # named collection id -- same endpoint, same design-item shape
+        # `search` already maps (mw_capture_notes.md).
+        with _favorites_client(token) as c:
+            r = c.get(
+                f"/design-service/favorites/designs/{list_id}",
+                params={"handle": f"@{handle}", "limit": _SEARCH_PAGE_SIZE, "offset": offset},
+            )
+            r.raise_for_status()
+            hits = (r.json() or {}).get("hits") or []
+        results: list[SearchResult] = []
+        for h in hits:
+            hid = h.get("id")
+            if not hid:
+                continue
+            results.append(
+                SearchResult(
+                    site=self.site,
+                    external_id=str(hid),
+                    title=h.get("title") or f"model {hid}",
+                    url=f"https://www.makerworld.com/en/models/{hid}",
+                    author=(h.get("designCreator") or {}).get("name"),
+                    thumbnail_url=h.get("cover"),
+                )
+            )
+        return results
 
 
 register_importer(MakerWorldImporter())

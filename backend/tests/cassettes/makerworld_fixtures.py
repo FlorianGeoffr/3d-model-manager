@@ -78,3 +78,56 @@ SEARCH_DESIGNS_BENCHY = [
         "downloadCount": 5,
     },
 ]
+
+# -- saved collections / likes (M9 A2) ------------------------------------
+
+PROFILE_TERMINALFOO = {"uid": 3054026541, "name": "Terminalfoo"}
+
+# Trimmed `pageProps.favoritesList[]` from the live-captured `collections.json`
+# SSR route (mw_capture_notes.md) down to the fields `list_user_lists` reads:
+# `id, title, slug, isDefault, designCnt, status`. Includes one `status: 2`
+# (hidden) collection ("Trays") to exercise the skip-hidden filter.
+FAVORITES_LIST = [
+    {
+        "id": 2155987,
+        "title": "Default Collection",
+        "slug": "default-collection",
+        "isDefault": True,
+        "designCnt": 7,
+        "status": 1,
+    },
+    {
+        "id": 18925823,
+        "title": "ESP32",
+        "slug": "esp32",
+        "isDefault": False,
+        "designCnt": 9,
+        "status": 1,
+    },
+    {
+        "id": 1793275,
+        "title": "Trays",
+        "slug": "trays",
+        "isDefault": False,
+        "designCnt": 3,
+        "status": 2,
+    },
+]
+
+# Trimmed real `/design-service/favorites/designs/{listId}` response
+# (mw_items.json, aggregate list for @Terminalfoo) down to the fields
+# `list_list_items` reads: `id, title, cover, designCreator{name}`.
+FAVORITE_DESIGNS = [
+    {
+        "id": 2188414,
+        "title": "ESP32-C6-Zigbee Gehäuse",
+        "cover": "https://makerworld.bblmw.com/makerworld/model/DSM00000002188414/design/2026-01-02_e75176fea9bc4.jpg",
+        "designCreator": {"uid": 3279776322, "name": "Jackstyle"},
+    },
+    {
+        "id": 2603954,
+        "title": "Housing for ESP32-C6 DevKitC",
+        "cover": "https://makerworld.bblmw.com/makerworld/model/US340b8e8edf9b37/design/06dd9a086e50e095.jpeg",
+        "designCreator": {"uid": 4268272778, "name": "Javier Lorenzana"},
+    },
+]

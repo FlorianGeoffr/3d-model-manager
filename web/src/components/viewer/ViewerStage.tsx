@@ -27,6 +27,7 @@ import {
   type LightingRig,
 } from "@/components/viewer/lighting";
 import { traysToPartColors, type PartColors } from "@/components/viewer/partColors";
+import { formatStats, type SceneStats, type ViewerToolsState } from "@/components/viewer/tools";
 import type { ViewerPart } from "@/components/viewer/viewable";
 import type { FileOut } from "@/api/types";
 
@@ -137,10 +138,18 @@ function MeshCanvas({
   parts,
   background,
   lighting,
+  tools,
+  plateSize,
+  onStats,
+  stats,
 }: {
   parts: ViewerPart[];
   background: string;
   lighting: LightingRig;
+  tools: ViewerToolsState;
+  plateSize: number;
+  onStats: (stats: SceneStats | null) => void;
+  stats: SceneStats | null;
 }) {
   if (parts.length === 0) {
     return (
@@ -157,12 +166,34 @@ function MeshCanvas({
     <>
       <ViewerErrorBoundary resetKey={visibleParts.map((part) => part.id).join("|")}>
         <Suspense fallback={<Skeleton className="h-full w-full" />}>
-          <ModelViewer parts={parts} background={background} lighting={lighting} />
+          <ModelViewer
+            parts={parts}
+            background={background}
+            lighting={lighting}
+            tools={tools}
+            plateSize={plateSize}
+            onStats={onStats}
+          />
         </Suspense>
       </ViewerErrorBoundary>
       {visibleParts.length === 0 && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-background/50 text-sm text-muted-foreground">
           No parts selected
+        </div>
+      )}
+      {/* "How big is this print?" -- the combined mm bounding box + triangle
+          count of every visible, loaded part (`ModelViewer`'s stats-
+          reporting effect), rendered over the canvas the same way the
+          "No parts selected" hint above is: `pointer-events-none` so it
+          never intercepts orbit-control drags, absolutely positioned within
+          the stage's `relative` wrapper rather than `inset-0` since it's a
+          corner chip, not a full-canvas overlay. */}
+      {stats && (
+        <div
+          data-testid="scene-stats"
+          className="pointer-events-none absolute bottom-2 left-2 rounded-md bg-background/70 px-2 py-1 text-xs text-muted-foreground backdrop-blur-sm"
+        >
+          {formatStats(stats)}
         </div>
       )}
     </>
@@ -248,6 +279,22 @@ export interface ViewerStageProps {
    * dialog's `h-[90vh]` wrapper and the window page's `h-svh` wrapper already
    * provide it, and the body row just needs to flex to fill it. */
   variant: "inline" | "dialog" | "window";
+  /** View-affecting toggles (build-plate grid today; wireframe/auto-rotate/
+   * ortho/section/explode land on later tasks in this branch) -- see
+   * `tools.ts`. `onToolsChange` isn't wired to any control in this task
+   * (Task 6 builds the panel's View section); it's threaded through now so
+   * that panel can be added without another pass through `useViewerScene`. */
+  tools: ViewerToolsState;
+  onToolsChange: (patch: Partial<ViewerToolsState>) => void;
+  /** "How big is this print?" -- the combined mm bounding box + triangle
+   * count of the currently visible, loaded parts, reported by `ModelViewer`
+   * and rendered by `MeshCanvas`'s stats overlay chip. `null` until
+   * something visible has loaded. */
+  stats: SceneStats | null;
+  onStats: (stats: SceneStats | null) => void;
+  /** The build plate's mm side length -- single source in `useViewerScene`
+   * today, so a future settings surface can override it in one place. */
+  plateSize: number;
 }
 
 /** Strip + canvas + collapsible parts panel -- the whole redesigned viewer
@@ -293,6 +340,10 @@ export function ViewerStage({
   panelOpen,
   onTogglePanel,
   variant,
+  tools,
+  stats,
+  onStats,
+  plateSize,
 }: ViewerStageProps) {
   // The strip only exists to host actions. With the panel open and no
   // pop-out/expand actions to show (the window's steady state), it would be
@@ -350,7 +401,15 @@ export function ViewerStage({
 
       <div className={cn(BODY_BASE_CLASS, variant === "inline" && INLINE_BODY_HEIGHT_CLASS)}>
         <div className="relative min-h-0 flex-1 overflow-hidden rounded-lg border border-border">
-          <MeshCanvas parts={parts} background={background} lighting={lighting} />
+          <MeshCanvas
+            parts={parts}
+            background={background}
+            lighting={lighting}
+            tools={tools}
+            plateSize={plateSize}
+            onStats={onStats}
+            stats={stats}
+          />
         </div>
 
         {panelOpen && (

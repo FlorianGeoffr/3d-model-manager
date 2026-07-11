@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Children, isValidElement, useEffect, type ReactNode } from "react";
 
@@ -16,18 +16,27 @@ import type { FileOut, ModelDetail } from "@/api/types";
 // viewer without a real mock per test. `data-parts` (B1 "toggle-fix core")
 // exposes each part's `visible` flag -- every combinable part is ALWAYS in
 // `parts` now (checked or not), so tests that used to assert on which urls
-// were present/absent assert on `visible` here instead.
+// were present/absent assert on `visible` here instead. `data-grid` (B1
+// Task 3 "viewer tools state") exposes the `tools.grid` flag `useViewerScene`
+// hands down, so a test can assert the default without reaching into
+// `tools.ts` directly. `onStats` is real (not stubbed away) -- it's
+// `useViewerScene`'s `setStats`, passed straight through -- so a test can
+// grab it off `modelViewerMock.mock.calls` and drive the real stats overlay
+// chip `ViewerStage` renders, the same way the real component would.
 type ViewerPart = { id: number; url: string; color?: string; visible: boolean };
 type ViewerLighting = { contactShadow: boolean };
+type ViewerToolsStub = { grid: boolean };
 const { modelViewerMock, platePanelMock, defaultModelViewerImpl } = vi.hoisted(() => {
   const defaultModelViewerImpl = ({
     parts,
     background,
     lighting,
+    tools,
   }: {
     parts: ViewerPart[];
     background: string;
     lighting?: ViewerLighting;
+    tools?: ViewerToolsStub;
   }) => (
     <div
       data-testid="model-viewer"
@@ -35,6 +44,7 @@ const { modelViewerMock, platePanelMock, defaultModelViewerImpl } = vi.hoisted((
       data-contact-shadow={lighting ? String(lighting.contactShadow) : undefined}
       data-colors={parts.map((part) => part.color ?? "").join(",")}
       data-parts={parts.map((part) => `${part.id}:${part.visible ? 1 : 0}`).join(",")}
+      data-grid={tools ? String(tools.grid) : undefined}
     >
       {parts.map((part) => part.url).join(",")}
     </div>
@@ -178,6 +188,13 @@ describe("ViewerTab", () => {
     expect(screen.getByRole("checkbox", { name: file.rel_path })).toBeChecked();
   });
 
+  it("passes the default viewer tools (build-plate grid on) to ModelViewer", async () => {
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file])} />);
+
+    expect(await screen.findByTestId("model-viewer")).toHaveAttribute("data-grid", "true");
+  });
+
   it("resyncs the first-part-checked default when the model's file set changes", async () => {
     // TanStack Router reuses this component instance across `$slug`
     // navigations, so `checkedIds` must not carry over model A's ids to
@@ -277,6 +294,27 @@ describe("ViewerTab", () => {
     expect(await screen.findByText("No parts selected")).toBeInTheDocument();
     expect(screen.getByTestId("model-viewer")).toBeInTheDocument();
     expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-parts", "1:0");
+  });
+
+  it("shows the scene-stats chip once ModelViewer reports stats, and hides it again on null", async () => {
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file])} />);
+    await screen.findByTestId("model-viewer");
+
+    // No stats reported yet -- the chip doesn't render at all.
+    expect(screen.queryByTestId("scene-stats")).not.toBeInTheDocument();
+
+    const { onStats } = modelViewerMock.mock.calls.at(-1)![0] as unknown as {
+      onStats: (stats: { x: number; y: number; z: number; triangles: number } | null) => void;
+    };
+
+    act(() => onStats({ x: 220.4, y: 180, z: 45.2, triangles: 1_200_000 }));
+    expect(await screen.findByTestId("scene-stats")).toHaveTextContent(
+      "220.4 × 180.0 × 45.2 mm · 1.2M tris",
+    );
+
+    act(() => onStats(null));
+    expect(screen.queryByTestId("scene-stats")).not.toBeInTheDocument();
   });
 
   it("selecting the White background passes #ffffff to ModelViewer and persists the choice", async () => {

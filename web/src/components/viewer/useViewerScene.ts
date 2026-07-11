@@ -19,9 +19,16 @@ import {
   savePartColors,
   type PartColors,
 } from "@/components/viewer/partColors";
+import { useViewerTools, type SceneStats, type ViewerToolsState } from "@/components/viewer/tools";
 import type { ViewerStageProps } from "@/components/viewer/ViewerStage";
 import { glbUrl, type ViewerPart } from "@/components/viewer/viewable";
 import type { FileOut } from "@/api/types";
+
+// Single source for the build-plate's mm side length -- a future settings
+// surface can replace this constant with a per-printer value without
+// touching anything downstream (`ModelViewer`, `PlateGrid`) that already
+// reads it as a prop.
+const PLATE_SIZE_MM = 256;
 
 /** Seed values so the pop-out window can start from its URL instead of this
  * tab's localStorage. Every field is optional; absent means "use the tab's
@@ -33,6 +40,7 @@ export interface ViewerSceneInitial {
   background?: { preset: BackgroundPreset; custom?: string };
   lighting?: LightingPreset;
   panelOpen?: boolean;
+  tools?: Partial<ViewerToolsState>;
 }
 
 type StagePropsBundle = Omit<
@@ -71,6 +79,8 @@ export function useViewerScene({
     initial?.lighting,
     persist,
   );
+  const { tools, setTools } = useViewerTools(initial?.tools, persist);
+  const [stats, setStats] = useState<SceneStats | null>(null);
   const printers = usePrinters();
   const printerId = printers.data?.[0]?.id;
 
@@ -163,6 +173,11 @@ export function useViewerScene({
     onOpenWindow: openInWindow,
     panelOpen,
     onTogglePanel: () => setPanelOpen((prev) => !prev),
+    tools,
+    onToolsChange: setTools,
+    stats,
+    onStats: setStats,
+    plateSize: PLATE_SIZE_MM,
   };
 
   return { stageProps };

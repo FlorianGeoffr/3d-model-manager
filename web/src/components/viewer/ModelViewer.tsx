@@ -47,7 +47,17 @@
  * ever refits when `loadedCount` changes (a part finishing its GLB load),
  * never on a plain checkbox click.
  */
-import { Component, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  Component,
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import * as THREE from "three";
 import { Canvas, useThree } from "@react-three/fiber";
 import {
@@ -62,8 +72,10 @@ import {
   useGLTF,
 } from "@react-three/drei";
 import type { LightingRig } from "@/components/viewer/lighting";
+import type { SceneStats, ViewerToolsState } from "@/components/viewer/tools";
 import type { ViewerPart } from "@/components/viewer/viewable";
 import { ViewerEffects } from "@/components/viewer/scene/Effects";
+import { CameraLayers, PlateGrid } from "@/components/viewer/scene/PlateGrid";
 
 // A 1-unit box, used as `Resize`'s `box3` while nothing has finished loading
 // yet (`allBox` is `null`) -- `Resize` divides by the box's largest
@@ -277,10 +289,16 @@ export default function ModelViewer({
   parts,
   background,
   lighting,
+  tools,
+  plateSize,
+  onStats,
 }: {
   parts: ViewerPart[];
   background: string;
   lighting: LightingRig;
+  tools: ViewerToolsState;
+  plateSize: number;
+  onStats?: (stats: SceneStats | null) => void;
 }) {
   const [loadedParts, setLoadedParts] = useState<Map<number, { box: THREE.Box3; triangles: number }>>(
     () => new Map(),
@@ -322,6 +340,67 @@ export default function ModelViewer({
     return union;
   }, [loadedParts]);
 
+  // The SAME normalization factor `<Resize box3=…>` below computes
+  // internally (`1 / max(box dimensions)`) -- kept here too so `PlateGrid`
+  // can convert its own raw-mm measurements (plate size, cell/section size)
+  // into the same normalized scene units `Resize` puts the model into,
+  // without either of them reaching into the other's internals. Only
+  // meaningful once `allBox` exists; `PlateGrid` is gated on `allBox` below
+  // so this value is never rendered from while it's still the 1-unit
+  // fallback.
+  const s = useMemo(() => {
+    const box = allBox ?? UNIT_BOX;
+    const size = box.getSize(new THREE.Vector3());
+    const maxDimension = Math.max(size.x, size.y, size.z);
+    return maxDimension > 0 ? 1 / maxDimension : 1;
+  }, [allBox]);
+
+  // Reports the combined mm-scale bounding box + triangle count of every
+  // currently VISIBLE, loaded part -- "how big is this print?" for
+  // `ViewerStage`'s stats overlay chip. Native GLB units are mm (see
+  // `viewable.ts`'s header / the backend's `convert.py` rescale), so
+  // `loadedParts`' boxes need no further conversion. `null` when nothing
+  // visible has finished loading. The ref guard skips the callback when the
+  // computed value hasn't actually changed (field-equal, not reference
+  // equal) -- `onStats` is expected to feed a `setState`, and calling it
+  // with an equivalent-but-new object every render would loop forever.
+  const lastStatsRef = useRef<SceneStats | null>(null);
+  useEffect(() => {
+    if (!onStats) return;
+
+    const union = new THREE.Box3();
+    let triangles = 0;
+    let any = false;
+    for (const part of parts) {
+      if (!part.visible) continue;
+      const loaded = loadedParts.get(part.id);
+      if (!loaded) continue;
+      union.union(loaded.box);
+      triangles += loaded.triangles;
+      any = true;
+    }
+
+    let next: SceneStats | null = null;
+    if (any) {
+      const size = union.getSize(new THREE.Vector3());
+      next = { x: size.x, y: size.y, z: size.z, triangles };
+    }
+
+    const prev = lastStatsRef.current;
+    const unchanged =
+      prev === next ||
+      (prev !== null &&
+        next !== null &&
+        prev.x === next.x &&
+        prev.y === next.y &&
+        prev.z === next.z &&
+        prev.triangles === next.triangles);
+    if (!unchanged) {
+      lastStatsRef.current = next;
+      onStats(next);
+    }
+  }, [parts, loadedParts, onStats]);
+
   return (
     // `antialias: false` -- the scene now renders offscreen into the
     // postprocessing composer's target (see `ViewerEffects` below), where
@@ -338,6 +417,12 @@ export default function ModelViewer({
     >
       <color attach="background" args={[background]} />
       <Exposure exposure={lighting.exposure} />
+      {/* Unconditional (not gated on `tools.grid`) -- `layers.enable` is
+          idempotent, and the ortho toggle (Task 4) swaps the active camera
+          out from under this, so it needs to keep re-running regardless of
+          whether the grid happens to be on right now. See PlateGrid.tsx's
+          file header for the full layer-trap rationale. */}
+      <CameraLayers />
 
       <ambientLight intensity={lighting.ambient} />
       <directionalLight position={[2.5, 4, 2.5]} intensity={lighting.key} />
@@ -387,6 +472,17 @@ export default function ModelViewer({
         </Resize>
         <BoundsRefitter loadedCount={loadedCount} />
       </Bounds>
+
+      {/* OUTSIDE `<Bounds>` deliberately -- `Bounds`'s `observe`/`fit` walks
+          its own children's bounding box to frame the camera, and the plate
+          is sized independently of the model (`plateSize`, not `allBox`);
+          including it in that subtree would inflate/skew the camera fit to
+          the plate instead of the model. `scaleFactor={s}` is the same
+          factor `<Resize>` above computes from `allBox`, so the grid and the
+          model agree on scale by construction (see `s`'s comment). Gated on
+          `allBox` (not just `tools.grid`) since `s` is only meaningful once
+          a part has actually loaded. */}
+      {tools.grid && allBox && <PlateGrid plateSize={plateSize} scaleFactor={s} />}
 
       {/* A render-target soft shadow, not a shadow map -- `<Canvas>` has no
           `shadows` prop and no light here has `castShadow`. Adding either

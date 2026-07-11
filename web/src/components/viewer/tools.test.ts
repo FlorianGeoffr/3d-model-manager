@@ -1,0 +1,124 @@
+import { act, renderHook } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
+
+import { DEFAULT_TOOLS, formatStats, useViewerTools } from "@/components/viewer/tools";
+
+afterEach(() => localStorage.clear());
+
+describe("DEFAULT_TOOLS", () => {
+  it("defaults the grid on and every other tool off/neutral", () => {
+    expect(DEFAULT_TOOLS).toEqual({
+      grid: true,
+      wireframe: false,
+      autoRotate: false,
+      ortho: false,
+      section: { enabled: false, axis: "x", t: 0.5 },
+      explode: 0,
+    });
+  });
+});
+
+describe("formatStats", () => {
+  it("formats dims to 1 decimal and a sub-1k triangle count with no suffix", () => {
+    expect(formatStats({ x: 220.4, y: 180, z: 45.2, triangles: 842 })).toBe(
+      "220.4 × 180.0 × 45.2 mm · 842 tris",
+    );
+  });
+
+  it("humanizes a thousands-range triangle count with a 'k' suffix", () => {
+    expect(formatStats({ x: 10, y: 10, z: 10, triangles: 12_400 })).toBe(
+      "10.0 × 10.0 × 10.0 mm · 12.4k tris",
+    );
+  });
+
+  it("humanizes a millions-range triangle count with an 'M' suffix", () => {
+    expect(formatStats({ x: 220.4, y: 180, z: 45.2, triangles: 1_200_000 })).toBe(
+      "220.4 × 180.0 × 45.2 mm · 1.2M tris",
+    );
+  });
+
+  it("rounds the M suffix to 1 decimal rather than truncating", () => {
+    expect(formatStats({ x: 1, y: 1, z: 1, triangles: 1_249_000 }).endsWith("1.2M tris")).toBe(true);
+    expect(formatStats({ x: 1, y: 1, z: 1, triangles: 1_260_000 }).endsWith("1.3M tris")).toBe(true);
+  });
+
+  it("rounds a sub-1k count to the nearest integer", () => {
+    expect(formatStats({ x: 1, y: 1, z: 1, triangles: 999.6 }).endsWith("1000 tris")).toBe(true);
+  });
+});
+
+describe("useViewerTools", () => {
+  it("defaults to DEFAULT_TOOLS when nothing is persisted and no initial is given", () => {
+    const { result } = renderHook(() => useViewerTools());
+    expect(result.current.tools).toEqual(DEFAULT_TOOLS);
+  });
+
+  it("restores a previously persisted grid value on mount", () => {
+    localStorage.setItem("viewer-tools", JSON.stringify({ grid: false }));
+    const { result } = renderHook(() => useViewerTools());
+    expect(result.current.tools.grid).toBe(false);
+    // Everything else still comes from the default -- only grid is stored.
+    expect(result.current.tools.wireframe).toBe(false);
+    expect(result.current.tools.explode).toBe(0);
+  });
+
+  it("falls back to the default grid value for a corrupt/invalid persisted value", () => {
+    localStorage.setItem("viewer-tools", "not json");
+    const { result: result1 } = renderHook(() => useViewerTools());
+    expect(result1.current.tools.grid).toBe(true);
+
+    localStorage.setItem("viewer-tools", JSON.stringify({ grid: "yes" }));
+    const { result: result2 } = renderHook(() => useViewerTools());
+    expect(result2.current.tools.grid).toBe(true);
+  });
+
+  it("setTools merges a patch instead of replacing the whole state", () => {
+    const { result } = renderHook(() => useViewerTools());
+
+    act(() => result.current.setTools({ wireframe: true }));
+
+    expect(result.current.tools.wireframe).toBe(true);
+    expect(result.current.tools.grid).toBe(true);
+    expect(result.current.tools.autoRotate).toBe(false);
+  });
+
+  it("persists only `grid`: patching wireframe leaves localStorage untouched", () => {
+    const { result } = renderHook(() => useViewerTools());
+
+    act(() => result.current.setTools({ wireframe: true, autoRotate: true, explode: 0.5 }));
+
+    expect(localStorage.getItem("viewer-tools")).toBeNull();
+  });
+
+  it("persists a grid change to localStorage", () => {
+    const { result } = renderHook(() => useViewerTools());
+
+    act(() => result.current.setTools({ grid: false }));
+
+    expect(JSON.parse(localStorage.getItem("viewer-tools") ?? "{}")).toEqual({ grid: false });
+  });
+
+  it("persist=false never writes grid changes to localStorage", () => {
+    const { result } = renderHook(() => useViewerTools(undefined, false));
+
+    act(() => result.current.setTools({ grid: false }));
+
+    expect(localStorage.getItem("viewer-tools")).toBeNull();
+  });
+
+  it("seeds from `initial` instead of localStorage when given", () => {
+    localStorage.setItem("viewer-tools", JSON.stringify({ grid: false }));
+    const { result } = renderHook(() => useViewerTools({ grid: true, explode: 0.3 }));
+
+    expect(result.current.tools.grid).toBe(true);
+    expect(result.current.tools.explode).toBe(0.3);
+  });
+
+  it("falls back to the stored grid value when `initial` doesn't specify grid", () => {
+    localStorage.setItem("viewer-tools", JSON.stringify({ grid: false }));
+    const { result } = renderHook(() => useViewerTools({ wireframe: true }));
+
+    expect(result.current.tools.grid).toBe(false);
+    expect(result.current.tools.wireframe).toBe(true);
+  });
+});

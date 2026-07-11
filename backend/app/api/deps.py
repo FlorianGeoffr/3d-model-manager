@@ -8,13 +8,14 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from fastapi import Cookie, Depends, HTTPException, status
+from fastapi import Cookie, Depends, Header, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.db import get_db
-from app.models import Session, User
+from app.models import ApiToken, Session, User
+from app.services import api_tokens
 from app.storage.base import StorageBackend
 
 SESSION_COOKIE_NAME = "tdmm_session"
@@ -83,6 +84,41 @@ async def require_session(
         await db.commit()
 
     return AuthContext(user=user, session=session)
+
+
+def _unauthenticated_bearer() -> HTTPException:
+    """401 for a missing/malformed/unknown/revoked ``Authorization: Bearer``
+    token -- the ``/ext`` router's counterpart to ``_unauthenticated()``
+    above. Never include the token in ``detail``; never log it.
+    """
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Not authenticated",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+async def require_api_token(
+    authorization: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> ApiToken:
+    """Resolve an ``Authorization: Bearer <token>`` header to a live
+    ``ApiToken`` row, or 401. This is the separate, narrowly-scoped auth
+    plane the ``/ext`` router (browser extension) uses instead of
+    ``require_session`` -- a browser extension can't present the httponly
+    session cookie cross-site, and a leaked extension token must not carry
+    the full session-cookie API's privileges.
+    """
+    if authorization is None:
+        raise _unauthenticated_bearer()
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise _unauthenticated_bearer()
+
+    row = await api_tokens.verify(db, token)
+    if row is None:
+        raise _unauthenticated_bearer()
+    return row
 
 
 def require_printer_enabled(settings: Settings = Depends(get_settings)) -> None:

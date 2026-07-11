@@ -15,7 +15,8 @@
  * (`@react-three/drei/core/Environment.js`); given `<Lightformer>` children
  * and neither prop, it renders those emissive planes into a local cube
  * render target instead -- real IBL, zero network. That's what the rig below
- * uses, plus real directional lights and `ACESFilmicToneMapping`, so PBR
+ * uses, plus real directional lights and ACES Filmic tone mapping (now
+ * applied in the postprocessing composer, see `scene/Effects.tsx`), so PBR
  * materials (authored assuming IBL) get specular response and the model
  * reads as solid instead of flat and chalky.
  *
@@ -62,6 +63,7 @@ import {
 } from "@react-three/drei";
 import type { LightingRig } from "@/components/viewer/lighting";
 import type { ViewerPart } from "@/components/viewer/viewable";
+import { ViewerEffects } from "@/components/viewer/scene/Effects";
 
 // A 1-unit box, used as `Resize`'s `box3` while nothing has finished loading
 // yet (`allBox` is `null`) -- `Resize` divides by the box's largest
@@ -201,18 +203,25 @@ function GltfPart({
   );
 }
 
-// `toneMappingExposure` lives on the renderer, not a scene prop, so it can't
-// go through `<Canvas gl={{...}}>` -- that object is only applied once at
-// construction and won't re-apply when the lighting preset changes at
-// runtime. Setting it imperatively here on every `exposure` change (and
-// nudging `invalidate` since the canvas is `frameloop="demand"`) is the only
-// way a preset switch actually shows up.
-function ToneMapping({ exposure }: { exposure: number }) {
+// Tone mapping itself now lives in the postprocessing composer (see
+// `scene/Effects.tsx`'s `<ToneMapping mode={ToneMappingMode.ACES_FILMIC}>`)
+// -- `EffectComposer` renders the scene into an offscreen target, and three
+// only honors `gl.toneMapping` when rendering to the default framebuffer, so
+// an imperative `gl.toneMapping` assignment here would be a no-op (worse,
+// `EffectComposer` forces `gl.toneMapping = NoToneMapping` on mount, so it'd
+// actively fight the composer). `toneMappingExposure` is unaffected by that
+// split: it lives on the renderer, not a scene prop, so it can't go through
+// `<Canvas gl={{...}}>` (that object is only applied once at construction
+// and won't re-apply when the lighting preset changes at runtime), and the
+// composer's `ToneMapping` effect reads it via three's uniform upload same
+// as the old imperative renderer path did. Setting it imperatively here on
+// every `exposure` change (and nudging `invalidate` since the canvas is
+// `frameloop="demand"`) is the only way a preset switch actually shows up.
+function Exposure({ exposure }: { exposure: number }) {
   const gl = useThree((state) => state.gl);
   const invalidate = useThree((state) => state.invalidate);
 
   useEffect(() => {
-    gl.toneMapping = THREE.ACESFilmicToneMapping;
     gl.toneMappingExposure = exposure;
     invalidate();
   }, [gl, exposure, invalidate]);
@@ -314,9 +323,21 @@ export default function ModelViewer({
   }, [loadedParts]);
 
   return (
-    <Canvas frameloop="demand" dpr={[1, 2]} className="h-full w-full">
+    // `antialias: false` -- the scene now renders offscreen into the
+    // postprocessing composer's target (see `ViewerEffects` below), where
+    // MSAA can't reach the default framebuffer anyway; SMAA in the composer
+    // chain replaces it. `localClippingEnabled: true` is unused today but
+    // required for `THREE.Material.clippingPlanes` to have any effect --
+    // needed by the cross-section feature landing next on this branch, and
+    // harmless to turn on now.
+    <Canvas
+      frameloop="demand"
+      dpr={[1, 2]}
+      gl={{ antialias: false, localClippingEnabled: true }}
+      className="h-full w-full"
+    >
       <color attach="background" args={[background]} />
-      <ToneMapping exposure={lighting.exposure} />
+      <Exposure exposure={lighting.exposure} />
 
       <ambientLight intensity={lighting.ambient} />
       <directionalLight position={[2.5, 4, 2.5]} intensity={lighting.key} />
@@ -387,6 +408,8 @@ export default function ModelViewer({
       )}
 
       <OrbitControls makeDefault enablePan />
+
+      <ViewerEffects ao={lighting.ao} />
     </Canvas>
   );
 }

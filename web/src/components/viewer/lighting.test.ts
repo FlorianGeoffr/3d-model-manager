@@ -30,6 +30,7 @@ describe("resolveLighting", () => {
       rim: 0.9,
       env: 0.85,
       contactShadow: true,
+      ao: true,
     });
   });
 
@@ -42,6 +43,7 @@ describe("resolveLighting", () => {
       rim: 1.1,
       env: 1.1,
       contactShadow: true,
+      ao: true,
     });
   });
 
@@ -54,6 +56,7 @@ describe("resolveLighting", () => {
       rim: 0.3,
       env: 0.35,
       contactShadow: false,
+      ao: false,
     });
   });
 
@@ -61,6 +64,12 @@ describe("resolveLighting", () => {
     expect(resolveLighting("studio").contactShadow).toBe(true);
     expect(resolveLighting("bright").contactShadow).toBe(true);
     expect(resolveLighting("flat").contactShadow).toBe(false);
+  });
+
+  it("only flat has AO disabled -- studio and bright both use it", () => {
+    expect(resolveLighting("studio").ao).toBe(true);
+    expect(resolveLighting("bright").ao).toBe(true);
+    expect(resolveLighting("flat").ao).toBe(false);
   });
 
   it("falls back to the studio rig for an unknown preset string", () => {

@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ViewerWindowPage } from "@/pages/ViewerWindowPage";
@@ -6,11 +6,23 @@ import type { FileOut, ModelDetail } from "@/api/types";
 
 const { paramsBox, searchBox, modelBox, modelViewerMock } = vi.hoisted(() => ({
   paramsBox: { current: { slug: "dragon" } as { slug?: string } },
-  searchBox: { current: {} as { ids?: string; bg?: string; colors?: string } },
+  searchBox: { current: {} as { ids?: string; bg?: string; bgc?: string; light?: string; colors?: string } },
   modelBox: { current: { data: undefined as unknown, isLoading: false } },
   modelViewerMock: vi.fn(
-    ({ parts, background }: { parts: { id: number; url: string; color?: string }[]; background: string }) => (
-      <div data-testid="model-viewer" data-background={background}>
+    ({
+      parts,
+      background,
+      lighting,
+    }: {
+      parts: { id: number; url: string; color?: string }[];
+      background: string;
+      lighting?: { contactShadow: boolean };
+    }) => (
+      <div
+        data-testid="model-viewer"
+        data-background={background}
+        data-contact-shadow={lighting ? String(lighting.contactShadow) : undefined}
+      >
         {parts.map((part) => `${part.id}:${part.color ?? "none"}`).join(",")}
       </div>
     ),
@@ -23,6 +35,14 @@ vi.mock("@tanstack/react-router", () => ({
 }));
 vi.mock("@/api/library", () => ({ useModel: () => modelBox.current }));
 vi.mock("@/components/viewer/ModelViewer", () => ({ default: modelViewerMock }));
+// The window now renders the full ViewerStage, which reaches for the printer
+// (AMS color sync) and the app theme (the "Match theme" background). Neither
+// is under test here -- stub both to a quiet default so the stage mounts.
+vi.mock("@/api/printers", () => ({
+  usePrinters: () => ({ data: [] }),
+  usePrinterStatus: () => ({ data: undefined }),
+}));
+vi.mock("next-themes", () => ({ useTheme: () => ({ resolvedTheme: "light" }) }));
 
 function glbFile(id: number, hash: string, rel: string): FileOut {
   return {
@@ -49,6 +69,7 @@ function fakeModel(files: FileOut[]): ModelDetail {
 
 beforeEach(() => {
   modelViewerMock.mockClear();
+  localStorage.clear();
   paramsBox.current = { slug: "dragon" };
   searchBox.current = {};
   modelBox.current = { data: undefined, isLoading: false };
@@ -89,5 +110,61 @@ describe("ViewerWindowPage", () => {
     render(<ViewerWindowPage />);
     expect(await screen.findByText("Model not found.")).toBeInTheDocument();
     expect(screen.queryByTestId("model-viewer")).not.toBeInTheDocument();
+  });
+
+  it("renders the full stage -- parts checklist and appearance controls -- not a bare canvas", async () => {
+    modelBox.current = {
+      data: fakeModel([glbFile(1, "aaa", "a.glb"), glbFile(2, "bbb", "b.glb")]),
+      isLoading: false,
+    };
+    searchBox.current = { ids: "1" };
+
+    render(<ViewerWindowPage />);
+
+    await screen.findByTestId("model-viewer");
+    expect(screen.getByRole("radiogroup", { name: "Background" })).toBeInTheDocument();
+    expect(screen.getByRole("radiogroup", { name: "Lighting" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "a.glb" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "b.glb" })).not.toBeChecked();
+  });
+
+  it("checking another part in the window adds it to the rendered parts", async () => {
+    modelBox.current = {
+      data: fakeModel([glbFile(1, "aaa", "a.glb"), glbFile(2, "bbb", "b.glb")]),
+      isLoading: false,
+    };
+    searchBox.current = { ids: "1" };
+
+    render(<ViewerWindowPage />);
+    await screen.findByTestId("model-viewer");
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "b.glb" }));
+
+    await waitFor(() => {
+      const parts = modelViewerMock.mock.calls.at(-1)?.[0].parts;
+      expect((parts ?? []).map((part: { id: number }) => part.id)).toEqual([1, 2]);
+    });
+  });
+
+  it("resolves the white background preset from the URL", async () => {
+    modelBox.current = { data: fakeModel([glbFile(1, "aaa", "a.glb")]), isLoading: false };
+    searchBox.current = { bg: "white" };
+
+    render(<ViewerWindowPage />);
+
+    expect(await screen.findByTestId("model-viewer")).toHaveAttribute("data-background", "#ffffff");
+  });
+
+  it("the flat lighting preset from the URL turns the contact shadow off; studio (default) keeps it on", async () => {
+    modelBox.current = { data: fakeModel([glbFile(1, "aaa", "a.glb")]), isLoading: false };
+    searchBox.current = { light: "flat" };
+
+    const { unmount } = render(<ViewerWindowPage />);
+    expect(await screen.findByTestId("model-viewer")).toHaveAttribute("data-contact-shadow", "false");
+    unmount();
+
+    searchBox.current = {};
+    render(<ViewerWindowPage />);
+    expect(await screen.findByTestId("model-viewer")).toHaveAttribute("data-contact-shadow", "true");
   });
 });

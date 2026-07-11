@@ -58,9 +58,11 @@ const viewerWindowRoute = createRoute({
   },
   validateSearch: (
     search: Record<string, unknown>,
-  ): { ids?: string; bg?: string; colors?: string } => ({
+  ): { ids?: string; bg?: string; bgc?: string; light?: string; colors?: string } => ({
     ids: typeof search.ids === "string" ? search.ids : undefined,
     bg: typeof search.bg === "string" ? search.bg : undefined,
+    bgc: typeof search.bgc === "string" ? search.bgc : undefined,
+    light: typeof search.light === "string" ? search.light : undefined,
     colors: typeof search.colors === "string" ? search.colors : undefined,
   }),
   component: ViewerWindowPage,

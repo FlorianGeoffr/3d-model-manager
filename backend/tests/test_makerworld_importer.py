@@ -81,6 +81,22 @@ def _cache_db(migrated_db):
     _truncate()
 
 
+@pytest.fixture
+def _items_db(migrated_db):
+    """`list_list_items`'s cache fallback (task 3) reads `remote_collection_
+    items` -- same posture as `_cache_db` above, but for the sibling table."""
+    from sqlalchemy import text
+
+    def _truncate() -> None:
+        with tasks_base.sync_session() as s:
+            s.execute(text("TRUNCATE TABLE remote_collection_items RESTART IDENTITY CASCADE"))
+            s.commit()
+
+    _truncate()
+    yield
+    _truncate()
+
+
 def _raise_not_connected():
     raise BambuAuthError("no Bambu account is connected -- connect one in Settings.")
 
@@ -453,6 +469,132 @@ def test_list_list_items_maps_hits_to_search_results(monkeypatch):
     assert first.url == "https://www.makerworld.com/en/models/2188414"
     assert first.author == "Jackstyle"
     assert first.thumbnail_url == fx.FAVORITE_DESIGNS[0]["cover"]
+
+
+def test_list_list_items_falls_back_to_cache_when_live_returns_zero_hits_for_a_named_list(
+    monkeypatch, _items_db
+):
+    """LIVE-VERIFIED 2026-07-11: the real endpoint serves ONLY the uid
+    aggregate -- a genuinely non-empty named collection still comes back
+    `{"hits": []}` from a server IP. `list_list_items` must fall back to
+    whatever the extension pushed for this (site, list_id) via
+    `remote_collection_items` rather than reporting the collection as empty.
+    """
+    list_id = "18925823"
+    with tasks_base.sync_session() as s:
+        remote_collections_service.replace_list_items_sync(
+            s,
+            ImportSite.MAKERWORLD,
+            list_id,
+            [
+                remote_collections_service.ItemEntry(
+                    external_id="111",
+                    title="ESP32 case",
+                    url="https://www.makerworld.com/en/models/111",
+                    author="someone",
+                    thumbnail_url="https://makerworld.bblmw.com/cover1.jpg",
+                ),
+                remote_collections_service.ItemEntry(
+                    external_id="222",
+                    title="ESP32 mount",
+                    url="https://www.makerworld.com/en/models/222",
+                ),
+            ],
+        )
+    monkeypatch.setattr(makerworld, "_makerworld_web_token", lambda: "test-token")
+    monkeypatch.setattr(
+        makerworld,
+        "_favorites_client",
+        lambda token: _mock_favorites_client(token, hits_by_list={list_id: []}),
+    )
+
+    results = MakerWorldImporter().list_list_items(list_id)
+    assert [r.external_id for r in results] == ["111", "222"]
+    assert results[0].title == "ESP32 case" and results[0].author == "someone"
+    assert results[0].thumbnail_url == "https://makerworld.bblmw.com/cover1.jpg"
+    assert results[1].author is None and results[1].thumbnail_url is None
+
+
+def test_list_list_items_cache_fallback_honors_paging(monkeypatch, _items_db):
+    list_id = "18925823"
+    entries = [
+        remote_collections_service.ItemEntry(
+            external_id=str(i), title=f"item {i}", url=f"https://www.makerworld.com/en/models/{i}"
+        )
+        for i in range(1, 26)  # 25 pushed items, _SEARCH_PAGE_SIZE is 20
+    ]
+    with tasks_base.sync_session() as s:
+        remote_collections_service.replace_list_items_sync(
+            s, ImportSite.MAKERWORLD, list_id, entries
+        )
+    monkeypatch.setattr(makerworld, "_makerworld_web_token", lambda: "test-token")
+    monkeypatch.setattr(
+        makerworld,
+        "_favorites_client",
+        lambda token: _mock_favorites_client(token, hits_by_list={list_id: []}),
+    )
+
+    page1 = MakerWorldImporter().list_list_items(list_id, page=1)
+    page2 = MakerWorldImporter().list_list_items(list_id, page=2)
+    assert [r.external_id for r in page1] == [str(i) for i in range(1, 21)]
+    assert [r.external_id for r in page2] == [str(i) for i in range(21, 26)]
+
+
+def test_list_list_items_live_hit_wins_over_cache(monkeypatch, _items_db):
+    """A live (non-empty) result always wins over the cached fallback --
+    important if MakerWorld ever fixes the server-side endpoint."""
+    list_id = "18925823"
+    with tasks_base.sync_session() as s:
+        remote_collections_service.replace_list_items_sync(
+            s,
+            ImportSite.MAKERWORLD,
+            list_id,
+            [
+                remote_collections_service.ItemEntry(
+                    external_id="stale-cached-id",
+                    title="Stale cached item",
+                    url="https://www.makerworld.com/en/models/999999",
+                )
+            ],
+        )
+    monkeypatch.setattr(makerworld, "_makerworld_web_token", lambda: "test-token")
+    monkeypatch.setattr(
+        makerworld,
+        "_favorites_client",
+        lambda token: _mock_favorites_client(token, hits_by_list={list_id: fx.FAVORITE_DESIGNS}),
+    )
+
+    results = MakerWorldImporter().list_list_items(list_id)
+    assert [r.external_id for r in results] == ["2188414", "2603954"]
+
+
+def test_list_list_items_uid_never_falls_back_to_cache(monkeypatch, _items_db):
+    """The aggregate list (list_id == uid) works live off just the uid
+    (VERIFIED elsewhere in this module) -- an empty result for IT must be
+    trusted as "genuinely no items", never masked by a cache fallback meant
+    for named collections the live endpoint can't reach."""
+    uid = str(fx.PROFILE_TERMINALFOO["uid"])
+    with tasks_base.sync_session() as s:
+        remote_collections_service.replace_list_items_sync(
+            s,
+            ImportSite.MAKERWORLD,
+            uid,
+            [
+                remote_collections_service.ItemEntry(
+                    external_id="should-not-appear",
+                    title="x",
+                    url="https://www.makerworld.com/en/models/1",
+                )
+            ],
+        )
+    monkeypatch.setattr(makerworld, "_makerworld_web_token", lambda: "test-token")
+    monkeypatch.setattr(
+        makerworld,
+        "_favorites_client",
+        lambda token: _mock_favorites_client(token, hits_by_list={uid: []}),
+    )
+
+    assert MakerWorldImporter().list_list_items(uid) == []
 
 
 def test_resolve_download_hits_authed_endpoint_and_returns_presigned_url(monkeypatch):

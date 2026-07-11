@@ -549,11 +549,20 @@ class MakerWorldImporter:
         token = _makerworld_web_token()
         if not token:
             return []
-        _uid, handle = _profile(token)
+        uid, handle = _profile(token)
         offset = max(page - 1, 0) * _SEARCH_PAGE_SIZE
-        # VERIFIED: works for both the aggregate list (listId=uid) and a
-        # named collection id -- same endpoint, same design-item shape
-        # `search` already maps (mw_capture_notes.md).
+        # LIVE-VERIFIED (2026-07-11, corrects an earlier "VERIFIED ... named
+        # collection id" comment that was wrong): this endpoint serves ONLY
+        # the uid aggregate ("all collected models") from a server IP -- a
+        # real named collection id comes back `200 {"total":0}` even though
+        # the collection genuinely has items (checked against 3 real ids).
+        # Still attempted first every time (a live hit always wins -- if
+        # MakerWorld ever fixes this server-side, nothing here needs to
+        # change), but a named collection (list_id != uid) that comes back
+        # empty falls back to `remote_collection_items` below: the browser
+        # extension's own push from the user's authenticated browser, where
+        # the wall around this endpoint isn't up (see
+        # `app.models.collections.RemoteCollectionItem`'s docstring).
         with _favorites_client(token) as c:
             r = c.get(
                 f"/design-service/favorites/designs/{list_id}",
@@ -576,7 +585,31 @@ class MakerWorldImporter:
                     thumbnail_url=h.get("cover"),
                 )
             )
-        return results
+        if results or list_id == str(uid):
+            return results
+        return self._cached_list_items(list_id, page)
+
+    def _cached_list_items(self, list_id: str, page: int) -> list[SearchResult]:
+        # Deferred (mirrors `list_user_lists` above): pulls in the
+        # worker-side sync DB stack only when the live fetch actually came
+        # back empty for a named list.
+        from app.services.remote_collections import get_list_items
+        from app.tasks.base import sync_session
+
+        with sync_session() as s:
+            cached = get_list_items(s, self.site, list_id)
+        start = max(page - 1, 0) * _SEARCH_PAGE_SIZE
+        return [
+            SearchResult(
+                site=self.site,
+                external_id=row.external_id,
+                title=row.title,
+                url=row.url,
+                author=row.author,
+                thumbnail_url=row.thumbnail_url,
+            )
+            for row in cached[start : start + _SEARCH_PAGE_SIZE]
+        ]
 
 
 register_importer(MakerWorldImporter())

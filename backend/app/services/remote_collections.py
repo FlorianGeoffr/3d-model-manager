@@ -1,16 +1,27 @@
-"""``remote_collection_cache`` service (M10 escape hatch A).
+"""``remote_collection_cache``/``remote_collection_items`` services (M10
+escape hatch A + Workstream A task 3).
 
-Two independent producers keep the cache warm: the browser extension pushes
-a full authoritative snapshot of a site's collections (``POST
-/ext/collections``, API/async world), and ``MakerWorldImporter.list_user_lists``
-(``app.importers.makerworld``) upserts into it whenever the SSR route it
-normally reads happens to succeed on its own (worker/sync world, via
-``app.tasks.base.sync_session`` -- mirrors the async/sync split in
-``app.services.storage_backends``). Both funnel through ``replace_site_cache``
-(or its sync twin): the pushed/fetched set is treated as the site's full
-current list, so anything cached for that site but NOT in the new set is
-stale and gets deleted -- a collection the user deleted/unfollowed on the
-remote site should disappear from the cache too, not linger forever.
+Two independent producers keep the CACHE (collection metadata: id/title/
+slug/count) warm: the browser extension pushes a full authoritative snapshot
+of a site's collections (``POST /ext/collections``, API/async world), and
+``MakerWorldImporter.list_user_lists`` (``app.importers.makerworld``)
+upserts into it whenever the SSR route it normally reads happens to succeed
+on its own (worker/sync world, via ``app.tasks.base.sync_session`` --
+mirrors the async/sync split in ``app.services.storage_backends``). Both
+funnel through ``replace_site_cache`` (or its sync twin): the pushed/fetched
+set is treated as the site's full current list, so anything cached for that
+site but NOT in the new set is stale and gets deleted -- a collection the
+user deleted/unfollowed on the remote site should disappear from the cache
+too, not linger forever.
+
+``remote_collection_items`` (task 3) is the analogous store for a
+collection's CONTENTS: the extension pushes each collection's items (``POST
+/ext/collections/{list_id}/items``) because the server-side items endpoint
+serves only the uid aggregate (see ``app.models.collections
+.RemoteCollectionItem``'s docstring for the live-verified why).
+``replace_list_items``/``replace_list_items_sync`` follow the exact same
+"authoritative snapshot, full replace" posture as ``replace_site_cache``,
+scoped to ``(site, list_id)`` instead of just ``site``.
 """
 
 from __future__ import annotations
@@ -23,7 +34,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session as SyncSession
 
-from app.models.collections import RemoteCollectionCache
+from app.models.collections import RemoteCollectionCache, RemoteCollectionItem
 from app.models.enums import ImportSite
 
 
@@ -130,3 +141,128 @@ async def get_cache_entry(
         RemoteCollectionCache.site == site, RemoteCollectionCache.list_id == list_id
     )
     return (await db.execute(stmt)).scalars().first()
+
+
+@dataclass(frozen=True)
+class ItemEntry:
+    """One pushed collection item, decoupled from the ext API's pydantic
+    request schema and the ORM row -- deliberately NOT
+    ``app.importers.base.SearchResult`` either, even though the two shapes
+    match field-for-field, so this service has no import-time reason to know
+    about the importer layer (``list_list_items`` does that mapping itself,
+    the same way it already maps a live hit into a ``SearchResult``)."""
+
+    external_id: str
+    title: str
+    url: str
+    author: str | None = None
+    thumbnail_url: str | None = None
+
+
+def _item_upsert_values(site: ImportSite, list_id: str, position: int, entry: ItemEntry) -> dict:
+    return {
+        "site": site,
+        "list_id": list_id,
+        "external_id": entry.external_id,
+        "title": entry.title,
+        "url": entry.url,
+        "author": entry.author,
+        "thumbnail_url": entry.thumbnail_url,
+        "position": position,
+    }
+
+
+async def replace_list_items(
+    db: AsyncSession, site: ImportSite, list_id: str, items: list[ItemEntry]
+) -> int:
+    """ASYNC twin (API path, ``POST /ext/collections/{list_id}/items``).
+    Upsert every entry by ``(site, list_id, external_id)``, stamping each
+    with its position in ``items``, then delete whatever else was stored for
+    this ``(site, list_id)`` -- full replace-set, not a merge, same posture
+    as ``replace_site_cache``. Returns the number of entries just upserted."""
+    external_ids = [entry.external_id for entry in items]
+    for position, entry in enumerate(items):
+        stmt = pg_insert(RemoteCollectionItem).values(
+            **_item_upsert_values(site, list_id, position, entry)
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[
+                RemoteCollectionItem.site,
+                RemoteCollectionItem.list_id,
+                RemoteCollectionItem.external_id,
+            ],
+            set_={
+                "title": stmt.excluded.title,
+                "url": stmt.excluded.url,
+                "author": stmt.excluded.author,
+                "thumbnail_url": stmt.excluded.thumbnail_url,
+                "position": stmt.excluded.position,
+            },
+        )
+        await db.execute(stmt)
+    delete_stmt = sa_delete(RemoteCollectionItem).where(
+        RemoteCollectionItem.site == site, RemoteCollectionItem.list_id == list_id
+    )
+    if external_ids:
+        delete_stmt = delete_stmt.where(RemoteCollectionItem.external_id.notin_(external_ids))
+    await db.execute(delete_stmt)
+    await db.commit()
+    # See `replace_site_cache`'s matching comment -- the raw Core upsert/
+    # delete above never syncs an already-identity-mapped
+    # `RemoteCollectionItem` in this session.
+    db.expire_all()
+    return len(items)
+
+
+def replace_list_items_sync(
+    session: SyncSession, site: ImportSite, list_id: str, items: list[ItemEntry]
+) -> int:
+    """SYNC twin -- same semantics as ``replace_list_items``. No current
+    worker-side caller (the extension push is the only producer, and it's
+    API/async-world), but kept alongside ``replace_site_cache_sync`` for the
+    same reason: mirrors the module's established async/sync split so a
+    future sync producer (a self-heal, say) doesn't need to invent one."""
+    external_ids = [entry.external_id for entry in items]
+    for position, entry in enumerate(items):
+        stmt = pg_insert(RemoteCollectionItem).values(
+            **_item_upsert_values(site, list_id, position, entry)
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[
+                RemoteCollectionItem.site,
+                RemoteCollectionItem.list_id,
+                RemoteCollectionItem.external_id,
+            ],
+            set_={
+                "title": stmt.excluded.title,
+                "url": stmt.excluded.url,
+                "author": stmt.excluded.author,
+                "thumbnail_url": stmt.excluded.thumbnail_url,
+                "position": stmt.excluded.position,
+            },
+        )
+        session.execute(stmt)
+    delete_stmt = sa_delete(RemoteCollectionItem).where(
+        RemoteCollectionItem.site == site, RemoteCollectionItem.list_id == list_id
+    )
+    if external_ids:
+        delete_stmt = delete_stmt.where(RemoteCollectionItem.external_id.notin_(external_ids))
+    session.execute(delete_stmt)
+    session.commit()
+    session.expire_all()
+    return len(items)
+
+
+def get_list_items(
+    session: SyncSession, site: ImportSite, list_id: str
+) -> list[RemoteCollectionItem]:
+    """Every pushed item for ``(site, list_id)``, ordered by ``position`` --
+    the order the extension observed them on the page. Sync-only: the one
+    reader (``MakerWorldImporter.list_list_items``'s cache fallback) runs in
+    the worker/thread-offload sync world, same as ``get_site_cache``."""
+    stmt = (
+        select(RemoteCollectionItem)
+        .where(RemoteCollectionItem.site == site, RemoteCollectionItem.list_id == list_id)
+        .order_by(RemoteCollectionItem.position.asc())
+    )
+    return list(session.execute(stmt).scalars())

@@ -269,6 +269,70 @@ async def test_lists_endpoint_is_empty_when_no_site_has_an_authenticated_session
 
 
 @pytest.mark.asyncio
+async def test_list_items_endpoint_serves_extension_pushed_membership_for_a_named_collection(
+    authenticated_client, library_root, data_dir, monkeypatch
+):
+    """End-to-end (M10 Workstream A task 3): `GET /imports/lists/makerworld/
+    {list_id}/items` serves the extension-pushed membership when MakerWorld's
+    live items endpoint comes back empty for a named collection id -- the
+    live-verified behaviour this branch works around (see
+    `app.models.collections.RemoteCollectionItem`'s docstring). Exercises the
+    real `MakerWorldImporter.list_list_items` through the real HTTP route,
+    not a stub importer."""
+    from app.importers import makerworld
+    from app.models.enums import ImportSite
+    from app.services import remote_collections
+    from app.tasks import base as tasks_base
+
+    list_id = "18925823"
+    with tasks_base.sync_session() as s:
+        remote_collections.replace_list_items_sync(
+            s,
+            ImportSite.MAKERWORLD,
+            list_id,
+            [
+                remote_collections.ItemEntry(
+                    external_id="111",
+                    title="ESP32 case",
+                    url="https://www.makerworld.com/en/models/111",
+                    author="someone",
+                    thumbnail_url="https://makerworld.bblmw.com/cover1.jpg",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(makerworld, "_makerworld_web_token", lambda: "test-token")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/v1/user-service/my/profile":
+            return httpx.Response(200, json={"uid": 3054026541, "name": "Terminalfoo"})
+        if path == f"/api/v1/design-service/favorites/designs/{list_id}":
+            # Live-verified shape a real named-collection id actually
+            # returns: total 0, no hits, even though the collection has
+            # items (that's exactly why the cache fallback exists).
+            return httpx.Response(200, json={"hits": [], "total": 0})
+        return httpx.Response(404, text="unexpected path")
+
+    monkeypatch.setattr(
+        makerworld,
+        "_favorites_client",
+        lambda token: httpx.Client(
+            base_url="https://makerworld.com/api/v1", transport=httpx.MockTransport(handler)
+        ),
+    )
+
+    r = await authenticated_client.get(f"/api/imports/lists/makerworld/{list_id}/items")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert [item["external_id"] for item in body] == ["111"]
+    assert body[0]["title"] == "ESP32 case"
+    assert body[0]["author"] == "someone"
+    assert body[0]["thumbnail_url"] == "https://makerworld.bblmw.com/cover1.jpg"
+    assert body[0]["url"] == "https://www.makerworld.com/en/models/111"
+
+
+@pytest.mark.asyncio
 async def test_search_imports_federates_across_sites_and_isolates_errors(
     authenticated_client, library_root, data_dir, monkeypatch
 ):

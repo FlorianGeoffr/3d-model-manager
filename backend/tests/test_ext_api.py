@@ -209,3 +209,199 @@ async def test_push_collections_bad_site_is_422(client: httpx.AsyncClient, ext_t
 async def test_push_collections_requires_bearer(client: httpx.AsyncClient):
     r = await client.post("/api/ext/collections", json={"site": "makerworld", "collections": []})
     assert r.status_code == 401
+
+
+async def test_push_collection_items_creates_rows(client: httpx.AsyncClient, ext_token: str):
+    r = await client.post(
+        "/api/ext/collections/18925823/items",
+        json={
+            "site": "makerworld",
+            "items": [
+                {
+                    "external_id": "111",
+                    "title": "ESP32 case",
+                    "url": "https://makerworld.com/en/models/111-esp32-case",
+                    "author": "someone",
+                    "thumbnail_url": "https://makerworld.bblmw.com/cover1.jpg",
+                },
+                {
+                    "external_id": "222",
+                    "title": "ESP32 mount",
+                    "url": "https://makerworld.com/en/models/222",
+                },
+            ],
+        },
+        headers=_bearer(ext_token),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "count": 2}
+
+    from app.models.enums import ImportSite
+    from app.services import remote_collections
+    from app.tasks import base as tasks_base
+
+    with tasks_base.sync_session() as s:
+        rows = remote_collections.get_list_items(s, ImportSite.MAKERWORLD, "18925823")
+    assert [row.external_id for row in rows] == ["111", "222"]
+    assert rows[0].title == "ESP32 case" and rows[0].author == "someone"
+    assert rows[0].thumbnail_url == "https://makerworld.bblmw.com/cover1.jpg"
+    assert rows[1].author is None and rows[1].thumbnail_url is None
+
+
+async def test_push_collection_items_second_push_replaces_the_first(
+    client: httpx.AsyncClient, ext_token: str
+):
+    from app.models.enums import ImportSite
+    from app.services import remote_collections
+    from app.tasks import base as tasks_base
+
+    async def _push(items):
+        r = await client.post(
+            "/api/ext/collections/18925823/items",
+            json={"site": "makerworld", "items": items},
+            headers=_bearer(ext_token),
+        )
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    first = await _push(
+        [
+            {
+                "external_id": "111",
+                "title": "ESP32 case",
+                "url": "https://makerworld.com/en/models/111",
+            },
+            {
+                "external_id": "222",
+                "title": "ESP32 mount",
+                "url": "https://makerworld.com/en/models/222",
+            },
+        ]
+    )
+    assert first == {"ok": True, "count": 2}
+
+    # Second push: "111" is renamed, "222" dropped, "333" is new -- authoritative
+    # replace for this (site, list_id), same posture as the collection-list push.
+    second = await _push(
+        [
+            {
+                "external_id": "111",
+                "title": "ESP32 case (renamed)",
+                "url": "https://makerworld.com/en/models/111",
+            },
+            {
+                "external_id": "333",
+                "title": "New item",
+                "url": "https://makerworld.com/en/models/333",
+            },
+        ]
+    )
+    assert second == {"ok": True, "count": 2}
+
+    with tasks_base.sync_session() as s:
+        rows = {
+            row.external_id: row
+            for row in remote_collections.get_list_items(s, ImportSite.MAKERWORLD, "18925823")
+        }
+    assert set(rows) == {"111", "333"}
+    assert rows["111"].title == "ESP32 case (renamed)"
+
+
+async def test_push_collection_items_scoped_to_list_id(client: httpx.AsyncClient, ext_token: str):
+    """Pushing items for one list_id must not touch a different list_id's
+    rows -- the replace-set is scoped to (site, list_id), not the whole site."""
+    from app.models.enums import ImportSite
+    from app.services import remote_collections
+    from app.tasks import base as tasks_base
+
+    for list_id, external_id in (("18925823", "111"), ("2155987", "222")):
+        r = await client.post(
+            f"/api/ext/collections/{list_id}/items",
+            json={
+                "site": "makerworld",
+                "items": [
+                    {
+                        "external_id": external_id,
+                        "title": f"item {external_id}",
+                        "url": f"https://makerworld.com/en/models/{external_id}",
+                    }
+                ],
+            },
+            headers=_bearer(ext_token),
+        )
+        assert r.status_code == 200, r.text
+
+    with tasks_base.sync_session() as s:
+        a = remote_collections.get_list_items(s, ImportSite.MAKERWORLD, "18925823")
+        b = remote_collections.get_list_items(s, ImportSite.MAKERWORLD, "2155987")
+    assert [row.external_id for row in a] == ["111"]
+    assert [row.external_id for row in b] == ["222"]
+
+
+async def test_push_collection_items_over_500_is_422(client: httpx.AsyncClient, ext_token: str):
+    items = [
+        {
+            "external_id": str(i),
+            "title": f"item {i}",
+            "url": f"https://makerworld.com/en/models/{i}",
+        }
+        for i in range(501)
+    ]
+    r = await client.post(
+        "/api/ext/collections/18925823/items",
+        json={"site": "makerworld", "items": items},
+        headers=_bearer(ext_token),
+    )
+    assert r.status_code == 422
+
+
+async def test_push_collection_items_bad_url_is_422_naming_the_first_bad_url(
+    client: httpx.AsyncClient, ext_token: str
+):
+    r = await client.post(
+        "/api/ext/collections/18925823/items",
+        json={
+            "site": "makerworld",
+            "items": [
+                {
+                    "external_id": "111",
+                    "title": "OK",
+                    "url": "https://makerworld.com/en/models/111",
+                },
+                {
+                    "external_id": "999",
+                    "title": "Bad",
+                    "url": "https://example.com/not-a-makerworld-model",
+                },
+            ],
+        },
+        headers=_bearer(ext_token),
+    )
+    assert r.status_code == 422
+    assert "https://example.com/not-a-makerworld-model" in r.text
+
+    # Nothing was written -- a bad url rejects the whole request, not a
+    # partial push.
+    from app.models.enums import ImportSite
+    from app.services import remote_collections
+    from app.tasks import base as tasks_base
+
+    with tasks_base.sync_session() as s:
+        rows = remote_collections.get_list_items(s, ImportSite.MAKERWORLD, "18925823")
+    assert rows == []
+
+
+async def test_push_collection_items_bad_site_is_422(client: httpx.AsyncClient, ext_token: str):
+    r = await client.post(
+        "/api/ext/collections/18925823/items",
+        json={"site": "not-a-real-site", "items": []},
+        headers=_bearer(ext_token),
+    )
+    assert r.status_code == 422
+
+
+async def test_push_collection_items_requires_bearer(client: httpx.AsyncClient):
+    r = await client.post(
+        "/api/ext/collections/18925823/items", json={"site": "makerworld", "items": []}
+    )
+    assert r.status_code == 401

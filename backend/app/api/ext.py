@@ -4,25 +4,26 @@ on ``api_router`` (``app/api/__init__.py``), outside ``protected_router``,
 so it carries only its own ``require_api_token`` dependency and none of the
 session-cookie surface.
 
-Deliberately narrow: exactly four endpoints, matching what the extension
+Deliberately narrow: exactly five endpoints, matching what the extension
 needs to do (prove it has a live token, start an import, hand over a
 MakerWorld cookie, push the real MakerWorld collection list it can see in the
-user's authenticated browser) and nothing else -- a leaked extension token
-must not be able to delete models, read other secrets, or touch storage
-config.
+user's authenticated browser, push one of those collections' items) and
+nothing else -- a leaked extension token must not be able to delete models,
+read other secrets, or touch storage config.
 """
 
 from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_api_token
 from app.config import Settings, get_settings
 from app.db import get_db
+from app.importers.registry import get_importer
 from app.models.enums import ImportSite
 from app.schemas.imports import ImportCreate, ImportOut, NonEmptyStr
 from app.services import import_tokens, remote_collections
@@ -33,6 +34,9 @@ router = APIRouter(prefix="/ext", tags=["ext"], dependencies=[Depends(require_ap
 # Abuse guard: a runaway/misbehaving extension push shouldn't be able to
 # write an unbounded number of rows in one request.
 _MAX_PUSHED_COLLECTIONS = 200
+# A single collection's item count is bounded the same way (task 3) -- the
+# brief's own cap, chosen well above any real MakerWorld collection size.
+_MAX_PUSHED_ITEMS = 500
 
 
 class ExtCredentialIn(BaseModel):
@@ -57,6 +61,24 @@ class ExtCollectionsPushIn(BaseModel):
 
 
 class ExtCollectionsPushOut(BaseModel):
+    ok: bool = True
+    count: int
+
+
+class ExtCollectionItemIn(BaseModel):
+    external_id: NonEmptyStr
+    title: NonEmptyStr
+    url: NonEmptyStr
+    author: str | None = None
+    thumbnail_url: str | None = None
+
+
+class ExtCollectionItemsPushIn(BaseModel):
+    site: ImportSite
+    items: Annotated[list[ExtCollectionItemIn], Field(max_length=_MAX_PUSHED_ITEMS)]
+
+
+class ExtCollectionItemsPushOut(BaseModel):
     ok: bool = True
     count: int
 
@@ -126,3 +148,45 @@ async def push_collections(
     ]
     count = await remote_collections.replace_site_cache(db, payload.site, entries)
     return ExtCollectionsPushOut(count=count)
+
+
+@router.post("/collections/{list_id}/items", response_model=ExtCollectionItemsPushOut)
+async def push_collection_items(
+    list_id: str, payload: ExtCollectionItemsPushIn, db: AsyncSession = Depends(get_db)
+) -> ExtCollectionItemsPushOut:
+    """The extension pushes one collection's ITEMS here -- fetched from the
+    page origin in the user's own authenticated browser (same Cloudflare-
+    evasion posture as ``POST /ext/collections`` above; see
+    ``app.models.collections.RemoteCollectionItem``'s docstring for exactly
+    why the server-side items endpoint can't be trusted for a named
+    collection). Every ``url`` must canonicalize through ``site``'s importer
+    -- rejected 422, naming the first bad url, otherwise -- because
+    ``MakerWorldImporter.list_list_items``'s cache fallback hands these urls
+    straight back out as ``SearchResult.url``, which the UI feeds to ``POST
+    /imports`` verbatim; an arbitrary/malformed url pushed here would
+    otherwise poison that pipeline. Authoritative full-list replace for this
+    ``(site, list_id)``, same posture as the collection-list push.
+    """
+    importer = get_importer(payload.site)
+    if importer is None:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, f"{payload.site.value} isn't available"
+        )
+    for item in payload.items:
+        if importer.canonicalize(item.url) is None:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                f"not a valid {payload.site.value} model url: {item.url}",
+            )
+    entries = [
+        remote_collections.ItemEntry(
+            external_id=item.external_id,
+            title=item.title,
+            url=item.url,
+            author=item.author,
+            thumbnail_url=item.thumbnail_url,
+        )
+        for item in payload.items
+    ]
+    count = await remote_collections.replace_list_items(db, payload.site, list_id, entries)
+    return ExtCollectionItemsPushOut(count=count)

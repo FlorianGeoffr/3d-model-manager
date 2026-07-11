@@ -22,6 +22,7 @@ from sqlalchemy import (
     Boolean,
     ForeignKey,
     Identity,
+    Index,
     Integer,
     Text,
     UniqueConstraint,
@@ -109,6 +110,57 @@ class RemoteCollectionCache(Base):
     slug: Mapped[str | None] = mapped_column(Text)
     count: Mapped[int | None] = mapped_column(Integer)
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=false())
+    updated_at: Mapped[datetime] = mapped_column(
+        server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class RemoteCollectionItem(Base):
+    """Extension-pushed MEMBERSHIP of one remote collection (M10 Workstream A
+    task 3) -- which models belong to a followed named collection, per the
+    LAST ``POST /ext/collections/{list_id}/items`` push for that ``(site,
+    list_id)``. NOT a duplicate of ``RemoteCollectionCache`` above: that
+    table tracks a collection's METADATA (id/title/slug/count); this one
+    tracks its CONTENTS.
+
+    Exists because ``GET /api/v1/design-service/favorites/designs/{listId}``
+    -- the endpoint ``app.importers.makerworld.MakerWorldImporter
+    .list_list_items`` reads live -- serves ONLY the uid aggregate ("all
+    collected models") from a server IP: a real named collection id returns
+    ``200 {"total":0}`` (live-verified 2026-07-11 against 3 real ids), so a
+    followed named collection would sync ZERO items forever without this.
+    The browser extension fetches each collection's items from the page
+    origin (its own authenticated browser session, where the Cloudflare wall
+    around the server isn't up) and pushes a full replace-set here -- same
+    "authoritative snapshot, not a merge" posture as
+    ``RemoteCollectionCache``/``app.services.remote_collections
+    .replace_site_cache``. ``list_list_items`` falls back to
+    ``get_list_items`` when its live fetch comes back empty for a non-uid
+    list id; a live hit (if MakerWorld ever fixes the endpoint) always wins
+    over the cache.
+
+    ``position`` records each item's order within the push (the extension
+    walks the same paged endpoint the backend would, so paging the cache
+    back out via ``ORDER BY position`` reproduces the original page order).
+    """
+
+    __tablename__ = "remote_collection_items"
+    __table_args__ = (
+        UniqueConstraint(
+            "site", "list_id", "external_id", name="uq_remote_collection_items_site_list_external"
+        ),
+        Index("ix_remote_collection_items_site_list", "site", "list_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    site: Mapped[ImportSite] = mapped_column(str_enum(ImportSite, "import_site"), nullable=False)
+    list_id: Mapped[str] = mapped_column(Text, nullable=False)
+    external_id: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    author: Mapped[str | None] = mapped_column(Text)
+    thumbnail_url: Mapped[str | None] = mapped_column(Text)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         server_default=func.now(), onupdate=func.now(), nullable=False
     )

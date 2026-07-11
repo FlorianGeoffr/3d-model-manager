@@ -26,6 +26,7 @@ export interface GalleryFilters {
   tag?: string;
   format?: string;
   has_sliced?: boolean;
+  collection?: number;
   sort: string;
 }
 
@@ -37,6 +38,7 @@ function buildModelsUrl(filters: Partial<GalleryFilters>, cursor?: string, limit
   if (filters.tag) params.set("tag", filters.tag);
   if (filters.format) params.set("format", filters.format);
   if (filters.has_sliced) params.set("has_sliced", "true");
+  if (filters.collection !== undefined) params.set("collection", String(filters.collection));
   if (filters.sort) params.set("sort", filters.sort);
   params.set("limit", String(limit));
   if (cursor) params.set("cursor", cursor);
@@ -60,6 +62,19 @@ export function useModelSearchQuery(q: string) {
     queryKey: ["models", "search", q] as const,
     queryFn: () => api.get<GalleryPage>(buildModelsUrl({ q, sort: "name" }, undefined, 10)),
     enabled: q.trim().length > 0,
+  });
+}
+
+/** The model detail page's "More from <collection>" strip (Task 2, collection
+ * provenance) -- a small, non-paginated peek at a few other models imported
+ * from the same followed collection. Disabled when the model has no
+ * `source_collection_id` (manually created, or imported outside a followed
+ * collection). */
+export function useRelatedModelsQuery(collectionId: number | undefined) {
+  return useQuery({
+    queryKey: ["models", "related", collectionId] as const,
+    queryFn: () => api.get<GalleryPage>(buildModelsUrl({ collection: collectionId }, undefined, 6)),
+    enabled: collectionId !== undefined,
   });
 }
 

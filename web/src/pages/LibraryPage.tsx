@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "@tanstack/react-router";
-import { PlusIcon, SearchIcon, TagIcon } from "lucide-react";
+import { Link, useSearch } from "@tanstack/react-router";
+import { BookmarkIcon, PlusIcon, SearchIcon, TagIcon } from "lucide-react";
 
+import { useFollowedCollections } from "@/api/collections";
 import { useModelsQuery, useTags } from "@/api/library";
 import { ApiError } from "@/api/client";
 import { ModelCard } from "@/components/gallery/ModelCard";
@@ -18,6 +19,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useDebouncedValue } from "@/lib/format";
 import { BLOB_FORMATS, type BlobFormat } from "@/api/types";
 import { FORMAT_LABELS } from "@/lib/formatMeta";
+import type { LibrarySearch } from "@/pages/librarySearch";
 
 const SORT_OPTIONS = [
   { value: "-updated_at", label: "Recently updated" },
@@ -45,6 +47,12 @@ function FilterChip({
 }
 
 export function LibraryPage() {
+  // One-way seed only: a provenance badge or a related-models card can deep
+  // link here with `?collection=<id>` (see `librarySearch.ts`), but the
+  // facet's own selections never write back to the URL -- same as every
+  // other filter on this page.
+  const search = useSearch({ strict: false }) as LibrarySearch;
+
   const [searchInput, setSearchInput] = useState("");
   const debouncedSearch = useDebouncedValue(searchInput, 300);
   const [activeTag, setActiveTag] = useState<string | undefined>(undefined);
@@ -52,9 +60,13 @@ export function LibraryPage() {
   // so the chips behave as a single-select facet ("All" clears it).
   const [activeFormat, setActiveFormat] = useState<BlobFormat | undefined>(undefined);
   const [slicedOnly, setSlicedOnly] = useState(false);
+  const [activeCollection, setActiveCollection] = useState<number | undefined>(search.collection);
   const [sort, setSort] = useState<string>("-updated_at");
 
   const tagsQuery = useTags();
+  const collectionsQuery = useFollowedCollections();
+  const collections = collectionsQuery.data ?? [];
+  const activeCollectionTitle = collections.find((collection) => collection.id === activeCollection)?.title;
 
   const filters = useMemo(
     () => ({
@@ -62,9 +74,10 @@ export function LibraryPage() {
       tag: activeTag,
       format: activeFormat,
       has_sliced: slicedOnly || undefined,
+      collection: activeCollection,
       sort,
     }),
-    [debouncedSearch, activeTag, activeFormat, slicedOnly, sort],
+    [debouncedSearch, activeTag, activeFormat, slicedOnly, activeCollection, sort],
   );
 
   const modelsQuery = useModelsQuery(filters);
@@ -169,6 +182,37 @@ export function LibraryPage() {
                   </button>
                 ))}
                 {tags.length === 0 && <p className="text-xs text-muted-foreground">No tags yet</p>}
+              </div>
+            </PopoverContent>
+          </Popover>
+
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button type="button" variant="outline" size="sm">
+                <BookmarkIcon /> {activeCollectionTitle ? `Collection: ${activeCollectionTitle}` : "Collection"}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-64">
+              <div className="flex flex-wrap gap-1.5">
+                {collections.map((collection) => (
+                  <button
+                    key={collection.id}
+                    type="button"
+                    onClick={() =>
+                      setActiveCollection(activeCollection === collection.id ? undefined : collection.id)
+                    }
+                  >
+                    <Badge
+                      variant={activeCollection === collection.id ? "default" : "outline"}
+                      className="cursor-pointer"
+                    >
+                      {`${collection.title} (${collection.site})`}
+                    </Badge>
+                  </button>
+                ))}
+                {collections.length === 0 && (
+                  <p className="text-xs text-muted-foreground">No followed collections</p>
+                )}
               </div>
             </PopoverContent>
           </Popover>

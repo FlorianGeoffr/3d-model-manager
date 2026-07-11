@@ -7,10 +7,12 @@ import {
   createRouter,
 } from "@tanstack/react-router";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "@/api/client";
 import { LibraryPage } from "@/pages/LibraryPage";
+import type { FollowedCollection } from "@/api/types";
 
 // `vi.mock` factories are hoisted above the module's own top-level
 // bindings, so the mock function has to be created through `vi.hoisted`.
@@ -28,13 +30,24 @@ vi.mock("@/api/client", async (importOriginal) => {
   };
 });
 
-function renderLibraryPage() {
+// Radix's Popover never reaches an interactive open state under jsdom (same
+// floating-ui/dismissable-layer limitation documented for `<Select>` in
+// ViewerTab.test.tsx) -- render trigger/content unconditionally in place so
+// the Collection (and Tags) facet's options are reachable without needing a
+// real open click.
+vi.mock("@/components/ui/popover", () => ({
+  Popover: ({ children }: { children?: ReactNode }) => <>{children}</>,
+  PopoverTrigger: ({ children }: { children?: ReactNode }) => <>{children}</>,
+  PopoverContent: ({ children }: { children?: ReactNode }) => <>{children}</>,
+}));
+
+function renderLibraryPage(initialEntries: string[] = ["/"]) {
   const rootRoute = createRootRoute();
   const libraryRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", component: LibraryPage });
   const uploadRoute = createRoute({ getParentRoute: () => rootRoute, path: "/upload", component: () => null });
   const router = createRouter({
     routeTree: rootRoute.addChildren([libraryRoute, uploadRoute]),
-    history: createMemoryHistory({ initialEntries: ["/"] }),
+    history: createMemoryHistory({ initialEntries }),
   });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -47,6 +60,26 @@ function renderLibraryPage() {
 function mockGalleryOk() {
   getMock.mockImplementation((path: string) => {
     if (path.startsWith("/models")) return Promise.resolve({ items: [], next_cursor: null });
+    return Promise.resolve([]);
+  });
+}
+
+const FOLLOWED_COLLECTION: FollowedCollection = {
+  id: 5,
+  site: "thingiverse",
+  list_id: "list-1",
+  kind: "collection",
+  title: "Cool Prints",
+  mode: "auto",
+  last_synced_at: null,
+  last_error: null,
+  created_at: "2026-01-01T00:00:00Z",
+};
+
+function mockGalleryOkWithCollections(collections: FollowedCollection[]) {
+  getMock.mockImplementation((path: string) => {
+    if (path.startsWith("/models")) return Promise.resolve({ items: [], next_cursor: null });
+    if (path.startsWith("/collections")) return Promise.resolve(collections);
     return Promise.resolve([]);
   });
 }
@@ -115,5 +148,35 @@ describe("LibraryPage", () => {
 
     fireEvent.click(screen.getByRole("checkbox", { name: "Sliced only" }));
     await waitFor(() => expect(lastModelsCall()).not.toContain("has_sliced"));
+  });
+
+  it("renders followed collections as options in the Collection facet", async () => {
+    mockGalleryOkWithCollections([FOLLOWED_COLLECTION]);
+    renderLibraryPage();
+    await screen.findByText("No models yet");
+
+    expect(await screen.findByText("Cool Prints (thingiverse)")).toBeInTheDocument();
+  });
+
+  it("filters by a followed collection via the facet, and clears back on a second click", async () => {
+    mockGalleryOkWithCollections([FOLLOWED_COLLECTION]);
+    renderLibraryPage();
+    await screen.findByText("No models yet");
+
+    const chip = await screen.findByText("Cool Prints (thingiverse)");
+    fireEvent.click(chip);
+    await waitFor(() => expect(lastModelsCall()).toContain("collection=5"));
+    expect(await screen.findByRole("button", { name: "Collection: Cool Prints" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Cool Prints (thingiverse)"));
+    await waitFor(() => expect(lastModelsCall()).not.toContain("collection="));
+  });
+
+  it("seeds the collection filter from a ?collection= URL search param on mount", async () => {
+    mockGalleryOkWithCollections([FOLLOWED_COLLECTION]);
+    renderLibraryPage(["/?collection=5"]);
+
+    await waitFor(() => expect(lastModelsCall()).toContain("collection=5"));
+    expect(await screen.findByRole("button", { name: "Collection: Cool Prints" })).toBeInTheDocument();
   });
 });

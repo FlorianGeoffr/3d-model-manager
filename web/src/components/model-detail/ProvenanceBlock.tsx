@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import { ExternalLinkIcon } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -25,6 +26,22 @@ export function ProvenanceBlock({ model }: { model: ModelDetail }) {
       )}
       {model.source_author && <span>by {model.source_author}</span>}
       {model.source_license && <Badge variant="outline">{model.source_license}</Badge>}
+      {model.source_collection_title && (
+        <span>
+          · from collection{" "}
+          {model.source_collection_id != null ? (
+            <Link
+              to="/"
+              search={{ collection: model.source_collection_id }}
+              className="font-medium text-foreground hover:underline"
+            >
+              {model.source_collection_title}
+            </Link>
+          ) : (
+            <span className="font-medium text-foreground">{model.source_collection_title}</span>
+          )}
+        </span>
+      )}
     </div>
   );
 }

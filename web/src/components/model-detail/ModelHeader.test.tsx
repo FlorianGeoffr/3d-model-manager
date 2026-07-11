@@ -35,6 +35,8 @@ const MODEL: ModelDetail = {
   source_site: null,
   source_author: null,
   source_license: null,
+  source_collection_id: null,
+  source_collection_title: null,
   imported_at: null,
   cover_blob_hash: null,
   is_archived: false,

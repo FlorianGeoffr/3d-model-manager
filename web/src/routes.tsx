@@ -12,6 +12,7 @@ import { ModelDetailPage } from "@/pages/ModelDetailPage";
 import { PrinterPage } from "@/pages/PrinterPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { ViewerWindowPage } from "@/pages/ViewerWindowPage";
+import { parseLibrarySearch } from "@/pages/librarySearch";
 import { parseViewerWindowSearch } from "@/pages/viewerWindowSearch";
 
 export interface RouterContext {
@@ -64,6 +65,7 @@ const viewerWindowRoute = createRoute({
 const libraryRoute = createRoute({
   getParentRoute: () => authenticatedRoute,
   path: "/",
+  validateSearch: parseLibrarySearch,
   component: LibraryPage,
 });
 

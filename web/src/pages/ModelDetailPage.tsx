@@ -5,6 +5,7 @@ import { useModel } from "@/api/library";
 import { FilesTab } from "@/components/model-detail/FilesTab";
 import { ModelHeader } from "@/components/model-detail/ModelHeader";
 import { NotesTab } from "@/components/model-detail/NotesTab";
+import { RelatedModels } from "@/components/model-detail/RelatedModels";
 import { RevisionsTab } from "@/components/model-detail/RevisionsTab";
 import { ViewerTab } from "@/components/model-detail/ViewerTab";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -55,6 +56,7 @@ export function ModelDetailPage() {
   return (
     <div className="space-y-6">
       <ModelHeader model={model} editMode={editMode} onToggleEditMode={() => setEditMode((prev) => !prev)} />
+      <RelatedModels model={model} />
       <Tabs defaultValue="files">
         <TabsList>
           <TabsTrigger value="files">Files</TabsTrigger>

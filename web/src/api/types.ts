@@ -68,6 +68,8 @@ export interface ModelSummary {
   has_sliced: boolean;
   source_site: string | null;
   review_state?: string | null;
+  source_collection_id: number | null;
+  source_collection_title: string | null;
 }
 
 export interface GalleryPage {
@@ -190,6 +192,8 @@ export interface ModelDetail {
   source_site: string | null;
   source_author: string | null;
   source_license: string | null;
+  source_collection_id: number | null;
+  source_collection_title: string | null;
   imported_at: string | null;
   cover_blob_hash: string | null;
   is_archived: boolean;

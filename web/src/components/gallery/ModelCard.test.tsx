@@ -33,6 +33,8 @@ const MODEL: ModelSummary = {
   print_time_s: null,
   has_sliced: false,
   source_site: null,
+  source_collection_id: null,
+  source_collection_title: null,
 };
 
 function renderCard(model: ModelSummary) {

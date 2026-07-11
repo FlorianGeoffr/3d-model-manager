@@ -155,6 +155,19 @@ export function useViewerScene({
   // carries the custom hex only when that preset is "custom"; `light` carries
   // the lighting preset. Multiple windows are cheap -- GLB urls are
   // content-addressed.
+  //
+  // Task 6 adds the view-tools params (`grid`/`wf`/`rot`/`cam`/`sec`/`ex`),
+  // mirroring `tools` at the moment the window opens. Every one of them is
+  // OMITTED when it's already at `DEFAULT_TOOLS` -- a shorter URL for the
+  // (overwhelmingly common) case where nothing but the background/lighting
+  // was touched -- EXCEPT `grid`, which is always written explicitly. `grid`
+  // defaults to `true`, and the receiving window's `useViewerTools` falls
+  // back to reading the OPENER's `viewer-tools` localStorage entry when its
+  // `initial.grid` is absent (see that hook's doc comment) -- omitting it
+  // here would make the window's grid state depend on implicit, possibly
+  // stale shared storage instead of the exact toggle this tab is showing
+  // right now, which is the one thing "mirror the opener" can't leave to
+  // chance.
   function openInWindow(ids: number[]) {
     const params = new URLSearchParams({ ids: ids.join(","), bg: preset, light: lightingPreset });
     if (preset === "custom") params.set("bgc", custom);
@@ -162,6 +175,16 @@ export function useViewerScene({
     for (const id of ids) if (colors[id]) subset[id] = colors[id];
     const encoded = encodePartColors(subset);
     if (encoded) params.set("colors", encoded);
+
+    params.set("grid", tools.grid ? "1" : "0");
+    if (tools.wireframe) params.set("wf", "1");
+    if (tools.autoRotate) params.set("rot", "1");
+    if (tools.ortho) params.set("cam", "o");
+    if (tools.section.enabled) {
+      params.set("sec", `${tools.section.axis}:${tools.section.t.toFixed(2)}`);
+    }
+    if (tools.explode !== 0) params.set("ex", tools.explode.toFixed(2));
+
     window.open(`/viewer/${slug}?${params.toString()}`, "_blank", "popup=1,width=1024,height=768,noopener");
   }
 

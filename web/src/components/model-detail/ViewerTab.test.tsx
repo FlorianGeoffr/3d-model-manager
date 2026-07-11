@@ -322,6 +322,35 @@ describe("ViewerTab", () => {
     expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-wireframe", "true");
   });
 
+  it("Grid flips aria-pressed and the tools.grid flag ModelViewer receives", async () => {
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file])} />);
+    await screen.findByTestId("model-viewer");
+
+    const button = screen.getByRole("button", { name: "Grid" });
+    // Grid defaults on.
+    expect(button).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-grid", "true");
+
+    fireEvent.click(button);
+
+    await waitFor(() => expect(button).toHaveAttribute("aria-pressed", "false"));
+    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-grid", "false");
+  });
+
+  it("the G key on the canvas wrapper toggles the grid", async () => {
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file])} />);
+    await screen.findByTestId("model-viewer");
+
+    fireEvent.keyDown(screen.getByTestId("model-viewer").parentElement!, { key: "g" });
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Grid" })).toHaveAttribute("aria-pressed", "false"),
+    );
+    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-grid", "false");
+  });
+
   it("enabling Section reveals the axis control and position slider, both flowing to the mock", async () => {
     const file = fakeFile({ glb_status: "ok" });
     render(<ViewerTab model={fakeModel([file])} />);
@@ -591,14 +620,19 @@ describe("ViewerTab", () => {
     render(<ViewerTab model={fakeModel([file])} />);
     await screen.findByTestId("model-viewer");
 
-    // The custom color well only appears once the Custom segment is selected.
-    expect(screen.queryByLabelText("Custom background color")).not.toBeInTheDocument();
-
-    fireEvent.click(within(bgGroup()).getByRole("radio", { name: "Custom" }));
-    const colorInput = await screen.findByLabelText("Custom background color");
+    // The Custom swatch hosts its own invisible `<input type="color">`
+    // overlay (Task 6's `BackgroundSwatches`) -- it's `aria-hidden` (so it
+    // doesn't add a second stop to the roving-radio tab order alongside its
+    // wrapping `role="radio"` swatch), so reach it by DOM position instead
+    // of an accessible query.
+    const customRadio = within(bgGroup()).getByRole("radio", { name: "Custom" });
+    const colorInput = customRadio.querySelector('input[type="color"]') as HTMLInputElement;
     fireEvent.change(colorInput, { target: { value: "#123456" } });
 
     await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-background", "#123456"));
+    // Changing the color also selects the Custom preset, even though it
+    // wasn't the checked segment beforehand.
+    expect(customRadio).toHaveAttribute("aria-checked", "true");
   });
 
   it("selecting the Bright lighting preset persists it; studio and bright keep the ground shadow", async () => {
@@ -651,13 +685,69 @@ describe("ViewerTab", () => {
     render(<ViewerTab model={fakeModel([file])} />);
     await screen.findByTestId("model-viewer");
 
-    fireEvent.click(within(bgGroup()).getByRole("radio", { name: "Custom" }));
-    fireEvent.change(await screen.findByLabelText("Custom background color"), { target: { value: "#123456" } });
+    const colorInput = within(bgGroup())
+      .getByRole("radio", { name: "Custom" })
+      .querySelector('input[type="color"]') as HTMLInputElement;
+    fireEvent.change(colorInput, { target: { value: "#123456" } });
     fireEvent.click(screen.getByRole("button", { name: "New window" }));
 
     const url = String(openSpy.mock.calls.at(-1)?.[0]);
     expect(url).toContain("bg=custom");
     expect(url).toContain("bgc=%23123456");
+    openSpy.mockRestore();
+  });
+
+  it("openInWindow always carries grid, and only carries wf/rot/sec/ex when they're non-default", async () => {
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    const file = fakeFile({ id: 7, rel_path: "a.stl", blob_hash: "hashA", glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file])} />);
+    await screen.findByTestId("model-viewer");
+
+    // Every tools field still at its default -- `grid` (default true) is
+    // the one param that's always written; the rest stay out of the URL.
+    fireEvent.click(screen.getByRole("button", { name: "New window" }));
+    let url = String(openSpy.mock.calls.at(-1)?.[0]);
+    expect(url).toContain("grid=1");
+    expect(url).not.toContain("wf=");
+    expect(url).not.toContain("rot=");
+    expect(url).not.toContain("sec=");
+    expect(url).not.toContain("ex=");
+
+    // Flip every tool away from its default, then re-open: each param now
+    // appears, with `grid=0` reflecting the toggled-off state.
+    fireEvent.click(screen.getByRole("button", { name: "Grid" }));
+    fireEvent.click(screen.getByRole("button", { name: "Wireframe" }));
+    fireEvent.click(screen.getByRole("button", { name: "Auto-rotate" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Section" }));
+    await screen.findByRole("radiogroup", { name: "Axis" });
+    fireEvent.click(screen.getByRole("radio", { name: "Y" }));
+    fireEvent.change(screen.getByRole("slider", { name: "Section position" }), {
+      target: { value: "0.25" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "New window" }));
+    url = String(openSpy.mock.calls.at(-1)?.[0]);
+    expect(url).toContain("grid=0");
+    expect(url).toContain("wf=1");
+    expect(url).toContain("rot=1");
+    expect(url).toContain("sec=y%3A0.25");
+    expect(url).not.toContain("ex=");
+
+    openSpy.mockRestore();
+  });
+
+  it("openInWindow carries ex once the explode slider (only shown with 2+ parts) is moved off 0", async () => {
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    const fileA = fakeFile({ id: 1, rel_path: "a.stl", blob_hash: "hashA", glb_status: "ok" });
+    const fileB = fakeFile({ id: 2, rel_path: "b.stl", blob_hash: "hashB", glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([fileA, fileB])} />);
+    await screen.findByTestId("model-viewer");
+
+    fireEvent.change(screen.getByRole("slider", { name: "Explode" }), { target: { value: "0.4" } });
+    fireEvent.click(screen.getByRole("button", { name: "New window" }));
+
+    const url = String(openSpy.mock.calls.at(-1)?.[0]);
+    expect(url).toContain("ex=0.40");
     openSpy.mockRestore();
   });
 

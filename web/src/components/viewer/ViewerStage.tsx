@@ -3,6 +3,7 @@ import {
   BoxIcon,
   CameraIcon,
   ExternalLinkIcon,
+  Grid3x3Icon,
   Maximize2Icon,
   PanelRightCloseIcon,
   PanelRightOpenIcon,
@@ -20,12 +21,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { usePrinterStatus } from "@/api/printers";
 import { FilamentChip } from "@/components/ui/filament-chip";
+import { BackgroundSwatches } from "@/components/viewer/BackgroundSwatches";
 import { SegmentedControl } from "@/components/viewer/SegmentedControl";
-import {
-  BACKGROUND_PRESET_LABELS,
-  BACKGROUND_PRESET_ORDER,
-  type BackgroundPreset,
-} from "@/components/viewer/background";
+import type { BackgroundPreset } from "@/components/viewer/background";
 import {
   LIGHTING_PRESET_LABELS,
   LIGHTING_PRESET_ORDER,
@@ -311,10 +309,9 @@ export interface ViewerStageProps {
    * provide it, and the body row just needs to flex to fill it. */
   variant: "inline" | "dialog" | "window";
   /** View-affecting toggles (build-plate grid, auto-rotate, orthographic
-   * camera, wireframe, cross-section, explode; the grid toggle and a
-   * regroup land on Task 6) -- see `tools.ts`. Driven by the panel's View
-   * section, Section block, and Explode block below, and the `F`/`R`/`W`
-   * keyboard shortcuts. */
+   * camera, wireframe, cross-section, explode) -- see `tools.ts`. Driven by
+   * the panel's View section, Section block, and Explode block below, and
+   * the `F`/`R`/`W`/`G` keyboard shortcuts. */
   tools: ViewerToolsState;
   onToolsChange: (patch: Partial<ViewerToolsState>) => void;
   /** "How big is this print?" -- the combined mm bounding box + triangle
@@ -421,6 +418,10 @@ export function ViewerStage({
     onToolsChange({ wireframe: !tools.wireframe });
   }, [onToolsChange, tools.wireframe]);
 
+  const handleGridToggle = useCallback(() => {
+    onToolsChange({ grid: !tools.grid });
+  }, [onToolsChange, tools.grid]);
+
   // The explode slider leaves a nonzero offset applied to whichever parts
   // were already loaded when it moved -- a part that finishes loading LATE
   // (checked after the initial eager load, or a newly-added file) would
@@ -449,10 +450,9 @@ export function ViewerStage({
     URL.revokeObjectURL(url);
   }, [viewerApiRef, slug]);
 
-  // `F`/`R`/`W` shortcuts on the canvas wrapper -- ignored while any
+  // `F`/`R`/`W`/`G` shortcuts on the canvas wrapper -- ignored while any
   // modifier is held (so `Ctrl+F`/`Cmd+R`/etc. keep their browser-native
-  // meaning instead of being hijacked). `G` arrives with the grid-toggle
-  // feature that lands later on this branch (Task 6).
+  // meaning instead of being hijacked).
   const handleCanvasKeyDown = useCallback(
     (event: KeyboardEvent<HTMLDivElement>) => {
       if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
@@ -462,9 +462,11 @@ export function ViewerStage({
         handleAutoRotateToggle();
       } else if (event.key === "w" || event.key === "W") {
         handleWireframeToggle();
+      } else if (event.key === "g" || event.key === "G") {
+        handleGridToggle();
       }
     },
-    [onFit, handleAutoRotateToggle, handleWireframeToggle],
+    [onFit, handleAutoRotateToggle, handleWireframeToggle, handleGridToggle],
   );
 
   return (
@@ -604,25 +606,12 @@ export function ViewerStage({
               </span>
               <div className="flex flex-col gap-1.5">
                 <span className="text-xs text-muted-foreground">Background</span>
-                <div className="flex flex-wrap items-center gap-2">
-                  <SegmentedControl
-                    label="Background"
-                    options={BACKGROUND_PRESET_ORDER}
-                    labels={BACKGROUND_PRESET_LABELS}
-                    value={preset}
-                    onChange={onPresetChange}
-                    className="flex-wrap"
-                  />
-                  {preset === "custom" && (
-                    <input
-                      type="color"
-                      aria-label="Custom background color"
-                      value={custom}
-                      onChange={(event) => onCustomChange(event.target.value)}
-                      className="h-7 w-10 rounded-md border border-input bg-transparent p-0.5"
-                    />
-                  )}
-                </div>
+                <BackgroundSwatches
+                  preset={preset}
+                  custom={custom}
+                  onPresetChange={onPresetChange}
+                  onCustomChange={onCustomChange}
+                />
               </div>
               <div className="flex flex-col gap-1.5">
                 <span className="text-xs text-muted-foreground">Lighting</span>
@@ -638,16 +627,38 @@ export function ViewerStage({
             </div>
 
             {/* Camera/utility toggles + actions (Task 4), joined by
-                Wireframe (Task 5); the grid toggle and a regroup land on
-                Task 6. A compact icon-button row rather than labelled
-                buttons -- there's no room for both an icon and a label at
-                this panel width, so each button carries its name via
-                `aria-label` (and `title` for a hover tooltip) instead. */}
+                Wireframe (Task 5) and the build-plate Grid toggle (Task 6).
+                A compact icon-button row rather than labelled buttons --
+                there's no room for both an icon and a label at this panel
+                width, so each button carries its name via `aria-label` (and
+                `title` for a hover tooltip) instead. */}
             <div className="flex flex-col gap-3">
               <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
                 View
               </span>
               <div className="flex flex-wrap items-center gap-1.5">
+                <Button
+                  type="button"
+                  variant={tools.grid ? "secondary" : "outline"}
+                  size="icon-sm"
+                  aria-pressed={tools.grid}
+                  aria-label="Grid"
+                  title="Grid (G)"
+                  onClick={handleGridToggle}
+                >
+                  <Grid3x3Icon />
+                </Button>
+                <Button
+                  type="button"
+                  variant={tools.wireframe ? "secondary" : "outline"}
+                  size="icon-sm"
+                  aria-pressed={tools.wireframe}
+                  aria-label="Wireframe"
+                  title="Wireframe (W)"
+                  onClick={handleWireframeToggle}
+                >
+                  <TriangleDashedIcon />
+                </Button>
                 <Button
                   type="button"
                   variant={tools.autoRotate ? "secondary" : "outline"}
@@ -669,17 +680,6 @@ export function ViewerStage({
                   onClick={handleOrthoToggle}
                 >
                   <BoxIcon />
-                </Button>
-                <Button
-                  type="button"
-                  variant={tools.wireframe ? "secondary" : "outline"}
-                  size="icon-sm"
-                  aria-pressed={tools.wireframe}
-                  aria-label="Wireframe"
-                  title="Wireframe (W)"
-                  onClick={handleWireframeToggle}
-                >
-                  <TriangleDashedIcon />
                 </Button>
                 <Button
                   type="button"

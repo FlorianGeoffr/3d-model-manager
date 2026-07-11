@@ -10,6 +10,7 @@ import { glbFiles } from "@/components/viewer/viewable";
 import { Skeleton } from "@/components/ui/skeleton";
 import { type WindowSearch } from "@/pages/viewerWindowSearch";
 import type { FileOut } from "@/api/types";
+import type { SectionAxis, SectionState, ViewerToolsState } from "@/components/viewer/tools";
 
 
 function Centered({ children }: { children: React.ReactNode }) {
@@ -45,6 +46,53 @@ function decodeBackground(
   return { preset: bg as BackgroundPreset, custom: bgc };
 }
 
+const SECTION_AXES: readonly SectionAxis[] = ["x", "y", "z"];
+
+function clamp01(value: number): number {
+  return Math.min(1, Math.max(0, value));
+}
+
+/** Decode `?sec=<axis>:<t>` (e.g. `"x:0.35"`, see `openInWindow`) into a
+ * `SectionState`. Anything that doesn't parse cleanly -- missing colon,
+ * unknown axis, non-numeric `t` -- drops the WHOLE section rather than
+ * guessing a default: a malformed link should render as "section off", not
+ * silently enable one with a made-up axis/position. */
+function decodeSection(sec: string | undefined): SectionState | undefined {
+  if (!sec) return undefined;
+  const [axis, tRaw] = sec.split(":");
+  if (axis === undefined || tRaw === undefined) return undefined;
+  if (!(SECTION_AXES as readonly string[]).includes(axis)) return undefined;
+  const t = Number(tRaw);
+  if (!Number.isFinite(t)) return undefined;
+  return { enabled: true, axis: axis as SectionAxis, t: clamp01(t) };
+}
+
+/** Decode the Task 6 view-tools params into `useViewerScene`'s
+ * `initial.tools` -- only the keys actually present in the URL are set, so
+ * everything else falls through to `DEFAULT_TOOLS` inside `useViewerTools`.
+ * `grid` is the one field `openInWindow` always writes (see its comment);
+ * decoding it unconditionally when present just mirrors that -- a link
+ * missing `grid` entirely (hand-typed, or from before Task 6) still falls
+ * back to the hook's own default/localStorage-read behavior by leaving the
+ * key absent here. */
+function decodeTools(search: WindowSearch): Partial<ViewerToolsState> {
+  const tools: Partial<ViewerToolsState> = {};
+  if (search.grid !== undefined) tools.grid = search.grid !== "0";
+  if (search.wf === "1") tools.wireframe = true;
+  if (search.rot === "1") tools.autoRotate = true;
+  if (search.cam === "o") tools.ortho = true;
+
+  const section = decodeSection(search.sec);
+  if (section) tools.section = section;
+
+  if (search.ex !== undefined) {
+    const explode = Number(search.ex);
+    if (Number.isFinite(explode)) tools.explode = clamp01(explode);
+  }
+
+  return tools;
+}
+
 /** The loaded half: the model's GLB parts are known, so it can call
  * `useViewerScene` unconditionally (hook rules forbid it after the early
  * returns above). Seeds the scene from the URL and renders the SAME stage as
@@ -76,6 +124,7 @@ function ViewerWindow({ slug, files, search }: { slug: string; files: FileOut[];
       background: decodeBackground(search.bg, search.bgc),
       lighting: (search.light ?? "studio") as LightingPreset,
       panelOpen: true,
+      tools: decodeTools(search),
     },
   });
 

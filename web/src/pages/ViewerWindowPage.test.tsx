@@ -4,24 +4,57 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ViewerWindowPage } from "@/pages/ViewerWindowPage";
 import type { FileOut, ModelDetail } from "@/api/types";
 
+type ViewerToolsStub = {
+  grid: boolean;
+  wireframe: boolean;
+  autoRotate: boolean;
+  ortho: boolean;
+  section: { enabled: boolean; axis: string; t: number };
+  explode: number;
+};
+
 const { paramsBox, searchBox, modelBox, modelViewerMock } = vi.hoisted(() => ({
   paramsBox: { current: { slug: "dragon" } as { slug?: string } },
-  searchBox: { current: {} as { ids?: string; bg?: string; bgc?: string; light?: string; colors?: string } },
+  searchBox: {
+    current: {} as {
+      ids?: string;
+      bg?: string;
+      bgc?: string;
+      light?: string;
+      colors?: string;
+      grid?: string;
+      wf?: string;
+      rot?: string;
+      cam?: string;
+      sec?: string;
+      ex?: string;
+    },
+  },
   modelBox: { current: { data: undefined as unknown, isLoading: false } },
   modelViewerMock: vi.fn(
     ({
       parts,
       background,
       lighting,
+      tools,
     }: {
       parts: { id: number; url: string; color?: string; visible: boolean }[];
       background: string;
       lighting?: { contactShadow: boolean };
+      tools?: ViewerToolsStub;
     }) => (
       <div
         data-testid="model-viewer"
         data-background={background}
         data-contact-shadow={lighting ? String(lighting.contactShadow) : undefined}
+        data-grid={tools ? String(tools.grid) : undefined}
+        data-wireframe={tools ? String(tools.wireframe) : undefined}
+        data-auto-rotate={tools ? String(tools.autoRotate) : undefined}
+        data-ortho={tools ? String(tools.ortho) : undefined}
+        data-section={
+          tools ? `${tools.section.enabled}:${tools.section.axis}:${tools.section.t}` : undefined
+        }
+        data-explode={tools ? String(tools.explode) : undefined}
       >
         {parts.map((part) => `${part.id}:${part.color ?? "none"}`).join(",")}
       </div>
@@ -173,6 +206,40 @@ describe("ViewerWindowPage", () => {
     expect(await screen.findByTestId("model-viewer")).toHaveAttribute("data-background", "#ffffff");
   });
 
+  it("seeds tools.grid/wireframe/section from ?wf=1&grid=0&sec=y:0.25", async () => {
+    modelBox.current = { data: fakeModel([glbFile(1, "aaa", "a.glb")]), isLoading: false };
+    searchBox.current = { wf: "1", grid: "0", sec: "y:0.25" };
+
+    render(<ViewerWindowPage />);
+
+    const viewer = await screen.findByTestId("model-viewer");
+    expect(viewer).toHaveAttribute("data-grid", "false");
+    expect(viewer).toHaveAttribute("data-wireframe", "true");
+    expect(viewer).toHaveAttribute("data-section", "true:y:0.25");
+    // Unset tools params keep their defaults.
+    expect(viewer).toHaveAttribute("data-auto-rotate", "false");
+    expect(viewer).toHaveAttribute("data-ortho", "false");
+    expect(viewer).toHaveAttribute("data-explode", "0");
+  });
+
+  it("ignores a malformed sec param instead of guessing a default", async () => {
+    modelBox.current = { data: fakeModel([glbFile(1, "aaa", "a.glb")]), isLoading: false };
+    searchBox.current = { sec: "diagonal:0.5" };
+
+    render(<ViewerWindowPage />);
+
+    expect(await screen.findByTestId("model-viewer")).toHaveAttribute("data-section", "false:x:0.5");
+  });
+
+  it("clamps ex to [0,1]", async () => {
+    modelBox.current = { data: fakeModel([glbFile(1, "aaa", "a.glb")]), isLoading: false };
+    searchBox.current = { ex: "2.5" };
+
+    render(<ViewerWindowPage />);
+
+    expect(await screen.findByTestId("model-viewer")).toHaveAttribute("data-explode", "1");
+  });
+
   it("does not persist appearance changes -- the window is a URL-derived view, not the tab's prefs", async () => {
     modelBox.current = { data: fakeModel([glbFile(1, "aaa", "a.glb")]), isLoading: false };
     // No light param -> seeds studio (shadow on).
@@ -189,6 +256,17 @@ describe("ViewerWindowPage", () => {
     // ...but nothing leaked into the tab's shared localStorage prefs.
     expect(localStorage.getItem("viewer-lighting")).toBeNull();
     expect(localStorage.getItem("viewer-bg")).toBeNull();
+  });
+
+  it("does not persist tool changes -- toggling grid in the window never writes viewer-tools", async () => {
+    modelBox.current = { data: fakeModel([glbFile(1, "aaa", "a.glb")]), isLoading: false };
+    render(<ViewerWindowPage />);
+    await screen.findByTestId("model-viewer");
+
+    fireEvent.click(screen.getByRole("button", { name: "Grid" }));
+
+    await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-grid", "false"));
+    expect(localStorage.getItem("viewer-tools")).toBeNull();
   });
 
   it("the flat lighting preset from the URL turns the contact shadow off; studio (default) keeps it on", async () => {

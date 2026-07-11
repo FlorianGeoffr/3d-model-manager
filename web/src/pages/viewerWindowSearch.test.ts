@@ -18,7 +18,7 @@ describe("parseViewerWindowSearch", () => {
   it("passes the preset/color params through untouched", () => {
     expect(
       parseViewerWindowSearch({ bg: "custom", bgc: "#123456", light: "flat", colors: "13:ff0000" }),
-    ).toEqual({ ids: undefined, bg: "custom", bgc: "#123456", light: "flat", colors: "13:ff0000" });
+    ).toMatchObject({ ids: undefined, bg: "custom", bgc: "#123456", light: "flat", colors: "13:ff0000" });
   });
 
   it("drops non-primitive or missing values to undefined", () => {
@@ -28,6 +28,34 @@ describe("parseViewerWindowSearch", () => {
       bgc: undefined,
       light: undefined,
       colors: undefined,
+      grid: undefined,
+      wf: undefined,
+      rot: undefined,
+      cam: undefined,
+      sec: undefined,
+      ex: undefined,
+    });
+  });
+
+  // Task 6 view-tools params: `grid=0`/`grid=1`, `wf=1`, `rot=1`, and
+  // `ex=0.40` are all valid JSON, so TanStack's default parser hands them to
+  // `parseViewerWindowSearch` as NUMBERS (0.4, not "0.40") -- same regression
+  // class as the numeric `ids` case above.
+  it("coerces the grid/wf/rot/ex numeric-looking params back to strings", () => {
+    expect(parseViewerWindowSearch({ grid: 0, wf: 1, rot: 1, ex: 0.4 })).toMatchObject({
+      grid: "0",
+      wf: "1",
+      rot: "1",
+      ex: "0.4",
+    });
+  });
+
+  // `cam=o` and `sec=x:0.35` aren't valid JSON, so they arrive as plain
+  // strings already -- passed through untouched, same as `bg`/`light`.
+  it("passes cam/sec through untouched", () => {
+    expect(parseViewerWindowSearch({ cam: "o", sec: "x:0.35" })).toMatchObject({
+      cam: "o",
+      sec: "x:0.35",
     });
   });
 });

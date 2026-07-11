@@ -783,12 +783,35 @@ export default function ModelViewer({
       {/* A render-target soft shadow, not a shadow map -- `<Canvas>` has no
           `shadows` prop and no light here has `castShadow`. Adding either
           would double up with this and need shadow-acne tuning for no
-          visual gain. `frames={1}` bakes once and goes stale, so it's keyed
-          on `loadedCount` (a part finishing load) and the visible id set (a
-          checkbox toggle) so the bake re-runs whenever either changes. */}
+          visual gain.
+
+          Deliberately NO `key` prop -- this used to be keyed on
+          `loadedCount` + the visible id set to force a remount (and so a
+          fresh `frames={1}` bake) on every part load/checkbox toggle, but
+          drei 10.7.7's `ContactShadows` allocates two `WebGLRenderTarget`s
+          plus depth/blur `ShaderMaterial`s imperatively in a `useMemo` with
+          NO dispose path (no cleanup effect anywhere in
+          `@react-three/drei/core/ContactShadows.js`, and the targets never
+          appear in its JSX tree, so R3F can't auto-dispose them either) --
+          every remount leaked ~2MB of GPU memory into this deliberately
+          long-lived WebGL context, unbounded across checkbox toggles.
+
+          Re-bakes still happen without the key: drei declares its bake
+          frame counter as `let count = 0` in the component BODY (same
+          file), so ANY re-render of `ContactShadows` resets it and the next
+          invalidated frame re-runs the one-shot bake. Every event the key
+          used to encode (a part load -> `loadedParts` state change; a
+          visibility toggle -> `parts` prop change) re-renders `ModelViewer`
+          and therefore this component, and the R3F prop commit invalidates
+          a frame -- so the bake re-runs exactly when it must, with zero
+          remounts. Stray re-renders re-baking too is harmless (a cheap
+          one-shot 512^2 pass). If a drei upgrade ever memoizes that counter
+          or moves it into a ref/state (i.e. "fixes" the body-reset quirk we
+          intentionally rely on), stale shadows after a toggle are the
+          symptom -- solve it with an explicit `frames` bump or a fixed
+          upstream API then, NOT by re-adding a `key`. */}
       {lighting.contactShadow && (
         <ContactShadows
-          key={`${loadedCount}|${parts.filter((part) => part.visible).map((part) => part.id).join(",")}`}
           position={[0, -0.001, 0]}
           scale={3}
           far={1.2}

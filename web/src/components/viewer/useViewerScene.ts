@@ -8,7 +8,7 @@
  * caller only adds the per-surface `variant`/`showExpand`/`showWindowButtons`
  * flags), keeping the assembly in one place instead of duplicated per caller.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { usePrinters } from "@/api/printers";
 import { useViewerBackground, type BackgroundPreset } from "@/components/viewer/background";
@@ -19,7 +19,12 @@ import {
   savePartColors,
   type PartColors,
 } from "@/components/viewer/partColors";
-import { useViewerTools, type SceneStats, type ViewerToolsState } from "@/components/viewer/tools";
+import {
+  useViewerTools,
+  type SceneStats,
+  type ViewerApi,
+  type ViewerToolsState,
+} from "@/components/viewer/tools";
 import type { ViewerStageProps } from "@/components/viewer/ViewerStage";
 import { glbUrl, type ViewerPart } from "@/components/viewer/viewable";
 import type { FileOut } from "@/api/types";
@@ -81,6 +86,17 @@ export function useViewerScene({
   );
   const { tools, setTools } = useViewerTools(initial?.tools, persist);
   const [stats, setStats] = useState<SceneStats | null>(null);
+  // `fitSignal` is a counter, not a boolean -- "Fit view" is a one-shot
+  // action, not a state, and `ModelViewer`'s `BoundsRefitter` refits on
+  // CHANGE (a `useLayoutEffect` dep), so two fits in a row (e.g. pressing `F`
+  // twice) each need to register as a distinct change rather than
+  // coalescing into a no-op. Also bumped by the ortho toggle's post-swap
+  // recovery -- see `ViewerStage.tsx`'s comment on that handler.
+  const [fitSignal, setFitSignal] = useState(0);
+  // The imperative surface `ModelViewer` publishes (today: `screenshot`) --
+  // there's no prop path from a DOM button click into a `<Canvas>` child, so
+  // this ref is the bridge (see `scene/helpers.tsx`'s `CaptureBridge`).
+  const viewerApiRef = useRef<ViewerApi | null>(null);
   const printers = usePrinters();
   const printerId = printers.data?.[0]?.id;
 
@@ -150,6 +166,7 @@ export function useViewerScene({
   }
 
   const stageProps: StagePropsBundle = {
+    slug,
     files,
     checkedIds,
     onToggleFile: toggleFile,
@@ -178,6 +195,9 @@ export function useViewerScene({
     stats,
     onStats: setStats,
     plateSize: PLATE_SIZE_MM,
+    fitSignal,
+    onFit: () => setFitSignal((prev) => prev + 1),
+    viewerApiRef,
   };
 
   return { stageProps };

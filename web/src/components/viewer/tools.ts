@@ -41,6 +41,16 @@ export interface ViewerToolsState {
   explode: number; // 0..1, Task 5 wires
 }
 
+/** The imperative surface `ModelViewer` publishes into `ViewerStage`'s
+ * `viewerApiRef` (via `scene/helpers.tsx`'s `CaptureBridge`) for actions that
+ * have no prop path from a DOM button click into a `<Canvas>` child --
+ * today just the screenshot button. No three.js imports here (leaf module,
+ * see the file header) -- the `Blob` this resolves is a canvas capture, not
+ * a three.js type. */
+export interface ViewerApi {
+  screenshot: () => Promise<Blob | null>;
+}
+
 export const DEFAULT_TOOLS: ViewerToolsState = {
   grid: true,
   wireframe: false,

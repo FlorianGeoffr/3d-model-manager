@@ -65,17 +65,21 @@ import {
   Center,
   ContactShadows,
   Environment,
+  GizmoHelper,
+  GizmoViewcube,
   Lightformer,
   OrbitControls,
+  OrthographicCamera,
   Resize,
   useBounds,
   useGLTF,
 } from "@react-three/drei";
 import type { LightingRig } from "@/components/viewer/lighting";
-import type { SceneStats, ViewerToolsState } from "@/components/viewer/tools";
+import type { SceneStats, ViewerApi, ViewerToolsState } from "@/components/viewer/tools";
 import type { ViewerPart } from "@/components/viewer/viewable";
 import { ViewerEffects } from "@/components/viewer/scene/Effects";
 import { CameraLayers, PlateGrid } from "@/components/viewer/scene/PlateGrid";
+import { AutoRotate, CaptureBridge, DoubleClickTarget } from "@/components/viewer/scene/helpers";
 
 // A 1-unit box, used as `Resize`'s `box3` while nothing has finished loading
 // yet (`allBox` is `null`) -- `Resize` divides by the box's largest
@@ -241,22 +245,28 @@ function Exposure({ exposure }: { exposure: number }) {
   return null;
 }
 
-/** Re-measures and refits the camera as parts finish loading -- `Bounds`'s
- * own layout effect only re-runs on window resize (`observe`) or first
- * mount, and `Resize`/`Center` don't watch their children either, so nothing
- * else would re-frame the camera as a second/third part's GLB arrives.
- * Fires ONLY on `loadedCount` changing (a part finishing its load), never on
- * a visibility toggle -- toggling a checked part neither adds nor removes it
- * from `loadedParts`, so this intentionally does not run then. */
-function BoundsRefitter({ loadedCount }: { loadedCount: number }) {
+/** Re-measures and refits the camera as parts finish loading, or on demand
+ * via `fitSignal` -- `Bounds`'s own layout effect only re-runs on window
+ * resize (`observe`) or first mount, and `Resize`/`Center` don't watch their
+ * children either, so nothing else would re-frame the camera as a
+ * second/third part's GLB arrives. `fitSignal` is `ViewerStage`'s "Fit view"
+ * button/`F` key and the ortho toggle's post-swap recovery (see
+ * `ViewerStage.tsx`) -- both bump a counter rather than passing a boolean, so
+ * two fits in a row (e.g. pressing F twice) each still trigger this effect
+ * instead of coalescing into a no-op state-didn't-change skip. Still guarded
+ * by `loadedCount > 0`: fitting before anything has loaded would frame the
+ * `UNIT_BOX` fallback. Does NOT fire on a plain visibility toggle -- toggling
+ * a checked part neither adds nor removes it from `loadedParts` nor bumps
+ * `fitSignal`, so this intentionally does not run then. */
+function BoundsRefitter({ loadedCount, fitSignal }: { loadedCount: number; fitSignal: number }) {
   const api = useBounds();
   useLayoutEffect(() => {
     if (loadedCount > 0) api.refresh().clip().fit();
     // `api` is included for the lint rule's sake -- it's a `useMemo` inside
     // `Bounds` keyed on the camera/controls/margin, so in practice it's
     // stable across re-renders and this still only actually refits when
-    // `loadedCount` changes.
-  }, [loadedCount, api]);
+    // `loadedCount`/`fitSignal` changes.
+  }, [loadedCount, fitSignal, api]);
   return null;
 }
 
@@ -292,6 +302,8 @@ export default function ModelViewer({
   tools,
   plateSize,
   onStats,
+  fitSignal,
+  apiRef,
 }: {
   parts: ViewerPart[];
   background: string;
@@ -299,6 +311,13 @@ export default function ModelViewer({
   tools: ViewerToolsState;
   plateSize: number;
   onStats?: (stats: SceneStats | null) => void;
+  /** Bumped by `ViewerStage`'s "Fit view" button/`F` key (and the ortho
+   * toggle's post-swap recovery) to force a re-fit outside the normal
+   * `loadedCount`-driven path -- see `BoundsRefitter`. */
+  fitSignal: number;
+  /** Published imperative surface (today: `screenshot`) -- see
+   * `scene/helpers.tsx`'s `CaptureBridge`. */
+  apiRef?: React.MutableRefObject<ViewerApi | null>;
 }) {
   const [loadedParts, setLoadedParts] = useState<Map<number, { box: THREE.Box3; triangles: number }>>(
     () => new Map(),
@@ -424,6 +443,22 @@ export default function ModelViewer({
           file header for the full layer-trap rationale. */}
       <CameraLayers />
 
+      {/* Swaps in an orthographic default camera when `tools.ortho` is on.
+          drei's `OrthographicCamera` restores the previous default camera on
+          unmount (its `makeDefault` effect's cleanup resets the store's
+          `camera` back), so toggling this off cleanly hands the perspective
+          camera back. The camera swap also remounts `OrbitControls` below
+          (it re-derives its internal controls instance from the store's
+          `camera`), which resets the orbit target -- `ViewerStage`'s ortho
+          toggle handler calls `onFit()` right after flipping this to recover
+          framing (see its comment). Position/zoom picked for a pleasant
+          three-quarter default view; the gizmo/orbit controls take over from
+          there. */}
+      {tools.ortho && <OrthographicCamera makeDefault position={[1.2, 1.2, 1.2]} zoom={140} />}
+      <AutoRotate enabled={tools.autoRotate} />
+      <CaptureBridge apiRef={apiRef} />
+      <DoubleClickTarget />
+
       <ambientLight intensity={lighting.ambient} />
       <directionalLight position={[2.5, 4, 2.5]} intensity={lighting.key} />
       <directionalLight position={[-3, 1.5, 2]} intensity={lighting.fill} />
@@ -470,7 +505,7 @@ export default function ModelViewer({
             ))}
           </Center>
         </Resize>
-        <BoundsRefitter loadedCount={loadedCount} />
+        <BoundsRefitter loadedCount={loadedCount} fitSignal={fitSignal} />
       </Bounds>
 
       {/* OUTSIDE `<Bounds>` deliberately -- `Bounds`'s `observe`/`fit` walks
@@ -503,7 +538,21 @@ export default function ModelViewer({
         />
       )}
 
-      <OrbitControls makeDefault enablePan />
+      <OrbitControls makeDefault enablePan autoRotate={tools.autoRotate} autoRotateSpeed={1.5} />
+
+      {/* `renderPriority={2}`, NOT drei's default of 1 -- with the
+          `EffectComposer` active (`ViewerEffects` below, also a
+          `useFrame(priority=1)` render taker), drei's `Hud` (which
+          `GizmoHelper` renders into) only re-renders the raw
+          un-postprocessed default scene when its OWN `renderPriority === 1`,
+          which would race the composer at equal priority. At priority 2 it
+          just clears depth and draws the cube on top of the composer's
+          already-finished output instead. Face clicks tween the camera
+          around the default controls' target and call `invalidate()` per
+          step, so this works under `frameloop="demand"` unmodified. */}
+      <GizmoHelper alignment="bottom-left" margin={[64, 64]} renderPriority={2}>
+        <GizmoViewcube />
+      </GizmoHelper>
 
       <ViewerEffects ao={lighting.ao} />
     </Canvas>

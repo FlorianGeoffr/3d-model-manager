@@ -16,39 +16,57 @@ import type { FileOut, ModelDetail } from "@/api/types";
 // viewer without a real mock per test. `data-parts` (B1 "toggle-fix core")
 // exposes each part's `visible` flag -- every combinable part is ALWAYS in
 // `parts` now (checked or not), so tests that used to assert on which urls
-// were present/absent assert on `visible` here instead. `data-grid` (B1
-// Task 3 "viewer tools state") exposes the `tools.grid` flag `useViewerScene`
-// hands down, so a test can assert the default without reaching into
-// `tools.ts` directly. `onStats` is real (not stubbed away) -- it's
-// `useViewerScene`'s `setStats`, passed straight through -- so a test can
-// grab it off `modelViewerMock.mock.calls` and drive the real stats overlay
-// chip `ViewerStage` renders, the same way the real component would.
+// were present/absent assert on `visible` here instead. `data-grid`/
+// `data-auto-rotate`/`data-ortho` (B1 Task 3/4 "viewer tools state") expose
+// the matching `tools` flags `useViewerScene` hands down, so a test can
+// assert them without reaching into `tools.ts` directly. `data-fit` (B1
+// Task 4) exposes the `fitSignal` counter -- bumped by the Fit view
+// button/`F` key and the ortho toggle's post-swap recovery. `onStats` is
+// real (not stubbed away) -- it's `useViewerScene`'s `setStats`, passed
+// straight through -- so a test can grab it off `modelViewerMock.mock.calls`
+// and drive the real stats overlay chip `ViewerStage` renders, the same way
+// the real component would. The mock also publishes `apiRef.current = {
+// screenshot: screenshotSpy }` synchronously in its body -- standing in for
+// the real `ModelViewer`'s `CaptureBridge` effect -- so the Screenshot
+// button's click handler has something to call.
 type ViewerPart = { id: number; url: string; color?: string; visible: boolean };
 type ViewerLighting = { contactShadow: boolean };
-type ViewerToolsStub = { grid: boolean };
-const { modelViewerMock, platePanelMock, defaultModelViewerImpl } = vi.hoisted(() => {
+type ViewerToolsStub = { grid: boolean; autoRotate: boolean; ortho: boolean };
+type ViewerApiStub = { screenshot: () => Promise<Blob | null> };
+const { modelViewerMock, platePanelMock, defaultModelViewerImpl, screenshotSpy } = vi.hoisted(() => {
+  const screenshotSpy = vi.fn(() => Promise.resolve(new Blob(["fake-png"], { type: "image/png" })));
   const defaultModelViewerImpl = ({
     parts,
     background,
     lighting,
     tools,
+    fitSignal,
+    apiRef,
   }: {
     parts: ViewerPart[];
     background: string;
     lighting?: ViewerLighting;
     tools?: ViewerToolsStub;
-  }) => (
-    <div
-      data-testid="model-viewer"
-      data-background={background}
-      data-contact-shadow={lighting ? String(lighting.contactShadow) : undefined}
-      data-colors={parts.map((part) => part.color ?? "").join(",")}
-      data-parts={parts.map((part) => `${part.id}:${part.visible ? 1 : 0}`).join(",")}
-      data-grid={tools ? String(tools.grid) : undefined}
-    >
-      {parts.map((part) => part.url).join(",")}
-    </div>
-  );
+    fitSignal?: number;
+    apiRef?: { current: ViewerApiStub | null };
+  }) => {
+    if (apiRef) apiRef.current = { screenshot: screenshotSpy };
+    return (
+      <div
+        data-testid="model-viewer"
+        data-background={background}
+        data-contact-shadow={lighting ? String(lighting.contactShadow) : undefined}
+        data-colors={parts.map((part) => part.color ?? "").join(",")}
+        data-parts={parts.map((part) => `${part.id}:${part.visible ? 1 : 0}`).join(",")}
+        data-grid={tools ? String(tools.grid) : undefined}
+        data-auto-rotate={tools ? String(tools.autoRotate) : undefined}
+        data-ortho={tools ? String(tools.ortho) : undefined}
+        data-fit={fitSignal}
+      >
+        {parts.map((part) => part.url).join(",")}
+      </div>
+    );
+  };
   return {
     modelViewerMock: vi.fn(defaultModelViewerImpl),
     // `PlatePanel` has its own dedicated test suite (PlatePanel.test.tsx) --
@@ -56,6 +74,7 @@ const { modelViewerMock, platePanelMock, defaultModelViewerImpl } = vi.hoisted((
     // sliced files, not its internals.
     platePanelMock: vi.fn(({ file }: { file: FileOut }) => <div data-testid="plate-panel">{file.rel_path}</div>),
     defaultModelViewerImpl,
+    screenshotSpy,
   };
 });
 
@@ -166,6 +185,7 @@ describe("ViewerTab", () => {
   beforeEach(() => {
     modelViewerMock.mockClear();
     platePanelMock.mockClear();
+    screenshotSpy.mockClear();
     localStorage.clear();
   });
 
@@ -193,6 +213,92 @@ describe("ViewerTab", () => {
     render(<ViewerTab model={fakeModel([file])} />);
 
     expect(await screen.findByTestId("model-viewer")).toHaveAttribute("data-grid", "true");
+  });
+
+  it("Fit view bumps the fit signal ModelViewer receives", async () => {
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file])} />);
+    await screen.findByTestId("model-viewer");
+
+    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-fit", "0");
+
+    fireEvent.click(screen.getByRole("button", { name: "Fit view" }));
+
+    await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-fit", "1"));
+  });
+
+  it("the F key on the canvas wrapper also bumps the fit signal", async () => {
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file])} />);
+    await screen.findByTestId("model-viewer");
+
+    fireEvent.keyDown(screen.getByTestId("model-viewer").parentElement!, { key: "f" });
+
+    await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-fit", "1"));
+  });
+
+  it("Auto-rotate flips aria-pressed and the tools.autoRotate flag ModelViewer receives", async () => {
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file])} />);
+    await screen.findByTestId("model-viewer");
+
+    const button = screen.getByRole("button", { name: "Auto-rotate" });
+    expect(button).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-auto-rotate", "false");
+
+    fireEvent.click(button);
+
+    await waitFor(() => expect(button).toHaveAttribute("aria-pressed", "true"));
+    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-auto-rotate", "true");
+  });
+
+  it("the R key on the canvas wrapper toggles auto-rotate", async () => {
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file])} />);
+    await screen.findByTestId("model-viewer");
+
+    fireEvent.keyDown(screen.getByTestId("model-viewer").parentElement!, { key: "r" });
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Auto-rotate" })).toHaveAttribute("aria-pressed", "true"),
+    );
+  });
+
+  it("Orthographic camera flips tools.ortho and also bumps the fit signal (camera swap resets framing)", async () => {
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file])} />);
+    await screen.findByTestId("model-viewer");
+
+    const button = screen.getByRole("button", { name: "Orthographic camera" });
+    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-ortho", "false");
+    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-fit", "0");
+
+    fireEvent.click(button);
+
+    await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-ortho", "true"));
+    expect(button).toHaveAttribute("aria-pressed", "true");
+    // The camera swap resets `OrbitControls`' target -- the ortho handler
+    // fires a follow-up fit to recover framing, so `fitSignal` bumps too.
+    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-fit", "1");
+  });
+
+  it("Screenshot calls the published screenshot bridge and downloads the resulting PNG", async () => {
+    const createObjectURLSpy = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:fake");
+    const revokeObjectURLSpy = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file])} />);
+    await screen.findByTestId("model-viewer");
+
+    fireEvent.click(screen.getByRole("button", { name: "Screenshot" }));
+
+    await waitFor(() => expect(screenshotSpy).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(createObjectURLSpy).toHaveBeenCalledTimes(1));
+
+    createObjectURLSpy.mockRestore();
+    revokeObjectURLSpy.mockRestore();
+    clickSpy.mockRestore();
   });
 
   it("resyncs the first-part-checked default when the model's file set changes", async () => {

@@ -1,10 +1,14 @@
-import { Component, Suspense, lazy, type ReactNode } from "react";
+import { Component, Suspense, lazy, useCallback, type KeyboardEvent, type ReactNode } from "react";
 import {
+  BoxIcon,
+  CameraIcon,
   ExternalLinkIcon,
   Maximize2Icon,
   PanelRightCloseIcon,
   PanelRightOpenIcon,
   RotateCcwIcon,
+  RotateCwIcon,
+  ScanIcon,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -27,7 +31,12 @@ import {
   type LightingRig,
 } from "@/components/viewer/lighting";
 import { traysToPartColors, type PartColors } from "@/components/viewer/partColors";
-import { formatStats, type SceneStats, type ViewerToolsState } from "@/components/viewer/tools";
+import {
+  formatStats,
+  type SceneStats,
+  type ViewerApi,
+  type ViewerToolsState,
+} from "@/components/viewer/tools";
 import type { ViewerPart } from "@/components/viewer/viewable";
 import type { FileOut } from "@/api/types";
 
@@ -142,6 +151,8 @@ function MeshCanvas({
   plateSize,
   onStats,
   stats,
+  fitSignal,
+  apiRef,
 }: {
   parts: ViewerPart[];
   background: string;
@@ -150,6 +161,8 @@ function MeshCanvas({
   plateSize: number;
   onStats: (stats: SceneStats | null) => void;
   stats: SceneStats | null;
+  fitSignal: number;
+  apiRef: React.MutableRefObject<ViewerApi | null>;
 }) {
   if (parts.length === 0) {
     return (
@@ -173,6 +186,8 @@ function MeshCanvas({
             tools={tools}
             plateSize={plateSize}
             onStats={onStats}
+            fitSignal={fitSignal}
+            apiRef={apiRef}
           />
         </Suspense>
       </ViewerErrorBoundary>
@@ -245,6 +260,9 @@ const BODY_BASE_CLASS = "flex min-h-0 flex-1 flex-col gap-3 lg:flex-row";
 const INLINE_BODY_HEIGHT_CLASS = "h-[70vh] min-h-[32rem]";
 
 export interface ViewerStageProps {
+  /** The model's slug -- used only as the downloaded screenshot's filename
+   * (`${slug}.png`). */
+  slug: string;
   files: FileOut[];
   checkedIds: ReadonlySet<number>;
   onToggleFile: (fileId: number, checked: boolean) => void;
@@ -279,11 +297,10 @@ export interface ViewerStageProps {
    * dialog's `h-[90vh]` wrapper and the window page's `h-svh` wrapper already
    * provide it, and the body row just needs to flex to fill it. */
   variant: "inline" | "dialog" | "window";
-  /** View-affecting toggles (build-plate grid today; wireframe/auto-rotate/
-   * ortho/section/explode land on later tasks in this branch) -- see
-   * `tools.ts`. `onToolsChange` isn't wired to any control in this task
-   * (Task 6 builds the panel's View section); it's threaded through now so
-   * that panel can be added without another pass through `useViewerScene`. */
+  /** View-affecting toggles (build-plate grid, auto-rotate, orthographic
+   * camera today; wireframe/section/explode land on later tasks in this
+   * branch) -- see `tools.ts`. Driven by the panel's View section below and
+   * the `R` keyboard shortcut. */
   tools: ViewerToolsState;
   onToolsChange: (patch: Partial<ViewerToolsState>) => void;
   /** "How big is this print?" -- the combined mm bounding box + triangle
@@ -295,6 +312,22 @@ export interface ViewerStageProps {
   /** The build plate's mm side length -- single source in `useViewerScene`
    * today, so a future settings surface can override it in one place. */
   plateSize: number;
+  /** A counter `ModelViewer`'s `BoundsRefitter` treats as "refit now" on
+   * every change -- `useViewerScene`'s `onFit` bumps it. A counter rather
+   * than a boolean since "fit" is a one-shot action: two fits in a row (the
+   * `F` key pressed twice, or the ortho toggle's post-swap recovery
+   * immediately after a manual fit) each need to register as a distinct
+   * change, not coalesce into a no-op. */
+  fitSignal: number;
+  /** Bumps `fitSignal`. Wired to the "Fit view" button, the `F` key, and
+   * (after `onToolsChange({ ortho: ... })`) the Orthographic toggle -- see
+   * that handler's comment for why the ortho swap needs a follow-up fit. */
+  onFit: () => void;
+  /** The imperative surface `ModelViewer` publishes into (today:
+   * `screenshot`) -- see `scene/helpers.tsx`'s `CaptureBridge`. There's no
+   * prop path from the Screenshot button's click handler into a `<Canvas>`
+   * child otherwise. */
+  viewerApiRef: React.MutableRefObject<ViewerApi | null>;
 }
 
 /** Strip + canvas + collapsible parts panel -- the whole redesigned viewer
@@ -313,6 +346,7 @@ export interface ViewerStageProps {
  * hides them too. That's correct: the panel is THE control surface, and the
  * strip's reopen toggle brings the whole thing back. */
 export function ViewerStage({
+  slug,
   files,
   checkedIds,
   onToggleFile,
@@ -341,14 +375,64 @@ export function ViewerStage({
   onTogglePanel,
   variant,
   tools,
+  onToolsChange,
   stats,
   onStats,
   plateSize,
+  fitSignal,
+  onFit,
+  viewerApiRef,
 }: ViewerStageProps) {
   // The strip only exists to host actions. With the panel open and no
   // pop-out/expand actions to show (the window's steady state), it would be
   // an empty bar -- so render it only when it has something in it.
   const stripHasContent = !panelOpen || showWindowButtons || showExpand;
+
+  // The ortho toggle swaps drei's default camera (perspective <->
+  // orthographic), which remounts `OrbitControls` underneath it (it
+  // re-derives its internal controls instance from the store's `camera`) and
+  // resets the orbit target/framing -- `onFit()` right after recovers it.
+  // See `ModelViewer.tsx`'s ortho-camera comment for the underlying
+  // mechanism.
+  const handleOrthoToggle = useCallback(() => {
+    onToolsChange({ ortho: !tools.ortho });
+    onFit();
+  }, [onToolsChange, onFit, tools.ortho]);
+
+  const handleAutoRotateToggle = useCallback(() => {
+    onToolsChange({ autoRotate: !tools.autoRotate });
+  }, [onToolsChange, tools.autoRotate]);
+
+  // `viewerApiRef.current` is populated by `ModelViewer`'s `CaptureBridge`
+  // only once the canvas has mounted -- `?.` guards the (brief) window
+  // before that effect runs, or the empty-parts placeholder case where
+  // `MeshCanvas` never renders a `ModelViewer` at all.
+  const handleScreenshot = useCallback(async () => {
+    const blob = await viewerApiRef.current?.screenshot();
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${slug}.png`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [viewerApiRef, slug]);
+
+  // `F`/`R` shortcuts on the canvas wrapper -- ignored while any modifier is
+  // held (so `Ctrl+F`/`Cmd+R`/etc. keep their browser-native meaning instead
+  // of being hijacked). `G`/`W` arrive with the grid-toggle/wireframe
+  // features that land later on this branch.
+  const handleCanvasKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLDivElement>) => {
+      if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+      if (event.key === "f" || event.key === "F") {
+        onFit();
+      } else if (event.key === "r" || event.key === "R") {
+        handleAutoRotateToggle();
+      }
+    },
+    [onFit, handleAutoRotateToggle],
+  );
 
   return (
     <>
@@ -400,7 +484,11 @@ export function ViewerStage({
       )}
 
       <div className={cn(BODY_BASE_CLASS, variant === "inline" && INLINE_BODY_HEIGHT_CLASS)}>
-        <div className="relative min-h-0 flex-1 overflow-hidden rounded-lg border border-border">
+        <div
+          className="relative min-h-0 flex-1 overflow-hidden rounded-lg border border-border outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          tabIndex={0}
+          onKeyDown={handleCanvasKeyDown}
+        >
           <MeshCanvas
             parts={parts}
             background={background}
@@ -409,6 +497,8 @@ export function ViewerStage({
             plateSize={plateSize}
             onStats={onStats}
             stats={stats}
+            fitSignal={fitSignal}
+            apiRef={viewerApiRef}
           />
         </div>
 
@@ -510,6 +600,62 @@ export function ViewerStage({
                   onChange={onLightingChange}
                   className="flex-wrap"
                 />
+              </div>
+            </div>
+
+            {/* Camera/utility toggles + actions (Task 4). Wireframe/section/
+                explode join this row on Task 5; the grid toggle and a
+                regroup land on Task 6. A compact icon-button row rather than
+                labelled buttons -- there's no room for both an icon and a
+                label at this panel width, so each button carries its name
+                via `aria-label` (and `title` for a hover tooltip) instead. */}
+            <div className="flex flex-col gap-3">
+              <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+                View
+              </span>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <Button
+                  type="button"
+                  variant={tools.autoRotate ? "secondary" : "outline"}
+                  size="icon-sm"
+                  aria-pressed={tools.autoRotate}
+                  aria-label="Auto-rotate"
+                  title="Auto-rotate (R)"
+                  onClick={handleAutoRotateToggle}
+                >
+                  <RotateCwIcon />
+                </Button>
+                <Button
+                  type="button"
+                  variant={tools.ortho ? "secondary" : "outline"}
+                  size="icon-sm"
+                  aria-pressed={tools.ortho}
+                  aria-label="Orthographic camera"
+                  title="Orthographic camera"
+                  onClick={handleOrthoToggle}
+                >
+                  <BoxIcon />
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon-sm"
+                  aria-label="Fit view"
+                  title="Fit view (F)"
+                  onClick={onFit}
+                >
+                  <ScanIcon />
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon-sm"
+                  aria-label="Screenshot"
+                  title="Screenshot"
+                  onClick={handleScreenshot}
+                >
+                  <CameraIcon />
+                </Button>
               </div>
             </div>
 

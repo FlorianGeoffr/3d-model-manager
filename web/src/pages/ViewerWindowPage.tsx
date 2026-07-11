@@ -2,6 +2,7 @@ import { Suspense, lazy } from "react";
 import { useParams, useSearch } from "@tanstack/react-router";
 
 import { useModel } from "@/api/library";
+import { resolveLighting } from "@/components/viewer/lighting";
 import { decodePartColors } from "@/components/viewer/partColors";
 import { glbFiles, glbUrl } from "@/components/viewer/viewable";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -59,7 +60,10 @@ export function ViewerWindowPage() {
   return (
     <div className="h-svh w-svw bg-background">
       <Suspense fallback={<Skeleton className="h-full w-full" />}>
-        <ModelViewer parts={parts} background={search.bg ?? DEFAULT_BG} />
+        {/* Stopgap: Task 4 derives the pop-out's lighting preset from its own
+            URL, same as background/colors; until then it gets the studio
+            rig. */}
+        <ModelViewer parts={parts} background={search.bg ?? DEFAULT_BG} lighting={resolveLighting("studio")} />
       </Suspense>
     </div>
   );

@@ -29,6 +29,7 @@ import { usePrinters, usePrinterStatus } from "@/api/printers";
 import { FilamentChip } from "@/components/ui/filament-chip";
 import { PlatePanel } from "@/components/model-detail/PlatePanel";
 import { BACKGROUND_PRESET_LABELS, BACKGROUND_PRESET_ORDER, useViewerBackground, type BackgroundPreset } from "@/components/viewer/background";
+import { resolveLighting } from "@/components/viewer/lighting";
 import {
   encodePartColors,
   loadPartColors,
@@ -121,7 +122,9 @@ function MeshCanvas({
   return (
     <ViewerErrorBoundary key={parts.map((part) => part.id).join("|")}>
       <Suspense fallback={<Skeleton className="h-full w-full" />}>
-        <ModelViewer parts={parts} background={background} />
+        {/* Stopgap: Task 3 wires a real lighting preset control; until then
+            every viewer instance gets the studio rig. */}
+        <ModelViewer parts={parts} background={background} lighting={resolveLighting("studio")} />
       </Suspense>
     </ViewerErrorBoundary>
   );

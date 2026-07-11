@@ -5,6 +5,7 @@ import { authQueryOptions } from "@/api/auth";
 import { AppShell } from "@/components/AppShell";
 import { AddPage } from "@/pages/AddPage";
 import { CollectionsPage } from "@/pages/CollectionsPage";
+import { DuplicatesPage } from "@/pages/DuplicatesPage";
 import { JobsPage } from "@/pages/JobsPage";
 import { LibraryPage } from "@/pages/LibraryPage";
 import { LoginPage } from "@/pages/LoginPage";
@@ -126,6 +127,12 @@ const queueRoute = createRoute({
   component: QueuePage,
 });
 
+const duplicatesRoute = createRoute({
+  getParentRoute: () => authenticatedRoute,
+  path: "/duplicates",
+  component: DuplicatesPage,
+});
+
 const settingsRoute = createRoute({
   getParentRoute: () => authenticatedRoute,
   path: "/settings",
@@ -145,6 +152,7 @@ export const routeTree = rootRoute.addChildren([
     printerRoute,
     jobsRoute,
     queueRoute,
+    duplicatesRoute,
     settingsRoute,
   ]),
 ]);

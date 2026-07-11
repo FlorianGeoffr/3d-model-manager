@@ -708,3 +708,27 @@ export interface QueueEntry {
   added_at: string;
   model: ModelSummary;
 }
+
+// -- duplicate-files report (backend/app/schemas/reports.py, Branch 4 Task 1)
+// Files sharing a blob hash across more than one model -- reclaimable
+// storage from the same content having been imported/uploaded more than once.
+
+export interface DuplicateFile {
+  model_id: number;
+  model_slug: string;
+  model_name: string;
+  file_id: number;
+  file_name: string;
+}
+
+export interface DuplicateGroup {
+  blob_hash: string;
+  size: number;
+  wasted_bytes: number;
+  files: DuplicateFile[];
+}
+
+export interface DuplicatesReport {
+  groups: DuplicateGroup[];
+  total_wasted_bytes: number;
+}

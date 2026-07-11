@@ -1,5 +1,5 @@
 import { Link, Outlet, useNavigate } from "@tanstack/react-router";
-import { Bookmark, ListChecks, ListOrdered, LogOut, Plus, Printer, Settings, SquareLibrary } from "lucide-react";
+import { Bookmark, CopyCheck, ListChecks, ListOrdered, LogOut, Plus, Printer, Settings, SquareLibrary } from "lucide-react";
 
 import { useAuth, useLogout } from "@/api/auth";
 import { useFeatures } from "@/api/features";
@@ -20,8 +20,10 @@ const NAV_ITEMS = [
   { to: "/collections", label: "Collections", icon: Bookmark },
   { to: "/printer", label: "Printer", icon: Printer },
   { to: "/jobs", label: "Jobs", icon: ListChecks },
-  // A utility page -- grouped after Jobs, before Settings.
+  // Queue and Duplicates are both utility pages -- grouped after Jobs,
+  // before Settings.
   { to: "/queue", label: "Queue", icon: ListOrdered },
+  { to: "/duplicates", label: "Duplicates", icon: CopyCheck },
   { to: "/settings", label: "Settings", icon: Settings },
 ] as const;
 

@@ -52,11 +52,14 @@ function renderCard(model: ModelSummary) {
     routeTree: rootRoute.addChildren([cardRoute, detailRoute]),
     history: createMemoryHistory({ initialEntries: ["/"] }),
   });
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
-    </QueryClientProvider>,
-  );
+  return {
+    router,
+    ...render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    ),
+  };
 }
 
 beforeEach(() => {
@@ -145,18 +148,23 @@ describe("ModelCard", () => {
     expect(screen.queryByTestId("review-badge")).not.toBeInTheDocument();
   });
 
-  it("clicking the dismiss control opens a confirm dialog instead of patching immediately", async () => {
-    renderCard({ ...MODEL, review_state: "adopted" });
+  it("clicking the dismiss control opens a confirm dialog instead of patching immediately, without navigating", async () => {
+    const { router } = renderCard({ ...MODEL, review_state: "adopted" });
 
     fireEvent.click(await screen.findByRole("button", { name: "Dismiss needs review" }));
 
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
     expect(screen.getByText('Clear "needs review"?')).toBeInTheDocument();
     expect(patchMock).not.toHaveBeenCalled();
+    // The trigger sits inside the card's whole-surface <Link>; the click
+    // must not have leaked into it (detailRoute renders null, so the card
+    // would also unmount if it had).
+    expect(router.state.location.pathname).toBe("/");
+    expect(screen.getByText("Articulated Dragon")).toBeInTheDocument();
   });
 
   it("confirming the dialog PATCHes review_state to null without navigating", async () => {
-    renderCard({ ...MODEL, review_state: "adopted" });
+    const { router } = renderCard({ ...MODEL, review_state: "adopted" });
 
     fireEvent.click(await screen.findByRole("button", { name: "Dismiss needs review" }));
     const dialog = await screen.findByRole("dialog");
@@ -164,5 +172,10 @@ describe("ModelCard", () => {
 
     await waitFor(() => expect(patchMock).toHaveBeenCalledTimes(1));
     expect(patchMock).toHaveBeenCalledWith("/models/articulated-dragon", { review_state: null });
+    // The confirm button is portaled but bubbles through the React tree
+    // into the card's <Link>; the stopCardNavigation wrapper must have
+    // swallowed the click before it navigated.
+    expect(router.state.location.pathname).toBe("/");
+    expect(screen.getByText("Articulated Dragon")).toBeInTheDocument();
   });
 });

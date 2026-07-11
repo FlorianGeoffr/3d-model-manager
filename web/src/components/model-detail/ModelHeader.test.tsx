@@ -128,6 +128,15 @@ describe("ModelHeader -- edit mode", () => {
     expect(screen.getByRole("button", { name: "Archive" })).toBeInTheDocument();
   });
 
+  it("keeps the name as a level-1 heading in edit mode", async () => {
+    renderHeader(true);
+
+    // The heading's accessible name also picks up the embedded pencil
+    // button's label, so match on the model name rather than exactly.
+    const heading = await screen.findByRole("heading", { level: 1, name: /Articulated Dragon/ });
+    expect(heading).toBeInTheDocument();
+  });
+
   it("archiving still requires confirmation and calls the archive endpoint", async () => {
     renderHeader(true);
 

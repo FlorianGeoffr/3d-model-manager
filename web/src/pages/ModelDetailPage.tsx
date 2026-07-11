@@ -20,6 +20,18 @@ export function ModelDetailPage() {
   // (name/description/tags/archive) behind an explicit toggle so a stray
   // click can't silently mutate a model.
   const [editMode, setEditMode] = useState(false);
+  // The route component stays mounted when only `$slug` changes (e.g. the
+  // upcoming related-models strip links detail -> detail), so drop the gate
+  // when navigating to a different model: landing on it already in edit
+  // mode -- possibly with a stale open InlineEdit draft, which deliberately
+  // never resets while editing -- would defeat the whole gate. Render-time
+  // state adjustment (per React's "adjusting state when a prop changes")
+  // instead of an effect, so the new model never paints editable.
+  const [gateSlug, setGateSlug] = useState(slug);
+  if (slug !== gateSlug) {
+    setGateSlug(slug);
+    setEditMode(false);
+  }
 
   if (modelQuery.isLoading) {
     return (

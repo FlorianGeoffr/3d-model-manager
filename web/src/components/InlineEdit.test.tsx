@@ -129,4 +129,40 @@ describe("InlineEdit", () => {
 
     expect(screen.getByText("Add a description…")).toBeInTheDocument();
   });
+
+  it("Enter during an IME composition does NOT commit", () => {
+    const onSave = vi.fn();
+    render(<InlineEdit value="Articulated Dragon" aria-label="name" onSave={onSave} />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit name" }));
+
+    const input = screen.getByRole("textbox", { name: "name" });
+    fireEvent.change(input, { target: { value: "ドラゴン" } });
+    // Enter that confirms an IME composition arrives with isComposing set.
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+
+    expect(onSave).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox", { name: "name" })).toBeInTheDocument();
+  });
+
+  it("returns focus to the pencil trigger after Save", () => {
+    render(<InlineEdit value="Articulated Dragon" aria-label="name" onSave={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit name" }));
+
+    fireEvent.change(screen.getByRole("textbox", { name: "name" }), { target: { value: "New Name" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(screen.getByRole("button", { name: "Edit name" })).toHaveFocus();
+  });
+
+  it("returns focus to the pencil trigger after Cancel and after Escape", () => {
+    render(<InlineEdit value="Articulated Dragon" aria-label="name" onSave={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit name" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: "Edit name" })).toHaveFocus();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit name" }));
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "name" }), { key: "Escape" });
+    expect(screen.getByRole("button", { name: "Edit name" })).toHaveFocus();
+  });
 });

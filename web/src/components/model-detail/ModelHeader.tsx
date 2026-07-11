@@ -45,15 +45,20 @@ export function ModelHeader({
         <div className="min-w-0 flex-1 space-y-1">
           {editMode ? (
             <>
-              <InlineEdit
-                value={model.name}
-                aria-label="name"
-                onSave={(name) => {
-                  if (name) patchModel.mutate({ name });
-                }}
-                displayClassName="text-2xl font-semibold"
-                className="text-2xl font-semibold"
-              />
+              {/* Keep the page's h1 in the heading outline even while the
+                  name is editable -- InlineEdit renders spans, so nesting
+                  it here is valid and screen readers still see a level-1
+                  heading in both modes. */}
+              <h1 className="text-2xl font-semibold">
+                <InlineEdit
+                  value={model.name}
+                  aria-label="name"
+                  onSave={(name) => {
+                    if (name) patchModel.mutate({ name });
+                  }}
+                  className="text-2xl font-semibold"
+                />
+              </h1>
               <InlineEdit
                 value={model.description ?? ""}
                 placeholder="Add a description…"

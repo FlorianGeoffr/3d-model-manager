@@ -301,9 +301,9 @@ function Exposure({ exposure }: { exposure: number }) {
 }
 
 /** Re-measures and refits the camera as parts finish loading, or on demand
- * via `fitSignal` -- `Bounds`'s own layout effect only re-runs on window
- * resize (`observe`) or first mount, and `Resize`/`Center` don't watch their
- * children either, so nothing else would re-frame the camera as a
+ * via `fitSignal` -- `Bounds` is mounted without `fit`/`clip`/`observe`
+ * (see below), so it never fits on its own, and `Resize`/`Center` don't
+ * watch their children either; nothing else would re-frame the camera as a
  * second/third part's GLB arrives. `fitSignal` is `ViewerStage`'s "Fit view"
  * button/`F` key and the ortho toggle's post-swap recovery (see
  * `ViewerStage.tsx`) -- both bump a counter rather than passing a boolean, so
@@ -327,6 +327,33 @@ function Exposure({ exposure }: { exposure: number }) {
  * (`getVisibleBox` returns null), still guarded by `loadedCount > 0`:
  * fitting before anything has loaded would frame the `UNIT_BOX` fallback.
  *
+ * This component is the ONLY fit driver -- `<Bounds>` below is mounted with
+ * NO `fit`/`clip`/`observe` props, on purpose. drei's `Bounds` has an
+ * internal layout effect (`Bounds.js` ~line 206: `if (observe ||
+ * count.current++ === 0) { api.refresh(); if (fit) api.reset().fit(); if
+ * (clip) api.clip(); }`, deps `[size, clip, fit, observe, camera,
+ * controls]`) that re-runs whenever `state.controls` attaches -- and drei
+ * `OrbitControls` registers itself via `makeDefault` in ITS OWN effect,
+ * whose timing relative to part loads is a race. When the GLBs come from
+ * the browser HTTP cache (every real revisit), parts resolve and this
+ * component fits the tight visible box BEFORE the controls register; the
+ * controls registration then re-triggered `Bounds`'s internal effect,
+ * whose bare `api.refresh()` measured the FULL scene and `reset().fit()`
+ * stomped the visible-parts framing with whole-assembly framing. On a cold
+ * cache the order flips, which is why it looked correct on the vite dev
+ * server and wrong against the container. With those three props removed,
+ * that internal effect only ever does a harmless one-time `refresh()` (no
+ * fit, no clip) -- do NOT re-add `observe` (or `fit`/`clip`) to `<Bounds>`;
+ * it re-opens the race, and only on warm caches, so tests won't catch it.
+ *
+ * Replacing what `observe`/the controls re-run used to cover, two more
+ * refit triggers live here instead, both via `useThree` so they land in
+ * this effect's deps: `controls` (re-fit once the controls attach -- the
+ * post-attach fit re-frames the visible box with the controls properly
+ * targeted, closing the warm-cache race above from the other side) and
+ * `size` (canvas resizes -- window resize, panel collapse/expand -- re-fit
+ * the VISIBLE box, where `observe` would have framed the full assembly).
+ *
  * Does NOT fire on a plain visibility toggle -- toggling a checked part
  * neither adds nor removes it from `loadedParts` nor bumps `fitSignal`, and
  * `getVisibleBox` is identity-stable (fully ref-based, see its definition),
@@ -342,7 +369,15 @@ function BoundsRefitter({
   getVisibleBox: () => THREE.Box3 | null;
 }) {
   const api = useBounds();
+  const controls = useThree((state) => state.controls);
+  const size = useThree((state) => state.size);
   useLayoutEffect(() => {
+    // `controls` and `size` are refit TRIGGERS, not inputs -- the fit reads
+    // neither (Bounds' api resolves both from the store itself); they're
+    // referenced here only so each attach/resize re-runs this effect (see
+    // the doc comment above for why that's load-bearing).
+    void controls;
+    void size;
     const box = getVisibleBox();
     if (box) {
       api.refresh(box).clip().fit();
@@ -353,8 +388,8 @@ function BoundsRefitter({
     // `api` is a `useMemo` inside `Bounds` keyed on the camera/controls/
     // margin, `getVisibleBox` is a `useCallback([])`, so in practice both
     // are stable across re-renders and this still only actually refits when
-    // `loadedCount`/`fitSignal` changes.
-  }, [loadedCount, fitSignal, api, getVisibleBox]);
+    // `loadedCount`/`fitSignal`/`controls`/`size` changes.
+  }, [loadedCount, fitSignal, controls, size, api, getVisibleBox]);
   return null;
 }
 
@@ -693,12 +728,22 @@ export default function ModelViewer({
       {/* `Bounds > Resize > Center` all run their layout effects child-first,
           so this evaluates in the needed order: ground the combined bbox to
           y=0 (`Center top`), normalize its largest dimension to 1
-          (`Resize`), then frame the camera to it (`Bounds`, refit driven by
-          `BoundsRefitter` below). Each part gets its own `<Suspense>` +
+          (`Resize`), then frame the camera to it (`Bounds`, fits driven
+          EXCLUSIVELY by `BoundsRefitter` below). Deliberately NO
+          `fit`/`clip`/`observe` props here: any of them arms `Bounds`'s
+          internal layout effect, which re-runs when `state.controls`
+          attaches and would `refresh()` (measuring the FULL scene, hidden
+          parts included) + `reset().fit()`, stomping `BoundsRefitter`'s
+          visible-parts framing whenever cached GLBs resolve before the
+          OrbitControls registration -- a warm-cache-only race, so it looks
+          fine in dev and regresses silently in production. See
+          `BoundsRefitter`'s doc comment before touching these props; it
+          also carries the `controls`/`size` refit triggers that replace
+          what `observe` covered. Each part gets its own `<Suspense>` +
           `PartErrorBoundary` (inside the per-part wrapper) instead of one
           shared boundary around the whole map -- see the file header for
           why. */}
-      <Bounds fit clip observe margin={1.2}>
+      <Bounds margin={1.2}>
         <Resize box3={allBox ?? UNIT_BOX}>
           <Center top cacheKey={loadedCount} disable={loadedCount === 0}>
             {parts.map((part) => (
@@ -723,11 +768,12 @@ export default function ModelViewer({
         <BoundsRefitter loadedCount={loadedCount} fitSignal={fitSignal} getVisibleBox={getVisibleBox} />
       </Bounds>
 
-      {/* OUTSIDE `<Bounds>` deliberately -- `Bounds`'s `observe`/`fit` walks
-          its own children's bounding box to frame the camera, and the plate
-          is sized independently of the model (`plateSize`, not `allBox`);
-          including it in that subtree would inflate/skew the camera fit to
-          the plate instead of the model. `scaleFactor={s}` is the same
+      {/* OUTSIDE `<Bounds>` deliberately -- `BoundsRefitter`'s no-visible
+          fallback (`api.refresh()`) walks `Bounds`'s own children's bounding
+          box to frame the camera, and the plate is sized independently of
+          the model (`plateSize`, not `allBox`); including it in that subtree
+          would inflate/skew the camera fit to the plate instead of the
+          model. `scaleFactor={s}` is the same
           factor `<Resize>` above computes from `allBox`, so the grid and the
           model agree on scale by construction (see `s`'s comment). Gated on
           `allBox` (not just `tools.grid`) since `s` is only meaningful once

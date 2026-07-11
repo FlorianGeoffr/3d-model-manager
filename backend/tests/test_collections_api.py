@@ -347,3 +347,87 @@ async def test_unfollowing_a_collection_nulls_source_collection_id_but_keeps_tit
     model = await db_session.get(Model, model_id)
     assert model.source_collection_id is None
     assert model.source_collection_title == "Likes"
+
+
+# ---------------------------------------------------------------------------
+# M10 escape hatch B: `POST /collections/from-url` -- follow a MakerWorld
+# collection by pasting its URL, for when the SSR route that would otherwise
+# let a user pick one off a list is Cloudflare-walled.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_follow_from_url_uses_cache_title_when_cached(
+    authenticated_client, library_root, data_dir, db_session
+):
+    from app.models.enums import ImportSite
+    from app.services import remote_collections
+
+    await remote_collections.replace_site_cache(
+        db_session,
+        ImportSite.MAKERWORLD,
+        [remote_collections.CacheEntry(list_id="18925823", title="ESP32", count=9)],
+    )
+
+    r = await authenticated_client.post(
+        "/api/collections/from-url",
+        json={"url": "https://makerworld.com/en/collections/18925823-esp32"},
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["site"] == "makerworld"
+    assert body["list_id"] == "18925823"
+    assert body["title"] == "ESP32"
+    assert body["mode"] == "review"  # the schema's default, unchanged
+
+
+@pytest.mark.asyncio
+async def test_follow_from_url_falls_back_to_a_generic_title_when_not_cached(
+    authenticated_client, library_root, data_dir
+):
+    r = await authenticated_client.post(
+        "/api/collections/from-url",
+        json={"url": "https://makerworld.com/collections/555", "mode": "auto"},
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["list_id"] == "555"
+    assert body["title"] == "MakerWorld collection 555"
+    assert body["mode"] == "auto"
+
+
+@pytest.mark.asyncio
+async def test_follow_from_url_refollow_is_a_409_like_the_regular_follow_endpoint(
+    authenticated_client, library_root, data_dir
+):
+    """Same idempotent/conflict semantics as `POST /collections` -- following
+    the same (site, list_id) twice is a 409, not a silent duplicate."""
+    first = await authenticated_client.post(
+        "/api/collections/from-url", json={"url": "https://makerworld.com/collections/555"}
+    )
+    assert first.status_code == 201
+
+    second = await authenticated_client.post(
+        "/api/collections/from-url", json={"url": "https://makerworld.com/collections/555"}
+    )
+    assert second.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_follow_from_url_rejects_a_non_makerworld_url(
+    authenticated_client, library_root, data_dir
+):
+    r = await authenticated_client.post(
+        "/api/collections/from-url", json={"url": "https://www.thingiverse.com/collections/1"}
+    )
+    assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_follow_from_url_rejects_an_id_less_makerworld_url(
+    authenticated_client, library_root, data_dir
+):
+    r = await authenticated_client.post(
+        "/api/collections/from-url", json={"url": "https://makerworld.com/en/collections/"}
+    )
+    assert r.status_code == 422

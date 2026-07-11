@@ -1,5 +1,5 @@
 """``/ext/*`` browser-extension endpoints (M10 Workstream A): bearer-token
-auth (``require_api_token``), the three endpoints themselves, and -- most
+auth (``require_api_token``), the endpoints themselves, and -- most
 importantly -- that the two auth planes (session cookie vs. bearer token)
 don't leak into each other (SPEC: a leaked extension token must not unlock
 the session-gated API, and a stolen session cookie can't be replayed here).
@@ -116,4 +116,96 @@ async def test_set_makerworld_credential_preserves_thingiverse_token(
 
 async def test_set_makerworld_credential_requires_bearer(client: httpx.AsyncClient):
     r = await client.post("/api/ext/credentials/makerworld", json={"token": "x"})
+    assert r.status_code == 401
+
+
+async def test_push_collections_creates_rows(client: httpx.AsyncClient, ext_token: str):
+    r = await client.post(
+        "/api/ext/collections",
+        json={
+            "site": "makerworld",
+            "collections": [
+                {"list_id": "1", "title": "Default Collection", "is_default": True, "count": 7},
+                {"list_id": "2", "title": "ESP32", "slug": "esp32", "count": 9},
+            ],
+        },
+        headers=_bearer(ext_token),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "count": 2}
+
+    from app.models.enums import ImportSite
+    from app.services import remote_collections
+    from app.tasks import base as tasks_base
+
+    with tasks_base.sync_session() as s:
+        cache = remote_collections.get_site_cache(s, ImportSite.MAKERWORLD)
+        cached = {row.list_id: row for row in cache}
+    assert set(cached) == {"1", "2"}
+    assert cached["1"].title == "Default Collection" and cached["1"].is_default is True
+    assert cached["2"].slug == "esp32" and cached["2"].count == 9
+
+
+async def test_push_collections_second_push_replaces_the_first(
+    client: httpx.AsyncClient, ext_token: str
+):
+    from app.models.enums import ImportSite
+    from app.services import remote_collections
+    from app.tasks import base as tasks_base
+
+    async def _push(collections):
+        r = await client.post(
+            "/api/ext/collections",
+            json={"site": "makerworld", "collections": collections},
+            headers=_bearer(ext_token),
+        )
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    first = await _push(
+        [
+            {"list_id": "1", "title": "Default Collection"},
+            {"list_id": "2", "title": "ESP32"},
+        ]
+    )
+    assert first == {"ok": True, "count": 2}
+
+    # Second push: "1" is renamed, "2" is dropped (unfollowed remotely), "3"
+    # is new -- the push is authoritative for the whole site, not a merge.
+    second = await _push(
+        [
+            {"list_id": "1", "title": "Default Collection (renamed)"},
+            {"list_id": "3", "title": "New Collection"},
+        ]
+    )
+    assert second == {"ok": True, "count": 2}
+
+    with tasks_base.sync_session() as s:
+        cache = remote_collections.get_site_cache(s, ImportSite.MAKERWORLD)
+        cached = {row.list_id: row for row in cache}
+    assert set(cached) == {"1", "3"}
+    assert cached["1"].title == "Default Collection (renamed)"
+
+
+async def test_push_collections_over_200_entries_is_422(client: httpx.AsyncClient, ext_token: str):
+    collections = [{"list_id": str(i), "title": f"Collection {i}"} for i in range(201)]
+    r = await client.post(
+        "/api/ext/collections",
+        json={"site": "makerworld", "collections": collections},
+        headers=_bearer(ext_token),
+    )
+    assert r.status_code == 422
+
+
+async def test_push_collections_bad_site_is_422(client: httpx.AsyncClient, ext_token: str):
+    r = await client.post(
+        "/api/ext/collections",
+        json={"site": "not-a-real-site", "collections": []},
+        headers=_bearer(ext_token),
+    )
+    assert r.status_code == 422
+
+
+async def test_push_collections_requires_bearer(client: httpx.AsyncClient):
+    r = await client.post("/api/ext/collections", json={"site": "makerworld", "collections": []})
     assert r.status_code == 401

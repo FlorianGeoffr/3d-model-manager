@@ -12,20 +12,24 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
+from app.importers.makerworld import parse_collection_url
+from app.models.enums import ImportSite
 from app.schemas.collections import (
     CollectionModeIn,
     FollowCollectionIn,
     FollowedCollectionOut,
+    FollowFromUrlIn,
     PendingImportOut,
 )
 from app.schemas.imports import ImportOut
 from app.schemas.jobs import JobOut
 from app.services import collections as collections_svc
 from app.services import jobs as jobs_service
+from app.services import remote_collections as remote_collections_svc
 from app.services.imports import start_import
 from app.tasks.sync_collections import sync_all
 
@@ -97,6 +101,42 @@ async def follow_collection(
         list_id=payload.list_id,
         kind=payload.kind,
         title=payload.title,
+        mode=payload.mode,
+    )
+    return FollowedCollectionOut.from_model(row)
+
+
+@router.post("/from-url", status_code=status.HTTP_201_CREATED, response_model=FollowedCollectionOut)
+async def follow_collection_from_url(
+    payload: FollowFromUrlIn, db: AsyncSession = Depends(get_db)
+) -> FollowedCollectionOut:
+    """Add-by-URL escape hatch (M10 Workstream A): follow a MakerWorld
+    collection by pasting its URL, for when the SSR route that would
+    otherwise let a user pick one off a list is Cloudflare-walled (see
+    ``app.importers.makerworld``'s module docstring). Only MakerWorld is
+    supported -- Thingiverse/Printables collections are already reachable
+    through ``list_user_lists``. The title comes from the collection cache
+    (extension push, or a past successful SSR read) when we have it, else a
+    generic placeholder the user can rename by unfollowing/re-following once
+    they know the real name.
+
+    Declared before ``/{collection_id}`` so ``from-url`` isn't parsed as an
+    id (see this module's docstring)."""
+    list_id = parse_collection_url(payload.url)
+    if list_id is None:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"{payload.url!r} doesn't look like a MakerWorld collection URL "
+            "(expected e.g. https://makerworld.com/en/collections/<id>-<slug>)",
+        )
+    cached = await remote_collections_svc.get_cache_entry(db, ImportSite.MAKERWORLD, list_id)
+    title = cached.title if cached is not None else f"MakerWorld collection {list_id}"
+    row = await collections_svc.follow(
+        db,
+        site=ImportSite.MAKERWORLD,
+        list_id=list_id,
+        kind="collection",
+        title=title,
         mode=payload.mode,
     )
     return FollowedCollectionOut.from_model(row)

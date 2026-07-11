@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import re
 from typing import ClassVar
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 
@@ -58,6 +58,12 @@ _ALLOWED_HOSTS = {"makerworld.com", "www.makerworld.com"}
 # /de/, /fr/, /zh/, /ja/, ... or none at all) -- the id is always the numeric
 # segment right after "models/".
 _ID_RE = re.compile(r"models/(\d+)", re.IGNORECASE)
+# Add-by-URL (M10 escape hatch B, `POST /collections/from-url`): MakerWorld
+# spells the path both ways (`/collection/<id>` singular on some surfaces,
+# `/collections/<id>[-slug]` plural elsewhere) -- tolerate both, plus the
+# optional locale prefix `_ID_RE` above already tolerates by only searching
+# rather than anchoring.
+_COLLECTION_ID_RE = re.compile(r"collections?/(\d+)", re.IGNORECASE)
 _UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/125.0 Safari/537.36"
@@ -67,6 +73,35 @@ _SEARCH_PAGE_SIZE = 20
 _BAMBU_AUTH_REQUIRED = (
     "MakerWorld downloads require signing in with a Bambu account (configure in Settings)."
 )
+
+
+def parse_collection_url(url: str) -> str | None:
+    """Extract a collection id from a MakerWorld collection URL for the
+    add-by-URL escape hatch (M10 Workstream A, `POST /collections/from-url`)
+    -- the SSR route that would otherwise let a user pick a collection off a
+    list is intermittently Cloudflare-walled (see this module's docstring),
+    so pasting a URL is the fallback. Tolerant of: the singular/plural path
+    spelling (`/collection/<id>` vs `/collections/<id>`), an optional
+    trailing `-<slug>` (MakerWorld's own share links append one, e.g.
+    `/collections/18925823-esp32`), any/no locale prefix (`/en/`, `/de/`,
+    ...), and a bare `?collectionId=<id>` query param instead of a path
+    segment. Returns None for a non-MakerWorld host or an id-less MakerWorld
+    URL -- the caller (``POST /collections/from-url``) turns that into a
+    422."""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
+    host = (parsed.hostname or "").lower()
+    if host not in _ALLOWED_HOSTS:
+        return None
+    match = _COLLECTION_ID_RE.search(parsed.path)
+    if match:
+        return match.group(1)
+    query_id = parse_qs(parsed.query).get("collectionId", [None])[0]
+    if query_id and query_id.isdigit():
+        return query_id
+    return None
 
 
 def _client() -> httpx.Client:
@@ -397,6 +432,17 @@ class MakerWorldImporter:
     # an error" convention `search` uses.
 
     def list_user_lists(self) -> list[RemoteList]:
+        # Deferred (mirrors `_bambu_session`/`_makerworld_web_token` above):
+        # `app.services.remote_collections`/`app.tasks.base` pull in the
+        # worker-side sync DB stack, which importer modules otherwise have no
+        # reason to import at module load time.
+        from app.services.remote_collections import (
+            CacheEntry,
+            get_site_cache,
+            replace_site_cache_sync,
+        )
+        from app.tasks.base import sync_session
+
         token = _makerworld_web_token()
         if not token:
             return []
@@ -430,6 +476,7 @@ class MakerWorldImporter:
                 response.raise_for_status()
                 page_props = (response.json() or {}).get("pageProps") or {}
                 favorites = page_props.get("favoritesList") or []
+            cache_entries: list[CacheEntry] = []
             for coll in favorites:
                 if coll.get("status") != 1:
                     continue
@@ -445,12 +492,46 @@ class MakerWorldImporter:
                         count=coll.get("designCnt"),
                     )
                 )
+                cache_entries.append(
+                    CacheEntry(
+                        list_id=str(cid),
+                        title=coll.get("title") or f"collection {cid}",
+                        slug=coll.get("slug"),
+                        count=coll.get("designCnt"),
+                        is_default=bool(coll.get("isDefault")),
+                    )
+                )
+            # SSR succeeded -- self-heal the cache (M10 escape hatch A) so it
+            # stays warm even when the extension hasn't pushed lately.
+            with sync_session() as s:
+                replace_site_cache_sync(s, self.site, cache_entries)
         except (RuntimeError, httpx.HTTPError, KeyError):
             # RuntimeError: Cloudflare challenge (`_makerworld_build_id`).
             # httpx.HTTPError: non-2xx (`raise_for_status`) / transport error.
             # KeyError: unexpected pageProps shape. Any of these -> skip the
-            # named collections, keep the aggregate.
+            # named collections (and the cache write above) -- the merge
+            # below fills the gap from whatever is already cached.
             pass
+        # ALWAYS merge cached rows in (M10 escape hatch A): the extension's
+        # push -- or a past successful SSR read -- fills in what THIS call's
+        # SSR attempt couldn't reach. An SSR-fresh entry above wins over the
+        # cache for the same id; a cached row equal to the uid would just
+        # duplicate the aggregate already at the front of `lists`.
+        seen = {entry.list_id for entry in lists}
+        with sync_session() as s:
+            cached = get_site_cache(s, self.site)
+        for row in cached:
+            if row.list_id == str(uid) or row.list_id in seen:
+                continue
+            lists.append(
+                RemoteList(
+                    site=self.site,
+                    list_id=row.list_id,
+                    kind="collection",
+                    title=row.title,
+                    count=row.count,
+                )
+            )
         return lists
 
     @staticmethod

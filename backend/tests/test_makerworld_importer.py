@@ -8,6 +8,7 @@ from app.importers.base import ImportFile
 from app.importers.makerworld import MakerWorldImporter
 from app.models.enums import ImportSite
 from app.services import import_tokens as import_tokens_service
+from app.services import remote_collections as remote_collections_service
 from app.services.bambu_auth import BambuAuthError
 from app.tasks import base as tasks_base
 from app.tasks.importing import ImportRejected
@@ -61,6 +62,25 @@ def _clear_build_id_cache():
     makerworld._BUILD_ID.clear()
 
 
+@pytest.fixture
+def _cache_db(migrated_db):
+    """`list_user_lists` now reads/writes `remote_collection_cache` (M10
+    escape hatch A) even though this whole module is otherwise DB-free (see
+    the no-op `_truncate_all_tables` override above). Tests that exercise
+    that need the real migrated DB -- truncate just this one table around
+    them rather than lifting the module-wide DB-free override."""
+    from sqlalchemy import text
+
+    def _truncate() -> None:
+        with tasks_base.sync_session() as s:
+            s.execute(text("TRUNCATE TABLE remote_collection_cache RESTART IDENTITY CASCADE"))
+            s.commit()
+
+    _truncate()
+    yield
+    _truncate()
+
+
 def _raise_not_connected():
     raise BambuAuthError("no Bambu account is connected -- connect one in Settings.")
 
@@ -78,6 +98,27 @@ def _raise_not_connected():
 )
 def test_canonicalize(url, expected):
     assert MakerWorldImporter().canonicalize(url) == expected
+
+
+@pytest.mark.parametrize(
+    "url,expected",
+    [
+        ("https://makerworld.com/en/collections/18925823-esp32", "18925823"),
+        ("https://makerworld.com/collections/18925823-esp32", "18925823"),
+        ("https://makerworld.com/collections/18925823", "18925823"),
+        ("https://www.makerworld.com/collections/18925823", "18925823"),
+        ("https://www.makerworld.com/en/collections/18925823", "18925823"),
+        ("https://makerworld.com/collection/18925823", "18925823"),
+        ("https://www.makerworld.com/en/collection/18925823", "18925823"),
+        ("https://makerworld.com/en/@Terminalfoo?collectionId=18925823", "18925823"),
+        ("https://www.makerworld.com/@Terminalfoo?collectionId=18925823", "18925823"),
+        ("https://www.thingiverse.com/collections/18925823", None),
+        ("https://makerworld.com/en/models/3018898", None),
+        ("https://makerworld.com/en/collections/", None),
+    ],
+)
+def test_parse_collection_url(url, expected):
+    assert makerworld.parse_collection_url(url) == expected
 
 
 def test_fetch_metadata_maps_verified_fields(monkeypatch):
@@ -295,7 +336,7 @@ def test_makerworld_web_token_none_when_nothing_stored(monkeypatch):
     assert makerworld._makerworld_web_token() is None
 
 
-def test_list_user_lists_returns_aggregate_and_named_collections(monkeypatch):
+def test_list_user_lists_returns_aggregate_and_named_collections(monkeypatch, _cache_db):
     monkeypatch.setattr(makerworld, "_makerworld_web_token", lambda: "test-token")
     monkeypatch.setattr(
         makerworld, "_favorites_client", lambda token: _mock_favorites_client(token)
@@ -318,8 +359,22 @@ def test_list_user_lists_returns_aggregate_and_named_collections(monkeypatch):
     assert named["18925823"].title == "ESP32"
     assert named["18925823"].count == 9
 
+    # SSR succeeded -- self-heals the cache (M10 escape hatch A) so it's warm
+    # the next time the wall is up. "Trays" (status 2) stays excluded, same
+    # as from the returned list above.
+    with tasks_base.sync_session() as s:
+        cached = {
+            row.list_id: row
+            for row in remote_collections_service.get_site_cache(s, ImportSite.MAKERWORLD)
+        }
+    assert set(cached) == {"2155987", "18925823"}
+    assert cached["2155987"].title == "Default Collection" and cached["2155987"].is_default is True
+    assert cached["18925823"].title == "ESP32" and cached["18925823"].is_default is False
 
-def test_list_user_lists_still_returns_aggregate_when_collections_route_fails(monkeypatch):
+
+def test_list_user_lists_still_returns_aggregate_when_collections_route_fails(
+    monkeypatch, _cache_db
+):
     # The SSR collections.json route Cloudflare-challenges from a server IP
     # (intermittent, live-verified) -- must not take down the aggregate.
     monkeypatch.setattr(makerworld, "_makerworld_web_token", lambda: "test-token")
@@ -331,6 +386,55 @@ def test_list_user_lists_still_returns_aggregate_when_collections_route_fails(mo
     assert len(lists) == 1
     assert lists[0].list_id == str(fx.PROFILE_TERMINALFOO["uid"])
     assert lists[0].title == "All collected models"
+
+
+def test_list_user_lists_merges_warm_cache_when_collections_route_fails(monkeypatch, _cache_db):
+    """A warm cache (a past extension push, or a past successful SSR read)
+    fills in the named collections a WALLED SSR attempt can't reach this
+    time -- and a cached row equal to the profile uid must not duplicate the
+    aggregate that's always emitted separately."""
+    with tasks_base.sync_session() as s:
+        remote_collections_service.replace_site_cache_sync(
+            s,
+            ImportSite.MAKERWORLD,
+            [
+                remote_collections_service.CacheEntry(
+                    list_id="2155987", title="Default Collection", count=7, is_default=True
+                ),
+                remote_collections_service.CacheEntry(
+                    list_id=str(fx.PROFILE_TERMINALFOO["uid"]), title="All collected models"
+                ),
+            ],
+        )
+    monkeypatch.setattr(makerworld, "_makerworld_web_token", lambda: "test-token")
+    monkeypatch.setattr(
+        makerworld, "_favorites_client", lambda token: _mock_favorites_client(token)
+    )
+    monkeypatch.setattr(makerworld, "_web_client", _challenged_web_client)
+
+    lists = MakerWorldImporter().list_user_lists()
+    assert [entry.list_id for entry in lists] == [str(fx.PROFILE_TERMINALFOO["uid"]), "2155987"]
+    assert lists[1].title == "Default Collection" and lists[1].count == 7
+
+
+def test_list_user_lists_ssr_entry_beats_stale_cache_title_for_same_id(monkeypatch, _cache_db):
+    """A fresh SSR read wins over a stale cached title for the same id."""
+    with tasks_base.sync_session() as s:
+        stale = remote_collections_service.CacheEntry(
+            list_id="2155987", title="Stale Title", count=1
+        )
+        remote_collections_service.replace_site_cache_sync(s, ImportSite.MAKERWORLD, [stale])
+    monkeypatch.setattr(makerworld, "_makerworld_web_token", lambda: "test-token")
+    monkeypatch.setattr(
+        makerworld, "_favorites_client", lambda token: _mock_favorites_client(token)
+    )
+    monkeypatch.setattr(
+        makerworld, "_web_client", lambda: _mock_collections_client(fx.FAVORITES_LIST)
+    )
+
+    lists = MakerWorldImporter().list_user_lists()
+    named = {entry.list_id: entry for entry in lists[1:]}
+    assert named["2155987"].title == "Default Collection"  # fresh SSR wins, not "Stale Title"
 
 
 def test_list_list_items_maps_hits_to_search_results(monkeypatch):

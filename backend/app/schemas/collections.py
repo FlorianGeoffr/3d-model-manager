@@ -53,6 +53,16 @@ class CollectionModeIn(BaseModel):
     mode: CollectionSyncMode
 
 
+class FollowFromUrlIn(BaseModel):
+    """``POST /collections/from-url`` (M10 escape hatch B): follow a
+    MakerWorld collection by pasting its URL instead of picking it off a
+    list -- the SSR route that would otherwise enumerate it is intermittently
+    Cloudflare-walled (``app.importers.makerworld``'s module docstring)."""
+
+    url: NonEmptyStr
+    mode: CollectionSyncMode = CollectionSyncMode.REVIEW
+
+
 class PendingImportOut(BaseModel):
     id: int
     collection_id: int

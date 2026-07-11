@@ -4,26 +4,35 @@ on ``api_router`` (``app/api/__init__.py``), outside ``protected_router``,
 so it carries only its own ``require_api_token`` dependency and none of the
 session-cookie surface.
 
-Deliberately narrow: exactly three endpoints, matching what the extension
+Deliberately narrow: exactly four endpoints, matching what the extension
 needs to do (prove it has a live token, start an import, hand over a
-MakerWorld cookie) and nothing else -- a leaked extension token must not be
-able to delete models, read other secrets, or touch storage config.
+MakerWorld cookie, push the real MakerWorld collection list it can see in the
+user's authenticated browser) and nothing else -- a leaked extension token
+must not be able to delete models, read other secrets, or touch storage
+config.
 """
 
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_api_token
 from app.config import Settings, get_settings
 from app.db import get_db
+from app.models.enums import ImportSite
 from app.schemas.imports import ImportCreate, ImportOut, NonEmptyStr
-from app.services import import_tokens
+from app.services import import_tokens, remote_collections
 from app.services.imports import start_import
 
 router = APIRouter(prefix="/ext", tags=["ext"], dependencies=[Depends(require_api_token)])
+
+# Abuse guard: a runaway/misbehaving extension push shouldn't be able to
+# write an unbounded number of rows in one request.
+_MAX_PUSHED_COLLECTIONS = 200
 
 
 class ExtCredentialIn(BaseModel):
@@ -32,6 +41,24 @@ class ExtCredentialIn(BaseModel):
 
 class OkOut(BaseModel):
     ok: bool = True
+
+
+class ExtCollectionEntryIn(BaseModel):
+    list_id: NonEmptyStr
+    title: NonEmptyStr
+    slug: str | None = None
+    count: int | None = None
+    is_default: bool = False
+
+
+class ExtCollectionsPushIn(BaseModel):
+    site: ImportSite
+    collections: Annotated[list[ExtCollectionEntryIn], Field(max_length=_MAX_PUSHED_COLLECTIONS)]
+
+
+class ExtCollectionsPushOut(BaseModel):
+    ok: bool = True
+    count: int
 
 
 @router.get("/ping", response_model=OkOut)
@@ -72,3 +99,30 @@ async def set_makerworld_credential(
         db, settings, thingiverse_token=current.thingiverse_token, makerworld_token=payload.token
     )
     return OkOut()
+
+
+@router.post("/collections", response_model=ExtCollectionsPushOut)
+async def push_collections(
+    payload: ExtCollectionsPushIn, db: AsyncSession = Depends(get_db)
+) -> ExtCollectionsPushOut:
+    """The extension pushes the real collection list for ``site`` here --
+    it runs in the user's authenticated browser, where MakerWorld's
+    Cloudflare wall around the SSR collections route isn't up (see
+    ``app.importers.makerworld``'s module docstring). Authoritative full-list
+    replace, not an incremental merge: anything cached for ``site`` but not
+    in this push is deleted (``app.services.remote_collections
+    .replace_site_cache``) -- a collection the user deleted/unfollowed on the
+    remote site should disappear from the cache too.
+    """
+    entries = [
+        remote_collections.CacheEntry(
+            list_id=entry.list_id,
+            title=entry.title,
+            slug=entry.slug,
+            count=entry.count,
+            is_default=entry.is_default,
+        )
+        for entry in payload.collections
+    ]
+    count = await remote_collections.replace_site_cache(db, payload.site, entries)
+    return ExtCollectionsPushOut(count=count)

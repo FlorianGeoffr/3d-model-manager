@@ -17,7 +17,17 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, ForeignKey, Identity, Text, UniqueConstraint, func
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    ForeignKey,
+    Identity,
+    Integer,
+    Text,
+    UniqueConstraint,
+    false,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, str_enum
@@ -67,3 +77,38 @@ class PendingImport(Base):
     url: Mapped[str] = mapped_column(Text, nullable=False)
     thumbnail_url: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+
+
+class RemoteCollectionCache(Base):
+    """A read-through cache of a site's REAL collection list (M10 escape
+    hatch), keyed by ``(site, list_id)``. Exists because MakerWorld's own
+    per-collection enumeration (the SSR ``collections.json`` route
+    ``list_user_lists`` reads, ``app.importers.makerworld``) is intermittently
+    Cloudflare-walled from a server IP -- when it is, the wall merges every
+    one of the user's collections into a single uid-keyed aggregate.
+
+    Two independent producers keep this warm: the browser extension pushes a
+    full authoritative snapshot (``POST /ext/collections``, read in the
+    user's own authenticated browser where the wall isn't up), and
+    ``list_user_lists`` itself upserts into it whenever the SSR route happens
+    to succeed on its own, so the cache self-heals without the extension.
+    Both go through ``app.services.remote_collections.replace_site_cache``
+    (or its sync twin), which treats its input as the site's full current
+    list and deletes anything cached for that site NOT in it.
+    """
+
+    __tablename__ = "remote_collection_cache"
+    __table_args__ = (
+        UniqueConstraint("site", "list_id", name="uq_remote_collection_cache_site_list"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    site: Mapped[ImportSite] = mapped_column(str_enum(ImportSite, "import_site"), nullable=False)
+    list_id: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    slug: Mapped[str | None] = mapped_column(Text)
+    count: Mapped[int | None] = mapped_column(Integer)
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=false())
+    updated_at: Mapped[datetime] = mapped_column(
+        server_default=func.now(), onupdate=func.now(), nullable=False
+    )

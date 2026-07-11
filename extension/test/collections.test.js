@@ -80,12 +80,12 @@ test("extractFavoritesList: defaults slug/count to null and is_default to false 
   assert.deepEqual(entries, [{ list_id: "5", title: "Bare", slug: null, count: null, is_default: false }]);
 });
 
-test("extractHandle: falls back to the /@handle/collections URL path segment when __NEXT_DATA__ has no recognizable handle field", () => {
+test("extractHandle: reads the handle from the /@handle/collections URL path segment when __NEXT_DATA__ has no recognizable handle field", () => {
   const handle = extractHandle({}, "https://makerworld.com/en/@Terminalfoo/collections");
   assert.equal(handle, "Terminalfoo");
 });
 
-test("extractHandle: URL fallback works with a further path segment or query string", () => {
+test("extractHandle: URL parsing works with a further path segment or query string", () => {
   assert.equal(
     extractHandle(null, "https://makerworld.com/@Terminalfoo/collections/2155987"),
     "Terminalfoo",
@@ -96,17 +96,30 @@ test("extractHandle: URL fallback works with a further path segment or query str
   );
 });
 
-test("extractHandle: an unparseable URL and no usable __NEXT_DATA__ returns null", () => {
-  assert.equal(extractHandle({}, "not a url"), null);
-  assert.equal(extractHandle({}, "https://makerworld.com/some/other/page"), null);
-});
-
-test("extractHandle: prefers a handle found in __NEXT_DATA__ over the URL", () => {
+test("extractHandle: prefers the URL's /@handle/collections segment over any __NEXT_DATA__ guess (F2 fix -- the URL is the guaranteed-reliable source, isCollectionsPage already required this path shape; __NEXT_DATA__ handle fields are unverified guesses)", () => {
   const nextData = { props: { pageProps: { userInfo: { name: "FromNextData" } } } };
   assert.equal(
     extractHandle(nextData, "https://makerworld.com/en/@FromUrl/collections"),
+    "FromUrl",
+  );
+});
+
+test("extractHandle: falls back to __NEXT_DATA__ only when the URL can't be parsed", () => {
+  const nextData = { props: { pageProps: { userInfo: { name: "FromNextData" } } } };
+  assert.equal(extractHandle(nextData, "not a url"), "FromNextData");
+});
+
+test("extractHandle: falls back to __NEXT_DATA__ when the URL parses but doesn't match the /@handle/collections shape", () => {
+  const nextData = { props: { pageProps: { profile: { name: "FromNextData" } } } };
+  assert.equal(
+    extractHandle(nextData, "https://makerworld.com/some/other/page"),
     "FromNextData",
   );
+});
+
+test("extractHandle: an unparseable URL and no usable __NEXT_DATA__ returns null", () => {
+  assert.equal(extractHandle({}, "not a url"), null);
+  assert.equal(extractHandle({}, "https://makerworld.com/some/other/page"), null);
 });
 
 test("buildItemsFetchPlan: empty collections array returns an empty plan", () => {

@@ -502,9 +502,17 @@ class MakerWorldImporter:
                     )
                 )
             # SSR succeeded -- self-heal the cache (M10 escape hatch A) so it
-            # stays warm even when the extension hasn't pushed lately.
-            with sync_session() as s:
-                replace_site_cache_sync(s, self.site, cache_entries)
+            # stays warm even when the extension hasn't pushed lately. Only
+            # write when there's something to write: an SSR 200 with an
+            # empty/shape-drifted `favoritesList` would otherwise call
+            # `replace_site_cache_sync` with `[]`, which is a full-replace
+            # and would wipe every collection the extension already pushed.
+            # The extension's own empty push (`POST /ext/collections` with
+            # `collections: []`) stays the one authoritative way to clear the
+            # cache.
+            if cache_entries:
+                with sync_session() as s:
+                    replace_site_cache_sync(s, self.site, cache_entries)
         except (RuntimeError, httpx.HTTPError, KeyError):
             # RuntimeError: Cloudflare challenge (`_makerworld_build_id`).
             # httpx.HTTPError: non-2xx (`raise_for_status`) / transport error.

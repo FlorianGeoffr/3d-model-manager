@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_api_token
@@ -38,6 +38,18 @@ _MAX_PUSHED_COLLECTIONS = 200
 # brief's own cap, chosen well above any real MakerWorld collection size.
 _MAX_PUSHED_ITEMS = 500
 
+# Per-field length caps on the strings the extension pushes -- same
+# `NonEmptyStr` posture (min_length=1) plus an upper bound, since these are
+# scraped straight off a live page and pushed by an unaudited client: an
+# unbounded title/url could otherwise write an arbitrarily large row per
+# entry, times up to `_MAX_PUSHED_COLLECTIONS`/`_MAX_PUSHED_ITEMS` of them.
+_TitleStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=512)]
+_UrlStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1024)]
+_IdStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128)]
+# `slug` is optional (unlike the fields above) -- `None` is still allowed,
+# but a PRESENT slug is held to the same non-empty/max-512 shape as `title`.
+_SlugStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=512)]
+
 
 class ExtCredentialIn(BaseModel):
     token: NonEmptyStr
@@ -48,9 +60,9 @@ class OkOut(BaseModel):
 
 
 class ExtCollectionEntryIn(BaseModel):
-    list_id: NonEmptyStr
-    title: NonEmptyStr
-    slug: str | None = None
+    list_id: _IdStr
+    title: _TitleStr
+    slug: _SlugStr | None = None
     count: int | None = None
     is_default: bool = False
 
@@ -66,9 +78,9 @@ class ExtCollectionsPushOut(BaseModel):
 
 
 class ExtCollectionItemIn(BaseModel):
-    external_id: NonEmptyStr
-    title: NonEmptyStr
-    url: NonEmptyStr
+    external_id: _IdStr
+    title: _TitleStr
+    url: _UrlStr
     author: str | None = None
     thumbnail_url: str | None = None
 

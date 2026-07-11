@@ -29,7 +29,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from sqlalchemy import delete as sa_delete
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session as SyncSession
@@ -77,6 +77,7 @@ async def replace_site_cache(db: AsyncSession, site: ImportSite, entries: list[C
                 "slug": stmt.excluded.slug,
                 "count": stmt.excluded.count,
                 "is_default": stmt.excluded.is_default,
+                "updated_at": func.now(),
             },
         )
         await db.execute(stmt)
@@ -109,6 +110,7 @@ def replace_site_cache_sync(
                 "slug": stmt.excluded.slug,
                 "count": stmt.excluded.count,
                 "is_default": stmt.excluded.is_default,
+                "updated_at": func.now(),
             },
         )
         session.execute(stmt)
@@ -197,6 +199,7 @@ async def replace_list_items(
                 "author": stmt.excluded.author,
                 "thumbnail_url": stmt.excluded.thumbnail_url,
                 "position": stmt.excluded.position,
+                "updated_at": func.now(),
             },
         )
         await db.execute(stmt)
@@ -239,6 +242,7 @@ def replace_list_items_sync(
                 "author": stmt.excluded.author,
                 "thumbnail_url": stmt.excluded.thumbnail_url,
                 "position": stmt.excluded.position,
+                "updated_at": func.now(),
             },
         )
         session.execute(stmt)

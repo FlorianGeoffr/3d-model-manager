@@ -69,33 +69,35 @@ const HANDLE_PATH_RE = /\/@([^/]+)\/collections(?:\/.*)?$/i;
  * the favorites/items fetch URL the same way the backend's `_profile`-
  * derived `@{handle}` does (`backend/app/importers/makerworld.py`).
  *
- * Tries a couple of plausible `__NEXT_DATA__` shapes first (UNVERIFIED --
- * no live capture of exactly where the collections page's own SSR props
- * carry this was taken for this task), but the RELIABLE source is the
- * page's own URL: a page that reached this code already matched
- * `isCollectionsPage` (`detect.js`), which requires a literal
- * `/@<handle>/collections` path segment -- so the URL fallback always
- * succeeds on the one page type this runs on, even if the `__NEXT_DATA__`
- * guess never matches.
+ * The RELIABLE source is the page's own URL: a page that reached this code
+ * already matched `isCollectionsPage` (`detect.js`), which requires a
+ * literal `/@<handle>/collections` path segment -- so the URL always
+ * succeeds on the one page type this runs on, and is tried FIRST. A couple
+ * of plausible `__NEXT_DATA__` shapes are tried only as a fallback when the
+ * URL can't be parsed (UNVERIFIED -- no live capture of exactly where the
+ * collections page's own SSR props carry this was taken for this task), so
+ * an unverified guess never overrides the value the URL guarantees.
  * @param {unknown} nextDataJson parsed `__NEXT_DATA__` script tag content
  * @param {string} url the tab's URL
  * @returns {string|null}
  */
 export function extractHandle(nextDataJson, url) {
-  const pageProps = nextDataJson?.props?.pageProps;
-  const fromNextData =
-    pageProps?.userInfo?.name ?? pageProps?.profile?.name ?? pageProps?.accountInfo?.name ?? null;
-  if (typeof fromNextData === "string" && fromNextData) {
-    return fromNextData;
-  }
   let pathname;
   try {
     pathname = new URL(url).pathname;
   } catch {
-    return null;
+    pathname = null;
   }
-  const match = HANDLE_PATH_RE.exec(pathname);
-  return match ? decodeURIComponent(match[1]) : null;
+  if (pathname) {
+    const match = HANDLE_PATH_RE.exec(pathname);
+    if (match) {
+      return decodeURIComponent(match[1]);
+    }
+  }
+  const pageProps = nextDataJson?.props?.pageProps;
+  const fromNextData =
+    pageProps?.userInfo?.name ?? pageProps?.profile?.name ?? pageProps?.accountInfo?.name ?? null;
+  return typeof fromNextData === "string" && fromNextData ? fromNextData : null;
 }
 
 /**

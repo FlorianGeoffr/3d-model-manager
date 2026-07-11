@@ -388,6 +388,46 @@ def test_list_user_lists_returns_aggregate_and_named_collections(monkeypatch, _c
     assert cached["18925823"].title == "ESP32" and cached["18925823"].is_default is False
 
 
+def test_list_user_lists_ssr_success_with_empty_favorites_list_does_not_wipe_warm_cache(
+    monkeypatch, _cache_db
+):
+    """An SSR 200 with an empty (or shape-drifted) `favoritesList` must NOT
+    self-heal-wipe an already-warm cache (F1 fix): `cache_entries` would be
+    `[]`, and an unconditional `replace_site_cache_sync(s, site, [])` call is
+    a full-replace that deletes every cached row for the site -- including
+    ones the extension already pushed. The extension's own empty push stays
+    the one authoritative way to clear the cache; a merely-empty SSR read
+    must leave it alone."""
+    with tasks_base.sync_session() as s:
+        remote_collections_service.replace_site_cache_sync(
+            s,
+            ImportSite.MAKERWORLD,
+            [
+                remote_collections_service.CacheEntry(
+                    list_id="2155987", title="Default Collection", count=7, is_default=True
+                ),
+            ],
+        )
+    monkeypatch.setattr(makerworld, "_makerworld_web_token", lambda: "test-token")
+    monkeypatch.setattr(
+        makerworld, "_favorites_client", lambda token: _mock_favorites_client(token)
+    )
+    monkeypatch.setattr(makerworld, "_web_client", lambda: _mock_collections_client([]))
+
+    lists = MakerWorldImporter().list_user_lists()
+    # Returned lists still include the cached collection, merged in as usual
+    # (M10 escape hatch A) -- the empty SSR response just contributed nothing
+    # new, it didn't erase what was already warm.
+    assert [entry.list_id for entry in lists] == [str(fx.PROFILE_TERMINALFOO["uid"]), "2155987"]
+
+    with tasks_base.sync_session() as s:
+        cached = {
+            row.list_id: row
+            for row in remote_collections_service.get_site_cache(s, ImportSite.MAKERWORLD)
+        }
+    assert set(cached) == {"2155987"}  # untouched, not wiped
+
+
 def test_list_user_lists_still_returns_aggregate_when_collections_route_fails(
     monkeypatch, _cache_db
 ):

@@ -211,6 +211,32 @@ async def test_push_collections_requires_bearer(client: httpx.AsyncClient):
     assert r.status_code == 401
 
 
+async def test_push_collections_over_length_title_is_422(client: httpx.AsyncClient, ext_token: str):
+    r = await client.post(
+        "/api/ext/collections",
+        json={
+            "site": "makerworld",
+            "collections": [{"list_id": "1", "title": "x" * 513}],
+        },
+        headers=_bearer(ext_token),
+    )
+    assert r.status_code == 422
+
+
+async def test_push_collections_over_length_list_id_is_422(
+    client: httpx.AsyncClient, ext_token: str
+):
+    r = await client.post(
+        "/api/ext/collections",
+        json={
+            "site": "makerworld",
+            "collections": [{"list_id": "1" * 129, "title": "Collection"}],
+        },
+        headers=_bearer(ext_token),
+    )
+    assert r.status_code == 422
+
+
 async def test_push_collection_items_creates_rows(client: httpx.AsyncClient, ext_token: str):
     r = await client.post(
         "/api/ext/collections/18925823/items",
@@ -405,3 +431,38 @@ async def test_push_collection_items_requires_bearer(client: httpx.AsyncClient):
         "/api/ext/collections/18925823/items", json={"site": "makerworld", "items": []}
     )
     assert r.status_code == 401
+
+
+async def test_push_collection_items_over_length_url_is_422(
+    client: httpx.AsyncClient, ext_token: str
+):
+    over_length_url = "https://makerworld.com/en/models/111-" + ("x" * 1000)
+    r = await client.post(
+        "/api/ext/collections/18925823/items",
+        json={
+            "site": "makerworld",
+            "items": [{"external_id": "111", "title": "ESP32 case", "url": over_length_url}],
+        },
+        headers=_bearer(ext_token),
+    )
+    assert r.status_code == 422
+
+
+async def test_push_collection_items_over_length_external_id_is_422(
+    client: httpx.AsyncClient, ext_token: str
+):
+    r = await client.post(
+        "/api/ext/collections/18925823/items",
+        json={
+            "site": "makerworld",
+            "items": [
+                {
+                    "external_id": "1" * 129,
+                    "title": "ESP32 case",
+                    "url": "https://makerworld.com/en/models/111",
+                }
+            ],
+        },
+        headers=_bearer(ext_token),
+    )
+    assert r.status_code == 422

@@ -65,6 +65,25 @@ export function useFollowCollection() {
   });
 }
 
+export interface FollowCollectionByUrlBody {
+  url: string;
+}
+
+/** M10 escape hatch B: follow a MakerWorld collection by pasting its URL
+ * (`POST /collections/from-url`) instead of picking it off `useRemoteLists`'
+ * browsable list -- the SSR route that would otherwise enumerate it is
+ * intermittently Cloudflare-walled. Always uses the endpoint's default mode
+ * (`review`); invalidates the same `["collections"]` key `useFollowCollection`
+ * does, so the new follow shows up in the "Followed collections" list. */
+export function useFollowCollectionByUrl() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: FollowCollectionByUrlBody) =>
+      api.post<FollowedCollection>("/collections/from-url", body),
+    onSuccess: () => invalidateAll(queryClient),
+  });
+}
+
 export function useUnfollowCollection() {
   const queryClient = useQueryClient();
   return useMutation({

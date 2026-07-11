@@ -7,9 +7,10 @@ import {
   createRoute,
   createRouter,
 } from "@tanstack/react-router";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ApiError } from "@/api/client";
 import { SavedPanel } from "@/components/collections/SavedPanel";
 import type { FollowedCollection, PendingImport, RemoteList } from "@/api/types";
 
@@ -23,6 +24,7 @@ const {
   followMock,
   unfollowMock,
   setModeMock,
+  postMock,
 } = vi.hoisted(() => ({
   followedBox: { current: { data: [] as FollowedCollection[], isLoading: false } },
   pendingBox: { current: { data: [] as PendingImport[], isLoading: false } },
@@ -33,21 +35,38 @@ const {
   followMock: vi.fn(),
   unfollowMock: vi.fn(),
   setModeMock: vi.fn(),
+  postMock: vi.fn(),
 }));
 
 const idle = { isPending: false, isError: false, error: null };
 
-vi.mock("@/api/collections", () => ({
-  useFollowedCollections: () => followedBox.current,
-  usePendingImports: () => pendingBox.current,
-  useRemoteLists: () => remoteListsBox.current,
-  useSyncCollectionsNow: () => ({ ...idle, mutate: syncNowMock }),
-  useApprovePending: () => ({ ...idle, mutate: approveMock }),
-  useDismissPending: () => ({ ...idle, mutate: dismissMock }),
-  useFollowCollection: () => ({ ...idle, mutate: followMock }),
-  useUnfollowCollection: () => ({ ...idle, mutate: unfollowMock }),
-  useSetCollectionMode: () => ({ ...idle, mutate: setModeMock }),
-}));
+// `useFollowCollectionByUrl` is deliberately left as the real implementation
+// (via `importOriginal`) rather than mocked like the others -- the tests
+// below need to see the actual POST it makes, so only `@/api/client`'s
+// `post` is stubbed (same pattern as BrowserExtensionCard.test.tsx).
+vi.mock("@/api/collections", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/collections")>();
+  return {
+    ...actual,
+    useFollowedCollections: () => followedBox.current,
+    usePendingImports: () => pendingBox.current,
+    useRemoteLists: () => remoteListsBox.current,
+    useSyncCollectionsNow: () => ({ ...idle, mutate: syncNowMock }),
+    useApprovePending: () => ({ ...idle, mutate: approveMock }),
+    useDismissPending: () => ({ ...idle, mutate: dismissMock }),
+    useFollowCollection: () => ({ ...idle, mutate: followMock }),
+    useUnfollowCollection: () => ({ ...idle, mutate: unfollowMock }),
+    useSetCollectionMode: () => ({ ...idle, mutate: setModeMock }),
+  };
+});
+
+vi.mock("@/api/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/client")>();
+  return {
+    ...actual,
+    api: { ...actual.api, post: postMock },
+  };
+});
 
 // Radix Select never opens under jsdom -- swap for a native <select>.
 vi.mock("@/components/ui/select", () => ({
@@ -126,6 +145,7 @@ beforeEach(() => {
   followedBox.current = { data: [], isLoading: false };
   pendingBox.current = { data: [], isLoading: false };
   remoteListsBox.current = { data: [], isLoading: false };
+  postMock.mockReset();
 });
 
 describe("SavedPanel", () => {
@@ -177,7 +197,10 @@ describe("SavedPanel", () => {
     };
     renderPanel();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Follow" }));
+    // Scoped to the remote-lists row -- the "Add collection by URL" form
+    // above it also has a button named "Follow".
+    const row = within(await screen.findByTestId("remote-lists"));
+    fireEvent.click(row.getByRole("button", { name: "Follow" }));
     expect(followMock).toHaveBeenCalledWith({
       site: "thingiverse",
       list_id: "likes",
@@ -185,5 +208,43 @@ describe("SavedPanel", () => {
       title: "Likes",
       mode: "review",
     });
+  });
+
+  it("follows a collection pasted as a URL and clears the input on success", async () => {
+    postMock.mockResolvedValueOnce({
+      id: 5,
+      site: "makerworld",
+      list_id: "555",
+      kind: "collection",
+      title: "Some collection",
+      mode: "review",
+      last_synced_at: null,
+      last_error: null,
+      created_at: "2026-07-11T00:00:00Z",
+    });
+    renderPanel();
+
+    const input = await screen.findByPlaceholderText(/makerworld\.com/);
+    fireEvent.change(input, { target: { value: "https://makerworld.com/en/collections/555" } });
+    fireEvent.click(within(screen.getByTestId("add-collection-by-url")).getByRole("button", { name: "Follow" }));
+
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledWith("/collections/from-url", {
+        url: "https://makerworld.com/en/collections/555",
+      }),
+    );
+    await waitFor(() => expect(input).toHaveValue(""));
+  });
+
+  it("shows the API's error detail inline when following by URL fails", async () => {
+    postMock.mockRejectedValueOnce(new ApiError(422, "Unsupported or invalid URL"));
+    renderPanel();
+
+    fireEvent.change(await screen.findByPlaceholderText(/makerworld\.com/), {
+      target: { value: "https://example.com/not-a-collection" },
+    });
+    fireEvent.click(within(screen.getByTestId("add-collection-by-url")).getByRole("button", { name: "Follow" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Unsupported or invalid URL");
   });
 });

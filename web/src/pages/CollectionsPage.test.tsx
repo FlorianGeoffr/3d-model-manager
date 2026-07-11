@@ -26,6 +26,7 @@ vi.mock("@/api/collections", () => ({
   useApprovePending: () => ({ ...idle, mutate: vi.fn() }),
   useDismissPending: () => ({ ...idle, mutate: vi.fn() }),
   useFollowCollection: () => ({ ...idle, mutate: vi.fn() }),
+  useFollowCollectionByUrl: () => ({ ...idle, mutate: vi.fn() }),
   useUnfollowCollection: () => ({ ...idle, mutate: vi.fn() }),
   useSetCollectionMode: () => ({ ...idle, mutate: vi.fn() }),
 }));

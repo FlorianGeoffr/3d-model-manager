@@ -1,3 +1,4 @@
+import { type FormEvent, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { ImageIcon, RefreshCwIcon } from "lucide-react";
 
@@ -6,6 +7,7 @@ import {
   useApprovePending,
   useDismissPending,
   useFollowCollection,
+  useFollowCollectionByUrl,
   useFollowedCollections,
   usePendingImports,
   useRemoteLists,
@@ -17,6 +19,8 @@ import type { CollectionSyncMode, FollowedCollection, PendingImport, RemoteList 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDate } from "@/lib/format";
@@ -192,6 +196,50 @@ function ReviewQueue({ items, loading }: { items: PendingImport[]; loading: bool
   );
 }
 
+/** MakerWorld's own SSR collections page is intermittently Cloudflare-walled,
+ * so `useRemoteLists` can come back without a collection the user actually
+ * has -- pasting its URL follows it directly (`POST /collections/from-url`)
+ * without needing it to show up in the browsable list first. */
+function AddCollectionByUrl() {
+  const [url, setUrl] = useState("");
+  const followByUrl = useFollowCollectionByUrl();
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const trimmed = url.trim();
+    if (!trimmed || followByUrl.isPending) {
+      return;
+    }
+    followByUrl.mutate({ url: trimmed }, { onSuccess: () => setUrl("") });
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-2" data-testid="add-collection-by-url">
+      <div className="flex flex-wrap items-center gap-2">
+        <Label htmlFor="collection-url" className="sr-only">
+          Collection URL
+        </Label>
+        <Input
+          id="collection-url"
+          type="url"
+          placeholder="https://makerworld.com/…/collections/…"
+          value={url}
+          onChange={(event) => setUrl(event.target.value)}
+          className="h-8 max-w-sm flex-1"
+        />
+        <Button type="submit" size="sm" variant="outline" disabled={!url.trim() || followByUrl.isPending}>
+          {followByUrl.isPending ? "Following…" : "Follow"}
+        </Button>
+      </div>
+      {followByUrl.isError && (
+        <p role="alert" className="text-sm text-destructive">
+          {followByUrl.error instanceof ApiError ? followByUrl.error.detail : "Could not follow that collection."}
+        </p>
+      )}
+    </form>
+  );
+}
+
 function BrowseLists() {
   const lists = useRemoteLists();
   const follow = useFollowCollection();
@@ -204,7 +252,8 @@ function BrowseLists() {
         <CardTitle>Your collections on each site</CardTitle>
         <CardDescription>Follow a list to keep it synced with your library.</CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-4">
+        <AddCollectionByUrl />
         {lists.isLoading ? (
           <Skeleton className="h-20 w-full rounded-lg" />
         ) : (lists.data ?? []).length === 0 ? (
@@ -232,7 +281,7 @@ function BrowseLists() {
             </ul>
           </div>
         ) : (
-          <div className="space-y-2">
+          <div className="space-y-2" data-testid="remote-lists">
             {(lists.data ?? []).map((list: RemoteList) => {
               const already = followedKeys.has(`${list.site}:${list.list_id}`);
               return (

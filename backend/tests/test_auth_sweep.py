@@ -10,6 +10,15 @@ route list maintained by hand here, which would drift) and asserts each one
 401s with no session cookie -- so a future route that lands outside
 ``protected_router`` by mistake fails a test immediately instead of shipping
 as a silent auth hole.
+
+``/ext/*`` (M10 Workstream A) is the one family of routes NOT gated by
+``require_session`` -- it carries its own router-level ``require_api_token``
+dependency instead (see ``app.api.ext``). A bare request with no session
+cookie AND no bearer token still 401s there, for a different reason, so this
+sweep still catches an ``/ext`` route that accidentally loses its auth
+dependency; the bearer-specific contract (missing/malformed/revoked token,
+and the reverse scope-isolation direction) is covered in
+``test_ext_api.py``.
 """
 
 from __future__ import annotations
@@ -52,6 +61,8 @@ _PATH_PARAM_VALUES = {
     "list_id": "1",
     "collection_id": "1",
     "pending_id": "1",
+    # M10 Workstream A: browser-extension API-token management.
+    "token_id": "1",
 }
 
 

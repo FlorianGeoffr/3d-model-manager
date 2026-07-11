@@ -7,6 +7,13 @@ Split per the SPEC auth rule ("every /api route except /api/auth/login and
 dependency so everything included under it is auth-gated without
 per-endpoint copy-paste. Later tasks add their routers to
 ``protected_router``, not to ``api_router`` directly.
+
+``ext.router`` (M10 Workstream A: browser-extension endpoints) is the one
+other exception -- it's mounted directly on ``api_router`` like
+``health_router``/``auth.public_router`` above, but it is NOT unauthenticated:
+it carries its own router-level ``require_api_token`` dependency (a separate,
+narrowly-scoped bearer-token auth plane, deliberately kept independent of
+``require_session`` -- see ``app.api.ext``'s module docstring).
 """
 
 from fastapi import APIRouter, Depends
@@ -16,6 +23,7 @@ from app.api import (
     blobs,
     collections,
     events,
+    ext,
     features,
     files,
     imports,
@@ -36,6 +44,7 @@ from app.api.health import router as health_router
 api_router = APIRouter()
 api_router.include_router(health_router)
 api_router.include_router(auth.public_router)
+api_router.include_router(ext.router)
 
 protected_router = APIRouter(dependencies=[Depends(require_session)])
 protected_router.include_router(auth.protected_router)

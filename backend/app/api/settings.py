@@ -26,6 +26,9 @@ from app.importers.printables import fetch_identity
 from app.schemas.imports import ImportTokensIn, ImportTokensOut
 from app.schemas.jobs import JobOut
 from app.schemas.settings import (
+    ApiTokenCreateIn,
+    ApiTokenMintOut,
+    ApiTokenOut,
     BambuLoginIn,
     BambuLoginOut,
     BambuStatusOut,
@@ -39,7 +42,7 @@ from app.schemas.settings import (
     StorageConfigIn,
     StorageConfigOut,
 )
-from app.services import bambu_auth, import_tokens, printables_auth, storage_config
+from app.services import api_tokens, bambu_auth, import_tokens, printables_auth, storage_config
 from app.services import jobs as jobs_service
 from app.services import storage_backends as storage_backends_service
 from app.services.storage_probe import probe_backend
@@ -537,3 +540,33 @@ async def delete_printables_auth(
     db: AsyncSession = Depends(get_db), settings: Settings = Depends(get_settings)
 ) -> None:
     await printables_auth.clear_printables_auth(db, settings)
+
+
+# ---------------------------------------------------------------------------
+# Browser-extension API tokens (M10 Workstream A). Session-gated management
+# (these live under `protected_router`, unlike `/ext/*` itself) of the
+# SEPARATE bearer-token auth plane `app.api.ext` uses -- mint returns the
+# plaintext ONCE, list/delete never touch the plaintext or its hash. See
+# `app.services.api_tokens` for the storage/verification contract.
+# ---------------------------------------------------------------------------
+
+
+@router.post("/api-tokens", status_code=status.HTTP_201_CREATED, response_model=ApiTokenMintOut)
+async def create_api_token(
+    payload: ApiTokenCreateIn, db: AsyncSession = Depends(get_db)
+) -> ApiTokenMintOut:
+    token, row = await api_tokens.mint(db, label=payload.label)
+    return ApiTokenMintOut(id=row.id, label=row.label, token=token, created_at=row.created_at)
+
+
+@router.get("/api-tokens", response_model=list[ApiTokenOut])
+async def list_api_tokens(db: AsyncSession = Depends(get_db)) -> list[ApiTokenOut]:
+    rows = await api_tokens.list_tokens(db)
+    return [ApiTokenOut.from_model(row) for row in rows]
+
+
+@router.delete("/api-tokens/{token_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_api_token(token_id: int, db: AsyncSession = Depends(get_db)) -> None:
+    deleted = await api_tokens.revoke(db, token_id)
+    if not deleted:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"api token {token_id} not found")

@@ -22,7 +22,7 @@ BambuRegion = Literal["global", "china"]
 
 if TYPE_CHECKING:
     from app.config import Settings
-    from app.models import StorageBackendRow
+    from app.models import ApiToken, StorageBackendRow
     from app.storage.config import StorageConfig
 
 
@@ -152,3 +152,37 @@ class PrintablesStatusOut(BaseModel):
     connected: bool
     username: str | None = None
     user_id: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Browser-extension API tokens (M10 Workstream A; see app.services.api_tokens
+# and app.api.ext). Session-gated management of the SEPARATE bearer-token
+# auth plane the extension uses. ``ApiTokenMintOut`` is the ONE place the
+# plaintext token is ever present in a response -- ``ApiTokenOut`` (the list
+# shape) never carries the token or its hash, same masking discipline as the
+# Bambu/Printables status-outs above.
+# ---------------------------------------------------------------------------
+
+
+class ApiTokenCreateIn(BaseModel):
+    label: NonEmptyStr
+
+
+class ApiTokenMintOut(BaseModel):
+    id: int
+    label: str
+    token: str  # shown exactly once, at mint time -- never returned again
+    created_at: datetime
+
+
+class ApiTokenOut(BaseModel):
+    id: int
+    label: str
+    created_at: datetime
+    last_used_at: datetime | None = None
+
+    @classmethod
+    def from_model(cls, row: ApiToken) -> ApiTokenOut:
+        return cls(
+            id=row.id, label=row.label, created_at=row.created_at, last_used_at=row.last_used_at
+        )

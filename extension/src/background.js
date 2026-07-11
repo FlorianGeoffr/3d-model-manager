@@ -20,7 +20,8 @@ const GALLERY_HOST_PATTERNS = [
   "*://www.printables.com/*",
 ];
 
-const CONTEXT_MENU_ID = "save-to-my-library";
+const CONTEXT_MENU_PAGE_ID = "save-to-my-library-page";
+const CONTEXT_MENU_LINK_ID = "save-to-my-library-link";
 const COURIER_ALARM_NAME = "makerworld-courier";
 const COURIER_ALARM_PERIOD_MINUTES = 30;
 const MAKERWORLD_COOKIE_URL = "https://makerworld.com";
@@ -31,12 +32,24 @@ const BADGE_OK_COLOR = "#2e7d32";
 const BADGE_ERROR_COLOR = "#b3261e";
 
 function ensureContextMenu() {
+  // Two separate items, not one item with both contexts: Chrome ANDs
+  // `documentUrlPatterns` and `targetUrlPatterns` together on a single
+  // item, so a combined item would require the CURRENT PAGE to also be a
+  // gallery host before a matching LINK's menu entry could ever show —
+  // which would hide the entry for the common case of right-clicking a
+  // gallery link from an unrelated page (a forum post, a search result,
+  // etc). Splitting keeps each restriction independent.
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({
-      id: CONTEXT_MENU_ID,
+      id: CONTEXT_MENU_PAGE_ID,
       title: "Save model to my library",
-      contexts: ["page", "link"],
+      contexts: ["page"],
       documentUrlPatterns: GALLERY_HOST_PATTERNS,
+    });
+    chrome.contextMenus.create({
+      id: CONTEXT_MENU_LINK_ID,
+      title: "Save model to my library",
+      contexts: ["link"],
       targetUrlPatterns: GALLERY_HOST_PATTERNS,
     });
   });
@@ -91,7 +104,7 @@ async function flashBadge(text, color) {
 // We didn't request the `notifications` permission (see manifest), so
 // context-menu feedback is a brief action-badge flash instead of a toast.
 chrome.contextMenus.onClicked.addListener(async (info) => {
-  if (info.menuItemId !== CONTEXT_MENU_ID) {
+  if (info.menuItemId !== CONTEXT_MENU_PAGE_ID && info.menuItemId !== CONTEXT_MENU_LINK_ID) {
     return;
   }
   const url = info.linkUrl || info.pageUrl;

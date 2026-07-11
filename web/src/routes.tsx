@@ -12,6 +12,7 @@ import { ModelDetailPage } from "@/pages/ModelDetailPage";
 import { PrinterPage } from "@/pages/PrinterPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { ViewerWindowPage } from "@/pages/ViewerWindowPage";
+import { parseViewerWindowSearch } from "@/pages/viewerWindowSearch";
 
 export interface RouterContext {
   queryClient: QueryClient;
@@ -56,15 +57,7 @@ const viewerWindowRoute = createRoute({
       throw redirect({ to: "/login" });
     }
   },
-  validateSearch: (
-    search: Record<string, unknown>,
-  ): { ids?: string; bg?: string; bgc?: string; light?: string; colors?: string } => ({
-    ids: typeof search.ids === "string" ? search.ids : undefined,
-    bg: typeof search.bg === "string" ? search.bg : undefined,
-    bgc: typeof search.bgc === "string" ? search.bgc : undefined,
-    light: typeof search.light === "string" ? search.light : undefined,
-    colors: typeof search.colors === "string" ? search.colors : undefined,
-  }),
+  validateSearch: parseViewerWindowSearch,
   component: ViewerWindowPage,
 });
 

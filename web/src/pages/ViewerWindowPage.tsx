@@ -8,15 +8,9 @@ import { ViewerStage } from "@/components/viewer/ViewerStage";
 import { useViewerScene } from "@/components/viewer/useViewerScene";
 import { glbFiles } from "@/components/viewer/viewable";
 import { Skeleton } from "@/components/ui/skeleton";
+import { type WindowSearch } from "@/pages/viewerWindowSearch";
 import type { FileOut } from "@/api/types";
 
-interface WindowSearch {
-  ids?: string;
-  bg?: string;
-  bgc?: string;
-  light?: string;
-  colors?: string;
-}
 
 function Centered({ children }: { children: React.ReactNode }) {
   return (

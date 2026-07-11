@@ -1,6 +1,7 @@
 import { ApiError } from "@/api/client";
 import { useStorageBackends } from "@/api/settings";
 import { BambuAccountCard } from "@/components/settings/BambuAccountCard";
+import { BrowserExtensionCard } from "@/components/settings/BrowserExtensionCard";
 import { PrinterSetupCard } from "@/components/settings/PrinterSetupCard";
 import { PrintablesAccountCard } from "@/components/settings/PrintablesAccountCard";
 import { ScanReport } from "@/components/settings/ScanReport";
@@ -58,14 +59,20 @@ export function SettingsPage() {
             <PrinterSetupCard />
           </TabsContent>
           <TabsContent value="imports" className="grid gap-6 xl:grid-cols-2">
-            {/* The two paste-a-credential cards pair up on a wide screen; the
-                Bambu login form is itself two columns wide (email/region +
-                password), so it takes the full row -- and it goes LAST, since a
-                col-span-2 card between two single-column ones cannot fit beside
-                either and would strand an empty cell on both rows. */}
+            {/* Sparse grid auto-placement never backfills: a col-span-2 card
+                only avoids stranding a cell if it starts an EVEN number of
+                single-column cards in. With three single-column cards, a
+                double placed after all three (the naive "keep it last")
+                strands BrowserExtensionCard's row -- confirmed by rendering
+                both orders. Placing the Bambu login form (two columns wide:
+                email/region + password) right after the first pair keeps
+                every row packed; BrowserExtensionCard trails alone in its
+                own final row, which is a normal odd-item tail, not a strand
+                (nothing sits below it to sandwich a gap). */}
             <SiteTokensCard />
             <PrintablesAccountCard />
             <BambuAccountCard className="xl:col-span-2" />
+            <BrowserExtensionCard />
           </TabsContent>
           <TabsContent value="scan" className="space-y-6">
             <ScanReport />

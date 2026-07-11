@@ -652,3 +652,27 @@ export interface PrintablesStatusOut {
 export interface PrintablesConnectIn {
   refresh_token: string;
 }
+
+// -- browser-extension API tokens (backend/app/schemas/settings.py, M10
+// Workstream A) -- session-gated mint/list/revoke of the SEPARATE
+// bearer-token auth plane the sideloaded extension uses. `ApiTokenMintOut`
+// is the ONE place the plaintext token is ever present in a response;
+// `ApiTokenOut` (the list shape) never carries the token or its hash.
+
+export interface ApiTokenCreateIn {
+  label: string;
+}
+
+export interface ApiTokenMintOut {
+  id: number;
+  label: string;
+  token: string;
+  created_at: string;
+}
+
+export interface ApiTokenOut {
+  id: number;
+  label: string;
+  created_at: string;
+  last_used_at: string | null;
+}

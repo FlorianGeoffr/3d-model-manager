@@ -42,10 +42,16 @@
  * Visibility toggles are therefore deliberately cheap: `THREE.Box3.
  * expandByObject` (which every `Box3.setFromObject` call -- `Center`,
  * `Resize`, `Bounds`'s default `refresh()` -- goes through) ignores
- * `.visible`, so hidden parts still count toward the combined bounding box.
- * Showing/hiding a part never changes framing, and `BoundsRefitter` only
- * ever refits when `loadedCount` changes (a part finishing its GLB load),
- * never on a plain checkbox click.
+ * `.visible`, so hidden parts still count toward the combined bounding box
+ * that grounds and normalizes the scene (`Center`/`Resize` stay stable
+ * across toggles). Camera FRAMING is the exception: `BoundsRefitter` fits
+ * the visible parts' world-space union (`getVisibleBox`), not the full
+ * assembly -- otherwise 1 checked part of 11 renders tiny inside the whole
+ * assembly's frame. Showing/hiding a part still never triggers a refit by
+ * itself: `BoundsRefitter` only runs when `loadedCount` changes (a part
+ * finishing its GLB load) or `fitSignal` bumps (an explicit Fit), never on
+ * a plain checkbox click -- the new visible set is simply what the next fit
+ * measures.
  */
 import {
   Component,
@@ -158,6 +164,7 @@ function GltfPart({
   plane,
   offset,
   onLoaded,
+  registerGroup,
 }: {
   id: number;
   url: string;
@@ -179,8 +186,20 @@ function GltfPart({
    * `loadedParts`, e.g. still loading) falls back to `ZERO_OFFSET`. */
   offset?: [number, number, number];
   onLoaded: (id: number, box: THREE.Box3, triangles: number) => void;
+  /** Registers this part's outer `<group>` into `ModelViewer`'s per-part
+   * group map (null on unmount) so `getVisibleBox` can measure the visible
+   * parts' world-space union at fit time. Both `registerGroup` and `id` are
+   * stable, so the memoized callback ref below keeps a stable identity --
+   * React then only invokes it on actual mount/unmount, not on every
+   * render. */
+  registerGroup: (id: number, group: THREE.Group | null) => void;
 }) {
   const { scene } = useGLTF(url);
+
+  const handleGroupRef = useCallback(
+    (group: THREE.Group | null) => registerGroup(id, group),
+    [registerGroup, id],
+  );
 
   const { object, box, triangles } = useMemo(() => {
     const cloned = scene.clone(true);
@@ -249,7 +268,7 @@ function GltfPart({
   }, [object, color, wireframe, plane, invalidate]);
 
   return (
-    <group visible={visible} position={offset ?? ZERO_OFFSET}>
+    <group ref={handleGroupRef} visible={visible} position={offset ?? ZERO_OFFSET}>
       <primitive object={object} />
     </group>
   );
@@ -289,20 +308,53 @@ function Exposure({ exposure }: { exposure: number }) {
  * button/`F` key and the ortho toggle's post-swap recovery (see
  * `ViewerStage.tsx`) -- both bump a counter rather than passing a boolean, so
  * two fits in a row (e.g. pressing F twice) each still trigger this effect
- * instead of coalescing into a no-op state-didn't-change skip. Still guarded
- * by `loadedCount > 0`: fitting before anything has loaded would frame the
- * `UNIT_BOX` fallback. Does NOT fire on a plain visibility toggle -- toggling
- * a checked part neither adds nor removes it from `loadedParts` nor bumps
- * `fitSignal`, so this intentionally does not run then. */
-function BoundsRefitter({ loadedCount, fitSignal }: { loadedCount: number; fitSignal: number }) {
+ * instead of coalescing into a no-op state-didn't-change skip.
+ *
+ * Frames the VISIBLE parts, not the whole assembly: `getVisibleBox` (see
+ * `ModelViewer`) measures the world-space union of the visible parts' groups
+ * at fit time -- with 1 of 11 parts checked, framing the full-assembly union
+ * (which `Box3.expandByObject` would produce, since it ignores `.visible`)
+ * renders that one part tiny in a huge frame, and a single-part pop-out
+ * window opens absurdly zoomed-out. drei's `refresh(object?: Object3D |
+ * Box3)` accepts the box directly (`if (isBox3(object)) box.copy(object)` in
+ * `@react-three/drei/core/Bounds.js`). Computed INSIDE this layout effect,
+ * not during render: React runs layout effects child-first and in sibling
+ * order, and this component sits after `Resize` under `Bounds`, so
+ * `Center`/`Resize` have already applied their position/scale by the time
+ * the box is measured (and `getVisibleBox` bakes them into world space via
+ * `updateWorldMatrix(true, true)`, same as drei's own Object3D path).
+ * Falls back to the whole-scene measure when nothing visible has loaded
+ * (`getVisibleBox` returns null), still guarded by `loadedCount > 0`:
+ * fitting before anything has loaded would frame the `UNIT_BOX` fallback.
+ *
+ * Does NOT fire on a plain visibility toggle -- toggling a checked part
+ * neither adds nor removes it from `loadedParts` nor bumps `fitSignal`, and
+ * `getVisibleBox` is identity-stable (fully ref-based, see its definition),
+ * so this intentionally does not run then; the NEXT fit (explicit or
+ * load-driven) picks up the new visible set. */
+function BoundsRefitter({
+  loadedCount,
+  fitSignal,
+  getVisibleBox,
+}: {
+  loadedCount: number;
+  fitSignal: number;
+  getVisibleBox: () => THREE.Box3 | null;
+}) {
   const api = useBounds();
   useLayoutEffect(() => {
-    if (loadedCount > 0) api.refresh().clip().fit();
-    // `api` is included for the lint rule's sake -- it's a `useMemo` inside
-    // `Bounds` keyed on the camera/controls/margin, so in practice it's
-    // stable across re-renders and this still only actually refits when
+    const box = getVisibleBox();
+    if (box) {
+      api.refresh(box).clip().fit();
+    } else if (loadedCount > 0) {
+      api.refresh().clip().fit();
+    }
+    // `api` and `getVisibleBox` are included for the lint rule's sake --
+    // `api` is a `useMemo` inside `Bounds` keyed on the camera/controls/
+    // margin, `getVisibleBox` is a `useCallback([])`, so in practice both
+    // are stable across re-renders and this still only actually refits when
     // `loadedCount`/`fitSignal` changes.
-  }, [loadedCount, fitSignal, api]);
+  }, [loadedCount, fitSignal, api, getVisibleBox]);
   return null;
 }
 
@@ -328,8 +380,9 @@ function BoundsRefitter({ loadedCount, fitSignal }: { loadedCount: number; fitSi
  * `loadedParts` tracks the parts that have actually finished loading (keyed
  * by id, pruned when a part disappears from `parts` entirely -- e.g. the
  * underlying file set changed), independent of which are currently visible,
- * so the combined bounding box used by `Resize`/`Bounds` stays stable across
- * plain visibility toggles.
+ * so the combined bounding box used by `Resize` (and `Bounds`'s no-visible
+ * fallback) stays stable across plain visibility toggles; camera fits frame
+ * the visible subset via `getVisibleBox` (see the file header).
  */
 export default function ModelViewer({
   parts,
@@ -391,6 +444,51 @@ export default function ModelViewer({
   // parts-pruning effect below so a part that leaves `parts` entirely and
   // later returns (file set changed back) counts as a fresh first load.
   const seenIds = useRef(new Set<number>());
+
+  // Each mounted part's outer `<group>`, keyed by part id -- populated by
+  // the stable callback ref `GltfPart` puts on its group (registered on
+  // mount, deleted on unmount). A part only commits its group once its GLB
+  // has resolved (`useGLTF` suspends until then, and the per-part
+  // `<Suspense>` holds the subtree back), so presence in this map already
+  // means "loaded" -- no cross-check against `loadedParts` needed. A ref,
+  // not state: only read imperatively at fit time by `getVisibleBox`.
+  const partGroups = useRef(new Map<number, THREE.Group>());
+
+  const registerPartGroup = useCallback((id: number, group: THREE.Group | null) => {
+    if (group) {
+      partGroups.current.set(id, group);
+    } else {
+      partGroups.current.delete(id);
+    }
+  }, []);
+
+  // The world-space union of every VISIBLE loaded part -- what
+  // `BoundsRefitter` frames the camera to, so checking 1 of 11 parts fits
+  // that one part instead of the whole assembly's footprint (see its
+  // comment). Reads `group.visible` off the live groups rather than closing
+  // over the `parts` prop: that keeps this callback fully ref-based and
+  // identity-stable (`useCallback([])`), which is what lets it sit in
+  // `BoundsRefitter`'s effect deps without visibility toggles re-triggering
+  // a fit. `updateWorldMatrix(true, true)` first -- `Center`/`Resize` set
+  // position/scale in their layout effects but nothing recomputes
+  // `matrixWorld` until the next render otherwise, and drei's own
+  // `refresh(Object3D)` path does exactly the same bake. Returns null when
+  // nothing visible is loaded (all parts hidden, or nothing loaded yet) --
+  // `BoundsRefitter` then falls back to the whole-scene measure.
+  const getVisibleBox = useCallback((): THREE.Box3 | null => {
+    const union = new THREE.Box3();
+    const partBox = new THREE.Box3();
+    let any = false;
+    for (const group of partGroups.current.values()) {
+      if (!group.visible) continue;
+      group.updateWorldMatrix(true, true);
+      partBox.setFromObject(group);
+      if (partBox.isEmpty()) continue;
+      union.union(partBox);
+      any = true;
+    }
+    return any ? union : null;
+  }, []);
 
   const onLoaded = useCallback((id: number, box: THREE.Box3, triangles: number) => {
     setLoadedParts((prev) => {
@@ -615,13 +713,14 @@ export default function ModelViewer({
                     plane={plane}
                     offset={offsets.get(part.id)}
                     onLoaded={onLoaded}
+                    registerGroup={registerPartGroup}
                   />
                 </Suspense>
               </PartErrorBoundary>
             ))}
           </Center>
         </Resize>
-        <BoundsRefitter loadedCount={loadedCount} fitSignal={fitSignal} />
+        <BoundsRefitter loadedCount={loadedCount} fitSignal={fitSignal} getVisibleBox={getVisibleBox} />
       </Bounds>
 
       {/* OUTSIDE `<Bounds>` deliberately -- `Bounds`'s `observe`/`fit` walks

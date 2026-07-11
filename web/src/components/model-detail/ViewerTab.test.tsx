@@ -249,6 +249,25 @@ describe("ViewerTab", () => {
     await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-fit", "1"));
   });
 
+  it("visibility toggles never bump the fit signal; an explicit Fit after one still does", async () => {
+    // The visible-parts camera fit (ModelViewer's `getVisibleBox`) relies on
+    // this stage-side contract: checking/unchecking a part must NOT trigger
+    // a refit by itself (framing stays put), and the NEXT explicit Fit is
+    // what picks up the new visible set. The geometry itself needs a real
+    // canvas -- verified live -- but the signal plumbing pins here.
+    const fileA = fakeFile({ id: 1, rel_path: "a.stl", blob_hash: "hashA", glb_status: "ok" });
+    const fileB = fakeFile({ id: 2, rel_path: "b.stl", blob_hash: "hashB", glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([fileA, fileB])} />);
+    await screen.findByTestId("model-viewer");
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "b.stl" }));
+    await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-parts", "1:1,2:1"));
+    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-fit", "0");
+
+    fireEvent.click(screen.getByRole("button", { name: "Fit view" }));
+    await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-fit", "1"));
+  });
+
   it("Auto-rotate flips aria-pressed and the tools.autoRotate flag ModelViewer receives", async () => {
     const file = fakeFile({ glb_status: "ok" });
     render(<ViewerTab model={fakeModel([file])} />);

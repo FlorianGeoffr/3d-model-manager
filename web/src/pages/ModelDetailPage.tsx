@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { getRouteApi } from "@tanstack/react-router";
 
 import { useModel } from "@/api/library";
@@ -15,6 +16,10 @@ const routeApi = getRouteApi("/authenticated/models/$slug");
 export function ModelDetailPage() {
   const { slug } = routeApi.useParams();
   const modelQuery = useModel(slug);
+  // Per-visit UI state only -- not persisted. Gates metadata editing
+  // (name/description/tags/archive) behind an explicit toggle so a stray
+  // click can't silently mutate a model.
+  const [editMode, setEditMode] = useState(false);
 
   if (modelQuery.isLoading) {
     return (
@@ -37,7 +42,7 @@ export function ModelDetailPage() {
 
   return (
     <div className="space-y-6">
-      <ModelHeader model={model} />
+      <ModelHeader model={model} editMode={editMode} onToggleEditMode={() => setEditMode((prev) => !prev)} />
       <Tabs defaultValue="files">
         <TabsList>
           <TabsTrigger value="files">Files</TabsTrigger>

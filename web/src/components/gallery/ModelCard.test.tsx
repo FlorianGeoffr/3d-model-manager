@@ -145,10 +145,22 @@ describe("ModelCard", () => {
     expect(screen.queryByTestId("review-badge")).not.toBeInTheDocument();
   });
 
-  it("dismissing the review badge PATCHes review_state to null without navigating", async () => {
+  it("clicking the dismiss control opens a confirm dialog instead of patching immediately", async () => {
     renderCard({ ...MODEL, review_state: "adopted" });
 
     fireEvent.click(await screen.findByRole("button", { name: "Dismiss needs review" }));
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByText('Clear "needs review"?')).toBeInTheDocument();
+    expect(patchMock).not.toHaveBeenCalled();
+  });
+
+  it("confirming the dialog PATCHes review_state to null without navigating", async () => {
+    renderCard({ ...MODEL, review_state: "adopted" });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Dismiss needs review" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Clear" }));
 
     await waitFor(() => expect(patchMock).toHaveBeenCalledTimes(1));
     expect(patchMock).toHaveBeenCalledWith("/models/articulated-dragon", { review_state: null });

@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router";
 import { ClockIcon, FileStackIcon, XIcon } from "lucide-react";
 
 import { usePatchModel } from "@/api/library";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { SpecRow, type SpecItem } from "@/components/ui/spec-row";
@@ -38,13 +39,12 @@ export function ModelCard({ model }: { model: ModelSummary }) {
       : null,
   ];
 
-  // The card body is a `<Link>` (whole-card navigation); dismissing the
-  // badge must not also trigger that navigation, so stop the click before
-  // it reaches the anchor's handler.
-  function dismissReview(event: React.MouseEvent<HTMLButtonElement>) {
+  // The card body is a `<Link>` (whole-card navigation); the review-dismiss
+  // confirm dialog must not also trigger that navigation, so stop every
+  // click inside it before it reaches the anchor's handler.
+  function stopCardNavigation(event: React.MouseEvent) {
     event.preventDefault();
     event.stopPropagation();
-    patchModel.mutate({ review_state: null });
   }
 
   return (
@@ -85,14 +85,30 @@ export function ModelCard({ model }: { model: ModelSummary }) {
               data-testid="review-badge"
             >
               Needs review
-              <button
-                type="button"
-                aria-label="Dismiss needs review"
-                className="rounded-full hover:opacity-70"
-                onClick={dismissReview}
-              >
-                <XIcon className="size-3" />
-              </button>
+              {/* `display: contents` keeps this out of the Badge's flex
+                  layout (so the trigger button still sizes/aligns exactly
+                  as before) while still giving us a click handler that sees
+                  every click inside -- including the dialog's confirm
+                  button, which portals to `document.body` and would
+                  otherwise bubble up through the *React* tree (portals
+                  bubble via the component tree, not the DOM tree) into this
+                  card's wrapping `<Link>` and navigate away. */}
+              <span className="contents" onClick={stopCardNavigation}>
+                <ConfirmDialog
+                  trigger={
+                    <button
+                      type="button"
+                      aria-label="Dismiss needs review"
+                      className="rounded-full hover:opacity-70"
+                    >
+                      <XIcon className="size-3" />
+                    </button>
+                  }
+                  title='Clear "needs review"?'
+                  confirmLabel="Clear"
+                  onConfirm={() => patchModel.mutate({ review_state: null })}
+                />
+              </span>
             </Badge>
           )}
         </div>

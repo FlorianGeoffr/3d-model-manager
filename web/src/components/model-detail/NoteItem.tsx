@@ -1,5 +1,6 @@
 import { useState } from "react";
 
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { formatDateTime } from "@/lib/format";
@@ -62,9 +63,17 @@ export function NoteItem({
           <button type="button" className="hover:underline" onClick={() => setEditing(true)}>
             Edit
           </button>
-          <button type="button" className="hover:underline" onClick={onDelete}>
-            Delete
-          </button>
+          <ConfirmDialog
+            trigger={
+              <button type="button" className="hover:underline">
+                Delete
+              </button>
+            }
+            title="Delete this note?"
+            confirmLabel="Delete"
+            destructive
+            onConfirm={onDelete}
+          />
         </div>
       </div>
     </li>

@@ -1,5 +1,5 @@
 import { useNavigate } from "@tanstack/react-router";
-import { FileStackIcon } from "lucide-react";
+import { FileStackIcon, PencilIcon } from "lucide-react";
 
 import { useArchiveModel, usePatchModel } from "@/api/library";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -15,7 +15,15 @@ import { formatDate } from "@/lib/format";
 import { FORMAT_LABELS } from "@/lib/formatMeta";
 import type { ModelDetail } from "@/api/types";
 
-export function ModelHeader({ model }: { model: ModelDetail }) {
+export function ModelHeader({
+  model,
+  editMode,
+  onToggleEditMode,
+}: {
+  model: ModelDetail;
+  editMode: boolean;
+  onToggleEditMode: () => void;
+}) {
   const navigate = useNavigate();
   const patchModel = usePatchModel(model.slug);
   const archiveModel = useArchiveModel(model.slug);
@@ -35,40 +43,59 @@ export function ModelHeader({ model }: { model: ModelDetail }) {
     <div className="space-y-3 border-b border-border pb-4">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0 flex-1 space-y-1">
-          <InlineEdit
-            value={model.name}
-            aria-label="Model name"
-            onSave={(name) => {
-              if (name) patchModel.mutate({ name });
-            }}
-            displayClassName="text-2xl font-semibold"
-            className="text-2xl font-semibold"
-          />
-          <InlineEdit
-            value={model.description ?? ""}
-            placeholder="Add a description…"
-            aria-label="Model description"
-            multiline
-            onSave={(description) => patchModel.mutate({ description: description || null })}
-            displayClassName="block text-sm text-muted-foreground"
-          />
+          {editMode ? (
+            <>
+              <InlineEdit
+                value={model.name}
+                aria-label="name"
+                onSave={(name) => {
+                  if (name) patchModel.mutate({ name });
+                }}
+                displayClassName="text-2xl font-semibold"
+                className="text-2xl font-semibold"
+              />
+              <InlineEdit
+                value={model.description ?? ""}
+                placeholder="Add a description…"
+                aria-label="description"
+                multiline
+                onSave={(description) => patchModel.mutate({ description: description || null })}
+                displayClassName="text-sm text-muted-foreground"
+              />
+            </>
+          ) : (
+            <>
+              <h1 className="text-2xl font-semibold">{model.name}</h1>
+              {model.description && (
+                <p className="text-sm text-muted-foreground">{model.description}</p>
+              )}
+            </>
+          )}
         </div>
-        <ConfirmDialog
-          trigger={
-            <Button type="button" variant="destructive">
-              Archive
-            </Button>
-          }
-          title={`Archive "${model.name}"?`}
-          description="Archived models are hidden from the library by default. This does not delete files."
-          confirmLabel="Archive"
-          destructive
-          onConfirm={() =>
-            archiveModel.mutate(undefined, {
-              onSuccess: () => void navigate({ to: "/" }),
-            })
-          }
-        />
+        <div className="flex shrink-0 items-center gap-2">
+          <Button type="button" variant="outline" onClick={onToggleEditMode}>
+            <PencilIcon />
+            {editMode ? "Done" : "Edit"}
+          </Button>
+          {editMode && (
+            <ConfirmDialog
+              trigger={
+                <Button type="button" variant="destructive">
+                  Archive
+                </Button>
+              }
+              title={`Archive "${model.name}"?`}
+              description="Archived models are hidden from the library by default. This does not delete files."
+              confirmLabel="Archive"
+              destructive
+              onConfirm={() =>
+                archiveModel.mutate(undefined, {
+                  onSuccess: () => void navigate({ to: "/" }),
+                })
+              }
+            />
+          )}
+        </div>
       </div>
 
       <div className="space-y-2">
@@ -86,7 +113,7 @@ export function ModelHeader({ model }: { model: ModelDetail }) {
         )}
       </div>
 
-      <TagEditor model={model} />
+      <TagEditor model={model} editMode={editMode} />
       <ProvenanceBlock model={model} />
       <StorageLocationBar model={model} />
     </div>

@@ -38,21 +38,28 @@ This extension isn't published to the Chrome Web Store — load it from source:
 ## Syncing your MakerWorld collections
 
 MakerWorld blocks servers from listing your named collections (the SSR route
-behind them is intermittently Cloudflare-walled from a server IP), so the
-app can't enumerate your per-collection structure on its own — but your
-browser, already signed in, can see it just fine. To hand that structure
-over:
+behind them is intermittently Cloudflare-walled from a server IP), and it
+also serves each *named* collection's own item list as empty from a server
+IP even when the request itself succeeds (the app only ever gets your
+"all collected models" aggregate back) — so the app can't enumerate either
+your per-collection structure or a named collection's contents on its own.
+Your browser, already signed in, can see both just fine. To hand that over:
 
 1. Open your MakerWorld collections page (`makerworld.com/@<your
    handle>/collections`).
 2. Click the extension's toolbar icon.
 3. Click **Sync collections to app**.
 
-The app now knows each collection's name and id, so a collection you follow
-by pasting its URL shows its real title instead of a generic placeholder.
-Re-run the sync any time your collections change — each sync replaces the
-app's cached list with what's on the page, so a deleted or renamed
-collection updates too.
+The same click now does two things: it pushes your collection list (so a
+collection you follow by pasting its URL shows its real title instead of a
+generic placeholder), then reads and pushes each visible collection's
+contents, one at a time — the status line tracks progress and finishes with
+something like "Synced 3 collections (24 items)." If a collection's items
+couldn't be read from the page, it's called out as "no items readable"
+rather than silently synced empty. Re-run any time your collections (or
+their contents) change — each sync replaces what the app has cached for a
+given list with what's on the page, so a deleted/renamed collection or an
+added/removed item updates too.
 
 ## The MakerWorld courier
 

@@ -83,5 +83,16 @@ export function createClient({ baseUrl, token }) {
     pushCollections(site, collections) {
       return request("/collections", { method: "POST", body: { site, collections } });
     },
+    /**
+     * @param {string} site
+     * @param {string} listId
+     * @param {Array<{external_id: string, title: string, url: string, author: string|null, thumbnail_url: string|null}>} items
+     */
+    pushCollectionItems(site, listId, items) {
+      return request(`/collections/${encodeURIComponent(listId)}/items`, {
+        method: "POST",
+        body: { site, items },
+      });
+    },
   };
 }

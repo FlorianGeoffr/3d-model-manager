@@ -107,6 +107,53 @@ test("pushCollections: POSTs {site, collections} to /collections", async () => {
   );
 });
 
+test("pushCollectionItems: POSTs {site, items} to /collections/<listId>/items", async () => {
+  await withStubFetch(
+    () => jsonResponse(200, { ok: true, count: 2 }),
+    async (calls) => {
+      const client = createClient({ baseUrl: "http://nas.local:8080", token: "tok123" });
+      const items = [
+        {
+          external_id: "111",
+          title: "ESP32 case",
+          url: "https://makerworld.com/en/models/111",
+          author: "someone",
+          thumbnail_url: "https://makerworld.bblmw.com/cover1.jpg",
+        },
+        {
+          external_id: "222",
+          title: "ESP32 mount",
+          url: "https://makerworld.com/en/models/222",
+          author: null,
+          thumbnail_url: null,
+        },
+      ];
+      const result = await client.pushCollectionItems("makerworld", "18925823", items);
+
+      assert.equal(calls[0].url, "http://nas.local:8080/api/ext/collections/18925823/items");
+      assert.equal(calls[0].init.method, "POST");
+      assert.equal(calls[0].init.headers["Content-Type"], "application/json");
+      assert.deepEqual(JSON.parse(calls[0].init.body), { site: "makerworld", items });
+      assert.deepEqual(result, { ok: true, status: 200, data: { ok: true, count: 2 }, error: null });
+    }
+  );
+});
+
+test("pushCollectionItems: URL-encodes the listId path segment", async () => {
+  await withStubFetch(
+    () => jsonResponse(200, { ok: true, count: 0 }),
+    async (calls) => {
+      const client = createClient({ baseUrl: "http://nas.local:8080", token: "tok123" });
+      await client.pushCollectionItems("makerworld", "weird/id with space", []);
+
+      assert.equal(
+        calls[0].url,
+        "http://nas.local:8080/api/ext/collections/weird%2Fid%20with%20space/items"
+      );
+    }
+  );
+});
+
 test("pushCollections: non-2xx surfaces the response's `detail` as `error`", async () => {
   await withStubFetch(
     () => jsonResponse(422, { detail: "collections: at most 200 entries" }),

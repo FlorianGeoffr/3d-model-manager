@@ -413,6 +413,50 @@ describe("ViewerTab", () => {
     await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-explode", "0.6"));
   });
 
+  it("explode sticks across re-renders; onPartLoaded only resets it when actually fired", async () => {
+    // Regression: `ViewerStage` re-creates its `onPartLoaded` handler
+    // whenever `tools.explode` changes (it closes over it). The real
+    // `ModelViewer` keeps its part-load callback identity-stable and fires
+    // `onPartLoaded` only on a part's FIRST load -- if it instead re-fired
+    // on every handler-identity change, the reset-if-nonzero logic would
+    // snap the slider straight back to 0 the moment it moved (the mock here
+    // stands in for `ModelViewer`, so this test pins the `ViewerStage` side
+    // of that contract: re-renders alone never reset explode; an explicit
+    // `onPartLoaded()` call does).
+    const fileA = fakeFile({ id: 1, rel_path: "a.stl", blob_hash: "hashA", glb_status: "ok" });
+    const fileB = fakeFile({ id: 2, rel_path: "b.stl", blob_hash: "hashB", glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([fileA, fileB])} />);
+    await screen.findByTestId("model-viewer");
+
+    const partLoaded = () => {
+      const { onPartLoaded } = modelViewerMock.mock.calls.at(-1)![0] as unknown as {
+        onPartLoaded: () => void;
+      };
+      act(() => onPartLoaded());
+    };
+
+    // The initial eager load fires it while explode is still 0 -- harmless.
+    partLoaded();
+    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-explode", "0");
+
+    fireEvent.change(screen.getByRole("slider", { name: "Explode" }), { target: { value: "0.6" } });
+    await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-explode", "0.6"));
+
+    // Unrelated tool changes re-render the stage and hand ModelViewer a NEW
+    // `onPartLoaded` identity -- explode must stay where the slider put it.
+    fireEvent.click(screen.getByRole("button", { name: "Wireframe" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-wireframe", "true"),
+    );
+    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-explode", "0.6");
+
+    // A genuine late FIRST load is the one thing that resets it (the
+    // just-arrived part would otherwise render detached from the exploded
+    // scene).
+    partLoaded();
+    await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-explode", "0"));
+  });
+
   it("Screenshot calls the published screenshot bridge and downloads the resulting PNG", async () => {
     const createObjectURLSpy = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:fake");
     const revokeObjectURLSpy = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});

@@ -355,36 +355,69 @@ export default function ModelViewer({
   /** Published imperative surface (today: `screenshot`) -- see
    * `scene/helpers.tsx`'s `CaptureBridge`. */
   apiRef?: React.MutableRefObject<ViewerApi | null>;
-  /** Task 5 explode view: fires every time a part finishes loading
-   * (including late loads -- a part checked after the initial eager load,
-   * or a newly-added file), so `ViewerStage` can reset a nonzero explode
-   * back to 0 rather than leaving the just-arrived part visually detached
-   * from the rest of the exploded scene. A no-op during the initial eager
-   * load, since `tools.explode` starts at 0. */
+  /** Task 5 explode view: fires the first time each part finishes loading
+   * (including late first loads -- a part checked after the initial eager
+   * load, or a newly-added file), so `ViewerStage` can reset a nonzero
+   * explode back to 0 rather than leaving the just-arrived part visually
+   * detached from the rest of the exploded scene. A no-op during the
+   * initial eager load, since `tools.explode` starts at 0. FIRST load only
+   * (`seenIds` below): each `GltfPart`'s reporting layout effect can re-run
+   * for reasons other than a load (its deps include the `onLoaded` callback
+   * itself), and firing this on those re-runs would let the explode reset
+   * clobber values the slider just set -- see `onLoaded`'s comment. */
   onPartLoaded?: () => void;
 }) {
   const [loadedParts, setLoadedParts] = useState<Map<number, { box: THREE.Box3; triangles: number }>>(
     () => new Map(),
   );
 
-  const onLoaded = useCallback(
-    (id: number, box: THREE.Box3, triangles: number) => {
-      setLoadedParts((prev) => {
-        const existing = prev.get(id);
-        if (existing && existing.triangles === triangles && existing.box.equals(box)) return prev;
-        const next = new Map(prev);
-        next.set(id, { box, triangles });
-        return next;
-      });
-      onPartLoaded?.();
-    },
-    [onPartLoaded],
-  );
+  // `onLoaded` below must be identity-STABLE (empty deps), so it reads the
+  // latest `onPartLoaded` through a ref instead of closing over the prop.
+  // The failure mode this prevents is a feedback loop that made the explode
+  // slider unusable: `ViewerStage`'s `onPartLoaded` handler is re-created
+  // whenever `tools.explode` changes (it closes over it) -> with
+  // `onPartLoaded` in `onLoaded`'s deps, `onLoaded` got a new identity ->
+  // every `GltfPart`'s reporting layout effect (deps include `onLoaded`)
+  // re-fired -> `onPartLoaded()` -> the reset-if-nonzero logic snapped the
+  // explode the user just set straight back to 0.
+  const onPartLoadedRef = useRef(onPartLoaded);
+  useEffect(() => {
+    onPartLoadedRef.current = onPartLoaded;
+  });
+
+  // Which part ids have already reported a load -- so `onPartLoaded` only
+  // fires on a part's FIRST load, not on the reporting effect's re-runs
+  // (see above). A ref, not state: nothing renders from it. Pruned in the
+  // parts-pruning effect below so a part that leaves `parts` entirely and
+  // later returns (file set changed back) counts as a fresh first load.
+  const seenIds = useRef(new Set<number>());
+
+  const onLoaded = useCallback((id: number, box: THREE.Box3, triangles: number) => {
+    setLoadedParts((prev) => {
+      const existing = prev.get(id);
+      if (existing && existing.triangles === triangles && existing.box.equals(box)) return prev;
+      const next = new Map(prev);
+      next.set(id, { box, triangles });
+      return next;
+    });
+    // Outside the setState updater -- StrictMode double-invokes updaters, and
+    // a side effect in there could fire twice (or not at all, if React drops
+    // the render). The `seenIds` guard also makes this idempotent per part.
+    if (!seenIds.current.has(id)) {
+      seenIds.current.add(id);
+      onPartLoadedRef.current?.();
+    }
+  }, []);
 
   // Prune parts that dropped out of `parts` entirely (not merely hidden) --
-  // e.g. the model's file set changed under an already-mounted viewer.
+  // e.g. the model's file set changed under an already-mounted viewer. Also
+  // forgets their `seenIds` entry, so a pruned part re-appearing later fires
+  // `onPartLoaded` again as a genuine fresh load.
   useEffect(() => {
     const ids = new Set(parts.map((part) => part.id));
+    for (const id of seenIds.current) {
+      if (!ids.has(id)) seenIds.current.delete(id);
+    }
     setLoadedParts((prev) => {
       let changed = false;
       const next = new Map(prev);

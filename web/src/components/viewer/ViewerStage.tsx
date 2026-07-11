@@ -1,0 +1,425 @@
+import { Component, Suspense, lazy, type ReactNode } from "react";
+import {
+  ExternalLinkIcon,
+  Maximize2Icon,
+  PanelRightCloseIcon,
+  PanelRightOpenIcon,
+  RotateCcwIcon,
+} from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Skeleton } from "@/components/ui/skeleton";
+import { cn } from "@/lib/utils";
+import { usePrinterStatus } from "@/api/printers";
+import { FilamentChip } from "@/components/ui/filament-chip";
+import { SegmentedControl } from "@/components/viewer/SegmentedControl";
+import {
+  BACKGROUND_PRESET_LABELS,
+  BACKGROUND_PRESET_ORDER,
+  type BackgroundPreset,
+} from "@/components/viewer/background";
+import {
+  LIGHTING_PRESET_LABELS,
+  LIGHTING_PRESET_ORDER,
+  type LightingPreset,
+  type LightingRig,
+} from "@/components/viewer/lighting";
+import { traysToPartColors, type PartColors } from "@/components/viewer/partColors";
+import type { FileOut } from "@/api/types";
+
+// three.js/@react-three/fiber/drei are heavy (Global Constraints "BUNDLE
+// RULE") — load them only once a GLB actually needs rendering, so the main
+// bundle never pays for the viewer on pages that don't render this stage.
+const ModelViewer = lazy(() => import("@/components/viewer/ModelViewer"));
+
+/** A centered card used for every "nothing to render here" state -- shared by
+ * this stage's empty-selection case and `ViewerTab`'s file-status cards
+ * (pending / failed / unsupported / plain gcode), so it's exported rather
+ * than duplicated. */
+export function PlaceholderCard({
+  title,
+  description,
+  destructive = false,
+}: {
+  title: string;
+  description: string;
+  destructive?: boolean;
+}) {
+  return (
+    <Card className="mx-auto mt-8 max-w-md">
+      <CardHeader className="items-center text-center">
+        <CardTitle className={destructive ? "text-destructive" : undefined}>{title}</CardTitle>
+        <CardDescription>{description}</CardDescription>
+      </CardHeader>
+    </Card>
+  );
+}
+
+// React has no hook form for error boundaries (`componentDidCatch`/
+// `getDerivedStateFromError` are class-only APIs), and this project has no
+// `react-error-boundary` dependency or existing boundary pattern to reuse
+// -- a tiny local class is the documented fallback (M2-Minor 1). Without
+// this, a GLB fetch/parse throw from the lazy R3F viewer propagates past
+// this tab to the router's top-level error surface, taking down the whole
+// model-detail page instead of just this one preview.
+interface ViewerErrorBoundaryState {
+  hasError: boolean;
+}
+
+class ViewerErrorBoundary extends Component<{ children: ReactNode }, ViewerErrorBoundaryState> {
+  state: ViewerErrorBoundaryState = { hasError: false };
+
+  static getDerivedStateFromError(): ViewerErrorBoundaryState {
+    return { hasError: true };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <PlaceholderCard
+          destructive
+          title="Preview failed to load"
+          description="The 3D preview crashed while loading this file. It may be corrupt or in an unsupported format."
+        />
+      );
+    }
+    return this.props.children;
+  }
+}
+
+/** The combined multi-part canvas, guarded by its own error boundary. Reused
+ * for the inline box, the pop-out dialog, and the standalone window (via
+ * `ViewerStage`) so all three stay visually and behaviorally identical --
+ * only the wrapping height/size differs. Keyed on the checked file ids so
+ * switching the selection remounts the boundary, clearing any error state
+ * left over from a previous selection instead of getting stuck on the
+ * fallback forever (mirrors the old single-file behavior keyed on `file.id`). */
+function MeshCanvas({
+  parts,
+  background,
+  lighting,
+}: {
+  parts: { id: number; url: string; color?: string }[];
+  background: string;
+  lighting: LightingRig;
+}) {
+  if (parts.length === 0) {
+    return (
+      <PlaceholderCard
+        title="Select a part to preview"
+        description="Select a part in the panel to render it."
+      />
+    );
+  }
+
+  return (
+    <ViewerErrorBoundary key={parts.map((part) => part.id).join("|")}>
+      <Suspense fallback={<Skeleton className="h-full w-full" />}>
+        <ModelViewer parts={parts} background={background} lighting={lighting} />
+      </Suspense>
+    </ViewerErrorBoundary>
+  );
+}
+
+/** AMS filament legend + "Sync colors from printer" (M8 G3), styled for the
+ * narrow right-hand panel column (a vertical stack, not the old horizontal
+ * bar). Rendered only when a printer is configured, so its
+ * `usePrinterStatus` poll (which has no `enabled` gate) always has a real
+ * id. Maps the checked parts onto the loaded trays in order, cycling if
+ * there are more parts than trays. */
+function AmsSync({
+  printerId,
+  partIds,
+  onApply,
+}: {
+  printerId: number;
+  partIds: number[];
+  onApply: (colors: PartColors) => void;
+}) {
+  const status = usePrinterStatus(printerId);
+  const trays = (status.data?.trays ?? []).filter((tray) => tray.color);
+  if (trays.length === 0) return null;
+
+  return (
+    <div className="flex flex-col gap-2">
+      <span className="text-xs font-medium text-muted-foreground">Loaded filament</span>
+      <div className="flex flex-wrap gap-1.5">
+        {trays.map((tray) => (
+          <FilamentChip key={tray.slot} color={tray.color ?? undefined} material={tray.material ?? undefined} />
+        ))}
+      </div>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        disabled={partIds.length === 0}
+        onClick={() => onApply(traysToPartColors(partIds, trays))}
+        className="w-full"
+      >
+        Sync colors from printer
+      </Button>
+    </div>
+  );
+}
+
+const BODY_BASE_CLASS = "flex min-h-0 flex-1 flex-col gap-3 lg:flex-row";
+const INLINE_BODY_HEIGHT_CLASS = "h-[70vh] min-h-[32rem]";
+
+export interface ViewerStageProps {
+  files: FileOut[];
+  checkedIds: ReadonlySet<number>;
+  onToggleFile: (fileId: number, checked: boolean) => void;
+  colors: PartColors;
+  onSetPartColor: (fileId: number, hex: string) => void;
+  onClearPartColor: (fileId: number) => void;
+  hasColors: boolean;
+  onResetColors: () => void;
+  preset: BackgroundPreset;
+  custom: string;
+  background: string;
+  onPresetChange: (preset: BackgroundPreset) => void;
+  onCustomChange: (custom: string) => void;
+  lightingPreset: LightingPreset;
+  lighting: LightingRig;
+  onLightingChange: (preset: LightingPreset) => void;
+  printerId: number | undefined;
+  onApplyAmsColors: (colors: PartColors) => void;
+  parts: { id: number; url: string; color?: string }[];
+  checkedList: number[];
+  onOpenWindow: (ids: number[]) => void;
+  /** Shows the "New window" / "Parts in windows" pop-out buttons. False in
+   * the `window` variant -- you're already in a pop-out, so re-popping is
+   * noise. */
+  showWindowButtons: boolean;
+  showExpand: boolean;
+  onExpand?: () => void;
+  panelOpen: boolean;
+  onTogglePanel: () => void;
+  /** "inline" gets its own `h-[70vh]` since it isn't inside a sized flex
+   * ancestor; "dialog" and "window" must NOT hard-code a height -- the
+   * dialog's `h-[90vh]` wrapper and the window page's `h-svh` wrapper already
+   * provide it, and the body row just needs to flex to fill it. */
+  variant: "inline" | "dialog" | "window";
+}
+
+/** Strip + canvas + collapsible parts panel -- the whole redesigned viewer
+ * surface. Rendered from the inline tab, the Expand dialog, and the pop-out
+ * window with the SAME props (assembled by `useViewerScene`), so all three
+ * are always in sync and none strips the controls away. Returns a fragment
+ * rather than its own wrapping element: each caller supplies its own
+ * height-bearing flex column (the inline tab a `flex flex-col gap-3` div, the
+ * dialog `DialogContent`, the window page an `h-svh` column), so the body row
+ * becomes a direct flex item of whichever real container it's in without an
+ * extra wrapper needing its own `min-h-0 flex-1` to pass the height down.
+ *
+ * The appearance controls (Background, Lighting) live INSIDE the parts panel,
+ * not the top strip: they're appearance settings and belong beside the
+ * per-part color swatches. A consequence to accept -- collapsing the panel
+ * hides them too. That's correct: the panel is THE control surface, and the
+ * strip's reopen toggle brings the whole thing back. */
+export function ViewerStage({
+  files,
+  checkedIds,
+  onToggleFile,
+  colors,
+  onSetPartColor,
+  onClearPartColor,
+  hasColors,
+  onResetColors,
+  preset,
+  custom,
+  background,
+  onPresetChange,
+  onCustomChange,
+  lightingPreset,
+  lighting,
+  onLightingChange,
+  printerId,
+  onApplyAmsColors,
+  parts,
+  checkedList,
+  onOpenWindow,
+  showWindowButtons,
+  showExpand,
+  onExpand,
+  panelOpen,
+  onTogglePanel,
+  variant,
+}: ViewerStageProps) {
+  // The strip only exists to host actions. With the panel open and no
+  // pop-out/expand actions to show (the window's steady state), it would be
+  // an empty bar -- so render it only when it has something in it.
+  const stripHasContent = !panelOpen || showWindowButtons || showExpand;
+
+  return (
+    <>
+      {stripHasContent && (
+        <div className="flex flex-wrap items-center justify-end gap-2 rounded-lg border border-border bg-card px-3 py-2">
+          {!panelOpen && (
+            <Button
+              type="button"
+              variant="outline"
+              size="icon-sm"
+              aria-label="Expand panel"
+              aria-expanded={false}
+              onClick={onTogglePanel}
+            >
+              <PanelRightOpenIcon />
+            </Button>
+          )}
+          {showWindowButtons && (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={checkedList.length === 0}
+                onClick={() => onOpenWindow(checkedList)}
+              >
+                <ExternalLinkIcon />
+                New window
+              </Button>
+              {checkedList.length > 1 && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => checkedList.forEach((id) => onOpenWindow([id]))}
+                >
+                  Parts in windows
+                </Button>
+              )}
+            </>
+          )}
+          {showExpand && (
+            <Button type="button" variant="outline" size="sm" onClick={onExpand}>
+              <Maximize2Icon />
+              Expand
+            </Button>
+          )}
+        </div>
+      )}
+
+      <div className={cn(BODY_BASE_CLASS, variant === "inline" && INLINE_BODY_HEIGHT_CLASS)}>
+        <div className="min-h-0 flex-1 overflow-hidden rounded-lg border border-border">
+          <MeshCanvas parts={parts} background={background} lighting={lighting} />
+        </div>
+
+        {panelOpen && (
+          <div className="flex w-full shrink-0 flex-col gap-4 rounded-lg border border-border bg-card p-3 lg:w-72">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+                  Parts
+                </span>
+                <span className="text-xs text-muted-foreground tabular-nums">
+                  {checkedList.length} of {files.length}
+                </span>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Collapse panel"
+                aria-expanded={true}
+                onClick={onTogglePanel}
+              >
+                <PanelRightCloseIcon />
+              </Button>
+            </div>
+
+            <div className="space-y-1">
+              {files.map((file) => {
+                const checked = checkedIds.has(file.id);
+                const partColor = colors[file.id];
+                return (
+                  <div key={file.id} className={cn("flex items-center gap-2", !checked && "opacity-60")}>
+                    <Checkbox
+                      checked={checked}
+                      onCheckedChange={(next) => onToggleFile(file.id, next === true)}
+                      aria-label={file.rel_path}
+                    />
+                    <label className="relative inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full focus-within:ring-2 focus-within:ring-ring/50">
+                      <FilamentChip color={partColor ?? "#cccccc"} />
+                      <input
+                        type="color"
+                        aria-label={`Color for ${file.rel_path}`}
+                        value={partColor ?? "#cccccc"}
+                        onChange={(event) => onSetPartColor(file.id, event.target.value)}
+                        className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                      />
+                    </label>
+                    <span className="min-w-0 flex-1 truncate text-sm" title={file.rel_path}>
+                      {file.rel_path}
+                    </span>
+                    {partColor && (
+                      <button
+                        type="button"
+                        aria-label={`Reset color for ${file.rel_path}`}
+                        onClick={() => onClearPartColor(file.id)}
+                        className="inline-flex size-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+                      >
+                        <RotateCcwIcon className="size-3.5" />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="flex flex-col gap-3">
+              <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+                Appearance
+              </span>
+              <div className="flex flex-col gap-1.5">
+                <span className="text-xs text-muted-foreground">Background</span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <SegmentedControl
+                    label="Background"
+                    options={BACKGROUND_PRESET_ORDER}
+                    labels={BACKGROUND_PRESET_LABELS}
+                    value={preset}
+                    onChange={onPresetChange}
+                    className="flex-wrap"
+                  />
+                  {preset === "custom" && (
+                    <input
+                      type="color"
+                      aria-label="Custom background color"
+                      value={custom}
+                      onChange={(event) => onCustomChange(event.target.value)}
+                      className="h-7 w-10 rounded-md border border-input bg-transparent p-0.5"
+                    />
+                  )}
+                </div>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <span className="text-xs text-muted-foreground">Lighting</span>
+                <SegmentedControl
+                  label="Lighting"
+                  options={LIGHTING_PRESET_ORDER}
+                  labels={LIGHTING_PRESET_LABELS}
+                  value={lightingPreset}
+                  onChange={onLightingChange}
+                  className="flex-wrap"
+                />
+              </div>
+            </div>
+
+            {printerId !== undefined && (
+              <AmsSync printerId={printerId} partIds={checkedList} onApply={onApplyAmsColors} />
+            )}
+
+            {hasColors && (
+              <Button type="button" variant="ghost" size="sm" className="w-full" onClick={onResetColors}>
+                Reset colors
+              </Button>
+            )}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}

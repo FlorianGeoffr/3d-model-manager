@@ -91,12 +91,23 @@ function writeStoredBackground(value: StoredBackground): void {
 }
 
 /** Persists the chosen preset + custom hex in localStorage and resolves the
- * `theme` preset against the app's current `next-themes` theme. */
-export function useViewerBackground() {
+ * `theme` preset against the app's current `next-themes` theme. Pass `initial`
+ * to seed the state directly instead of reading localStorage -- the pop-out
+ * window decodes its background from its own URL and must not be clobbered by
+ * whatever this tab last stored. An invalid `initial.preset` degrades to the
+ * default the same as a corrupt persisted value would. */
+export function useViewerBackground(initial?: { preset: BackgroundPreset; custom?: string }) {
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === "dark";
 
-  const [state, setState] = useState<StoredBackground>(() => readStoredBackground());
+  const [state, setState] = useState<StoredBackground>(() =>
+    initial
+      ? {
+          preset: isBackgroundPreset(initial.preset) ? initial.preset : DEFAULT_STATE.preset,
+          custom: initial.custom ?? DEFAULT_STATE.custom,
+        }
+      : readStoredBackground(),
+  );
 
   // Skip the initial run: `state` was just read back from localStorage, so
   // persisting it again on mount would be a redundant no-op write. Only real

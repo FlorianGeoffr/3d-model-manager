@@ -15,11 +15,21 @@ import type { FileOut, ModelDetail } from "@/api/types";
 // lets recolor tests assert per-part colors reach the viewer without a real
 // mock per test.
 type ViewerPart = { id: number; url: string; color?: string };
+type ViewerLighting = { contactShadow: boolean };
 const { modelViewerMock, platePanelMock, defaultModelViewerImpl } = vi.hoisted(() => {
-  const defaultModelViewerImpl = ({ parts, background }: { parts: ViewerPart[]; background: string }) => (
+  const defaultModelViewerImpl = ({
+    parts,
+    background,
+    lighting,
+  }: {
+    parts: ViewerPart[];
+    background: string;
+    lighting?: ViewerLighting;
+  }) => (
     <div
       data-testid="model-viewer"
       data-background={background}
+      data-contact-shadow={lighting ? String(lighting.contactShadow) : undefined}
       data-colors={parts.map((part) => part.color ?? "").join(",")}
     >
       {parts.map((part) => part.url).join(",")}
@@ -47,10 +57,10 @@ vi.mock("@/api/printers", () => ({
 }));
 
 // Radix's Select never reaches an interactive open state under jsdom (same
-// floating-ui/dismissable-layer limitation as Popover, which is why B1's
-// redesigned background control is a `role="radiogroup"` of plain buttons
-// instead of a `<Select>` or a `<Popover>` -- see `BackgroundSegmentedControl`
-// in ViewerTab.tsx) -- swap the remaining `<Select>` (the non-mesh file
+// floating-ui/dismissable-layer limitation as Popover, which is why the
+// Background/Lighting pickers are a `role="radiogroup"` of plain buttons
+// instead of a `<Select>` or a `<Popover>` -- see `SegmentedControl` in
+// `@/components/viewer/SegmentedControl`) -- swap the remaining `<Select>` (the non-mesh file
 // picker) for a native <select> so it can be driven with a plain change
 // event. It carries its accessible name via `<SelectTrigger aria-label=...>`,
 // so this mock pulls that label off whichever child element declares it and
@@ -145,6 +155,12 @@ describe("ViewerTab", () => {
     localStorage.clear();
   });
 
+  // Background and Lighting are now two separate segmented controls in the
+  // panel, and both have a "Studio" segment -- so radio queries must be scoped
+  // to the group under test or they match across both.
+  const bgGroup = () => screen.getByRole("radiogroup", { name: "Background" });
+  const lightGroup = () => screen.getByRole("radiogroup", { name: "Lighting" });
+
   it("shows a placeholder when there are no previewable files", () => {
     render(<ViewerTab model={fakeModel([])} />);
     expect(screen.getByText("No previewable files")).toBeInTheDocument();
@@ -228,7 +244,7 @@ describe("ViewerTab", () => {
     render(<ViewerTab model={fakeModel([file])} />);
     await screen.findByTestId("model-viewer");
 
-    fireEvent.click(screen.getByRole("radio", { name: "White" }));
+    fireEvent.click(within(bgGroup()).getByRole("radio", { name: "White" }));
 
     await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-background", "#ffffff"));
     expect(JSON.parse(localStorage.getItem("viewer-bg") ?? "{}")).toMatchObject({ preset: "white" });
@@ -242,9 +258,9 @@ describe("ViewerTab", () => {
     render(<ViewerTab model={fakeModel([file])} />);
     await screen.findByTestId("model-viewer");
 
-    fireEvent.keyDown(screen.getByRole("radio", { name: "Studio" }), { key: "ArrowRight" });
+    fireEvent.keyDown(within(bgGroup()).getByRole("radio", { name: "Studio" }), { key: "ArrowRight" });
 
-    const white = screen.getByRole("radio", { name: "White" });
+    const white = within(bgGroup()).getByRole("radio", { name: "White" });
     await waitFor(() => expect(white).toHaveAttribute("aria-checked", "true"));
     expect(white).toHaveFocus();
     expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-background", "#ffffff");
@@ -255,9 +271,9 @@ describe("ViewerTab", () => {
     render(<ViewerTab model={fakeModel([file])} />);
     await screen.findByTestId("model-viewer");
 
-    fireEvent.keyDown(screen.getByRole("radio", { name: "Studio" }), { key: "ArrowLeft" });
+    fireEvent.keyDown(within(bgGroup()).getByRole("radio", { name: "Studio" }), { key: "ArrowLeft" });
 
-    const custom = screen.getByRole("radio", { name: "Custom" });
+    const custom = within(bgGroup()).getByRole("radio", { name: "Custom" });
     await waitFor(() => expect(custom).toHaveAttribute("aria-checked", "true"));
     expect(custom).toHaveFocus();
   });
@@ -267,7 +283,7 @@ describe("ViewerTab", () => {
     render(<ViewerTab model={fakeModel([file])} />);
     await screen.findByTestId("model-viewer");
 
-    const radios = screen.getAllByRole("radio");
+    const radios = within(bgGroup()).getAllByRole("radio");
     const tabbable = radios.filter((radio) => radio.tabIndex === 0);
     expect(tabbable).toHaveLength(1);
     expect(tabbable[0]).toHaveAccessibleName("Studio");
@@ -292,11 +308,71 @@ describe("ViewerTab", () => {
     // The custom color well only appears once the Custom segment is selected.
     expect(screen.queryByLabelText("Custom background color")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("radio", { name: "Custom" }));
+    fireEvent.click(within(bgGroup()).getByRole("radio", { name: "Custom" }));
     const colorInput = await screen.findByLabelText("Custom background color");
     fireEvent.change(colorInput, { target: { value: "#123456" } });
 
     await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-background", "#123456"));
+  });
+
+  it("selecting the Bright lighting preset persists it; studio and bright keep the ground shadow", async () => {
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file])} />);
+    await screen.findByTestId("model-viewer");
+
+    // The default studio rig lights with a ground contact shadow.
+    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-contact-shadow", "true");
+
+    fireEvent.click(within(lightGroup()).getByRole("radio", { name: "Bright" }));
+
+    await waitFor(() => expect(localStorage.getItem("viewer-lighting")).toBe("bright"));
+    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-contact-shadow", "true");
+  });
+
+  it("the Flat lighting preset turns the ground contact shadow off", async () => {
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file])} />);
+    await screen.findByTestId("model-viewer");
+
+    fireEvent.click(within(lightGroup()).getByRole("radio", { name: "Flat" }));
+
+    await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-contact-shadow", "false"));
+  });
+
+  it("opens a pop-out window carrying the background and lighting presets in the URL", async () => {
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    const file = fakeFile({ id: 7, rel_path: "a.stl", blob_hash: "hashA", glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file])} />);
+    await screen.findByTestId("model-viewer");
+
+    fireEvent.click(screen.getByRole("button", { name: "New window" }));
+
+    expect(openSpy).toHaveBeenCalledTimes(1);
+    const url = String(openSpy.mock.calls[0][0]);
+    expect(url).toContain("/viewer/test-model?");
+    expect(url).toContain("ids=7");
+    // `bg` carries the PRESET now, not a resolved hex, so the window's control
+    // lands on the right segment; no `bgc` unless the preset is custom.
+    expect(url).toContain("bg=studio");
+    expect(url).toContain("light=studio");
+    expect(url).not.toContain("bgc=");
+    openSpy.mockRestore();
+  });
+
+  it("includes the custom background hex in the pop-out URL only when the preset is custom", async () => {
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    const file = fakeFile({ id: 7, rel_path: "a.stl", blob_hash: "hashA", glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file])} />);
+    await screen.findByTestId("model-viewer");
+
+    fireEvent.click(within(bgGroup()).getByRole("radio", { name: "Custom" }));
+    fireEvent.change(await screen.findByLabelText("Custom background color"), { target: { value: "#123456" } });
+    fireEvent.click(screen.getByRole("button", { name: "New window" }));
+
+    const url = String(openSpy.mock.calls.at(-1)?.[0]);
+    expect(url).toContain("bg=custom");
+    expect(url).toContain("bgc=%23123456");
+    openSpy.mockRestore();
   });
 
   it("recolors a part via its swatch, persists it, and doesn't bleed onto the other part", async () => {
@@ -343,14 +419,22 @@ describe("ViewerTab", () => {
     await screen.findByTestId("model-viewer");
 
     expect(screen.getByRole("checkbox", { name: file.rel_path })).toBeInTheDocument();
+    // The appearance controls live inside the panel now, so collapsing it
+    // takes them with it -- the panel is the single control surface.
+    expect(screen.getByRole("radiogroup", { name: "Background" })).toBeInTheDocument();
+    expect(screen.getByRole("radiogroup", { name: "Lighting" })).toBeInTheDocument();
+
     fireEvent.click(screen.getByRole("button", { name: "Collapse panel" }));
 
     expect(screen.queryByRole("checkbox", { name: file.rel_path })).not.toBeInTheDocument();
+    expect(screen.queryByRole("radiogroup", { name: "Background" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("radiogroup", { name: "Lighting" })).not.toBeInTheDocument();
     const reopen = screen.getByRole("button", { name: "Expand panel" });
     expect(reopen).toHaveAttribute("aria-expanded", "false");
 
     fireEvent.click(reopen);
     expect(await screen.findByRole("checkbox", { name: file.rel_path })).toBeInTheDocument();
+    expect(screen.getByRole("radiogroup", { name: "Background" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Collapse panel" })).toHaveAttribute("aria-expanded", "true");
   });
 

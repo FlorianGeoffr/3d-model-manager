@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "3D Model Manager — Send to app",
+  "version": "0.1.0",
+  "description": "Save MakerWorld, Thingiverse, and Printables models to your self-hosted 3D Model Manager library, and keep your MakerWorld cookie synced.",
+  "permissions": ["cookies", "storage", "alarms", "contextMenus", "activeTab"],
+  "host_permissions": [
+    "*://makerworld.com/*",
+    "*://www.makerworld.com/*",
+    "*://thingiverse.com/*",
+    "*://www.thingiverse.com/*",
+    "*://printables.com/*",
+    "*://www.printables.com/*"
+  ],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "src/popup.html",
+    "default_title": "Save to my library"
+  },
+  "options_page": "src/options.html"
+}

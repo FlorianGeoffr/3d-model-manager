@@ -14,7 +14,7 @@ const { paramsBox, searchBox, modelBox, modelViewerMock } = vi.hoisted(() => ({
       background,
       lighting,
     }: {
-      parts: { id: number; url: string; color?: string }[];
+      parts: { id: number; url: string; color?: string; visible: boolean }[];
       background: string;
       lighting?: { contactShadow: boolean };
     }) => (
@@ -87,8 +87,14 @@ describe("ViewerWindowPage", () => {
 
     const viewer = await screen.findByTestId("model-viewer");
     expect(viewer).toHaveAttribute("data-background", "#112233");
+    // B1 "toggle-fix core": every combinable part is always in `parts` --
+    // only id 2 (the requested one) is `visible`; colors still flow to the
+    // matching part regardless.
     const parts = modelViewerMock.mock.calls.at(-1)?.[0].parts;
-    expect(parts).toEqual([{ id: 2, url: "/api/blobs/bbb/glb", color: "#ff0000" }]);
+    expect(parts).toEqual([
+      { id: 1, url: "/api/blobs/aaa/glb", color: undefined, visible: false },
+      { id: 2, url: "/api/blobs/bbb/glb", color: "#ff0000", visible: true },
+    ]);
   });
 
   it("renders every GLB part when no ids are given, with the default background", async () => {
@@ -128,7 +134,10 @@ describe("ViewerWindowPage", () => {
     expect(screen.getByRole("checkbox", { name: "b.glb" })).not.toBeChecked();
   });
 
-  it("checking another part in the window adds it to the rendered parts", async () => {
+  it("checking another part in the window marks it visible in the rendered parts", async () => {
+    // B1 "toggle-fix core": both parts are always in `parts` (checking id 1
+    // via `ids=1` doesn't drop id 2) -- checking the second part's checkbox
+    // only flips its `visible` flag.
     modelBox.current = {
       data: fakeModel([glbFile(1, "aaa", "a.glb"), glbFile(2, "bbb", "b.glb")]),
       isLoading: false,
@@ -138,11 +147,20 @@ describe("ViewerWindowPage", () => {
     render(<ViewerWindowPage />);
     await screen.findByTestId("model-viewer");
 
+    const before = modelViewerMock.mock.calls.at(-1)?.[0].parts;
+    expect((before ?? []).map((part: { id: number; visible: boolean }) => [part.id, part.visible])).toEqual([
+      [1, true],
+      [2, false],
+    ]);
+
     fireEvent.click(screen.getByRole("checkbox", { name: "b.glb" }));
 
     await waitFor(() => {
       const parts = modelViewerMock.mock.calls.at(-1)?.[0].parts;
-      expect((parts ?? []).map((part: { id: number }) => part.id)).toEqual([1, 2]);
+      expect((parts ?? []).map((part: { id: number; visible: boolean }) => [part.id, part.visible])).toEqual([
+        [1, true],
+        [2, true],
+      ]);
     });
   });
 

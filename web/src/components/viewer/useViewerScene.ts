@@ -20,7 +20,7 @@ import {
   type PartColors,
 } from "@/components/viewer/partColors";
 import type { ViewerStageProps } from "@/components/viewer/ViewerStage";
-import { glbUrl } from "@/components/viewer/viewable";
+import { glbUrl, type ViewerPart } from "@/components/viewer/viewable";
 import type { FileOut } from "@/api/types";
 
 /** Seed values so the pop-out window can start from its URL instead of this
@@ -79,11 +79,19 @@ export function useViewerScene({
     savePartColors(slug, colors);
   }, [slug, colors, persist]);
 
-  const parts = useMemo(
+  // B1 "toggle-fix core": every combinable file becomes a part, checked or
+  // not -- the scene keeps them all mounted and toggles `visible` instead of
+  // the checklist changing which parts even exist in the tree (which used to
+  // force the whole canvas to remount on every checkbox click). `checkedIds`
+  // still drives `visible`, `checkedList`, and the "N of M" header below.
+  const parts: ViewerPart[] = useMemo(
     () =>
-      files
-        .filter((file) => checkedIds.has(file.id))
-        .map((file) => ({ id: file.id, url: glbUrl(file), color: colors[file.id] })),
+      files.map((file) => ({
+        id: file.id,
+        url: glbUrl(file),
+        color: colors[file.id],
+        visible: checkedIds.has(file.id),
+      })),
     [files, checkedIds, colors],
   );
 

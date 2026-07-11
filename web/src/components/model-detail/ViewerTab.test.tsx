@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { Children, isValidElement, type ReactNode } from "react";
+import { Children, isValidElement, useEffect, type ReactNode } from "react";
 
 import { ViewerTab } from "@/components/model-detail/ViewerTab";
 import type { FileOut, ModelDetail } from "@/api/types";
@@ -8,13 +8,16 @@ import type { FileOut, ModelDetail } from "@/api/types";
 // `ModelViewer` is a `React.lazy` chunk that mounts an R3F `<Canvas>`, which
 // jsdom can't run (no WebGL) -- stub it so ViewerTab's branching logic can
 // be exercised without ever touching three.js. It now takes multiple parts
-// (Workstream A "multi-part combined view"), each `{ id, url, color? }`, plus
-// a resolved background color -- render the joined urls + the color onto the
-// stub so tests can assert on them (same joined-url shape as before). The
-// joined `data-colors` (B1 "per-part recolor via the FilamentChip swatch")
-// lets recolor tests assert per-part colors reach the viewer without a real
-// mock per test.
-type ViewerPart = { id: number; url: string; color?: string };
+// (Workstream A "multi-part combined view"), each `{ id, url, color?,
+// visible }`, plus a resolved background color -- render the joined urls +
+// the color onto the stub so tests can assert on them (same joined-url shape
+// as before). The joined `data-colors` (B1 "per-part recolor via the
+// FilamentChip swatch") lets recolor tests assert per-part colors reach the
+// viewer without a real mock per test. `data-parts` (B1 "toggle-fix core")
+// exposes each part's `visible` flag -- every combinable part is ALWAYS in
+// `parts` now (checked or not), so tests that used to assert on which urls
+// were present/absent assert on `visible` here instead.
+type ViewerPart = { id: number; url: string; color?: string; visible: boolean };
 type ViewerLighting = { contactShadow: boolean };
 const { modelViewerMock, platePanelMock, defaultModelViewerImpl } = vi.hoisted(() => {
   const defaultModelViewerImpl = ({
@@ -31,6 +34,7 @@ const { modelViewerMock, platePanelMock, defaultModelViewerImpl } = vi.hoisted((
       data-background={background}
       data-contact-shadow={lighting ? String(lighting.contactShadow) : undefined}
       data-colors={parts.map((part) => part.color ?? "").join(",")}
+      data-parts={parts.map((part) => `${part.id}:${part.visible ? 1 : 0}`).join(",")}
     >
       {parts.map((part) => part.url).join(",")}
     </div>
@@ -190,24 +194,59 @@ describe("ViewerTab", () => {
     expect(screen.getByTestId("model-viewer")).toHaveTextContent("/api/blobs/hashZ/glb");
   });
 
-  it("checking a second glb part combines both urls into the one viewer; unchecking drops it again", async () => {
+  it("checking a second glb part makes it visible in the combined viewer; unchecking hides it again", async () => {
+    // B1 "toggle-fix core": both parts are always mounted in the combined
+    // viewer (their urls are always both present) -- checking/unchecking
+    // only flips which are `visible`, it never adds/removes a part.
     const fileA = fakeFile({ id: 1, rel_path: "a.stl", blob_hash: "hashA", glb_status: "ok" });
     const fileB = fakeFile({ id: 2, rel_path: "b.stl", blob_hash: "hashB", glb_status: "ok" });
     render(<ViewerTab model={fakeModel([fileA, fileB])} />);
 
     // Only the first part is checked by default.
-    expect(await screen.findByTestId("model-viewer")).toHaveTextContent("/api/blobs/hashA/glb");
-    expect(screen.getByTestId("model-viewer")).not.toHaveTextContent("hashB");
+    expect(await screen.findByTestId("model-viewer")).toHaveTextContent(
+      "/api/blobs/hashA/glb,/api/blobs/hashB/glb",
+    );
+    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-parts", "1:1,2:0");
     expect(screen.getByRole("checkbox", { name: "b.stl" })).not.toBeChecked();
 
     fireEvent.click(screen.getByRole("checkbox", { name: "b.stl" }));
-    await waitFor(() =>
-      expect(screen.getByTestId("model-viewer")).toHaveTextContent("/api/blobs/hashA/glb,/api/blobs/hashB/glb"),
-    );
+    await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-parts", "1:1,2:1"));
 
     fireEvent.click(screen.getByRole("checkbox", { name: "a.stl" }));
-    await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveTextContent("/api/blobs/hashB/glb"));
-    expect(screen.getByTestId("model-viewer")).not.toHaveTextContent("hashA");
+    await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-parts", "1:0,2:1"));
+    // Both urls stay present the whole time -- neither part ever unmounts.
+    expect(screen.getByTestId("model-viewer")).toHaveTextContent(
+      "/api/blobs/hashA/glb,/api/blobs/hashB/glb",
+    );
+  });
+
+  it("toggling a part checkbox updates the mounted viewer's visibility without remounting it", async () => {
+    // The regression B1 exists to fix: the whole canvas (WebGL context, IBL
+    // bake, camera) used to remount on every checkbox click because the
+    // error boundary above it was keyed on the checked-id set.
+    const mountSpy = vi.fn();
+    function SpyModelViewer({ parts }: { parts: ViewerPart[] }) {
+      useEffect(() => {
+        mountSpy();
+      }, []);
+      return (
+        <div data-testid="model-viewer" data-parts={parts.map((part) => `${part.id}:${part.visible ? 1 : 0}`).join(",")} />
+      );
+    }
+    modelViewerMock.mockImplementation(SpyModelViewer);
+
+    const fileA = fakeFile({ id: 1, rel_path: "a.stl", blob_hash: "hashA", glb_status: "ok" });
+    const fileB = fakeFile({ id: 2, rel_path: "b.stl", blob_hash: "hashB", glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([fileA, fileB])} />);
+    await screen.findByTestId("model-viewer");
+    expect(mountSpy).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "b.stl" }));
+
+    await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-parts", "1:1,2:1"));
+    expect(mountSpy).toHaveBeenCalledTimes(1);
+
+    modelViewerMock.mockImplementation(defaultModelViewerImpl);
   });
 
   it("shows the checked/total part count in the panel header, updating as parts are checked", async () => {
@@ -225,18 +264,19 @@ describe("ViewerTab", () => {
     expect(await screen.findByText("2 of 3")).toBeInTheDocument();
   });
 
-  it("shows a hint instead of an empty canvas when every part is unchecked", async () => {
+  it("unchecking every part keeps the viewer mounted and shows a 'No parts selected' hint", async () => {
+    // B1 "toggle-fix core": unmounting the canvas here would tear down the
+    // WebGL context, IBL bake, and camera for no reason -- it stays mounted
+    // with every part hidden, and a hint overlays it instead.
     const file = fakeFile({ glb_status: "ok" });
     render(<ViewerTab model={fakeModel([file])} />);
     await screen.findByTestId("model-viewer");
 
     fireEvent.click(screen.getByRole("checkbox", { name: file.rel_path }));
 
-    expect(await screen.findByText("Select a part to preview")).toBeInTheDocument();
-    // B1: the checklist moved into the side panel, so "above" is no longer
-    // accurate copy.
-    expect(screen.getByText("Select a part in the panel to render it.")).toBeInTheDocument();
-    expect(screen.queryByTestId("model-viewer")).not.toBeInTheDocument();
+    expect(await screen.findByText("No parts selected")).toBeInTheDocument();
+    expect(screen.getByTestId("model-viewer")).toBeInTheDocument();
+    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-parts", "1:0");
   });
 
   it("selecting the White background passes #ffffff to ModelViewer and persists the choice", async () => {
@@ -521,8 +561,11 @@ describe("ViewerTab", () => {
 
   it("clears a previous crash once the checked parts change to a working set", async () => {
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    // B1: every part is always mounted now, so the throw is gated on
+    // `visible` (not mere presence) -- otherwise the always-present badhash
+    // part would keep throwing even once it's unchecked.
     modelViewerMock.mockImplementation(({ parts }: { parts: ViewerPart[]; background: string }) => {
-      if (parts.some((part) => part.url.includes("badhash"))) throw new Error("bad glb");
+      if (parts.some((part) => part.visible && part.url.includes("badhash"))) throw new Error("bad glb");
       return defaultModelViewerImpl({ parts, background: "#a1a1aa" });
     });
     const fileA = fakeFile({ id: 1, rel_path: "a.stl", blob_hash: "badhash", glb_status: "ok" });

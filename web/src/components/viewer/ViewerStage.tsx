@@ -27,6 +27,7 @@ import {
   type LightingRig,
 } from "@/components/viewer/lighting";
 import { traysToPartColors, type PartColors } from "@/components/viewer/partColors";
+import type { ViewerPart } from "@/components/viewer/viewable";
 import type { FileOut } from "@/api/types";
 
 // three.js/@react-three/fiber/drei are heavy (Global Constraints "BUNDLE
@@ -64,15 +65,43 @@ export function PlaceholderCard({
 // this, a GLB fetch/parse throw from the lazy R3F viewer propagates past
 // this tab to the router's top-level error surface, taking down the whole
 // model-detail page instead of just this one preview.
-interface ViewerErrorBoundaryState {
-  hasError: boolean;
+interface ViewerErrorBoundaryProps {
+  children: ReactNode;
+  /** B1 "toggle-fix core": used to be a `key` on this boundary (the joined
+   * checked ids), which cleared a stuck error by remounting the boundary --
+   * and everything under it, including the `<Canvas>` -- on every checkbox
+   * toggle, not just after a crash. Now it's a plain prop: parts stay
+   * mounted, and `getDerivedStateFromProps` below clears `hasError` itself
+   * the next time the checked selection actually changes (comparing against
+   * the resetKey the error happened under, tracked in state), so a crash
+   * doesn't get stuck on the fallback forever without remounting anything. */
+  resetKey: string;
 }
 
-class ViewerErrorBoundary extends Component<{ children: ReactNode }, ViewerErrorBoundaryState> {
-  state: ViewerErrorBoundaryState = { hasError: false };
+interface ViewerErrorBoundaryState {
+  hasError: boolean;
+  resetKey: string;
+}
 
-  static getDerivedStateFromError(): ViewerErrorBoundaryState {
+class ViewerErrorBoundary extends Component<ViewerErrorBoundaryProps, ViewerErrorBoundaryState> {
+  state: ViewerErrorBoundaryState = { hasError: false, resetKey: this.props.resetKey };
+
+  static getDerivedStateFromError(): Pick<ViewerErrorBoundaryState, "hasError"> {
     return { hasError: true };
+  }
+
+  // Derives state from props instead of a `componentDidUpdate` + `setState`
+  // pair (oxlint's `react/no-did-update-set-state` flags that combination as
+  // update-thrashing-prone) -- functionally the same reset, just expressed
+  // as a pure props+state -> state mapping: whenever `resetKey` changes,
+  // clear `hasError` (a no-op if it was already false) and resync the
+  // tracked key for the next comparison.
+  static getDerivedStateFromProps(
+    props: ViewerErrorBoundaryProps,
+    state: ViewerErrorBoundaryState,
+  ): ViewerErrorBoundaryState | null {
+    if (props.resetKey === state.resetKey) return null;
+    return { hasError: false, resetKey: props.resetKey };
   }
 
   render() {
@@ -92,16 +121,24 @@ class ViewerErrorBoundary extends Component<{ children: ReactNode }, ViewerError
 /** The combined multi-part canvas, guarded by its own error boundary. Reused
  * for the inline box, the pop-out dialog, and the standalone window (via
  * `ViewerStage`) so all three stay visually and behaviorally identical --
- * only the wrapping height/size differs. Keyed on the checked file ids so
- * switching the selection remounts the boundary, clearing any error state
- * left over from a previous selection instead of getting stuck on the
- * fallback forever (mirrors the old single-file behavior keyed on `file.id`). */
+ * only the wrapping height/size differs.
+ *
+ * `parts` now always carries EVERY combinable file (B1 "toggle-fix core"),
+ * checked or not -- `PlaceholderCard` here only covers the case where there
+ * is nothing combinable AT ALL (no GLB-ready files exist), which in practice
+ * `ViewerTab`/`ViewerWindowPage` already guard against before ever reaching
+ * this component. When parts exist but none is checked, the canvas stays
+ * mounted (unmounting it would blank the WebGL context, IBL bake, and camera
+ * for no reason) and a `pointer-events-none` hint overlays it instead. The
+ * error boundary's `resetKey` is the checked ids only -- switching the
+ * selection clears a stuck crash without remounting the boundary (see its
+ * comment above). */
 function MeshCanvas({
   parts,
   background,
   lighting,
 }: {
-  parts: { id: number; url: string; color?: string }[];
+  parts: ViewerPart[];
   background: string;
   lighting: LightingRig;
 }) {
@@ -114,12 +151,21 @@ function MeshCanvas({
     );
   }
 
+  const visibleParts = parts.filter((part) => part.visible);
+
   return (
-    <ViewerErrorBoundary key={parts.map((part) => part.id).join("|")}>
-      <Suspense fallback={<Skeleton className="h-full w-full" />}>
-        <ModelViewer parts={parts} background={background} lighting={lighting} />
-      </Suspense>
-    </ViewerErrorBoundary>
+    <>
+      <ViewerErrorBoundary resetKey={visibleParts.map((part) => part.id).join("|")}>
+        <Suspense fallback={<Skeleton className="h-full w-full" />}>
+          <ModelViewer parts={parts} background={background} lighting={lighting} />
+        </Suspense>
+      </ViewerErrorBoundary>
+      {visibleParts.length === 0 && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-background/50 text-sm text-muted-foreground">
+          No parts selected
+        </div>
+      )}
+    </>
   );
 }
 
@@ -186,7 +232,7 @@ export interface ViewerStageProps {
   onLightingChange: (preset: LightingPreset) => void;
   printerId: number | undefined;
   onApplyAmsColors: (colors: PartColors) => void;
-  parts: { id: number; url: string; color?: string }[];
+  parts: ViewerPart[];
   checkedList: number[];
   onOpenWindow: (ids: number[]) => void;
   /** Shows the "New window" / "Parts in windows" pop-out buttons. False in
@@ -303,7 +349,7 @@ export function ViewerStage({
       )}
 
       <div className={cn(BODY_BASE_CLASS, variant === "inline" && INLINE_BODY_HEIGHT_CLASS)}>
-        <div className="min-h-0 flex-1 overflow-hidden rounded-lg border border-border">
+        <div className="relative min-h-0 flex-1 overflow-hidden rounded-lg border border-border">
           <MeshCanvas parts={parts} background={background} lighting={lighting} />
         </div>
 

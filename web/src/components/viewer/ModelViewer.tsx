@@ -18,78 +18,187 @@
  * uses, plus real directional lights and `ACESFilmicToneMapping`, so PBR
  * materials (authored assuming IBL) get specular response and the model
  * reads as solid instead of flat and chalky.
+ *
+ * ARCHITECTURE (B1 "toggle-fix core"): every combinable part stays mounted
+ * for as long as it's in `parts`, whether or not its checklist checkbox is
+ * checked -- toggling a checkbox only flips a `<group visible>` flag inside
+ * `GltfPart`, it never adds/removes that part's subtree. Two library facts
+ * forced this design:
+ *
+ *  1. `<Canvas>` wraps ALL of its children in exactly ONE internal
+ *     `<Suspense>`. If a newly-checked part's `useGLTF` suspends, R3F hides
+ *     the WHOLE already-committed scene until that one GLB resolves, then
+ *     un-hides it -- which re-fires every layout effect underneath,
+ *     including `Bounds`'s, and jumps the camera. Checking one more part
+ *     must not blank parts that already loaded, so each part gets its OWN
+ *     `<Suspense>` (`GltfPart`'s per-part wrapper below), not a shared one.
+ *  2. drei's `Center`/`Resize` re-measure in a `useLayoutEffect` whose deps
+ *     do NOT include their children -- toggling which parts render would
+ *     never trigger a re-measure on its own. `BoundsRefitter` below is the
+ *     explicit re-measure path, driven off `loadedCount` (how many parts
+ *     have actually finished loading), not off visibility.
+ *
+ * Visibility toggles are therefore deliberately cheap: `THREE.Box3.
+ * expandByObject` (which every `Box3.setFromObject` call -- `Center`,
+ * `Resize`, `Bounds`'s default `refresh()` -- goes through) ignores
+ * `.visible`, so hidden parts still count toward the combined bounding box.
+ * Showing/hiding a part never changes framing, and `BoundsRefitter` only
+ * ever refits when `loadedCount` changes (a part finishing its GLB load),
+ * never on a plain checkbox click.
  */
-import { useEffect, useMemo } from "react";
+import { Component, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
 import * as THREE from "three";
 import { Canvas, useThree } from "@react-three/fiber";
 import {
   Bounds,
   Center,
-  Clone,
   ContactShadows,
   Environment,
   Lightformer,
   OrbitControls,
   Resize,
+  useBounds,
   useGLTF,
 } from "@react-three/drei";
 import type { LightingRig } from "@/components/viewer/lighting";
+import type { ViewerPart } from "@/components/viewer/viewable";
 
-// drei's `useGLTF` cache is a module-global keyed by url, so every caller of
-// the same url shares the SAME `THREE.Group` scene. `<primitive>` would mount
-// that shared instance directly, and because `Object3D.add` reparents, a
-// second simultaneous mount of the same url (the pop-out Dialog open at the
-// same time as the inline canvas, or two checked parts that dedup to one
-// content-addressed blob -> one url) would detach it from the first, blanking
-// it. `Clone` gives each mount its own copy of the cached scene (geometry and
-// materials stay shared, so it's cheap), making concurrent mounts safe.
-//
-// When a per-part `color` is set (M8 G2 recolor), the shared-material path
-// won't do: we have to OWN the materials to mutate them, so that branch
-// deep-clones the scene AND clones each mesh material before recoloring
-// (otherwise the color would bleed into every other mount of the same blob
-// through the shared cache) and disposes those clones on unmount.
-function GltfModel({ url, color }: { url: string; color?: string }) {
-  const { scene } = useGLTF(url);
-  if (!color) return <Clone object={scene} />;
-  return <RecoloredModel scene={scene} color={color} />;
+// A 1-unit box, used as `Resize`'s `box3` while nothing has finished loading
+// yet (`allBox` is `null`) -- `Resize` divides by the box's largest
+// dimension to compute its scale, and an empty/zero-size box would divide by
+// zero or `-Infinity`. Never mutated; shared across renders.
+const UNIT_BOX = new THREE.Box3(new THREE.Vector3(-0.5, -0.5, -0.5), new THREE.Vector3(0.5, 0.5, 0.5));
+
+function ownedMaterialsOf(mesh: THREE.Mesh): THREE.Material[] {
+  return Array.isArray(mesh.material) ? mesh.material : [mesh.material];
 }
 
-function RecoloredModel({ scene, color }: { scene: THREE.Object3D; color: string }) {
-  const object = useMemo(() => {
+function forEachMesh(object: THREE.Object3D, fn: (mesh: THREE.Mesh) => void) {
+  object.traverse((child) => {
+    const mesh = child as THREE.Mesh;
+    if (mesh.isMesh && mesh.material) fn(mesh);
+  });
+}
+
+// A tiny local class -- same rationale as `ViewerErrorBoundary` in
+// `ViewerStage.tsx` (no hook form for error boundaries, no
+// `react-error-boundary` dependency). Scoped to ONE part's subtree: a
+// corrupt/unparseable GLB now only takes out its own `<group>`, not the
+// combined scene every other checked part renders into, and not the whole
+// `ModelViewer` (which `ViewerErrorBoundary` still guards for a crash that
+// isn't part-scoped, e.g. a lighting/Canvas-level throw). Renders `null` on
+// error rather than a placeholder card -- there's no per-part slot in the
+// canvas layout to put one, and the part simply not appearing is enough of a
+// signal alongside the still-working parts around it.
+class PartErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
+  state = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  render() {
+    if (this.state.hasError) return null;
+    return this.props.children;
+  }
+}
+
+/**
+ * One combinable GLB part. Unifies the old `GltfModel`/`RecoloredModel`
+ * split -- every mount now OWNS its materials (clones each mesh's material
+ * once, geometry and textures stay shared with drei's `useGLTF` cache) so a
+ * `color` can always be applied/cleared imperatively without ever touching
+ * the shared cache materials (which would bleed the color into every other
+ * mount of the same content-addressed blob). The original material is
+ * stashed on the clone's `userData.__source` so clearing a color can restore
+ * it exactly instead of needing a second network round-trip or a re-clone.
+ *
+ * Also measures the part's own native-mm `Box3` and triangle count once, in
+ * the same `useMemo` pass, while the clone is still unparented -- reported
+ * upward via `onLoaded` so `ModelViewer` can union every loaded part's box
+ * into the combined `Resize`/`Bounds` target without each part fighting over
+ * its own separate `Center`/`Resize` (which would destroy their relative
+ * positions -- see the header comment on the scene graph below).
+ */
+function GltfPart({
+  id,
+  url,
+  color,
+  visible,
+  onLoaded,
+}: {
+  id: number;
+  url: string;
+  color: string | undefined;
+  visible: boolean;
+  onLoaded: (id: number, box: THREE.Box3, triangles: number) => void;
+}) {
+  const { scene } = useGLTF(url);
+
+  const { object, box, triangles } = useMemo(() => {
     const cloned = scene.clone(true);
-    const target = new THREE.Color(color);
-    cloned.traverse((obj) => {
-      const mesh = obj as THREE.Mesh;
-      if (!mesh.isMesh || !mesh.material) return;
-      const recolor = (material: THREE.Material) => {
+    let triCount = 0;
+    forEachMesh(cloned, (mesh) => {
+      const clone = (material: THREE.Material) => {
         const owned = material.clone(); // never mutate the shared cache material
-        const std = owned as THREE.MeshStandardMaterial;
-        if (std.color) std.color.copy(target);
+        owned.userData.__source = material;
         return owned;
       };
-      mesh.material = Array.isArray(mesh.material)
-        ? mesh.material.map(recolor)
-        : recolor(mesh.material);
-    });
-    return cloned;
-  }, [scene, color]);
+      mesh.material = Array.isArray(mesh.material) ? mesh.material.map(clone) : clone(mesh.material);
 
-  // Dispose the materials WE cloned above when this object is replaced (color
-  // change) or unmounted -- R3F does not auto-dispose externally-created
-  // `<primitive>` objects, so without this each recolor would leak materials.
+      const geometry = mesh.geometry;
+      const index = geometry.index;
+      triCount += index ? index.count / 3 : (geometry.attributes.position?.count ?? 0) / 3;
+    });
+    // Measured while `cloned` is still unparented, so this is the part's
+    // native mm bounding box -- no Resize/Center/group scaling applied yet.
+    const nativeBox = new THREE.Box3().setFromObject(cloned);
+    return { object: cloned, box: nativeBox, triangles: triCount };
+  }, [scene]);
+
+  useLayoutEffect(() => {
+    onLoaded(id, box, triangles);
+  }, [id, box, triangles, onLoaded]);
+
+  // Dispose the materials WE cloned above when this part is unmounted -- R3F
+  // does not auto-dispose externally-created `<primitive>` objects, so
+  // without this every mount would leak owned materials. Geometries and
+  // textures are NOT disposed here: they're still owned by drei's `useGLTF`
+  // cache and may be shared with other mounts of the same url.
   useEffect(() => {
     return () => {
-      object.traverse((obj) => {
-        const mesh = obj as THREE.Mesh;
-        if (!mesh.isMesh || !mesh.material) return;
-        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-        materials.forEach((material) => material.dispose());
+      forEachMesh(object, (mesh) => {
+        ownedMaterialsOf(mesh).forEach((material) => material.dispose());
       });
     };
   }, [object]);
 
-  return <primitive object={object} />;
+  const invalidate = useThree((state) => state.invalidate);
+
+  // Recolor as an imperative traversal over the owned materials, so a color
+  // change never re-clones the scene. Clearing `color` restores each
+  // material's `.color` from the `__source` stashed above.
+  useEffect(() => {
+    forEachMesh(object, (mesh) => {
+      ownedMaterialsOf(mesh).forEach((material) => {
+        const std = material as THREE.MeshStandardMaterial;
+        if (!std.color) return;
+        if (color) {
+          std.color.set(color);
+        } else {
+          const source = material.userData.__source as THREE.MeshStandardMaterial | undefined;
+          if (source?.color) std.color.copy(source.color);
+        }
+      });
+    });
+    invalidate();
+  }, [object, color, invalidate]);
+
+  return (
+    <group visible={visible}>
+      <primitive object={object} />
+    </group>
+  );
 }
 
 // `toneMappingExposure` lives on the renderer, not a scene prop, so it can't
@@ -111,6 +220,25 @@ function ToneMapping({ exposure }: { exposure: number }) {
   return null;
 }
 
+/** Re-measures and refits the camera as parts finish loading -- `Bounds`'s
+ * own layout effect only re-runs on window resize (`observe`) or first
+ * mount, and `Resize`/`Center` don't watch their children either, so nothing
+ * else would re-frame the camera as a second/third part's GLB arrives.
+ * Fires ONLY on `loadedCount` changing (a part finishing its load), never on
+ * a visibility toggle -- toggling a checked part neither adds nor removes it
+ * from `loadedParts`, so this intentionally does not run then. */
+function BoundsRefitter({ loadedCount }: { loadedCount: number }) {
+  const api = useBounds();
+  useLayoutEffect(() => {
+    if (loadedCount > 0) api.refresh().clip().fit();
+    // `api` is included for the lint rule's sake -- it's a `useMemo` inside
+    // `Bounds` keyed on the camera/controls/margin, so in practice it's
+    // stable across re-renders and this still only actually refits when
+    // `loadedCount` changes.
+  }, [loadedCount, api]);
+  return null;
+}
+
 /**
  * `parts` renders one GLB per entry inside a single shared `<Bounds>` /
  * `<Resize>` / `<Center>` stack so multiple mesh parts (Workstream A
@@ -127,16 +255,64 @@ function ToneMapping({ exposure }: { exposure: number }) {
  * hard-coded studio gray -- see `background.ts` for the preset/theme
  * resolution that produces it. `lighting` selects the intensities/exposure/
  * contact-shadow toggle -- see `lighting.ts` for the preset resolution.
+ *
+ * Every part in `parts` is ALWAYS rendered (see the file header) -- `part.
+ * visible` toggles a `<group visible>`, it never mounts/unmounts the part.
+ * `loadedParts` tracks the parts that have actually finished loading (keyed
+ * by id, pruned when a part disappears from `parts` entirely -- e.g. the
+ * underlying file set changed), independent of which are currently visible,
+ * so the combined bounding box used by `Resize`/`Bounds` stays stable across
+ * plain visibility toggles.
  */
 export default function ModelViewer({
   parts,
   background,
   lighting,
 }: {
-  parts: { id: number; url: string; color?: string }[];
+  parts: ViewerPart[];
   background: string;
   lighting: LightingRig;
 }) {
+  const [loadedParts, setLoadedParts] = useState<Map<number, { box: THREE.Box3; triangles: number }>>(
+    () => new Map(),
+  );
+
+  const onLoaded = useCallback((id: number, box: THREE.Box3, triangles: number) => {
+    setLoadedParts((prev) => {
+      const existing = prev.get(id);
+      if (existing && existing.triangles === triangles && existing.box.equals(box)) return prev;
+      const next = new Map(prev);
+      next.set(id, { box, triangles });
+      return next;
+    });
+  }, []);
+
+  // Prune parts that dropped out of `parts` entirely (not merely hidden) --
+  // e.g. the model's file set changed under an already-mounted viewer.
+  useEffect(() => {
+    const ids = new Set(parts.map((part) => part.id));
+    setLoadedParts((prev) => {
+      let changed = false;
+      const next = new Map(prev);
+      for (const id of next.keys()) {
+        if (!ids.has(id)) {
+          next.delete(id);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [parts]);
+
+  const loadedCount = loadedParts.size;
+
+  const allBox = useMemo(() => {
+    if (loadedParts.size === 0) return null;
+    const union = new THREE.Box3();
+    for (const { box } of loadedParts.values()) union.union(box);
+    return union;
+  }, [loadedParts]);
+
   return (
     <Canvas frameloop="demand" dpr={[1, 2]} className="h-full w-full">
       <color attach="background" args={[background]} />
@@ -165,26 +341,41 @@ export default function ModelViewer({
       {/* `Bounds > Resize > Center` all run their layout effects child-first,
           so this evaluates in the needed order: ground the combined bbox to
           y=0 (`Center top`), normalize its largest dimension to 1
-          (`Resize`), then frame the camera to it (`Bounds`). */}
+          (`Resize`), then frame the camera to it (`Bounds`, refit driven by
+          `BoundsRefitter` below). Each part gets its own `<Suspense>` +
+          `PartErrorBoundary` (inside the per-part wrapper) instead of one
+          shared boundary around the whole map -- see the file header for
+          why. */}
       <Bounds fit clip observe margin={1.2}>
-        <Resize>
-          <Center top>
+        <Resize box3={allBox ?? UNIT_BOX}>
+          <Center top cacheKey={loadedCount} disable={loadedCount === 0}>
             {parts.map((part) => (
-              <GltfModel key={part.id} url={part.url} color={part.color} />
+              <PartErrorBoundary key={part.id}>
+                <Suspense fallback={null}>
+                  <GltfPart
+                    id={part.id}
+                    url={part.url}
+                    color={part.color}
+                    visible={part.visible}
+                    onLoaded={onLoaded}
+                  />
+                </Suspense>
+              </PartErrorBoundary>
             ))}
           </Center>
         </Resize>
+        <BoundsRefitter loadedCount={loadedCount} />
       </Bounds>
 
       {/* A render-target soft shadow, not a shadow map -- `<Canvas>` has no
           `shadows` prop and no light here has `castShadow`. Adding either
           would double up with this and need shadow-acne tuning for no
-          visual gain. Safe under `frameloop="demand"` with `frames={1}`:
-          `<Canvas>` wraps all children in one `<Suspense>`, so a suspending
-          `useGLTF` unmounts/remounts the whole subtree together -- the model
-          is guaranteed present by the first committed frame. */}
+          visual gain. `frames={1}` bakes once and goes stale, so it's keyed
+          on `loadedCount` (a part finishing load) and the visible id set (a
+          checkbox toggle) so the bake re-runs whenever either changes. */}
       {lighting.contactShadow && (
         <ContactShadows
+          key={`${loadedCount}|${parts.filter((part) => part.visible).map((part) => part.id).join(",")}`}
           position={[0, -0.001, 0]}
           scale={3}
           far={1.2}

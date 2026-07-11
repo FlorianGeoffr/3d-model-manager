@@ -5,6 +5,25 @@
  */
 import type { FileOut, ModelDetail } from "@/api/types";
 
+/** One combinable mesh part passed down to the viewer scene (`useViewerScene`
+ * -> `ViewerStage` -> the lazy `ModelViewer`). Kept in this dependency-free
+ * module (no React/three) rather than `ModelViewer.tsx` so consumers that
+ * never render the viewer -- `ViewerStage`, `useViewerScene` -- can import
+ * the type without pulling the lazy R3F chunk into the main bundle (Global
+ * Constraints "BUNDLE RULE"; a `import type` is erased at compile time
+ * regardless, but this keeps the type's home consistent with that rule).
+ *
+ * `visible` (B1 "toggle-fix core") is ALWAYS present -- every combinable
+ * part is included here whether or not its checkbox is checked, so the
+ * scene can keep every part mounted and merely toggle this flag instead of
+ * remounting the whole canvas when a checkbox changes. */
+export interface ViewerPart {
+  id: number;
+  url: string;
+  color?: string;
+  visible: boolean;
+}
+
 // Mirrors `PREVIEW_TRIANGLE_THRESHOLD` in `backend/app/tasks/pipeline.py` —
 // keep in sync by hand (Global Constraints "types.ts" convention).
 const PREVIEW_TRIANGLE_THRESHOLD = 1_500_000;

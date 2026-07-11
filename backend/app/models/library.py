@@ -110,6 +110,12 @@ class Model(Base):
     # brief). `patch_model` allows clearing it so the UI can dismiss the flag.
     review_state: Mapped[str | None] = mapped_column(String)
     is_archived: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=false())
+    # A user-starred model (Branch 4 Task 1: favorites). Indexed -- like
+    # `source_collection_id`/`format`, the gallery's `favorite=` filter is a
+    # plain equality on this column.
+    favorite: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=false(), index=True
+    )
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         server_default=func.now(), onupdate=func.now(), nullable=False
@@ -150,6 +156,27 @@ class Note(Base):
     updated_at: Mapped[datetime] = mapped_column(
         server_default=func.now(), onupdate=func.now(), nullable=False
     )
+
+
+class PrintQueueEntry(Base):
+    """One model queued to print, in manual print order (Branch 4 Task 1).
+
+    ``model_id`` is UNIQUE -- a model can only be queued once; re-adding an
+    already-queued model is idempotent (``app.services.queue.enqueue_model``
+    returns the existing entry rather than erroring). ``position`` is a
+    dense 1..n ranking over the whole queue, renumbered by the service layer
+    on every insert/delete/reorder so the UI can always render (and PATCH
+    back) a contiguous list.
+    """
+
+    __tablename__ = "print_queue"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    model_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("models.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    added_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
 
 
 class Revision(Base):

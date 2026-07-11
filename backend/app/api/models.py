@@ -11,7 +11,15 @@ from app.api.deps import get_storage_backend
 from app.config import Settings, get_settings
 from app.db import get_db
 from app.schemas.jobs import JobOut
-from app.schemas.library import GalleryPage, ModelCreate, ModelDetail, ModelPatch, ModelRelocateIn
+from app.schemas.library import (
+    GalleryPage,
+    ModelBulkIn,
+    ModelBulkOut,
+    ModelCreate,
+    ModelDetail,
+    ModelPatch,
+    ModelRelocateIn,
+)
 from app.services import jobs as jobs_service
 from app.services import library
 from app.services import storage_backends as storage_backends_service
@@ -41,6 +49,7 @@ async def list_models(
     format: str | None = None,
     has_sliced: bool | None = None,
     collection: int | None = None,
+    favorite: bool | None = None,
     sort: str = "-updated_at",
     archived: bool = False,
     limit: int = Query(20, ge=1, le=100),
@@ -54,12 +63,31 @@ async def list_models(
         format_=format,
         has_sliced=has_sliced,
         collection=collection,
+        favorite=favorite,
         sort=sort,
         archived=archived,
         limit=limit,
         cursor=cursor,
     )
     return GalleryPage(items=items, next_cursor=next_cursor)
+
+
+@router.post("/bulk", response_model=ModelBulkOut)
+async def bulk_update_models(
+    payload: ModelBulkIn, db: AsyncSession = Depends(get_db)
+) -> ModelBulkOut:
+    """Declared BEFORE ``/{slug}`` (Branch 4 Task 1) -- FastAPI matches
+    routes in declaration order, so a literal ``/bulk`` segment must come
+    before the ``{slug}`` path-param routes or it would be parsed as a slug.
+    """
+    updated = await library.bulk_update_models(
+        db,
+        ids=payload.ids,
+        add_tags=payload.add_tags,
+        remove_tags=payload.remove_tags,
+        favorite=payload.favorite,
+    )
+    return ModelBulkOut(updated=updated)
 
 
 @router.get("/{slug}", response_model=ModelDetail)

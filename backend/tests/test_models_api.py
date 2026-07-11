@@ -681,6 +681,106 @@ async def test_gallery_and_detail_review_state_is_null_for_normal_model(
 
 
 # ---------------------------------------------------------------------------
+# favorites (Branch 4 Task 1): ModelSummary/ModelDetail.favorite, PATCH
+# toggle, and the gallery's `favorite=` filter facet.
+# ---------------------------------------------------------------------------
+
+
+async def test_patch_model_favorite_toggle(authenticated_client: httpx.AsyncClient) -> None:
+    created = await _create_model(authenticated_client, "Favorite Me")
+    assert created["favorite"] is False
+
+    starred = await authenticated_client.patch(
+        f"/api/models/{created['slug']}", json={"favorite": True}
+    )
+    assert starred.status_code == 200
+    assert starred.json()["favorite"] is True
+
+    unstarred = await authenticated_client.patch(
+        f"/api/models/{created['slug']}", json={"favorite": False}
+    )
+    assert unstarred.status_code == 200
+    assert unstarred.json()["favorite"] is False
+
+
+async def test_gallery_favorite_filter_and_schema_field(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    fav = await _create_model(authenticated_client, "Favorite Model")
+    plain = await _create_model(authenticated_client, "Plain Model")
+
+    patch = await authenticated_client.patch(f"/api/models/{fav['slug']}", json={"favorite": True})
+    assert patch.status_code == 200
+
+    fav_item = await _gallery_item(authenticated_client, fav["slug"])
+    plain_item = await _gallery_item(authenticated_client, plain["slug"])
+    assert fav_item["favorite"] is True
+    assert plain_item["favorite"] is False
+
+    only_favorites = await authenticated_client.get("/api/models?favorite=true")
+    assert [i["slug"] for i in only_favorites.json()["items"]] == [fav["slug"]]
+
+    # `favorite=false` must NOT hide favorites -- it applies no filter at all.
+    unfiltered_by_false = await authenticated_client.get("/api/models?favorite=false")
+    slugs = {i["slug"] for i in unfiltered_by_false.json()["items"]}
+    assert slugs == {fav["slug"], plain["slug"]}
+
+
+# ---------------------------------------------------------------------------
+# bulk ops (Branch 4 Task 1): POST /models/bulk
+# ---------------------------------------------------------------------------
+
+
+async def test_bulk_add_remove_tags_and_favorite_across_models(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    model_a = await _create_model(authenticated_client, "Bulk A")
+    model_b = await _create_model(authenticated_client, "Bulk B")
+    for model in (model_a, model_b):
+        tagged = await authenticated_client.post(
+            f"/api/models/{model['id']}/tags", json={"name": "old"}
+        )
+        assert tagged.status_code == 201
+
+    response = await authenticated_client.post(
+        "/api/models/bulk",
+        json={
+            "ids": [model_a["id"], model_b["id"]],
+            "add_tags": ["new"],
+            "remove_tags": ["old"],
+            "favorite": True,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"updated": 2}
+
+    for model in (model_a, model_b):
+        detail = await authenticated_client.get(f"/api/models/{model['slug']}")
+        body = detail.json()
+        assert body["tags"] == ["new"]
+        assert body["favorite"] is True
+
+
+async def test_bulk_unknown_id_is_404_with_nothing_applied(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    model = await _create_model(authenticated_client, "Bulk Untouched")
+
+    response = await authenticated_client.post(
+        "/api/models/bulk",
+        json={"ids": [model["id"], 999999], "add_tags": ["should-not-land"], "favorite": True},
+    )
+
+    assert response.status_code == 404
+
+    detail = await authenticated_client.get(f"/api/models/{model['slug']}")
+    body = detail.json()
+    assert body["tags"] == []
+    assert body["favorite"] is False
+
+
+# ---------------------------------------------------------------------------
 # relocate (Workstream C task C3): POST /models/{slug}/relocate enqueues
 # app.tasks.relocate.relocate_model_storage. The relocate MECHANICS
 # (move/replicate copy+verify, hash-mismatch handling) are covered end to

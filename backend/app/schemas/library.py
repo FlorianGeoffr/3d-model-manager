@@ -42,6 +42,7 @@ class ModelPatch(BaseModel):
     description: str | None = None
     cover_blob_hash: str | None = None
     review_state: str | None = None
+    favorite: bool | None = None
 
 
 class ModelRelocateIn(BaseModel):
@@ -54,6 +55,21 @@ class ModelRelocateIn(BaseModel):
 
     target_backend_id: int
     mode: Literal["move", "replicate"]
+
+
+class ModelBulkIn(BaseModel):
+    """``POST /models/bulk`` payload (Branch 4 Task 1): apply the same
+    tag/favorite changes to every model in ``ids`` in one call.
+    """
+
+    ids: list[int]
+    add_tags: list[str] | None = None
+    remove_tags: list[str] | None = None
+    favorite: bool | None = None
+
+
+class ModelBulkOut(BaseModel):
+    updated: int
 
 
 class ModelSummary(BaseModel):
@@ -77,6 +93,7 @@ class ModelSummary(BaseModel):
     review_state: str | None = None
     source_collection_id: int | None = None
     source_collection_title: str | None = None
+    favorite: bool = False
 
 
 class GalleryPage(BaseModel):
@@ -310,6 +327,7 @@ class ModelDetail(BaseModel):
     notes: list[NoteOut]
     review_state: str | None = None
     backends: list[ModelBackendOut] = []
+    favorite: bool = False
 
 
 # -- diff -------------------------------------------------------------

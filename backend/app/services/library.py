@@ -393,7 +393,7 @@ async def patch_model(
             layout.write_sidecar, backend, model.id, model.slug, new_name
         )
 
-    for field in ("name", "description", "cover_blob_hash", "review_state"):
+    for field in ("name", "description", "cover_blob_hash", "review_state", "favorite"):
         if field in changes:
             setattr(model, field, changes[field])
     await db.commit()
@@ -404,6 +404,47 @@ async def archive_model(db: AsyncSession, model: Model) -> None:
     """Soft-delete: hard delete is out of M1 scope (Task 5 brief)."""
     model.is_archived = True
     await db.commit()
+
+
+async def bulk_update_models(
+    db: AsyncSession,
+    *,
+    ids: list[int],
+    add_tags: list[str] | None,
+    remove_tags: list[str] | None,
+    favorite: bool | None,
+) -> int:
+    """``POST /models/bulk`` (Branch 4 Task 1): apply the same tag/favorite
+    changes to every id in one go. Every id is validated to exist BEFORE any
+    mutation runs, so an unknown id 404s with NOTHING applied -- the
+    add/remove-tag steps below reuse ``add_tag_to_model``/
+    ``remove_tag_from_model`` verbatim (the same functions backing
+    ``POST /models/{id}/tags``/``DELETE /models/{id}/tags/{name}``), which is
+    safe only because every id is already known-good by the time they run.
+    """
+    unique_ids = list(dict.fromkeys(ids))  # de-dupe, preserve order
+    found_ids = set(
+        (await db.execute(select(Model.id).where(Model.id.in_(unique_ids)))).scalars().all()
+    )
+    missing = [i for i in unique_ids if i not in found_ids]
+    if missing:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"model(s) not found: {missing}")
+
+    for model_id in unique_ids:
+        for tag_name in add_tags or []:
+            await add_tag_to_model(db, model_id, tag_name)
+        for tag_name in remove_tags or []:
+            await remove_tag_from_model(db, model_id, tag_name)
+        if favorite is not None:
+            model = await db.get(Model, model_id)
+            assert model is not None  # just validated above
+            model.favorite = favorite
+            model.updated_at = func.now()
+
+    if favorite is not None:
+        await db.commit()
+
+    return len(unique_ids)
 
 
 def _escape_like(value: str) -> str:
@@ -542,6 +583,43 @@ def _gallery_cover_url(
     return None
 
 
+async def build_model_summaries(db: AsyncSession, models: list[Model]) -> list[ModelSummary]:
+    """Build ``ModelSummary`` rows for an arbitrary list of already-loaded
+    ``models`` (Branch 4 Task 1) -- not just one gallery page. Shared by
+    ``list_models`` and the print queue's ``GET /queue``
+    (``app.services.queue``), which reuses this instead of duplicating the
+    aggregate-then-assemble logic. Callers must have ``selectinload``ed
+    ``Model.tags`` already.
+    """
+    aggregates, cover_ok_hashes = await _gallery_aggregates(db, models)
+
+    items = []
+    for m in models:
+        agg = aggregates.get(m.current_revision_id)
+        items.append(
+            ModelSummary(
+                id=m.id,
+                slug=m.slug,
+                name=m.name,
+                description=m.description,
+                tags=[t.name for t in m.tags],
+                updated_at=m.updated_at,
+                created_at=m.created_at,
+                file_count=agg.file_count if agg else 0,
+                formats=agg.formats if agg else [],
+                cover=_gallery_cover_url(m, agg, cover_ok_hashes),
+                print_time_s=agg.print_time_s if agg else None,
+                has_sliced=agg.has_sliced if agg else False,
+                source_site=m.source_site,
+                review_state=m.review_state,
+                source_collection_id=m.source_collection_id,
+                source_collection_title=m.source_collection_title,
+                favorite=m.favorite,
+            )
+        )
+    return items
+
+
 async def list_models(
     db: AsyncSession,
     *,
@@ -550,6 +628,7 @@ async def list_models(
     format_: str | None,
     has_sliced: bool | None,
     collection: int | None,
+    favorite: bool | None,
     sort: str,
     archived: bool,
     limit: int,
@@ -558,7 +637,9 @@ async def list_models(
     """Gallery query: search/filter/sort + cursor pagination (Task 5
     interface decision; Task 7 adds the ``has_sliced`` filter; Branch 3 Task 1
     adds the ``collection`` filter -- a plain equality on the denormalized
-    ``Model.source_collection_id``, no join needed).
+    ``Model.source_collection_id``, no join needed; Branch 4 Task 1 adds the
+    ``favorite`` filter -- ``favorite=true`` narrows to starred models,
+    ``false``/omitted apply no filter at all (never hides favorites)).
     """
     is_desc = sort.startswith("-")
     field_name = sort[1:] if is_desc else sort
@@ -606,6 +687,8 @@ async def list_models(
         )
     if collection is not None:
         stmt = stmt.where(Model.source_collection_id == collection)
+    if favorite:
+        stmt = stmt.where(Model.favorite.is_(True))
 
     order_col = sort_column.desc() if is_desc else sort_column.asc()
     order_id = Model.id.desc() if is_desc else Model.id.asc()
@@ -631,31 +714,7 @@ async def list_models(
     has_more = len(page_models) > limit
     page_models = page_models[:limit]
 
-    aggregates, cover_ok_hashes = await _gallery_aggregates(db, page_models)
-
-    items = []
-    for m in page_models:
-        agg = aggregates.get(m.current_revision_id)
-        items.append(
-            ModelSummary(
-                id=m.id,
-                slug=m.slug,
-                name=m.name,
-                description=m.description,
-                tags=[t.name for t in m.tags],
-                updated_at=m.updated_at,
-                created_at=m.created_at,
-                file_count=agg.file_count if agg else 0,
-                formats=agg.formats if agg else [],
-                cover=_gallery_cover_url(m, agg, cover_ok_hashes),
-                print_time_s=agg.print_time_s if agg else None,
-                has_sliced=agg.has_sliced if agg else False,
-                source_site=m.source_site,
-                review_state=m.review_state,
-                source_collection_id=m.source_collection_id,
-                source_collection_title=m.source_collection_title,
-            )
-        )
+    items = await build_model_summaries(db, page_models)
 
     next_cursor = None
     if has_more and page_models:
@@ -780,6 +839,7 @@ async def build_model_detail(db: AsyncSession, model: Model, settings: Settings)
         notes=notes,
         review_state=model.review_state,
         backends=backends,
+        favorite=model.favorite,
     )
 
 
@@ -917,9 +977,7 @@ async def create_revision(
         await db.flush()  # assigns new_file.id, needed for file_locations below
         for new_file in new_files:
             db.add(
-                FileLocation(
-                    file_id=new_file.id, backend_id=new_file.backend_id, verified_at=None
-                )
+                FileLocation(file_id=new_file.id, backend_id=new_file.backend_id, verified_at=None)
             )
 
     model.current_revision_id = new_revision.id

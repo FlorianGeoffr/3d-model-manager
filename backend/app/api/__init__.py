@@ -32,6 +32,8 @@ from app.api import (
     notes,
     print_jobs,
     printers,
+    queue,
+    reports,
     revisions,
     scan,
     settings,
@@ -64,5 +66,7 @@ protected_router.include_router(printers.router)
 protected_router.include_router(print_jobs.router)
 protected_router.include_router(imports.router)
 protected_router.include_router(collections.router)
+protected_router.include_router(queue.router)
+protected_router.include_router(reports.router)
 
 api_router.include_router(protected_router)

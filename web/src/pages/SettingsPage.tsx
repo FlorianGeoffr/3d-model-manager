@@ -1,3 +1,5 @@
+import { Link } from "@tanstack/react-router";
+
 import { ApiError } from "@/api/client";
 import { useStorageBackends } from "@/api/settings";
 import { BambuAccountCard } from "@/components/settings/BambuAccountCard";
@@ -58,21 +60,34 @@ export function SettingsPage() {
           <TabsContent value="printer" className="space-y-6">
             <PrinterSetupCard />
           </TabsContent>
-          <TabsContent value="imports" className="grid gap-6 xl:grid-cols-2">
-            {/* Sparse grid auto-placement never backfills: a col-span-2 card
-                only avoids stranding a cell if it starts an EVEN number of
-                single-column cards in. With three single-column cards, a
-                double placed after all three (the naive "keep it last")
-                strands BrowserExtensionCard's row -- confirmed by rendering
-                both orders. Placing the Bambu login form (two columns wide:
-                email/region + password) right after the first pair keeps
-                every row packed; BrowserExtensionCard trails alone in its
-                own final row, which is a normal odd-item tail, not a strand
-                (nothing sits below it to sandwich a gap). */}
-            <SiteTokensCard />
-            <PrintablesAccountCard />
-            <BambuAccountCard className="xl:col-span-2" />
-            <BrowserExtensionCard />
+          <TabsContent value="imports" className="space-y-6">
+            {/* Signpost, kept OUTSIDE the cards grid below: users connect an
+                account here and then look for its collections nearby. They
+                live on their own page, so say so -- and adding this as a 5th
+                grid item would have broken the packing worked out below. */}
+            <p className="text-sm text-muted-foreground">
+              Connect your gallery accounts here. The collections they hold appear under{" "}
+              <Link to="/collections" className="underline">
+                Collections
+              </Link>
+              , where you pick which ones to keep synced.
+            </p>
+            <div className="grid gap-6 xl:grid-cols-2">
+              {/* Sparse grid auto-placement never backfills: a col-span-2 card
+                  only avoids stranding a cell if it starts an EVEN number of
+                  single-column cards in. With three single-column cards, a
+                  double placed after all three (the naive "keep it last")
+                  strands BrowserExtensionCard's row -- confirmed by rendering
+                  both orders. Placing the Bambu login form (two columns wide:
+                  email/region + password) right after the first pair keeps
+                  every row packed; BrowserExtensionCard trails alone in its
+                  own final row, which is a normal odd-item tail, not a strand
+                  (nothing sits below it to sandwich a gap). */}
+              <SiteTokensCard />
+              <PrintablesAccountCard />
+              <BambuAccountCard className="xl:col-span-2" />
+              <BrowserExtensionCard />
+            </div>
           </TabsContent>
           <TabsContent value="scan" className="space-y-6">
             <ScanReport />

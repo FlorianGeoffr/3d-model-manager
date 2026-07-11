@@ -125,12 +125,14 @@ beforeEach(() => {
 });
 
 describe("AddPage", () => {
-  it("offers Upload / Import URL / Search / Saved tabs", async () => {
+  it("offers Upload / Import URL / Search tabs, with saved collections no longer buried here", async () => {
     renderAddPage();
     expect(await screen.findByRole("tab", { name: "Upload files" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Import from URL" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Search galleries" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Saved" })).toBeInTheDocument();
+    // Saved collections moved out to their own /collections page -- as a tab
+    // behind "Add to library" nobody could find them.
+    expect(screen.queryByRole("tab", { name: "Saved" })).not.toBeInTheDocument();
   });
 
   it("creates the new model once and reuses it for a second upload batch", async () => {

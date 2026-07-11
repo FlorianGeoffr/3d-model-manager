@@ -1,5 +1,12 @@
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  RouterProvider,
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+} from "@tanstack/react-router";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -105,11 +112,29 @@ function mockGet(backends: StorageBackendOut[] = []) {
   });
 }
 
+// SettingsPage renders inside the router in the real app (its Imports tab links
+// to /collections), so the harness needs a router context -- a bare render makes
+// TanStack's `useLinkProps` throw. Same memory-router setup as SavedPanel.test.
 function renderSettingsPage() {
+  const rootRoute = createRootRoute();
+  const home = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/",
+    component: SettingsPage,
+  });
+  const collections = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/collections",
+    component: () => null,
+  });
+  const router = createRouter({
+    routeTree: rootRoute.addChildren([home, collections]),
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+  });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <SettingsPage />
+      <RouterProvider router={router} />
     </QueryClientProvider>,
   );
 }
@@ -131,6 +156,19 @@ describe("SettingsPage tabs", () => {
 
     expect(await screen.findByText("Bambu Lab account")).toBeInTheDocument();
     expect(await screen.findByLabelText("Email")).toBeInTheDocument();
+  });
+
+  // You connect an account here, then go looking for its collections. They live
+  // on their own page now, so the Imports tab has to say where.
+  it("points from the Imports tab to the Collections page", async () => {
+    mockGet();
+
+    renderSettingsPage();
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Imports" }));
+
+    const link = await screen.findByRole("link", { name: "Collections" });
+    expect(link).toHaveAttribute("href", "/collections");
   });
 });
 

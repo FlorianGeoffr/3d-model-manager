@@ -1,5 +1,5 @@
 import { Link, Outlet, useNavigate } from "@tanstack/react-router";
-import { ListChecks, LogOut, Plus, Printer, Settings, SquareLibrary } from "lucide-react";
+import { Bookmark, ListChecks, LogOut, Plus, Printer, Settings, SquareLibrary } from "lucide-react";
 
 import { useAuth, useLogout } from "@/api/auth";
 import { useFeatures } from "@/api/features";
@@ -10,8 +10,14 @@ import { EventsProvider } from "@/hooks/useEvents";
 // Upload + Import used to be separate nav items; they now live behind the
 // single global "Add to library" action (Workstream E consolidates them onto
 // /add — until then this points at /upload).
+//
+// "Collections" is a rail entry rather than a tab inside /add because saved-list
+// sync is recurring work, not a one-off add: when it lived as a "Saved" tab
+// behind the "Add to library" button, no nav label anywhere said "collection" or
+// "sync" and users simply could not find it.
 const NAV_ITEMS = [
   { to: "/", label: "Library", icon: SquareLibrary },
+  { to: "/collections", label: "Collections", icon: Bookmark },
   { to: "/printer", label: "Printer", icon: Printer },
   { to: "/jobs", label: "Jobs", icon: ListChecks },
   { to: "/settings", label: "Settings", icon: Settings },

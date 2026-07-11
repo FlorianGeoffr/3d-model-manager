@@ -75,4 +75,14 @@ describe("AppShell nav", () => {
     expect(screen.queryByRole("link", { name: /^Upload$/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /^Import$/ })).not.toBeInTheDocument();
   });
+
+  // Saved-collection sync used to be a "Saved" tab behind the "Add to library"
+  // button, where no nav label said "collection" or "sync" -- users could not
+  // find it at all. It gets a first-class rail entry.
+  it("links to the Collections page from the nav rail", async () => {
+    renderShell();
+
+    const link = await screen.findByRole("link", { name: /Collections/ });
+    expect(link).toHaveAttribute("href", "/collections");
+  });
 });

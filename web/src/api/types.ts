@@ -680,3 +680,15 @@ export interface ApiTokenOut {
   created_at: string;
   last_used_at: string | null;
 }
+
+// -- print queue (backend/app/schemas/queue.py, Branch 4 Task 1) -----------
+// An ordered "models to print" worklist. `position` is a dense 1-based rank
+// over the whole queue, renumbered on every insert/delete/reorder.
+
+export interface QueueEntry {
+  id: number;
+  model_id: number;
+  position: number;
+  added_at: string;
+  model: ModelSummary;
+}

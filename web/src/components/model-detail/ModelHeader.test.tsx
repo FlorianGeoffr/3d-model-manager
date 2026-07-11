@@ -12,17 +12,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ModelHeader } from "@/components/model-detail/ModelHeader";
 import type { ModelDetail } from "@/api/types";
 
-const { getMock, patchMock, deleteMock } = vi.hoisted(() => ({
+const { getMock, patchMock, deleteMock, postMock } = vi.hoisted(() => ({
   getMock: vi.fn().mockResolvedValue([]),
   patchMock: vi.fn().mockResolvedValue({}),
   deleteMock: vi.fn().mockResolvedValue(undefined),
+  postMock: vi.fn().mockResolvedValue({}),
 }));
 
 vi.mock("@/api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/client")>();
   return {
     ...actual,
-    api: { ...actual.api, get: getMock, patch: patchMock, delete: deleteMock },
+    api: { ...actual.api, get: getMock, patch: patchMock, delete: deleteMock, post: postMock },
   };
 });
 
@@ -77,6 +78,7 @@ beforeEach(() => {
   getMock.mockClear();
   patchMock.mockClear();
   deleteMock.mockClear();
+  postMock.mockClear();
 });
 
 describe("ModelHeader -- read-only by default", () => {
@@ -107,6 +109,12 @@ describe("ModelHeader -- read-only by default", () => {
 
     const toggle = await screen.findByRole("button", { name: "Edit" });
     expect(toggle).toBeInTheDocument();
+  });
+
+  it("shows an Add to queue action, even in read-only mode", async () => {
+    renderHeader(false);
+
+    expect(await screen.findByRole("button", { name: "Add to queue" })).toBeInTheDocument();
   });
 });
 
@@ -162,5 +170,16 @@ describe("ModelHeader -- edit mode", () => {
     await waitFor(() =>
       expect(patchMock).toHaveBeenCalledExactlyOnceWith("/models/articulated-dragon", { name: "New Name" }),
     );
+  });
+
+});
+
+describe("ModelHeader -- queue action", () => {
+  it("'Add to queue' posts the model id to the queue endpoint", async () => {
+    renderHeader(false);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Add to queue" }));
+
+    await waitFor(() => expect(postMock).toHaveBeenCalledExactlyOnceWith("/queue", { model_id: 1 }));
   });
 });

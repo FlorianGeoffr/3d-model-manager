@@ -1,7 +1,9 @@
 import { useNavigate } from "@tanstack/react-router";
-import { FileStackIcon, PencilIcon } from "lucide-react";
+import { FileStackIcon, ListPlusIcon, PencilIcon } from "lucide-react";
+import { toast } from "sonner";
 
 import { useArchiveModel, usePatchModel } from "@/api/library";
+import { useEnqueueModel } from "@/api/queue";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { InlineEdit } from "@/components/InlineEdit";
 import { modelFilaments, revisionFormats } from "@/components/model-detail/modelSpec";
@@ -27,6 +29,7 @@ export function ModelHeader({
   const navigate = useNavigate();
   const patchModel = usePatchModel(model.slug);
   const archiveModel = useArchiveModel(model.slug);
+  const enqueueModel = useEnqueueModel();
 
   const filaments = modelFilaments(model);
   const formats = revisionFormats(model);
@@ -78,6 +81,20 @@ export function ModelHeader({
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {/* Queueing a model to print is a normal action too, not an edit. */}
+          <Button
+            type="button"
+            variant="outline"
+            disabled={enqueueModel.isPending}
+            onClick={() =>
+              enqueueModel.mutate(model.id, {
+                onSuccess: () => toast.success("Added to queue"),
+              })
+            }
+          >
+            <ListPlusIcon />
+            Add to queue
+          </Button>
           <Button type="button" variant="outline" onClick={onToggleEditMode}>
             <PencilIcon />
             {editMode ? "Done" : "Edit"}

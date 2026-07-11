@@ -10,6 +10,7 @@ import { LibraryPage } from "@/pages/LibraryPage";
 import { LoginPage } from "@/pages/LoginPage";
 import { ModelDetailPage } from "@/pages/ModelDetailPage";
 import { PrinterPage } from "@/pages/PrinterPage";
+import { QueuePage } from "@/pages/QueuePage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { ViewerWindowPage } from "@/pages/ViewerWindowPage";
 import { parseLibrarySearch } from "@/pages/librarySearch";
@@ -119,6 +120,12 @@ const jobsRoute = createRoute({
   component: JobsPage,
 });
 
+const queueRoute = createRoute({
+  getParentRoute: () => authenticatedRoute,
+  path: "/queue",
+  component: QueuePage,
+});
+
 const settingsRoute = createRoute({
   getParentRoute: () => authenticatedRoute,
   path: "/settings",
@@ -137,6 +144,7 @@ export const routeTree = rootRoute.addChildren([
     collectionsRoute,
     printerRoute,
     jobsRoute,
+    queueRoute,
     settingsRoute,
   ]),
 ]);

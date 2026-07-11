@@ -35,6 +35,7 @@ const MODEL: ModelDetail = {
   current_revision: null,
   notes: [],
   backends: [],
+  favorite: false,
 };
 
 function renderEditor(editMode: boolean) {

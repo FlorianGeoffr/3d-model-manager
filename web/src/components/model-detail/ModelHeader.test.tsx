@@ -47,6 +47,7 @@ const MODEL: ModelDetail = {
   current_revision: null,
   notes: [],
   backends: [],
+  favorite: false,
 };
 
 function renderHeader(editMode: boolean, onToggleEditMode = vi.fn()) {
@@ -111,10 +112,11 @@ describe("ModelHeader -- read-only by default", () => {
     expect(toggle).toBeInTheDocument();
   });
 
-  it("shows an Add to queue action, even in read-only mode", async () => {
+  it("shows the favorite star, and an Add to queue action, even in read-only mode", async () => {
     renderHeader(false);
 
-    expect(await screen.findByRole("button", { name: "Add to queue" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Add to favorites" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add to queue" })).toBeInTheDocument();
   });
 });
 
@@ -172,9 +174,24 @@ describe("ModelHeader -- edit mode", () => {
     );
   });
 
+  it("still shows the favorite star in edit mode -- it isn't gated by the edit toggle", async () => {
+    renderHeader(true);
+
+    expect(await screen.findByRole("button", { name: "Add to favorites" })).toBeInTheDocument();
+  });
 });
 
-describe("ModelHeader -- queue action", () => {
+describe("ModelHeader -- favorite + queue actions", () => {
+  it("toggling the favorite star PATCHes favorite:true, without touching the edit gate", async () => {
+    renderHeader(false);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Add to favorites" }));
+
+    await waitFor(() =>
+      expect(patchMock).toHaveBeenCalledExactlyOnceWith("/models/articulated-dragon", { favorite: true }),
+    );
+  });
+
   it("'Add to queue' posts the model id to the queue endpoint", async () => {
     renderHeader(false);
 

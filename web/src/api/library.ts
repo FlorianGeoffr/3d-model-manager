@@ -9,6 +9,8 @@ import type {
   DiffResponse,
   GalleryPage,
   JobOut,
+  ModelBulkIn,
+  ModelBulkOut,
   ModelCreate,
   ModelDetail,
   ModelPatch,
@@ -27,6 +29,7 @@ export interface GalleryFilters {
   format?: string;
   has_sliced?: boolean;
   collection?: number;
+  favorite?: boolean;
   sort: string;
 }
 
@@ -39,6 +42,9 @@ function buildModelsUrl(filters: Partial<GalleryFilters>, cursor?: string, limit
   if (filters.format) params.set("format", filters.format);
   if (filters.has_sliced) params.set("has_sliced", "true");
   if (filters.collection !== undefined) params.set("collection", String(filters.collection));
+  // `false`/omitted apply no filter at all (never hides favorites) --
+  // mirrors the backend's `favorite` query param semantics.
+  if (filters.favorite) params.set("favorite", "true");
   if (filters.sort) params.set("sort", filters.sort);
   params.set("limit", String(limit));
   if (cursor) params.set("cursor", cursor);
@@ -106,6 +112,21 @@ export function usePatchModel(slug: string) {
       queryClient.setQueryData(modelQueryOptions(slug).queryKey, data);
       void queryClient.invalidateQueries({ queryKey: ["models", "list"] });
     },
+  });
+}
+
+/** `POST /models/bulk` (Branch 4 Task 1) -- applies the same tag/favorite
+ * changes to every model in `ids` in one call, used by the library's bulk
+ * select mode. Declared before `/{slug}`-scoped routes match on the
+ * backend, but that's a server-side routing detail; from here it's just
+ * another mutation. Invalidates the whole `["models"]` prefix (covers both
+ * the gallery list and any open model-detail queries) since the affected
+ * slugs aren't known client-side. */
+export function useBulkUpdateModels() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: ModelBulkIn) => api.post<ModelBulkOut>("/models/bulk", payload),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["models"] }),
   });
 }
 

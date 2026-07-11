@@ -79,6 +79,7 @@ function fakeModel(overrides: Partial<ModelDetail> = {}): ModelDetail {
     notes: [],
     current_revision: null,
     backends: [{ id: 1, name: "Default" }],
+    favorite: false,
     ...overrides,
   };
 }

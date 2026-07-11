@@ -1,5 +1,5 @@
 import { useNavigate } from "@tanstack/react-router";
-import { FileStackIcon, ListPlusIcon, PencilIcon } from "lucide-react";
+import { FileStackIcon, ListPlusIcon, PencilIcon, StarIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { useArchiveModel, usePatchModel } from "@/api/library";
@@ -81,6 +81,18 @@ export function ModelHeader({
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {/* A star is a deliberate, always-live action -- not part of the
+              edit gate the way name/description/tags/archive are. */}
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            aria-label={model.favorite ? "Remove from favorites" : "Add to favorites"}
+            aria-pressed={model.favorite}
+            onClick={() => patchModel.mutate({ favorite: !model.favorite })}
+          >
+            <StarIcon className={model.favorite ? "fill-amber-400 text-amber-500" : ""} />
+          </Button>
           {/* Queueing a model to print is a normal action too, not an edit. */}
           <Button
             type="button"

@@ -33,6 +33,7 @@ function summary(overrides: Partial<ModelSummary>): ModelSummary {
     source_site: null,
     source_collection_id: null,
     source_collection_title: null,
+    favorite: false,
     ...overrides,
   };
 }
@@ -57,6 +58,7 @@ const MODEL: ModelDetail = {
   current_revision: null,
   notes: [],
   backends: [],
+  favorite: false,
 };
 
 function renderRelated(model: ModelDetail) {

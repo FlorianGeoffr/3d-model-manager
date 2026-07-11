@@ -181,6 +181,7 @@ function fakeModel(files: FileOut[]): ModelDetail {
     tags: [],
     notes: [],
     backends: [],
+    favorite: false,
     current_revision: {
       id: 1,
       model_id: 1,

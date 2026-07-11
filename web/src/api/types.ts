@@ -35,6 +35,20 @@ export interface ModelPatch {
   description?: string | null;
   cover_blob_hash?: string | null;
   review_state?: string | null;
+  favorite?: boolean;
+}
+
+// `POST /models/bulk` (Branch 4 Task 1): apply the same tag/favorite changes
+// to every model in `ids` in one call.
+export interface ModelBulkIn {
+  ids: number[];
+  add_tags?: string[];
+  remove_tags?: string[];
+  favorite?: boolean;
+}
+
+export interface ModelBulkOut {
+  updated: number;
 }
 
 // Multi-backend storage (backend/app/schemas/library.py, Workstream C task
@@ -70,6 +84,7 @@ export interface ModelSummary {
   review_state?: string | null;
   source_collection_id: number | null;
   source_collection_title: string | null;
+  favorite: boolean;
 }
 
 export interface GalleryPage {
@@ -204,6 +219,7 @@ export interface ModelDetail {
   notes: NoteOut[];
   review_state?: string | null;
   backends: ModelBackendOut[];
+  favorite: boolean;
 }
 
 // -- diff ----------------------------------------------------------

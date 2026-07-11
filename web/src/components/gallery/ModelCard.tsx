@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { ClockIcon, FileStackIcon, XIcon } from "lucide-react";
+import { ClockIcon, FileStackIcon, StarIcon, XIcon } from "lucide-react";
 
 import { usePatchModel } from "@/api/library";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { SpecRow, type SpecItem } from "@/components/ui/spec-row";
 import { FORMAT_LABELS, formatIcon } from "@/lib/formatMeta";
 import { formatDate, humanizeDuration } from "@/lib/format";
@@ -13,7 +14,19 @@ import type { ModelSummary } from "@/api/types";
 
 const VISIBLE_TAGS = 3;
 
-export function ModelCard({ model }: { model: ModelSummary }) {
+export function ModelCard({
+  model,
+  selectable = false,
+  selected = false,
+  onSelectChange,
+}: {
+  model: ModelSummary;
+  /** Bulk-select mode (LibraryPage): shows a checkbox overlay instead of
+   * (or alongside) the favorite star, none of which navigate the card. */
+  selectable?: boolean;
+  selected?: boolean;
+  onSelectChange?: (id: number, next: boolean) => void;
+}) {
   const [coverErrored, setCoverErrored] = useState(false);
   const patchModel = usePatchModel(model.slug);
   const visibleTags = model.tags.slice(0, VISIBLE_TAGS);
@@ -69,48 +82,75 @@ export function ModelCard({ model }: { model: ModelSummary }) {
               </span>
             </div>
           )}
-          {model.source_site && (
-            <Badge
-              variant="secondary"
-              className="absolute top-2 left-2 capitalize backdrop-blur-sm"
-              data-testid="source-badge"
-            >
-              {model.source_site}
-            </Badge>
-          )}
-          {needsReview && (
-            <Badge
-              variant="secondary"
-              className="absolute top-2 right-2 gap-1 pr-1 backdrop-blur-sm"
-              data-testid="review-badge"
-            >
-              Needs review
-              {/* `display: contents` keeps this out of the Badge's flex
-                  layout (so the trigger button still sizes/aligns exactly
-                  as before) while still giving us a click handler that sees
-                  every click inside -- including the dialog's confirm
-                  button, which portals to `document.body` and would
-                  otherwise bubble up through the *React* tree (portals
-                  bubble via the component tree, not the DOM tree) into this
-                  card's wrapping `<Link>` and navigate away. */}
+          <div className="absolute top-2 left-2 flex flex-col items-start gap-1.5">
+            {selectable && (
+              // Same `display: contents` + stop-propagation trick as the
+              // review-dismiss control below -- the card body is a
+              // whole-surface `<Link>`, and Radix's checkbox click would
+              // otherwise bubble up and navigate away instead of toggling
+              // selection.
               <span className="contents" onClick={stopCardNavigation}>
-                <ConfirmDialog
-                  trigger={
-                    <button
-                      type="button"
-                      aria-label="Dismiss needs review"
-                      className="rounded-full hover:opacity-70"
-                    >
-                      <XIcon className="size-3" />
-                    </button>
-                  }
-                  title='Clear "needs review"?'
-                  confirmLabel="Clear"
-                  onConfirm={() => patchModel.mutate({ review_state: null })}
+                <Checkbox
+                  checked={selected}
+                  onCheckedChange={(checked) => onSelectChange?.(model.id, checked === true)}
+                  aria-label={`Select ${model.name}`}
+                  className="bg-background/80 backdrop-blur-sm"
                 />
               </span>
-            </Badge>
-          )}
+            )}
+            {model.source_site && (
+              <Badge variant="secondary" className="capitalize backdrop-blur-sm" data-testid="source-badge">
+                {model.source_site}
+              </Badge>
+            )}
+          </div>
+          <div className="absolute top-2 right-2 flex flex-col items-end gap-1.5">
+            {needsReview && (
+              <Badge variant="secondary" className="gap-1 pr-1 backdrop-blur-sm" data-testid="review-badge">
+                Needs review
+                {/* `display: contents` keeps this out of the Badge's flex
+                    layout (so the trigger button still sizes/aligns exactly
+                    as before) while still giving us a click handler that sees
+                    every click inside -- including the dialog's confirm
+                    button, which portals to `document.body` and would
+                    otherwise bubble up through the *React* tree (portals
+                    bubble via the component tree, not the DOM tree) into this
+                    card's wrapping `<Link>` and navigate away. */}
+                <span className="contents" onClick={stopCardNavigation}>
+                  <ConfirmDialog
+                    trigger={
+                      <button
+                        type="button"
+                        aria-label="Dismiss needs review"
+                        className="rounded-full hover:opacity-70"
+                      >
+                        <XIcon className="size-3" />
+                      </button>
+                    }
+                    title='Clear "needs review"?'
+                    confirmLabel="Clear"
+                    onConfirm={() => patchModel.mutate({ review_state: null })}
+                  />
+                </span>
+              </Badge>
+            )}
+            {/* A star is a deliberate, always-live action -- not gated
+                behind edit mode like name/description/tags. Same
+                stop-navigation wrapper as the dismiss control above; a
+                favorited star stays visible even when the card isn't
+                hovered (it's state, not a hover affordance). */}
+            <span className="contents" onClick={stopCardNavigation}>
+              <button
+                type="button"
+                aria-label={model.favorite ? "Remove from favorites" : "Add to favorites"}
+                aria-pressed={model.favorite}
+                onClick={() => patchModel.mutate({ favorite: !model.favorite })}
+                className="rounded-full bg-background/80 p-1 text-foreground backdrop-blur-sm transition-colors hover:text-amber-500"
+              >
+                <StarIcon className={model.favorite ? "size-4 fill-amber-400 text-amber-500" : "size-4"} />
+              </button>
+            </span>
+          </div>
         </div>
         <CardContent className="flex flex-col gap-2 px-4">
           <h3 className="truncate text-sm font-medium" title={model.name}>

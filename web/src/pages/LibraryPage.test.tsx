@@ -12,11 +12,14 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "@/api/client";
 import { LibraryPage } from "@/pages/LibraryPage";
-import type { FollowedCollection } from "@/api/types";
+import type { FollowedCollection, ModelSummary } from "@/api/types";
 
 // `vi.mock` factories are hoisted above the module's own top-level
 // bindings, so the mock function has to be created through `vi.hoisted`.
-const { getMock } = vi.hoisted(() => ({ getMock: vi.fn() }));
+const { getMock, postMock } = vi.hoisted(() => ({
+  getMock: vi.fn(),
+  postMock: vi.fn().mockResolvedValue({ updated: 0 }),
+}));
 
 // Fakes a rejecting queryFn by mocking the fetch wrapper the gallery query
 // runs through (`useModelsQuery` -> `api.get`), so the real react-query
@@ -26,9 +29,21 @@ vi.mock("@/api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/client")>();
   return {
     ...actual,
-    api: { ...actual.api, get: getMock },
+    api: { ...actual.api, get: getMock, post: postMock },
   };
 });
+
+// jsdom doesn't implement `IntersectionObserver` (the gallery grid's
+// infinite-scroll sentinel uses it) -- every earlier test in this file only
+// ever renders the empty/error state (no grid, no sentinel), so this never
+// came up before. A minimal stub is enough: none of these tests exercise
+// scroll-triggered pagination, only that the grid/select-mode UI renders.
+class MockIntersectionObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+vi.stubGlobal("IntersectionObserver", MockIntersectionObserver);
 
 // Radix's Popover never reaches an interactive open state under jsdom (same
 // floating-ui/dismissable-layer limitation documented for `<Select>` in
@@ -84,11 +99,44 @@ function mockGalleryOkWithCollections(collections: FollowedCollection[]) {
   });
 }
 
+const GALLERY_MODEL: ModelSummary = {
+  id: 1,
+  slug: "test-model",
+  name: "Test Model",
+  description: null,
+  tags: ["fantasy"],
+  updated_at: "2026-06-01T12:00:00Z",
+  created_at: "2026-06-01T12:00:00Z",
+  file_count: 1,
+  formats: ["stl"],
+  cover: null,
+  print_time_s: null,
+  has_sliced: false,
+  source_site: null,
+  source_collection_id: null,
+  source_collection_title: null,
+  favorite: false,
+};
+
+function mockGalleryOkWithModels(models: ModelSummary[]) {
+  getMock.mockImplementation((path: string) => {
+    if (path.startsWith("/models")) return Promise.resolve({ items: models, next_cursor: null });
+    return Promise.resolve([]);
+  });
+}
+
 function lastModelsCall(): string {
   const calls = getMock.mock.calls.filter((call: unknown[]) => (call[0] as string).startsWith("/models"));
   const last = calls.at(-1);
   if (!last) throw new Error("no /models call recorded");
   return last[0] as string;
+}
+
+function lastBulkCall(): { path: string; body: unknown } {
+  const calls = postMock.mock.calls.filter((call: unknown[]) => (call[0] as string) === "/models/bulk");
+  const last = calls.at(-1);
+  if (!last) throw new Error("no /models/bulk call recorded");
+  return { path: last[0] as string, body: last[1] };
 }
 
 describe("LibraryPage", () => {
@@ -178,5 +226,48 @@ describe("LibraryPage", () => {
 
     await waitFor(() => expect(lastModelsCall()).toContain("collection=5"));
     expect(await screen.findByRole("button", { name: "Collection: Cool Prints" })).toBeInTheDocument();
+  });
+
+  it("adds favorite=true to the gallery query when the Favorites facet is toggled on, and clears it back off", async () => {
+    mockGalleryOk();
+    renderLibraryPage();
+    await screen.findByText("No models yet");
+
+    fireEvent.click(screen.getByRole("button", { name: "Favorites" }));
+    await waitFor(() => expect(lastModelsCall()).toContain("favorite=true"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Favorites" }));
+    await waitFor(() => expect(lastModelsCall()).not.toContain("favorite="));
+  });
+
+  it("select mode reveals a checkbox per card and a floating action bar once one is checked", async () => {
+    mockGalleryOkWithModels([GALLERY_MODEL]);
+    renderLibraryPage();
+    await screen.findByText("Test Model");
+
+    expect(screen.queryByRole("checkbox", { name: "Select Test Model" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Select" }));
+    const checkbox = await screen.findByRole("checkbox", { name: "Select Test Model" });
+    expect(screen.queryByText(/selected/)).not.toBeInTheDocument();
+
+    fireEvent.click(checkbox);
+    expect(await screen.findByText("1 selected")).toBeInTheDocument();
+  });
+
+  it("bulk-favoriting the selection POSTs /models/bulk with the selected ids and favorite:true", async () => {
+    mockGalleryOkWithModels([GALLERY_MODEL]);
+    renderLibraryPage();
+    await screen.findByText("Test Model");
+
+    fireEvent.click(screen.getByRole("button", { name: "Select" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Select Test Model" }));
+    await screen.findByText("1 selected");
+
+    fireEvent.click(screen.getByRole("button", { name: "Favorite" }));
+
+    await waitFor(() =>
+      expect(lastBulkCall()).toEqual({ path: "/models/bulk", body: { ids: [1], favorite: true } }),
+    );
   });
 });

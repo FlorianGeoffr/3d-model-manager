@@ -25,6 +25,7 @@ const BASE_MODEL: ModelDetail = {
   current_revision: null,
   notes: [],
   backends: [],
+  favorite: false,
 };
 
 function renderBlock(model: ModelDetail) {

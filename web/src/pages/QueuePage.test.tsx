@@ -45,6 +45,7 @@ function entry(overrides: Partial<QueueEntry> = {}): QueueEntry {
       source_site: null,
       source_collection_id: null,
       source_collection_title: null,
+      favorite: false,
     },
     ...overrides,
   };

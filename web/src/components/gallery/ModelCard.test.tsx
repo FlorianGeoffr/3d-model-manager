@@ -35,15 +35,19 @@ const MODEL: ModelSummary = {
   source_site: null,
   source_collection_id: null,
   source_collection_title: null,
+  favorite: false,
 };
 
-function renderCard(model: ModelSummary) {
+function renderCard(
+  model: ModelSummary,
+  cardProps: { selectable?: boolean; selected?: boolean; onSelectChange?: (id: number, next: boolean) => void } = {},
+) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const rootRoute = createRootRoute();
   const cardRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: "/",
-    component: () => <ModelCard model={model} />,
+    component: () => <ModelCard model={model} {...cardProps} />,
   });
   const detailRoute = createRoute({
     getParentRoute: () => rootRoute,
@@ -179,5 +183,53 @@ describe("ModelCard", () => {
     // swallowed the click before it navigated.
     expect(router.state.location.pathname).toBe("/");
     expect(screen.getByText("Articulated Dragon")).toBeInTheDocument();
+  });
+
+  it("shows an outline favorite star for a non-favorited model, filled for a favorited one", async () => {
+    renderCard(MODEL);
+    const star = await screen.findByRole("button", { name: "Add to favorites" });
+    expect(star).toHaveAttribute("aria-pressed", "false");
+
+    renderCard({ ...MODEL, favorite: true });
+    const filledStar = await screen.findByRole("button", { name: "Remove from favorites" });
+    expect(filledStar).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("clicking the star PATCHes the toggled favorite value without navigating", async () => {
+    const { router } = renderCard(MODEL);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Add to favorites" }));
+
+    await waitFor(() =>
+      expect(patchMock).toHaveBeenCalledExactlyOnceWith("/models/articulated-dragon", { favorite: true }),
+    );
+    expect(router.state.location.pathname).toBe("/");
+    expect(screen.getByText("Articulated Dragon")).toBeInTheDocument();
+  });
+
+  it("shows no select checkbox when not in select mode", async () => {
+    renderCard(MODEL);
+
+    await screen.findByText("Articulated Dragon");
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+  });
+
+  it("shows a select checkbox when selectable, and calls onSelectChange without navigating", async () => {
+    const onSelectChange = vi.fn();
+    const { router } = renderCard(MODEL, { selectable: true, selected: false, onSelectChange });
+
+    const checkbox = await screen.findByRole("checkbox", { name: "Select Articulated Dragon" });
+    expect(checkbox).not.toBeChecked();
+
+    fireEvent.click(checkbox);
+
+    expect(onSelectChange).toHaveBeenCalledExactlyOnceWith(1, true);
+    expect(router.state.location.pathname).toBe("/");
+  });
+
+  it("renders the checkbox as checked when selected", async () => {
+    renderCard(MODEL, { selectable: true, selected: true, onSelectChange: vi.fn() });
+
+    expect(await screen.findByRole("checkbox", { name: "Select Articulated Dragon" })).toBeChecked();
   });
 });

@@ -1,9 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearch } from "@tanstack/react-router";
-import { BookmarkIcon, PlusIcon, SearchIcon, TagIcon } from "lucide-react";
+import {
+  BookmarkIcon,
+  ListPlusIcon,
+  PlusIcon,
+  SearchIcon,
+  SquareCheckIcon,
+  StarIcon,
+  TagIcon,
+  XIcon,
+} from "lucide-react";
+import { toast } from "sonner";
 
 import { useFollowedCollections } from "@/api/collections";
-import { useModelsQuery, useTags } from "@/api/library";
+import { useBulkUpdateModels, useModelsQuery, useTags } from "@/api/library";
+import { useEnqueueModel } from "@/api/queue";
 import { ApiError } from "@/api/client";
 import { ModelCard } from "@/components/gallery/ModelCard";
 import { NewModelDialog } from "@/components/gallery/NewModelDialog";
@@ -17,7 +28,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useDebouncedValue } from "@/lib/format";
-import { BLOB_FORMATS, type BlobFormat } from "@/api/types";
+import { BLOB_FORMATS, type BlobFormat, type ModelSummary } from "@/api/types";
 import { FORMAT_LABELS } from "@/lib/formatMeta";
 import type { LibrarySearch } from "@/pages/librarySearch";
 
@@ -60,8 +71,28 @@ export function LibraryPage() {
   // so the chips behave as a single-select facet ("All" clears it).
   const [activeFormat, setActiveFormat] = useState<BlobFormat | undefined>(undefined);
   const [slicedOnly, setSlicedOnly] = useState(false);
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [activeCollection, setActiveCollection] = useState<number | undefined>(search.collection);
   const [sort, setSort] = useState<string>("-updated_at");
+
+  // Bulk select mode: per-visit UI state only, same as the facets above --
+  // never persisted, never written to the URL.
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+
+  function exitSelectMode() {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+  }
+
+  function toggleSelected(id: number, next: boolean) {
+    setSelectedIds((prev) => {
+      const updated = new Set(prev);
+      if (next) updated.add(id);
+      else updated.delete(id);
+      return updated;
+    });
+  }
 
   const tagsQuery = useTags();
   const collectionsQuery = useFollowedCollections();
@@ -75,13 +106,15 @@ export function LibraryPage() {
       format: activeFormat,
       has_sliced: slicedOnly || undefined,
       collection: activeCollection,
+      favorite: favoritesOnly || undefined,
       sort,
     }),
-    [debouncedSearch, activeTag, activeFormat, slicedOnly, activeCollection, sort],
+    [debouncedSearch, activeTag, activeFormat, slicedOnly, favoritesOnly, activeCollection, sort],
   );
 
   const modelsQuery = useModelsQuery(filters);
   const items = modelsQuery.data?.pages.flatMap((page) => page.items) ?? [];
+  const selectedItems = items.filter((model) => selectedIds.has(model.id));
 
   const sentinelRef = useRef<HTMLDivElement | null>(null);
 
@@ -127,6 +160,14 @@ export function LibraryPage() {
             </SelectContent>
           </Select>
           <div className="flex-1" />
+          <Button
+            type="button"
+            variant={selectMode ? "default" : "outline"}
+            aria-pressed={selectMode}
+            onClick={() => (selectMode ? exitSelectMode() : setSelectMode(true))}
+          >
+            <SquareCheckIcon /> Select
+          </Button>
           <NewModelDialog
             trigger={
               <Button type="button">
@@ -161,6 +202,11 @@ export function LibraryPage() {
             />
             Sliced only
           </Label>
+
+          <FilterChip active={favoritesOnly} onClick={() => setFavoritesOnly((prev) => !prev)}>
+            <StarIcon className={favoritesOnly ? "fill-current" : undefined} />
+            Favorites
+          </FilterChip>
 
           <Popover>
             <PopoverTrigger asChild>
@@ -257,7 +303,13 @@ export function LibraryPage() {
         <>
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
             {items.map((model) => (
-              <ModelCard key={model.id} model={model} />
+              <ModelCard
+                key={model.id}
+                model={model}
+                selectable={selectMode}
+                selected={selectedIds.has(model.id)}
+                onSelectChange={toggleSelected}
+              />
             ))}
           </div>
           <div ref={sentinelRef} className="h-1" />
@@ -266,6 +318,148 @@ export function LibraryPage() {
           )}
         </>
       )}
+
+      {selectMode && selectedItems.length > 0 && (
+        <SelectionActionBar selectedItems={selectedItems} onDone={exitSelectMode} />
+      )}
     </div>
+  );
+}
+
+/** Floating bulk-action bar (fixed bottom-center) shown once at least one
+ * model is checked in select mode. Tag add/remove and favorite go through
+ * `useBulkUpdateModels` (`POST /models/bulk`); queueing has no bulk endpoint,
+ * so it loops `useEnqueueModel` over the selection instead. */
+function SelectionActionBar({ selectedItems, onDone }: { selectedItems: ModelSummary[]; onDone: () => void }) {
+  const [tagToAdd, setTagToAdd] = useState("");
+  const [addTagOpen, setAddTagOpen] = useState(false);
+  const [removeTagOpen, setRemoveTagOpen] = useState(false);
+  const [queueing, setQueueing] = useState(false);
+
+  const bulkUpdate = useBulkUpdateModels();
+  const enqueueModel = useEnqueueModel();
+
+  const ids = selectedItems.map((model) => model.id);
+  const tagsOnSelection = Array.from(new Set(selectedItems.flatMap((model) => model.tags))).sort();
+
+  function addTag() {
+    const trimmed = tagToAdd.trim();
+    if (!trimmed) return;
+    bulkUpdate.mutate(
+      { ids, add_tags: [trimmed] },
+      {
+        onSuccess: (result) => {
+          toast.success(`Tagged ${result.updated} model${result.updated === 1 ? "" : "s"}`);
+          setTagToAdd("");
+          setAddTagOpen(false);
+          onDone();
+        },
+      },
+    );
+  }
+
+  function removeTag(name: string) {
+    bulkUpdate.mutate(
+      { ids, remove_tags: [name] },
+      {
+        onSuccess: (result) => {
+          toast.success(`Untagged ${result.updated} model${result.updated === 1 ? "" : "s"}`);
+          setRemoveTagOpen(false);
+          onDone();
+        },
+      },
+    );
+  }
+
+  function favoriteSelection() {
+    bulkUpdate.mutate(
+      { ids, favorite: true },
+      {
+        onSuccess: (result) => {
+          toast.success(`Favorited ${result.updated} model${result.updated === 1 ? "" : "s"}`);
+          // Non-destructive -- keep the selection live instead of exiting.
+        },
+      },
+    );
+  }
+
+  async function addToQueue() {
+    setQueueing(true);
+    try {
+      const results = await Promise.allSettled(ids.map((id) => enqueueModel.mutateAsync(id)));
+      const succeeded = results.filter((result) => result.status === "fulfilled").length;
+      if (succeeded > 0) toast.success(`Added ${succeeded} model${succeeded === 1 ? "" : "s"} to queue`);
+    } finally {
+      setQueueing(false);
+    }
+  }
+
+  return (
+    <Card className="fixed inset-x-0 bottom-6 z-40 mx-auto w-fit flex-row items-center gap-3 px-4 py-2.5 shadow-lg">
+      <span className="text-sm font-medium">
+        {selectedItems.length} selected
+      </span>
+
+      <Popover open={addTagOpen} onOpenChange={setAddTagOpen}>
+        <PopoverTrigger asChild>
+          <Button type="button" variant="outline" size="sm">
+            <TagIcon /> Add tag
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="center" className="w-56">
+          <Input
+            autoFocus
+            value={tagToAdd}
+            placeholder="Tag name…"
+            aria-label="Tag to add"
+            onChange={(event) => setTagToAdd(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                addTag();
+              }
+            }}
+          />
+          <Button type="button" size="sm" className="mt-2 w-full" disabled={!tagToAdd.trim()} onClick={addTag}>
+            Add
+          </Button>
+        </PopoverContent>
+      </Popover>
+
+      <Popover open={removeTagOpen} onOpenChange={setRemoveTagOpen}>
+        <PopoverTrigger asChild>
+          <Button type="button" variant="outline" size="sm">
+            <XIcon /> Remove tag
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="center" className="w-56">
+          {tagsOnSelection.length > 0 ? (
+            <div className="flex flex-wrap gap-1.5">
+              {tagsOnSelection.map((name) => (
+                <button key={name} type="button" onClick={() => removeTag(name)}>
+                  <Badge variant="outline" className="cursor-pointer">
+                    {name}
+                  </Badge>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground">None of the selected models have tags.</p>
+          )}
+        </PopoverContent>
+      </Popover>
+
+      <Button type="button" variant="outline" size="sm" onClick={favoriteSelection}>
+        <StarIcon /> Favorite
+      </Button>
+
+      <Button type="button" variant="outline" size="sm" disabled={queueing} onClick={() => void addToQueue()}>
+        <ListPlusIcon /> Add to queue
+      </Button>
+
+      <Button type="button" variant="ghost" size="sm" onClick={onDone}>
+        Cancel
+      </Button>
+    </Card>
   );
 }

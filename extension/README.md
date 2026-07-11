@@ -35,6 +35,25 @@ This extension isn't published to the Chrome Web Store — load it from source:
   of those sites and choose **Save model to my library** from the context
   menu — no need to open the link first.
 
+## Syncing your MakerWorld collections
+
+MakerWorld blocks servers from listing your named collections (the SSR route
+behind them is intermittently Cloudflare-walled from a server IP), so the
+app can't enumerate your per-collection structure on its own — but your
+browser, already signed in, can see it just fine. To hand that structure
+over:
+
+1. Open your MakerWorld collections page (`makerworld.com/@<your
+   handle>/collections`).
+2. Click the extension's toolbar icon.
+3. Click **Sync collections to app**.
+
+The app now knows each collection's name and id, so a collection you follow
+by pasting its URL shows its real title instead of a generic placeholder.
+Re-run the sync any time your collections change — each sync replaces the
+app's cached list with what's on the page, so a deleted or renamed
+collection updates too.
+
 ## The MakerWorld courier
 
 While you're signed in and browsing makerworld.com, the extension watches

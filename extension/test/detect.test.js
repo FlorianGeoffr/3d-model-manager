@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { detectSite, isModelPage } from "../src/detect.js";
+import { detectSite, isCollectionsPage, isModelPage } from "../src/detect.js";
 
 test("detectSite: identifies each supported gallery host", () => {
   assert.equal(detectSite("https://makerworld.com/en/models/643408-foo"), "makerworld");
@@ -52,4 +52,40 @@ test("isModelPage: never throws on a malformed URL", () => {
   assert.equal(isModelPage("not a url"), false);
   assert.equal(isModelPage(""), false);
   assert.equal(isModelPage(undefined), false);
+});
+
+test("isCollectionsPage: true for a MakerWorld user's collections page, with/without a locale prefix or www", () => {
+  assert.equal(isCollectionsPage("https://makerworld.com/@Terminalfoo/collections"), true);
+  assert.equal(isCollectionsPage("https://www.makerworld.com/@Terminalfoo/collections"), true);
+  assert.equal(isCollectionsPage("https://makerworld.com/en/@Terminalfoo/collections"), true);
+  assert.equal(isCollectionsPage("https://www.makerworld.com/en/@Terminalfoo/collections"), true);
+});
+
+test("isCollectionsPage: true with a trailing slash, trailing segment, or query string", () => {
+  assert.equal(isCollectionsPage("https://makerworld.com/@Terminalfoo/collections/"), true);
+  assert.equal(isCollectionsPage("https://makerworld.com/en/@Terminalfoo/collections/"), true);
+  assert.equal(isCollectionsPage("https://makerworld.com/@Terminalfoo/collections/1793275-trays"), true);
+  assert.equal(isCollectionsPage("https://makerworld.com/en/@Terminalfoo/collections?tab=likes"), true);
+});
+
+test("isCollectionsPage: false for a model page on the same host", () => {
+  assert.equal(isCollectionsPage("https://makerworld.com/en/models/643408-foo"), false);
+  assert.equal(isCollectionsPage("https://www.makerworld.com/models/643408-foo"), false);
+});
+
+test("isCollectionsPage: false for a MakerWorld page that isn't a collections page", () => {
+  assert.equal(isCollectionsPage("https://makerworld.com/@Terminalfoo"), false);
+  assert.equal(isCollectionsPage("https://makerworld.com/en/search?keyword=vase"), false);
+});
+
+test("isCollectionsPage: false for an unsupported host", () => {
+  assert.equal(isCollectionsPage("https://example.com/@Terminalfoo/collections"), false);
+  assert.equal(isCollectionsPage("https://www.thingiverse.com/@Terminalfoo/collections"), false);
+});
+
+test("isCollectionsPage: never throws on a malformed URL", () => {
+  assert.doesNotThrow(() => isCollectionsPage("not a url"));
+  assert.equal(isCollectionsPage("not a url"), false);
+  assert.equal(isCollectionsPage(""), false);
+  assert.equal(isCollectionsPage(undefined), false);
 });

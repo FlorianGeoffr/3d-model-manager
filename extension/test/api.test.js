@@ -87,6 +87,40 @@ test("setMakerworldCredential: POSTs the cookie value as {token}", async () => {
   );
 });
 
+test("pushCollections: POSTs {site, collections} to /collections", async () => {
+  await withStubFetch(
+    () => jsonResponse(200, { ok: true, count: 2 }),
+    async (calls) => {
+      const client = createClient({ baseUrl: "http://nas.local:8080", token: "tok123" });
+      const collections = [
+        { list_id: "1", title: "Default Collection", slug: null, count: 7, is_default: true },
+        { list_id: "2", title: "ESP32", slug: "esp32", count: 9, is_default: false },
+      ];
+      const result = await client.pushCollections("makerworld", collections);
+
+      assert.equal(calls[0].url, "http://nas.local:8080/api/ext/collections");
+      assert.equal(calls[0].init.method, "POST");
+      assert.equal(calls[0].init.headers["Content-Type"], "application/json");
+      assert.deepEqual(JSON.parse(calls[0].init.body), { site: "makerworld", collections });
+      assert.deepEqual(result, { ok: true, status: 200, data: { ok: true, count: 2 }, error: null });
+    }
+  );
+});
+
+test("pushCollections: non-2xx surfaces the response's `detail` as `error`", async () => {
+  await withStubFetch(
+    () => jsonResponse(422, { detail: "collections: at most 200 entries" }),
+    async () => {
+      const client = createClient({ baseUrl: "http://nas.local:8080", token: "tok123" });
+      const result = await client.pushCollections("makerworld", []);
+
+      assert.equal(result.ok, false);
+      assert.equal(result.status, 422);
+      assert.equal(result.error, "collections: at most 200 entries");
+    }
+  );
+});
+
 test("non-2xx: surfaces the response's `detail` as `error`", async () => {
   await withStubFetch(
     () => jsonResponse(422, { detail: "Unsupported or invalid URL" }),

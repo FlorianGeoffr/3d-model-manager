@@ -76,5 +76,12 @@ export function createClient({ baseUrl, token }) {
     setMakerworldCredential(cookieValue) {
       return request("/credentials/makerworld", { method: "POST", body: { token: cookieValue } });
     },
+    /**
+     * @param {string} site
+     * @param {Array<{list_id: string, title: string, slug: string|null, count: number|null, is_default: boolean}>} collections
+     */
+    pushCollections(site, collections) {
+      return request("/collections", { method: "POST", body: { site, collections } });
+    },
   };
 }

@@ -25,6 +25,16 @@ const SITES = [
   },
 ];
 
+const MAKERWORLD_HOSTS = new Set(["makerworld.com", "www.makerworld.com"]);
+
+// `/@<handle>/collections`, optionally locale-prefixed (`/en/@handle/...`)
+// and optionally followed by a further path segment (viewing one collection)
+// or a query string (the query is naturally ignored since it's not part of
+// `URL#pathname`). Tested against the pathname only, anchored at both ends
+// so an unrelated page that merely contains "/collections/" somewhere
+// doesn't false-positive.
+const COLLECTIONS_PATH_PATTERN = /^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?@[^/]+\/collections(?:\/.*)?$/i;
+
 /**
  * @param {string} url
  * @returns {"makerworld"|"thingiverse"|"printables"|null}
@@ -69,4 +79,27 @@ export function isModelPage(url) {
   // acceptable for this loose gate).
   const target = `${parsed.pathname}${parsed.search}`;
   return entry.idPattern.test(target);
+}
+
+/**
+ * True iff `url` is a MakerWorld user's collections page --
+ * `/@<handle>/collections`, optionally locale-prefixed and/or with a
+ * trailing path segment or query string. Used to gate the popup's "Sync
+ * collections to app" button (`extractFavoritesList` in `collections.js`
+ * does the actual scrape).
+ * @param {string} url
+ * @returns {boolean}
+ */
+export function isCollectionsPage(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  const host = (parsed.hostname || "").toLowerCase();
+  if (!MAKERWORLD_HOSTS.has(host)) {
+    return false;
+  }
+  return COLLECTIONS_PATH_PATTERN.test(parsed.pathname);
 }

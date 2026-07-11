@@ -101,6 +101,27 @@ test("non-2xx: surfaces the response's `detail` as `error`", async () => {
   );
 });
 
+test("non-2xx: joins an array `detail` (FastAPI validation shape) instead of stringifying it", async () => {
+  await withStubFetch(
+    () =>
+      jsonResponse(422, {
+        detail: [
+          { loc: ["body", "url"], msg: "field required", type: "value_error.missing" },
+          { loc: ["body", "token"], msg: "field required", type: "value_error.missing" },
+        ],
+      }),
+    async () => {
+      const client = createClient({ baseUrl: "http://nas.local:8080", token: "tok123" });
+      const result = await client.createImport("https://example.com/not-a-model");
+
+      assert.equal(result.ok, false);
+      assert.equal(result.status, 422);
+      assert.equal(result.error, "field required; field required");
+      assert.doesNotMatch(result.error, /\[object Object\]/);
+    }
+  );
+});
+
 test("401: surfaces as a non-ok result without throwing", async () => {
   await withStubFetch(
     () => jsonResponse(401, { detail: "Not authenticated" }),

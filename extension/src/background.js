@@ -9,7 +9,7 @@
 import { isModelPage } from "./detect.js";
 import { createClient } from "./api.js";
 import { getConfig, isConfigured, setConfig } from "./config.js";
-import { hashToken, shouldPush } from "./courier.js";
+import { hashToken, pickCookieValue, shouldPush } from "./courier.js";
 
 const GALLERY_HOST_PATTERNS = [
   "*://makerworld.com/*",
@@ -24,7 +24,7 @@ const CONTEXT_MENU_PAGE_ID = "save-to-my-library-page";
 const CONTEXT_MENU_LINK_ID = "save-to-my-library-link";
 const COURIER_ALARM_NAME = "makerworld-courier";
 const COURIER_ALARM_PERIOD_MINUTES = 30;
-const MAKERWORLD_COOKIE_URL = "https://makerworld.com";
+const MAKERWORLD_COOKIE_DOMAIN = "makerworld.com";
 const MAKERWORLD_COOKIE_HOSTS = new Set(["makerworld.com", "www.makerworld.com"]);
 const MAKERWORLD_COOKIE_NAME = "token";
 const BADGE_FLASH_MS = 3000;
@@ -115,6 +115,10 @@ chrome.contextMenus.onClicked.addListener(async (info) => {
   const result = await saveUrl(url);
   if (result && result.ok) {
     await flashBadge("✓", BADGE_OK_COLOR);
+  } else if (result && result.needsConfig) {
+    // Not just a badge flash: an unexplained "!" doesn't tell the user
+    // *why* the save failed, so send them straight to setup.
+    await chrome.runtime.openOptionsPage();
   } else {
     await flashBadge("!", BADGE_ERROR_COLOR);
   }
@@ -131,11 +135,11 @@ async function runCourier() {
   if (!config.autoCourier || !isConfigured(config)) {
     return;
   }
-  const cookie = await chrome.cookies.get({
-    url: MAKERWORLD_COOKIE_URL,
+  const cookies = await chrome.cookies.getAll({
+    domain: MAKERWORLD_COOKIE_DOMAIN,
     name: MAKERWORLD_COOKIE_NAME,
   });
-  const value = cookie && cookie.value;
+  const value = pickCookieValue(cookies);
   if (!value) {
     return;
   }

@@ -51,7 +51,18 @@ function renderSavable(url) {
 async function handleSave(button, url) {
   button.disabled = true;
   setStatus("Saving…", null);
-  const response = await chrome.runtime.sendMessage({ type: "save", url });
+  let response;
+  try {
+    response = await chrome.runtime.sendMessage({ type: "save", url });
+  } catch {
+    // The background service worker's message port can reject/close out
+    // from under us (e.g. it was asleep and got killed again). Don't leave
+    // the button stuck disabled on "Saving…" — restore it with a generic
+    // error instead.
+    setStatus("Something went wrong.", "error");
+    button.disabled = false;
+    return;
+  }
   if (response && response.needsConfig) {
     setStatus("The extension isn't configured yet.", "error");
     button.disabled = false;

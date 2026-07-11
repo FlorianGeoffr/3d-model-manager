@@ -36,3 +36,24 @@ export async function shouldPush(currentValue, lastPushedHash) {
   const currentHash = await hashToken(currentValue);
   return currentHash !== lastPushedHash;
 }
+
+/**
+ * Picks the cookie value to use from a `chrome.cookies.getAll(...)` result.
+ * MakerWorld may set the `token` cookie as host-only on `www.makerworld.com`
+ * rather than domain-scoped to `makerworld.com`, so a lookup can return
+ * multiple candidates (or none). Pure/chrome-free so it's unit-testable
+ * without a browser context.
+ * @param {Array<{value?: string}>|null|undefined} cookies
+ * @returns {string|null}
+ */
+export function pickCookieValue(cookies) {
+  if (!Array.isArray(cookies)) {
+    return null;
+  }
+  for (const cookie of cookies) {
+    if (cookie && typeof cookie.value === "string" && cookie.value !== "") {
+      return cookie.value;
+    }
+  }
+  return null;
+}

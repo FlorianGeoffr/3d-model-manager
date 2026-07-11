@@ -51,10 +51,18 @@ export function createClient({ baseUrl, token }) {
       return { ok: true, status: response.status, data, error: null };
     }
 
-    const detail =
+    let detail =
       (data && typeof data === "object" && "detail" in data && data.detail) ||
       response.statusText ||
       `Request failed (${response.status})`;
+    // FastAPI validation errors surface `detail` as an array of error
+    // objects (each with a `msg`), not a string — join them instead of
+    // letting `String(detail)` render "[object Object]".
+    if (Array.isArray(detail)) {
+      detail = detail
+        .map((item) => (item && typeof item === "object" ? item.msg || JSON.stringify(item) : item))
+        .join("; ");
+    }
     return { ok: false, status: response.status, data, error: String(detail) };
   }
 

@@ -243,6 +243,8 @@ def create_imported_model_sync(
     source_license: str | None,
     imported_at: datetime | None,
     tags: list[str],
+    source_collection_id: int | None = None,
+    source_collection_title: str | None = None,
     initial_revision_name: str = "imported",
     commit: bool = True,
 ) -> Model:
@@ -262,7 +264,11 @@ def create_imported_model_sync(
     leaving a window where Model+Revision were durably committed while
     ``imports.model_id`` (and the DOWNLOADING->done transition) was not --
     undetectable to the redelivery guard, which only reconciles on
-    ``imports.model_id IS NOT NULL``."""
+    ``imports.model_id IS NOT NULL``.
+
+    ``source_collection_id``/``source_collection_title`` (Branch 3 Task 1) are
+    the followed collection this import came from, if any -- ``None`` for a
+    manually-pasted URL."""
     slug = _unique_slug_sync(session, name)
     model = Model(
         slug=slug,
@@ -274,6 +280,8 @@ def create_imported_model_sync(
         source_author=source_author,
         source_license=source_license,
         imported_at=imported_at,
+        source_collection_id=source_collection_id,
+        source_collection_title=source_collection_title,
     )
     session.add(model)
     session.flush()
@@ -541,13 +549,16 @@ async def list_models(
     tag: str | None,
     format_: str | None,
     has_sliced: bool | None,
+    collection: int | None,
     sort: str,
     archived: bool,
     limit: int,
     cursor: str | None,
 ) -> tuple[list[ModelSummary], str | None]:
     """Gallery query: search/filter/sort + cursor pagination (Task 5
-    interface decision; Task 7 adds the ``has_sliced`` filter).
+    interface decision; Task 7 adds the ``has_sliced`` filter; Branch 3 Task 1
+    adds the ``collection`` filter -- a plain equality on the denormalized
+    ``Model.source_collection_id``, no join needed).
     """
     is_desc = sort.startswith("-")
     field_name = sort[1:] if is_desc else sort
@@ -593,6 +604,8 @@ async def list_models(
             if has_sliced
             else Model.current_revision_id.not_in(sliced_revision_ids)
         )
+    if collection is not None:
+        stmt = stmt.where(Model.source_collection_id == collection)
 
     order_col = sort_column.desc() if is_desc else sort_column.asc()
     order_id = Model.id.desc() if is_desc else Model.id.asc()
@@ -639,6 +652,8 @@ async def list_models(
                 has_sliced=agg.has_sliced if agg else False,
                 source_site=m.source_site,
                 review_state=m.review_state,
+                source_collection_id=m.source_collection_id,
+                source_collection_title=m.source_collection_title,
             )
         )
 
@@ -753,6 +768,8 @@ async def build_model_detail(db: AsyncSession, model: Model, settings: Settings)
         source_site=model.source_site,
         source_author=model.source_author,
         source_license=model.source_license,
+        source_collection_id=model.source_collection_id,
+        source_collection_title=model.source_collection_title,
         imported_at=model.imported_at,
         cover_blob_hash=model.cover_blob_hash,
         is_archived=model.is_archived,

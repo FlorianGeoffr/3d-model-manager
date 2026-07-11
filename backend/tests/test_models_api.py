@@ -619,6 +619,55 @@ async def test_gallery_and_detail_surface_review_state_for_adopted_model(
     assert detail.json()["review_state"] == "adopted"
 
 
+async def test_gallery_collection_filter_and_schema_fields(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """Branch 3 Task 1: ``source_collection_id``/``source_collection_title``
+    surface on both the gallery list item and the detail response, and
+    ``GET /models?collection=<id>`` filters by them (simple equality, since
+    the field is denormalized straight onto ``models``)."""
+    from app.models.collections import FollowedCollection
+    from app.models.enums import CollectionSyncMode, ImportSite
+
+    collection = FollowedCollection(
+        site=ImportSite.THINGIVERSE,
+        list_id="likes",
+        kind="likes",
+        title="My Likes",
+        mode=CollectionSyncMode.AUTO,
+    )
+    db_session.add(collection)
+    await db_session.commit()
+    await db_session.refresh(collection)
+
+    from_collection = await _create_model(authenticated_client, "From Collection")
+    other = await _create_model(authenticated_client, "Not From Collection")
+
+    model = await db_session.get(Model, from_collection["id"])
+    model.source_collection_id = collection.id
+    model.source_collection_title = collection.title
+    await db_session.commit()
+
+    filtered = await authenticated_client.get(f"/api/models?collection={collection.id}")
+    assert [i["slug"] for i in filtered.json()["items"]] == [from_collection["slug"]]
+    item = filtered.json()["items"][0]
+    assert item["source_collection_id"] == collection.id
+    assert item["source_collection_title"] == "My Likes"
+
+    unfiltered = await authenticated_client.get("/api/models")
+    slugs = {i["slug"] for i in unfiltered.json()["items"]}
+    assert slugs == {from_collection["slug"], other["slug"]}
+
+    detail = await authenticated_client.get(f"/api/models/{from_collection['slug']}")
+    assert detail.json()["source_collection_id"] == collection.id
+    assert detail.json()["source_collection_title"] == "My Likes"
+
+    detail_other = await authenticated_client.get(f"/api/models/{other['slug']}")
+    assert detail_other.json()["source_collection_id"] is None
+    assert detail_other.json()["source_collection_title"] is None
+
+
 async def test_gallery_and_detail_review_state_is_null_for_normal_model(
     authenticated_client: httpx.AsyncClient,
 ) -> None:

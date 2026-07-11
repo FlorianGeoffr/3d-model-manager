@@ -37,6 +37,12 @@ class Import(Base):
     model_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("models.id", ondelete="SET NULL")
     )
+    # The followed collection this import came from (AUTO-mode sync, or an
+    # approved review item), if any -- NULL for a manual `POST /imports`/`POST
+    # /ext/imports`. Branch 3 Task 1 provenance capture.
+    collection_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("followed_collections.id", ondelete="SET NULL")
+    )
     error: Mapped[str | None] = mapped_column(Text)
     meta: Mapped[dict | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)

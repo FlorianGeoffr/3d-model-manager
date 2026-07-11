@@ -75,6 +75,8 @@ class ModelSummary(BaseModel):
     has_sliced: bool = False
     source_site: str | None = None
     review_state: str | None = None
+    source_collection_id: int | None = None
+    source_collection_title: str | None = None
 
 
 class GalleryPage(BaseModel):
@@ -296,6 +298,8 @@ class ModelDetail(BaseModel):
     source_site: str | None
     source_author: str | None
     source_license: str | None
+    source_collection_id: int | None = None
+    source_collection_title: str | None = None
     imported_at: datetime | None
     cover_blob_hash: str | None
     is_archived: bool

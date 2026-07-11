@@ -66,7 +66,8 @@ async def approve_pending_import(
     dedup-guarded ``start_import`` as ``POST /imports``, so approving something
     that arrived some other way answers 200 and creates nothing."""
     pending = await collections_svc.get_pending(db, pending_id)
-    imp, created = await start_import(db, pending.url)
+    collection = await collections_svc.get_followed(db, pending.collection_id)
+    imp, created = await start_import(db, pending.url, collection)
     await collections_svc.delete_pending(db, pending_id)
     if not created:
         response.status_code = status.HTTP_200_OK

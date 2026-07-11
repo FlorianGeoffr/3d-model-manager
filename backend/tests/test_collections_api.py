@@ -202,3 +202,148 @@ async def test_dismiss_pending_import(
     r = await authenticated_client.delete(f"/api/collections/pending/{pending[0]['id']}")
     assert r.status_code == 204
     assert (await authenticated_client.get("/api/collections/pending")).json() == []
+
+
+# ---------------------------------------------------------------------------
+# Branch 3 Task 1: models carry the followed collection they were imported
+# from (id + a denormalized title snapshot) all the way through to the
+# gallery/detail API surface.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_auto_mode_sync_stamps_source_collection_on_imported_model(
+    authenticated_client, library_root, data_dir, fake_import, monkeypatch
+):
+    fake_import.files = {"cube.stl": corpus.box_stl()}
+    _stub_importer(monkeypatch, items=[42])
+    followed = await _follow(authenticated_client, "auto")
+
+    sync = await authenticated_client.post("/api/collections/sync")
+    assert sync.status_code == 200 and sync.json()["state"] == "done"
+
+    gallery = await authenticated_client.get("/api/models")
+    items = gallery.json()["items"]
+    assert len(items) == 1
+    assert items[0]["source_collection_id"] == followed["id"]
+    assert items[0]["source_collection_title"] == "Likes"
+
+    detail = await authenticated_client.get(f"/api/models/{items[0]['slug']}")
+    assert detail.json()["source_collection_id"] == followed["id"]
+    assert detail.json()["source_collection_title"] == "Likes"
+
+
+@pytest.mark.asyncio
+async def test_review_mode_approve_stamps_source_collection_on_imported_model(
+    authenticated_client, library_root, data_dir, fake_import, monkeypatch
+):
+    fake_import.files = {"cube.stl": corpus.box_stl()}
+    _stub_importer(monkeypatch, items=[42])
+    followed = await _follow(authenticated_client, "review")
+
+    await authenticated_client.post("/api/collections/sync")
+    pending = (await authenticated_client.get("/api/collections/pending")).json()
+
+    approved = await authenticated_client.post(
+        f"/api/collections/pending/{pending[0]['id']}/approve"
+    )
+    assert approved.status_code == 201, approved.text
+
+    gallery = await authenticated_client.get("/api/models")
+    items = gallery.json()["items"]
+    assert len(items) == 1
+    assert items[0]["source_collection_id"] == followed["id"]
+    assert items[0]["source_collection_title"] == "Likes"
+
+
+@pytest.mark.asyncio
+async def test_manual_import_leaves_source_collection_null(
+    authenticated_client, library_root, data_dir, fake_import
+):
+    """`POST /imports` (no followed-collection context) must not invent one."""
+    fake_import.files = {"cube.stl": corpus.box_stl()}
+
+    direct = await authenticated_client.post(
+        "/api/imports", json={"url": "https://fake.test/thing/42"}
+    )
+    assert direct.status_code == 201 and direct.json()["state"] == "done"
+
+    gallery = await authenticated_client.get("/api/models")
+    item = gallery.json()["items"][0]
+    assert item["source_collection_id"] is None
+    assert item["source_collection_title"] is None
+
+
+@pytest.mark.asyncio
+async def test_sync_backfills_provenance_onto_a_pre_existing_import_but_never_overwrites(
+    authenticated_client, library_root, data_dir, fake_import, monkeypatch
+):
+    """A model imported before this feature existed (or pasted manually) has
+    NULL ``source_collection_id`` -- the first sync that lists it (from
+    ANY followed list, auto or review) heals it in place via the
+    already-imported/"skip" path. A second, DIFFERENT followed list that also
+    lists the same item must not steal provenance from the first."""
+    fake_import.files = {"cube.stl": corpus.box_stl()}
+
+    direct = await authenticated_client.post(
+        "/api/imports", json={"url": "https://fake.test/thing/42"}
+    )
+    assert direct.status_code == 201
+
+    _stub_importer(monkeypatch, items=[42])
+    first_collection = await _follow(authenticated_client, "auto")
+
+    sync1 = await authenticated_client.post("/api/collections/sync")
+    assert sync1.status_code == 200
+
+    gallery = await authenticated_client.get("/api/models")
+    item = gallery.json()["items"][0]
+    assert item["source_collection_id"] == first_collection["id"]
+    assert item["source_collection_title"] == "Likes"
+
+    second = await authenticated_client.post(
+        "/api/collections",
+        json={
+            "site": "thingiverse",
+            "list_id": "other",
+            "kind": "collection",
+            "title": "Other Collection",
+            "mode": "review",
+        },
+    )
+    assert second.status_code == 201
+
+    sync2 = await authenticated_client.post("/api/collections/sync")
+    assert sync2.status_code == 200
+
+    gallery2 = await authenticated_client.get("/api/models")
+    item2 = gallery2.json()["items"][0]
+    assert item2["source_collection_id"] == first_collection["id"]
+    assert item2["source_collection_title"] == "Likes"
+    # The second list must not have queued it for review either -- it's
+    # already in the library.
+    assert (await authenticated_client.get("/api/collections/pending")).json() == []
+
+
+@pytest.mark.asyncio
+async def test_unfollowing_a_collection_nulls_source_collection_id_but_keeps_title(
+    authenticated_client, library_root, data_dir, fake_import, monkeypatch, db_session
+):
+    """ON DELETE SET NULL nulls the FK, but the denormalized title snapshot
+    survives -- provenance stays legible even after the collection is gone."""
+    from app.models.library import Model
+
+    fake_import.files = {"cube.stl": corpus.box_stl()}
+    _stub_importer(monkeypatch, items=[42])
+    followed = await _follow(authenticated_client, "auto")
+
+    await authenticated_client.post("/api/collections/sync")
+    gallery = await authenticated_client.get("/api/models")
+    model_id = gallery.json()["items"][0]["id"]
+
+    unfollow = await authenticated_client.delete(f"/api/collections/{followed['id']}")
+    assert unfollow.status_code == 204
+
+    model = await db_session.get(Model, model_id)
+    assert model.source_collection_id is None
+    assert model.source_collection_title == "Likes"

@@ -28,6 +28,7 @@ from app.importers.base import SEARCH_PAGE_SIZE
 from app.importers.registry import get_importer
 from app.models.collections import FollowedCollection
 from app.models.enums import CollectionSyncMode, ImportState
+from app.models.library import Model
 from app.models.system import Import
 from app.services import collections as collections_svc
 from app.services import jobs
@@ -53,6 +54,28 @@ def _walk_list_items(importer, list_id: str):
             return
 
 
+def _backfill_provenance_sync(session, imp: Import, collection: FollowedCollection) -> None:
+    """Heal an import a later sync re-discovers as already-imported but that
+    never recorded which collection it came from -- imports that predate this
+    feature, or that were created some other way (manual paste, a different
+    followed list's earlier sync). FIRST collection wins: a value already
+    stamped on either the import row or the model it produced is never
+    overwritten. ``imp`` is a live import (``find_live_import_sync``
+    guarantees ``model_id IS NOT NULL``).
+    """
+    changed = False
+    if imp.collection_id is None:
+        imp.collection_id = collection.id
+        changed = True
+    model = session.get(Model, imp.model_id)
+    if model is not None and model.source_collection_id is None:
+        model.source_collection_id = collection.id
+        model.source_collection_title = collection.title
+        changed = True
+    if changed:
+        session.commit()
+
+
 def _sync_one(session, collection: FollowedCollection) -> None:
     importer = get_importer(collection.site)
     if importer is None:
@@ -62,15 +85,17 @@ def _sync_one(session, collection: FollowedCollection) -> None:
         return
 
     for item in _walk_list_items(importer, collection.list_id):
-        already = find_live_import_sync(session, item.site, item.external_id) is not None
+        live_import = find_live_import_sync(session, item.site, item.external_id)
         # ...or still in flight: under real (non-eager) Celery the import this
         # run just dispatched is only `pending`, so a model that appears in two
         # followed lists would otherwise be imported twice.
         in_flight = find_active_import_sync(session, item.site, item.external_id) is not None
-        if already or in_flight:
+        if live_import is not None or in_flight:
             # Landing (or landed) in the library: make sure it isn't still
             # sitting in the review queue from an earlier run.
             collections_svc.drop_pending_sync(session, collection, item.external_id)
+            if live_import is not None:
+                _backfill_provenance_sync(session, live_import, collection)
             continue
 
         if collection.mode == CollectionSyncMode.AUTO:
@@ -79,6 +104,7 @@ def _sync_one(session, collection: FollowedCollection) -> None:
                 site=item.site,
                 external_id=item.external_id,
                 state=ImportState.PENDING,
+                collection_id=collection.id,
             )
             session.add(imp)
             session.commit()

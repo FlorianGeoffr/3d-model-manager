@@ -61,6 +61,7 @@ from sqlalchemy import delete as sa_delete
 from app.config import get_settings
 from app.importers import download
 from app.importers.registry import IMPORTER_REGISTRY
+from app.models.collections import FollowedCollection
 from app.models.enums import ImportState
 from app.models.system import Import
 from app.services import events, library
@@ -187,6 +188,19 @@ def import_from_url(import_id: int) -> None:
             # task below, which resolves + stamps the default backend for
             # each File itself) always lands on the DEFAULT backend.
             backend, _default_backend_id = resolve_default_backend_sync(s, settings)
+            imp = s.get(Import, import_id)
+            # Branch 3 Task 1: carry the followed collection this import came
+            # from (AUTO-mode sync, or an approved review item) onto the new
+            # model. The collection may have been unfollowed/deleted mid-
+            # import -- treat that the same as "no collection" rather than
+            # failing the import over it.
+            source_collection_id = None
+            source_collection_title = None
+            if imp.collection_id is not None:
+                collection = s.get(FollowedCollection, imp.collection_id)
+                if collection is not None:
+                    source_collection_id = collection.id
+                    source_collection_title = collection.title
             model = library.create_imported_model_sync(
                 s,
                 backend,
@@ -198,11 +212,12 @@ def import_from_url(import_id: int) -> None:
                 source_license=meta.license,
                 imported_at=datetime.now(UTC),
                 tags=list(meta.tags),
+                source_collection_id=source_collection_id,
+                source_collection_title=source_collection_title,
                 initial_revision_name="imported",
                 commit=False,
             )
             created_model_id = model.id
-            imp = s.get(Import, import_id)
             # LINK EARLY, SAME TRANSACTION: `commit=False` above left Model+
             # Revision flushed-but-uncommitted -- this single commit persists
             # them together with `imp.model_id`, so there is no window where

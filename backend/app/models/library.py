@@ -84,6 +84,14 @@ class Model(Base):
     source_site: Mapped[str | None] = mapped_column(String)
     source_author: Mapped[str | None] = mapped_column(String)
     source_license: Mapped[str | None] = mapped_column(String)
+    # The followed collection this model was imported from, if any (Branch 3
+    # Task 1). `source_collection_title` is a DENORMALIZED snapshot taken at
+    # import time so provenance survives unfollowing/deleting the collection
+    # -- ON DELETE SET NULL then nulls the FK but leaves the title behind.
+    source_collection_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("followed_collections.id", ondelete="SET NULL")
+    )
+    source_collection_title: Mapped[str | None] = mapped_column(Text)
     imported_at: Mapped[datetime | None]
     # Circular FK with revisions.model_id -> models.id: use_alter=True lets
     # SQLAlchemy (and Alembic autogenerate) create both tables first and add

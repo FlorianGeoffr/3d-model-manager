@@ -13,16 +13,24 @@ from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.importers.registry import build_importer_for_url, deferred_site_for_url
+from app.models.collections import FollowedCollection
 from app.models.enums import ImportState
 from app.models.system import Import
 from app.services.import_dedup import find_live_import
 from app.tasks.importing import import_from_url
 
 
-async def start_import(db: AsyncSession, url: str) -> tuple[Import, bool]:
+async def start_import(
+    db: AsyncSession, url: str, collection: FollowedCollection | None = None
+) -> tuple[Import, bool]:
     """Returns ``(import_row, created)``. ``created`` is False when the model was
     already in the library -- the caller then hands back the EXISTING import
     (and should signal "nothing was created", e.g. HTTP 200 instead of 201).
+
+    ``collection`` is the followed collection this import came from (approving
+    a queued review item), if any -- recorded on the new ``Import`` row so the
+    worker can stamp provenance on the resulting model (Branch 3 Task 1). A
+    manual ``POST /imports``/``POST /ext/imports`` passes none, leaving it NULL.
     """
     importer = build_importer_for_url(url)
     if importer is None:
@@ -42,7 +50,13 @@ async def start_import(db: AsyncSession, url: str) -> tuple[Import, bool]:
     if existing is not None:
         return existing, False
 
-    imp = Import(url=url, site=importer.site, external_id=external_id, state=ImportState.PENDING)
+    imp = Import(
+        url=url,
+        site=importer.site,
+        external_id=external_id,
+        state=ImportState.PENDING,
+        collection_id=collection.id if collection else None,
+    )
     db.add(imp)
     await db.commit()
     await db.refresh(imp)

@@ -32,6 +32,43 @@ export interface SceneStats {
   triangles: number;
 }
 
+/** A world-space (normalized-scene) clipping plane, as plain numbers --
+ * `ModelViewer` constructs the actual `THREE.Plane` from this (see this
+ * file's header: no three.js import here). */
+export interface SectionPlaneParams {
+  normal: [number, number, number];
+  constant: number;
+}
+
+/** World-space clipping plane for the normalized scene. The model is
+ * `Resize`-scaled by `s = 1 / maxDim` and `Center`-ed (x/z centered, bottom
+ * at y=0) -- `size` is the pre-scale native-mm box size (`ModelViewer`'s
+ * `allBox`) and `scaleFactor` is that same `s`. `normal` is the negative
+ * unit axis (e.g. x -> `[-1, 0, 0]`): three.js clipping keeps a point `p`
+ * where `dot(normal, p) + constant >= 0`, which for a negative normal
+ * reduces to `p_axis <= constant`. World extents per axis: x/z are centered
+ * around the origin (`[-size.a * s / 2, +size.a * s / 2]`); y runs from the
+ * ground up (`[0, size.y * s]`) since `Center top` grounds the model at
+ * y=0. `constant` sweeps from `worldMin` to `worldMax` as `t` goes 0 -> 1,
+ * so `t=0` keeps only `p_axis <= worldMin` (nothing) and `t=1` keeps
+ * `p_axis <= worldMax` (everything). */
+export function sectionPlaneParams(
+  section: SectionState,
+  size: { x: number; y: number; z: number },
+  scaleFactor: number,
+): SectionPlaneParams {
+  const { axis, t } = section;
+  const normal: [number, number, number] =
+    axis === "x" ? [-1, 0, 0] : axis === "y" ? [0, -1, 0] : [0, 0, -1];
+
+  const extent = size[axis] * scaleFactor;
+  const worldMin = axis === "y" ? 0 : -extent / 2;
+  const worldMax = axis === "y" ? extent : extent / 2;
+  const constant = worldMin + (worldMax - worldMin) * t;
+
+  return { normal, constant };
+}
+
 export interface ViewerToolsState {
   grid: boolean; // build-plate grid (persisted)
   wireframe: boolean; // Task 5 wires

@@ -31,7 +31,14 @@ import type { FileOut, ModelDetail } from "@/api/types";
 // button's click handler has something to call.
 type ViewerPart = { id: number; url: string; color?: string; visible: boolean };
 type ViewerLighting = { contactShadow: boolean };
-type ViewerToolsStub = { grid: boolean; autoRotate: boolean; ortho: boolean };
+type ViewerToolsStub = {
+  grid: boolean;
+  autoRotate: boolean;
+  ortho: boolean;
+  wireframe: boolean;
+  section: { enabled: boolean; axis: string; t: number };
+  explode: number;
+};
 type ViewerApiStub = { screenshot: () => Promise<Blob | null> };
 const { modelViewerMock, platePanelMock, defaultModelViewerImpl, screenshotSpy } = vi.hoisted(() => {
   const screenshotSpy = vi.fn(() => Promise.resolve(new Blob(["fake-png"], { type: "image/png" })));
@@ -61,6 +68,11 @@ const { modelViewerMock, platePanelMock, defaultModelViewerImpl, screenshotSpy }
         data-grid={tools ? String(tools.grid) : undefined}
         data-auto-rotate={tools ? String(tools.autoRotate) : undefined}
         data-ortho={tools ? String(tools.ortho) : undefined}
+        data-wireframe={tools ? String(tools.wireframe) : undefined}
+        data-section={
+          tools ? `${tools.section.enabled}:${tools.section.axis}:${tools.section.t}` : undefined
+        }
+        data-explode={tools ? String(tools.explode) : undefined}
         data-fit={fitSignal}
       >
         {parts.map((part) => part.url).join(",")}
@@ -280,6 +292,96 @@ describe("ViewerTab", () => {
     // The camera swap resets `OrbitControls`' target -- the ortho handler
     // fires a follow-up fit to recover framing, so `fitSignal` bumps too.
     expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-fit", "1");
+  });
+
+  it("Wireframe flips aria-pressed and the tools.wireframe flag ModelViewer receives", async () => {
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file])} />);
+    await screen.findByTestId("model-viewer");
+
+    const button = screen.getByRole("button", { name: "Wireframe" });
+    expect(button).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-wireframe", "false");
+
+    fireEvent.click(button);
+
+    await waitFor(() => expect(button).toHaveAttribute("aria-pressed", "true"));
+    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-wireframe", "true");
+  });
+
+  it("the W key on the canvas wrapper toggles wireframe", async () => {
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file])} />);
+    await screen.findByTestId("model-viewer");
+
+    fireEvent.keyDown(screen.getByTestId("model-viewer").parentElement!, { key: "w" });
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Wireframe" })).toHaveAttribute("aria-pressed", "true"),
+    );
+    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-wireframe", "true");
+  });
+
+  it("enabling Section reveals the axis control and position slider, both flowing to the mock", async () => {
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file])} />);
+    await screen.findByTestId("model-viewer");
+
+    // Off by default: no axis picker, no position slider, disabled in the mock.
+    expect(screen.queryByRole("radiogroup", { name: "Axis" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("slider", { name: "Section position" })).not.toBeInTheDocument();
+    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-section", "false:x:0.5");
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Section" }));
+
+    expect(await screen.findByRole("radiogroup", { name: "Axis" })).toBeInTheDocument();
+    expect(screen.getByRole("slider", { name: "Section position" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-section", "true:x:0.5"),
+    );
+  });
+
+  it("moving the section slider and switching the axis both update the mock's section state", async () => {
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file])} />);
+    await screen.findByTestId("model-viewer");
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Section" }));
+    await screen.findByRole("radiogroup", { name: "Axis" });
+
+    fireEvent.click(screen.getByRole("radio", { name: "Y" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-section", "true:y:0.5"),
+    );
+
+    fireEvent.change(screen.getByRole("slider", { name: "Section position" }), {
+      target: { value: "0.25" },
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-section", "true:y:0.25"),
+    );
+  });
+
+  it("Explode is absent with a single GLB part", async () => {
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file])} />);
+    await screen.findByTestId("model-viewer");
+
+    expect(screen.queryByRole("slider", { name: "Explode" })).not.toBeInTheDocument();
+  });
+
+  it("Explode appears with two GLB parts and its slider updates tools.explode", async () => {
+    const fileA = fakeFile({ id: 1, rel_path: "a.stl", blob_hash: "hashA", glb_status: "ok" });
+    const fileB = fakeFile({ id: 2, rel_path: "b.stl", blob_hash: "hashB", glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([fileA, fileB])} />);
+    await screen.findByTestId("model-viewer");
+
+    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-explode", "0");
+
+    const slider = screen.getByRole("slider", { name: "Explode" });
+    fireEvent.change(slider, { target: { value: "0.6" } });
+
+    await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-explode", "0.6"));
   });
 
   it("Screenshot calls the published screenshot bridge and downloads the resulting PNG", async () => {

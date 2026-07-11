@@ -9,11 +9,13 @@ import {
   RotateCcwIcon,
   RotateCwIcon,
   ScanIcon,
+  TriangleDashedIcon,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { usePrinterStatus } from "@/api/printers";
@@ -34,6 +36,7 @@ import { traysToPartColors, type PartColors } from "@/components/viewer/partColo
 import {
   formatStats,
   type SceneStats,
+  type SectionAxis,
   type ViewerApi,
   type ViewerToolsState,
 } from "@/components/viewer/tools";
@@ -44,6 +47,11 @@ import type { FileOut } from "@/api/types";
 // RULE") — load them only once a GLB actually needs rendering, so the main
 // bundle never pays for the viewer on pages that don't render this stage.
 const ModelViewer = lazy(() => import("@/components/viewer/ModelViewer"));
+
+// Order + labels for the cross-section's axis picker (Task 5) -- mirrors the
+// Background/Lighting `SegmentedControl` usages below.
+const SECTION_AXIS_OPTIONS: readonly SectionAxis[] = ["x", "y", "z"];
+const SECTION_AXIS_LABELS: Record<SectionAxis, string> = { x: "X", y: "Y", z: "Z" };
 
 /** A centered card used for every "nothing to render here" state -- shared by
  * this stage's empty-selection case and `ViewerTab`'s file-status cards
@@ -153,6 +161,7 @@ function MeshCanvas({
   stats,
   fitSignal,
   apiRef,
+  onPartLoaded,
 }: {
   parts: ViewerPart[];
   background: string;
@@ -163,6 +172,9 @@ function MeshCanvas({
   stats: SceneStats | null;
   fitSignal: number;
   apiRef: React.MutableRefObject<ViewerApi | null>;
+  /** Task 5 explode view: forwarded straight through to `ModelViewer` -- see
+   * `ViewerStage`'s `handlePartLoaded` for what it does. */
+  onPartLoaded: () => void;
 }) {
   if (parts.length === 0) {
     return (
@@ -188,6 +200,7 @@ function MeshCanvas({
             onStats={onStats}
             fitSignal={fitSignal}
             apiRef={apiRef}
+            onPartLoaded={onPartLoaded}
           />
         </Suspense>
       </ViewerErrorBoundary>
@@ -298,9 +311,10 @@ export interface ViewerStageProps {
    * provide it, and the body row just needs to flex to fill it. */
   variant: "inline" | "dialog" | "window";
   /** View-affecting toggles (build-plate grid, auto-rotate, orthographic
-   * camera today; wireframe/section/explode land on later tasks in this
-   * branch) -- see `tools.ts`. Driven by the panel's View section below and
-   * the `R` keyboard shortcut. */
+   * camera, wireframe, cross-section, explode; the grid toggle and a
+   * regroup land on Task 6) -- see `tools.ts`. Driven by the panel's View
+   * section, Section block, and Explode block below, and the `F`/`R`/`W`
+   * keyboard shortcuts. */
   tools: ViewerToolsState;
   onToolsChange: (patch: Partial<ViewerToolsState>) => void;
   /** "How big is this print?" -- the combined mm bounding box + triangle
@@ -403,6 +417,23 @@ export function ViewerStage({
     onToolsChange({ autoRotate: !tools.autoRotate });
   }, [onToolsChange, tools.autoRotate]);
 
+  const handleWireframeToggle = useCallback(() => {
+    onToolsChange({ wireframe: !tools.wireframe });
+  }, [onToolsChange, tools.wireframe]);
+
+  // The explode slider leaves a nonzero offset applied to whichever parts
+  // were already loaded when it moved -- a part that finishes loading LATE
+  // (checked after the initial eager load, or a newly-added file) would
+  // otherwise render at its un-exploded position, visibly detached from the
+  // rest of the already-exploded scene. Resetting to 0 on every load keeps
+  // the explode state honest: it only ever describes parts that were all
+  // present when the slider last moved. A no-op during the initial eager
+  // load, since `tools.explode` starts at 0 -- see `ModelViewer`'s
+  // `onPartLoaded` doc comment.
+  const handlePartLoaded = useCallback(() => {
+    if (tools.explode !== 0) onToolsChange({ explode: 0 });
+  }, [tools.explode, onToolsChange]);
+
   // `viewerApiRef.current` is populated by `ModelViewer`'s `CaptureBridge`
   // only once the canvas has mounted -- `?.` guards the (brief) window
   // before that effect runs, or the empty-parts placeholder case where
@@ -418,10 +449,10 @@ export function ViewerStage({
     URL.revokeObjectURL(url);
   }, [viewerApiRef, slug]);
 
-  // `F`/`R` shortcuts on the canvas wrapper -- ignored while any modifier is
-  // held (so `Ctrl+F`/`Cmd+R`/etc. keep their browser-native meaning instead
-  // of being hijacked). `G`/`W` arrive with the grid-toggle/wireframe
-  // features that land later on this branch.
+  // `F`/`R`/`W` shortcuts on the canvas wrapper -- ignored while any
+  // modifier is held (so `Ctrl+F`/`Cmd+R`/etc. keep their browser-native
+  // meaning instead of being hijacked). `G` arrives with the grid-toggle
+  // feature that lands later on this branch (Task 6).
   const handleCanvasKeyDown = useCallback(
     (event: KeyboardEvent<HTMLDivElement>) => {
       if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
@@ -429,9 +460,11 @@ export function ViewerStage({
         onFit();
       } else if (event.key === "r" || event.key === "R") {
         handleAutoRotateToggle();
+      } else if (event.key === "w" || event.key === "W") {
+        handleWireframeToggle();
       }
     },
-    [onFit, handleAutoRotateToggle],
+    [onFit, handleAutoRotateToggle, handleWireframeToggle],
   );
 
   return (
@@ -499,6 +532,7 @@ export function ViewerStage({
             stats={stats}
             fitSignal={fitSignal}
             apiRef={viewerApiRef}
+            onPartLoaded={handlePartLoaded}
           />
         </div>
 
@@ -603,12 +637,12 @@ export function ViewerStage({
               </div>
             </div>
 
-            {/* Camera/utility toggles + actions (Task 4). Wireframe/section/
-                explode join this row on Task 5; the grid toggle and a
-                regroup land on Task 6. A compact icon-button row rather than
-                labelled buttons -- there's no room for both an icon and a
-                label at this panel width, so each button carries its name
-                via `aria-label` (and `title` for a hover tooltip) instead. */}
+            {/* Camera/utility toggles + actions (Task 4), joined by
+                Wireframe (Task 5); the grid toggle and a regroup land on
+                Task 6. A compact icon-button row rather than labelled
+                buttons -- there's no room for both an icon and a label at
+                this panel width, so each button carries its name via
+                `aria-label` (and `title` for a hover tooltip) instead. */}
             <div className="flex flex-col gap-3">
               <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
                 View
@@ -638,6 +672,17 @@ export function ViewerStage({
                 </Button>
                 <Button
                   type="button"
+                  variant={tools.wireframe ? "secondary" : "outline"}
+                  size="icon-sm"
+                  aria-pressed={tools.wireframe}
+                  aria-label="Wireframe"
+                  title="Wireframe (W)"
+                  onClick={handleWireframeToggle}
+                >
+                  <TriangleDashedIcon />
+                </Button>
+                <Button
+                  type="button"
                   variant="outline"
                   size="icon-sm"
                   aria-label="Fit view"
@@ -658,6 +703,73 @@ export function ViewerStage({
                 </Button>
               </div>
             </div>
+
+            {/* Cross-section (Task 5): the checkbox both toggles
+                `section.enabled` and doubles as this block's heading (styled
+                to match the uppercase muted headings above it), so
+                "Section" isn't spelled out twice. Axis + sweep position only
+                render while enabled -- there's nothing useful to show them
+                for otherwise. */}
+            <div className="flex flex-col gap-3">
+              <Label className="flex items-center gap-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">
+                <Checkbox
+                  checked={tools.section.enabled}
+                  onCheckedChange={(next) =>
+                    onToolsChange({ section: { ...tools.section, enabled: next === true } })
+                  }
+                />
+                Section
+              </Label>
+              {tools.section.enabled && (
+                <div className="flex flex-col gap-2 pl-6">
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-xs text-muted-foreground">Axis</span>
+                    <SegmentedControl
+                      label="Axis"
+                      options={SECTION_AXIS_OPTIONS}
+                      labels={SECTION_AXIS_LABELS}
+                      value={tools.section.axis}
+                      onChange={(axis) => onToolsChange({ section: { ...tools.section, axis } })}
+                    />
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    aria-label="Section position"
+                    value={tools.section.t}
+                    onChange={(event) =>
+                      onToolsChange({ section: { ...tools.section, t: Number(event.target.value) } })
+                    }
+                    className="w-full"
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* Explode view (Task 5): only meaningful with more than one GLB
+                part to pull apart -- `files` is the GLB-ready part list (see
+                `ViewerStageProps.files`), not merely the checked subset, so
+                the slider stays available even while only one part happens
+                to be checked right now. */}
+            {files.length > 1 && (
+              <div className="flex flex-col gap-3">
+                <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+                  Explode
+                </span>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  aria-label="Explode"
+                  value={tools.explode}
+                  onChange={(event) => onToolsChange({ explode: Number(event.target.value) })}
+                  className="w-full"
+                />
+              </div>
+            )}
 
             {printerId !== undefined && (
               <AmsSync printerId={printerId} partIds={checkedList} onApply={onApplyAmsColors} />

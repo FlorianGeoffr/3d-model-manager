@@ -75,7 +75,12 @@ import {
   useGLTF,
 } from "@react-three/drei";
 import type { LightingRig } from "@/components/viewer/lighting";
-import type { SceneStats, ViewerApi, ViewerToolsState } from "@/components/viewer/tools";
+import {
+  sectionPlaneParams,
+  type SceneStats,
+  type ViewerApi,
+  type ViewerToolsState,
+} from "@/components/viewer/tools";
 import type { ViewerPart } from "@/components/viewer/viewable";
 import { ViewerEffects } from "@/components/viewer/scene/Effects";
 import { CameraLayers, PlateGrid } from "@/components/viewer/scene/PlateGrid";
@@ -86,6 +91,12 @@ import { AutoRotate, CaptureBridge, DoubleClickTarget } from "@/components/viewe
 // dimension to compute its scale, and an empty/zero-size box would divide by
 // zero or `-Infinity`. Never mutated; shared across renders.
 const UNIT_BOX = new THREE.Box3(new THREE.Vector3(-0.5, -0.5, -0.5), new THREE.Vector3(0.5, 0.5, 0.5));
+
+// The no-explode/no-offset default for `GltfPart`'s `position` -- a stable
+// module-level constant (rather than a fresh `[0, 0, 0]` literal per render)
+// so an unexploded part's `<group>` prop is referentially stable across
+// re-renders, same rationale as `UNIT_BOX` above.
+const ZERO_OFFSET: [number, number, number] = [0, 0, 0];
 
 function ownedMaterialsOf(mesh: THREE.Mesh): THREE.Material[] {
   return Array.isArray(mesh.material) ? mesh.material : [mesh.material];
@@ -143,12 +154,30 @@ function GltfPart({
   url,
   color,
   visible,
+  wireframe,
+  plane,
+  offset,
   onLoaded,
 }: {
   id: number;
   url: string;
   color: string | undefined;
   visible: boolean;
+  /** Task 5 "inspection tools": renders every owned material's edges only,
+   * no fill -- see the owned-materials effect below. */
+  wireframe: boolean;
+  /** Task 5 cross-section: a world-space (normalized-scene) clipping plane,
+   * or `null` when sectioning is off. Constructed by `ModelViewer` from
+   * `tools.section` via `tools.ts`'s `sectionPlaneParams` -- this component
+   * only assigns it onto its owned materials, it never computes plane math
+   * itself. */
+  plane: THREE.Plane | null;
+  /** Task 5 explode view: this part's position offset (native mm, see
+   * `ModelViewer`'s `offsets` memo for why native mm rather than normalized
+   * scene units), applied to the part's own `<group>` so it moves along
+   * with the rest of `Resize`'s scaling. `undefined` (not yet in
+   * `loadedParts`, e.g. still loading) falls back to `ZERO_OFFSET`. */
+  offset?: [number, number, number];
   onLoaded: (id: number, box: THREE.Box3, triangles: number) => void;
 }) {
   const { scene } = useGLTF(url);
@@ -193,27 +222,34 @@ function GltfPart({
 
   const invalidate = useThree((state) => state.invalidate);
 
-  // Recolor as an imperative traversal over the owned materials, so a color
-  // change never re-clones the scene. Clearing `color` restores each
-  // material's `.color` from the `__source` stashed above.
+  // A single imperative traversal over the owned materials for every Task 5
+  // inspection toggle (recolor/wireframe/section), so none of them ever
+  // re-clones the scene. Clearing `color` restores each material's `.color`
+  // from the `__source` stashed above. `wireframe`/`clippingPlanes` apply
+  // unconditionally to every owned material (not gated on `std.color` the
+  // way recolor is) -- both are meaningful even on a material with no
+  // `.color` property.
   useEffect(() => {
     forEachMesh(object, (mesh) => {
       ownedMaterialsOf(mesh).forEach((material) => {
         const std = material as THREE.MeshStandardMaterial;
-        if (!std.color) return;
-        if (color) {
-          std.color.set(color);
-        } else {
-          const source = material.userData.__source as THREE.MeshStandardMaterial | undefined;
-          if (source?.color) std.color.copy(source.color);
+        if (std.color) {
+          if (color) {
+            std.color.set(color);
+          } else {
+            const source = material.userData.__source as THREE.MeshStandardMaterial | undefined;
+            if (source?.color) std.color.copy(source.color);
+          }
         }
+        std.wireframe = wireframe;
+        material.clippingPlanes = plane ? [plane] : null;
       });
     });
     invalidate();
-  }, [object, color, invalidate]);
+  }, [object, color, wireframe, plane, invalidate]);
 
   return (
-    <group visible={visible}>
+    <group visible={visible} position={offset ?? ZERO_OFFSET}>
       <primitive object={object} />
     </group>
   );
@@ -304,6 +340,7 @@ export default function ModelViewer({
   onStats,
   fitSignal,
   apiRef,
+  onPartLoaded,
 }: {
   parts: ViewerPart[];
   background: string;
@@ -318,20 +355,31 @@ export default function ModelViewer({
   /** Published imperative surface (today: `screenshot`) -- see
    * `scene/helpers.tsx`'s `CaptureBridge`. */
   apiRef?: React.MutableRefObject<ViewerApi | null>;
+  /** Task 5 explode view: fires every time a part finishes loading
+   * (including late loads -- a part checked after the initial eager load,
+   * or a newly-added file), so `ViewerStage` can reset a nonzero explode
+   * back to 0 rather than leaving the just-arrived part visually detached
+   * from the rest of the exploded scene. A no-op during the initial eager
+   * load, since `tools.explode` starts at 0. */
+  onPartLoaded?: () => void;
 }) {
   const [loadedParts, setLoadedParts] = useState<Map<number, { box: THREE.Box3; triangles: number }>>(
     () => new Map(),
   );
 
-  const onLoaded = useCallback((id: number, box: THREE.Box3, triangles: number) => {
-    setLoadedParts((prev) => {
-      const existing = prev.get(id);
-      if (existing && existing.triangles === triangles && existing.box.equals(box)) return prev;
-      const next = new Map(prev);
-      next.set(id, { box, triangles });
-      return next;
-    });
-  }, []);
+  const onLoaded = useCallback(
+    (id: number, box: THREE.Box3, triangles: number) => {
+      setLoadedParts((prev) => {
+        const existing = prev.get(id);
+        if (existing && existing.triangles === triangles && existing.box.equals(box)) return prev;
+        const next = new Map(prev);
+        next.set(id, { box, triangles });
+        return next;
+      });
+      onPartLoaded?.();
+    },
+    [onPartLoaded],
+  );
 
   // Prune parts that dropped out of `parts` entirely (not merely hidden) --
   // e.g. the model's file set changed under an already-mounted viewer.
@@ -373,6 +421,37 @@ export default function ModelViewer({
     const maxDimension = Math.max(size.x, size.y, size.z);
     return maxDimension > 0 ? 1 / maxDimension : 1;
   }, [allBox]);
+
+  // Task 5 cross-section: the world-space (normalized-scene) clipping plane
+  // every `GltfPart` gets assigned onto its owned materials, or `null` when
+  // sectioning is off or nothing has loaded yet (`allBox` null -- `size`
+  // would be meaningless). `tools.ts`'s `sectionPlaneParams` does the pure
+  // plane math (see its header for why that module stays three.js-free);
+  // this is the one place that turns its result into a real `THREE.Plane`.
+  const plane = useMemo(() => {
+    if (!tools.section.enabled || !allBox) return null;
+    const size = allBox.getSize(new THREE.Vector3());
+    const { normal, constant } = sectionPlaneParams(tools.section, size, s);
+    return new THREE.Plane(new THREE.Vector3(...normal), constant);
+  }, [tools.section, allBox, s]);
+
+  // Task 5 explode view: each loaded part's `<group>` position offset, in
+  // NATIVE mm -- deliberately not pre-scaled by `s`, because this offset is
+  // applied INSIDE `Center`/`Resize` (see `GltfPart`'s `<group position=…>`
+  // below), and `Resize` scales that whole subtree (including this offset)
+  // by `s` on its way out. Pre-scaling here would double-apply it. Naturally
+  // yields a zero vector at `tools.explode === 0` (multiplying by 0) without
+  // a separate branch for it. `null`/empty when nothing has loaded.
+  const offsets = useMemo(() => {
+    const map = new Map<number, [number, number, number]>();
+    if (!allBox) return map;
+    const allCenter = allBox.getCenter(new THREE.Vector3());
+    for (const [id, { box }] of loadedParts) {
+      const offset = box.getCenter(new THREE.Vector3()).sub(allCenter).multiplyScalar(tools.explode);
+      map.set(id, [offset.x, offset.y, offset.z]);
+    }
+    return map;
+  }, [loadedParts, allBox, tools.explode]);
 
   // Reports the combined mm-scale bounding box + triangle count of every
   // currently VISIBLE, loaded part -- "how big is this print?" for
@@ -424,10 +503,11 @@ export default function ModelViewer({
     // `antialias: false` -- the scene now renders offscreen into the
     // postprocessing composer's target (see `ViewerEffects` below), where
     // MSAA can't reach the default framebuffer anyway; SMAA in the composer
-    // chain replaces it. `localClippingEnabled: true` is unused today but
-    // required for `THREE.Material.clippingPlanes` to have any effect --
-    // needed by the cross-section feature landing next on this branch, and
-    // harmless to turn on now.
+    // chain replaces it. `localClippingEnabled: true` is required for
+    // `THREE.Material.clippingPlanes` to have any effect -- the cross-section
+    // feature (Task 5) assigns a plane onto every owned material via
+    // `GltfPart`'s owned-materials effect; without this the renderer would
+    // silently ignore it.
     <Canvas
       frameloop="demand"
       dpr={[1, 2]}
@@ -498,6 +578,9 @@ export default function ModelViewer({
                     url={part.url}
                     color={part.color}
                     visible={part.visible}
+                    wireframe={tools.wireframe}
+                    plane={plane}
+                    offset={offsets.get(part.id)}
                     onLoaded={onLoaded}
                   />
                 </Suspense>
@@ -554,7 +637,12 @@ export default function ModelViewer({
         <GizmoViewcube />
       </GizmoHelper>
 
-      <ViewerEffects ao={lighting.ao} />
+      {/* Task 5 cross-section: N8AO off while sectioning -- ambient
+          occlusion baked from the CLIPPED geometry's depth buffer looks
+          wrong (dark halos along the cut plane that don't correspond to any
+          real crevice), so this gate wins over the lighting preset's own
+          `ao` choice rather than combining with it. */}
+      <ViewerEffects ao={lighting.ao && !tools.section.enabled} />
     </Canvas>
   );
 }

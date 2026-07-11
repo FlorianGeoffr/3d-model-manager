@@ -1,7 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { DEFAULT_TOOLS, formatStats, useViewerTools } from "@/components/viewer/tools";
+import { DEFAULT_TOOLS, formatStats, sectionPlaneParams, useViewerTools } from "@/components/viewer/tools";
 
 afterEach(() => localStorage.clear());
 
@@ -44,6 +44,59 @@ describe("formatStats", () => {
 
   it("rounds a sub-1k count to the nearest integer", () => {
     expect(formatStats({ x: 1, y: 1, z: 1, triangles: 999.6 }).endsWith("1000 tris")).toBe(true);
+  });
+});
+
+describe("sectionPlaneParams", () => {
+  // A size where every axis has a distinct dimension (10/20/30 mm) and a
+  // non-1 scale factor (2), so a mixed-up axis or an unscaled extent would
+  // fail these assertions rather than passing by coincidence.
+  const size = { x: 10, y: 20, z: 30 };
+  const s = 2;
+
+  it("x axis: centered around the origin, normal points in -x", () => {
+    expect(sectionPlaneParams({ enabled: true, axis: "x", t: 0 }, size, s)).toEqual({
+      normal: [-1, 0, 0],
+      constant: -10,
+    });
+    expect(sectionPlaneParams({ enabled: true, axis: "x", t: 0.5 }, size, s)).toEqual({
+      normal: [-1, 0, 0],
+      constant: 0,
+    });
+    expect(sectionPlaneParams({ enabled: true, axis: "x", t: 1 }, size, s)).toEqual({
+      normal: [-1, 0, 0],
+      constant: 10,
+    });
+  });
+
+  it("y axis: grounded at 0 (not centered), normal points in -y", () => {
+    expect(sectionPlaneParams({ enabled: true, axis: "y", t: 0 }, size, s)).toEqual({
+      normal: [0, -1, 0],
+      constant: 0,
+    });
+    expect(sectionPlaneParams({ enabled: true, axis: "y", t: 0.5 }, size, s)).toEqual({
+      normal: [0, -1, 0],
+      constant: 20,
+    });
+    expect(sectionPlaneParams({ enabled: true, axis: "y", t: 1 }, size, s)).toEqual({
+      normal: [0, -1, 0],
+      constant: 40,
+    });
+  });
+
+  it("z axis: centered around the origin, normal points in -z", () => {
+    expect(sectionPlaneParams({ enabled: true, axis: "z", t: 0 }, size, s)).toEqual({
+      normal: [0, 0, -1],
+      constant: -30,
+    });
+    expect(sectionPlaneParams({ enabled: true, axis: "z", t: 0.5 }, size, s)).toEqual({
+      normal: [0, 0, -1],
+      constant: 0,
+    });
+    expect(sectionPlaneParams({ enabled: true, axis: "z", t: 1 }, size, s)).toEqual({
+      normal: [0, 0, -1],
+      constant: 30,
+    });
   });
 });
 

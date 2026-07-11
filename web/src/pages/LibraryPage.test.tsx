@@ -8,7 +8,7 @@ import {
 } from "@tanstack/react-router";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "@/api/client";
 import { LibraryPage } from "@/pages/LibraryPage";
@@ -16,15 +16,19 @@ import type { FollowedCollection, ModelSummary } from "@/api/types";
 
 // `vi.mock` factories are hoisted above the module's own top-level
 // bindings, so the mock function has to be created through `vi.hoisted`.
-const { getMock, postMock } = vi.hoisted(() => ({
+const { getMock, postMock, toastSuccessMock, toastErrorMock } = vi.hoisted(() => ({
   getMock: vi.fn(),
   postMock: vi.fn().mockResolvedValue({ updated: 0 }),
+  toastSuccessMock: vi.fn(),
+  toastErrorMock: vi.fn(),
 }));
 
 // Fakes a rejecting queryFn by mocking the fetch wrapper the gallery query
 // runs through (`useModelsQuery` -> `api.get`), so the real react-query
 // pipeline (isError/error/refetch) is exercised end to end rather than
-// stubbing the hook's return value.
+// stubbing the hook's return value. `useEnqueueModel` (bulk "Add to queue")
+// also goes through this same mocked `api.post`, so per-test overrides of
+// `postMock` can simulate a queue failure without mocking `@/api/queue`.
 vi.mock("@/api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/client")>();
   return {
@@ -32,6 +36,12 @@ vi.mock("@/api/client", async (importOriginal) => {
     api: { ...actual.api, get: getMock, post: postMock },
   };
 });
+
+// Fix-review F3's "toast an error on total add-to-queue failure" test needs
+// to observe the toast calls `SelectionActionBar.addToQueue` makes.
+vi.mock("sonner", () => ({
+  toast: { success: toastSuccessMock, error: toastErrorMock },
+}));
 
 // jsdom doesn't implement `IntersectionObserver` (the gallery grid's
 // infinite-scroll sentinel uses it) -- every earlier test in this file only
@@ -138,6 +148,13 @@ function lastBulkCall(): { path: string; body: unknown } {
   if (!last) throw new Error("no /models/bulk call recorded");
   return { path: last[0] as string, body: last[1] };
 }
+
+beforeEach(() => {
+  postMock.mockReset();
+  postMock.mockResolvedValue({ updated: 0 });
+  toastSuccessMock.mockClear();
+  toastErrorMock.mockClear();
+});
 
 describe("LibraryPage", () => {
   it("renders an error card with a retry button when the gallery fetch fails, not the empty state", async () => {
@@ -269,5 +286,26 @@ describe("LibraryPage", () => {
     await waitFor(() =>
       expect(lastBulkCall()).toEqual({ path: "/models/bulk", body: { ids: [1], favorite: true } }),
     );
+  });
+
+  it("toasts an error, and no success toast, when every add-to-queue call in the selection fails", async () => {
+    // Fix-review F3: `Promise.allSettled` swallows rejections silently --
+    // a total failure must still tell the user something went wrong.
+    mockGalleryOkWithModels([GALLERY_MODEL]);
+    postMock.mockImplementation((path: string) => {
+      if (path === "/queue") return Promise.reject(new ApiError(409, "already queued"));
+      return Promise.resolve({ updated: 0 });
+    });
+    renderLibraryPage();
+    await screen.findByText("Test Model");
+
+    fireEvent.click(screen.getByRole("button", { name: "Select" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Select Test Model" }));
+    await screen.findByText("1 selected");
+
+    fireEvent.click(screen.getByRole("button", { name: "Add to queue" }));
+
+    await waitFor(() => expect(toastErrorMock).toHaveBeenCalledExactlyOnceWith("Failed to add 1 model to queue"));
+    expect(toastSuccessMock).not.toHaveBeenCalled();
   });
 });

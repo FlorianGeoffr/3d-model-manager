@@ -717,6 +717,7 @@ export interface DuplicateFile {
   model_id: number;
   model_slug: string;
   model_name: string;
+  model_archived: boolean;
   file_id: number;
   file_name: string;
 }

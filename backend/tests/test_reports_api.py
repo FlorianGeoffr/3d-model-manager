@@ -100,6 +100,38 @@ async def test_same_model_two_files_sharing_hash_is_not_a_group(
     assert body["total_wasted_bytes"] == 0
 
 
+async def test_archived_model_stays_in_group_and_is_labeled(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    """Fix-review F4: storage is per-file, so an archived model's bytes are
+    still real wasted storage -- it stays in the report, just LABELED via
+    ``model_archived``, rather than being silently dropped.
+    """
+    model_a = await _create_model(authenticated_client, "Archived Dup A")
+    model_b = await _create_model(authenticated_client, "Archived Dup B")
+
+    a, a_rev = await _model_and_revision(db_session, model_a)
+    file_a = await seed_file(a, a_rev, "part.stl", b"archived-shared-bytes")
+
+    b, b_rev = await _model_and_revision(db_session, model_b)
+    await seed_file(b, b_rev, "clone.stl", b"archived-shared-bytes")
+
+    archived = await authenticated_client.delete(f"/api/models/{model_a['slug']}")
+    assert archived.status_code == 204
+
+    response = await authenticated_client.get("/api/reports/duplicates")
+    assert response.status_code == 200
+    body = response.json()
+
+    assert len(body["groups"]) == 1
+    entries = {f["model_id"]: f for f in body["groups"][0]["files"]}
+    assert entries[model_a["id"]]["model_archived"] is True
+    assert entries[model_a["id"]]["file_id"] == file_a.id
+    assert entries[model_b["id"]]["model_archived"] is False
+
+
 async def test_groups_sorted_by_wasted_bytes_descending(
     authenticated_client: httpx.AsyncClient,
     db_session: AsyncSession,

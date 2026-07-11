@@ -24,8 +24,22 @@ const REPORT: DuplicatesReport = {
       size: 2048,
       wasted_bytes: 2048,
       files: [
-        { model_id: 1, model_slug: "dragon", model_name: "Dragon", file_id: 1, file_name: "dragon.stl" },
-        { model_id: 2, model_slug: "dragon-copy", model_name: "Dragon Copy", file_id: 2, file_name: "dragon.stl" },
+        {
+          model_id: 1,
+          model_slug: "dragon",
+          model_name: "Dragon",
+          model_archived: false,
+          file_id: 1,
+          file_name: "dragon.stl",
+        },
+        {
+          model_id: 2,
+          model_slug: "dragon-copy",
+          model_name: "Dragon Copy",
+          model_archived: false,
+          file_id: 2,
+          file_name: "dragon.stl",
+        },
       ],
     },
   ],
@@ -69,5 +83,31 @@ describe("DuplicatesPage", () => {
     expect(await screen.findByText("Reclaimable: 2.0 KB")).toBeInTheDocument();
     expect(screen.getByText("Dragon — dragon.stl")).toBeInTheDocument();
     expect(screen.getByText("Dragon Copy — dragon.stl")).toBeInTheDocument();
+  });
+
+  it("labels an archived model's entry with an '(archived)' suffix, and leaves live entries unlabeled", async () => {
+    // Branch 4 fix-review F4: storage is per-file, so an archived model's
+    // bytes are still real wasted storage -- it stays in the report,
+    // labeled rather than dropped.
+    reportBox.current = {
+      groups: [
+        {
+          ...REPORT.groups[0],
+          files: [
+            { ...REPORT.groups[0].files[0], model_archived: true },
+            REPORT.groups[0].files[1],
+          ],
+        },
+      ],
+      total_wasted_bytes: REPORT.total_wasted_bytes,
+    };
+
+    renderDuplicatesPage();
+
+    const archivedEntry = await screen.findByText("Dragon — dragon.stl");
+    expect(archivedEntry.parentElement).toHaveTextContent("Dragon — dragon.stl (archived)");
+
+    const liveEntry = screen.getByText("Dragon Copy — dragon.stl");
+    expect(liveEntry.parentElement).not.toHaveTextContent("(archived)");
   });
 });

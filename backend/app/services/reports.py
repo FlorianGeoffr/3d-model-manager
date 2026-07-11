@@ -36,6 +36,7 @@ async def duplicate_files_report(db: AsyncSession) -> DuplicatesReport:
             Model.id,
             Model.slug,
             Model.name,
+            Model.is_archived,
         )
         .join(Blob, Blob.hash == File.blob_hash)
         .join(Revision, Revision.id == File.revision_id)
@@ -45,7 +46,7 @@ async def duplicate_files_report(db: AsyncSession) -> DuplicatesReport:
     rows = (await db.execute(stmt)).all()
 
     buckets: dict[str, _Bucket] = {}
-    for file_id, rel_path, blob_hash, size, model_id, model_slug, model_name in rows:
+    for file_id, rel_path, blob_hash, size, model_id, model_slug, model_name, is_archived in rows:
         bucket = buckets.setdefault(blob_hash, _Bucket(size=size))
         bucket.model_ids.add(model_id)
         bucket.files.append(
@@ -53,6 +54,7 @@ async def duplicate_files_report(db: AsyncSession) -> DuplicatesReport:
                 model_id=model_id,
                 model_slug=model_slug,
                 model_name=model_name,
+                model_archived=is_archived,
                 file_id=file_id,
                 file_name=rel_path,
             )

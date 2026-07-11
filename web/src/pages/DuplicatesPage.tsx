@@ -70,6 +70,7 @@ function DuplicateGroupCard({ group }: { group: DuplicateGroup }) {
               <Link to="/models/$slug" params={{ slug: file.model_slug }} className="hover:underline">
                 {file.model_name} — {file.file_name}
               </Link>
+              {file.model_archived && <span className="text-muted-foreground"> (archived)</span>}
             </li>
           ))}
         </ul>

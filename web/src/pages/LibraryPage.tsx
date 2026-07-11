@@ -388,7 +388,12 @@ function SelectionActionBar({ selectedItems, onDone }: { selectedItems: ModelSum
     try {
       const results = await Promise.allSettled(ids.map((id) => enqueueModel.mutateAsync(id)));
       const succeeded = results.filter((result) => result.status === "fulfilled").length;
+      const failed = results.length - succeeded;
       if (succeeded > 0) toast.success(`Added ${succeeded} model${succeeded === 1 ? "" : "s"} to queue`);
+      // Fix-review F3: `Promise.allSettled` swallows rejections silently --
+      // without this, a total failure (e.g. every model already queued)
+      // left the user with no feedback at all.
+      if (failed > 0) toast.error(`Failed to add ${failed} model${failed === 1 ? "" : "s"} to queue`);
     } finally {
       setQueueing(false);
     }

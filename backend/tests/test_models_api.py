@@ -780,6 +780,59 @@ async def test_bulk_unknown_id_is_404_with_nothing_applied(
     assert body["favorite"] is False
 
 
+async def test_bulk_remove_tag_partial_membership_is_not_404_and_is_atomic(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    """Fix-review F1: the UI's remove-tag popover offers the UNION of tags
+    across the selection, so "only one of the two selected models actually
+    has this tag" is the NORMAL case -- must be a 200 no-op for the model
+    that never had it, not a 404 that leaves the batch half-committed.
+    """
+    model_a = await _create_model(authenticated_client, "Partial Tag A")
+    model_b = await _create_model(authenticated_client, "Partial Tag B")
+    tagged = await authenticated_client.post(
+        f"/api/models/{model_a['id']}/tags", json={"name": "shared"}
+    )
+    assert tagged.status_code == 201
+
+    detail_b_before = await authenticated_client.get(f"/api/models/{model_b['slug']}")
+    updated_at_b_before = detail_b_before.json()["updated_at"]
+
+    response = await authenticated_client.post(
+        "/api/models/bulk",
+        json={"ids": [model_a["id"], model_b["id"]], "remove_tags": ["shared"]},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"updated": 2}
+
+    detail_a = await authenticated_client.get(f"/api/models/{model_a['slug']}")
+    assert detail_a.json()["tags"] == []
+
+    # model_b never had the tag -- untouched, including its updated_at.
+    detail_b = await authenticated_client.get(f"/api/models/{model_b['slug']}")
+    assert detail_b.json()["tags"] == []
+    assert detail_b.json()["updated_at"] == updated_at_b_before
+
+
+async def test_bulk_remove_tag_that_exists_on_no_model_in_the_batch_is_a_noop(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    """A tag name that doesn't exist on ANY of the selected models (or at all)
+    is likewise a silent no-op, not a 404 -- same reasoning as the partial
+    case above, just the all-missing edge of it.
+    """
+    model = await _create_model(authenticated_client, "Bulk Remove Noop")
+
+    response = await authenticated_client.post(
+        "/api/models/bulk",
+        json={"ids": [model["id"]], "remove_tags": ["never-applied"]},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"updated": 1}
+
+
 # ---------------------------------------------------------------------------
 # relocate (Workstream C task C3): POST /models/{slug}/relocate enqueues
 # app.tasks.relocate.relocate_model_storage. The relocate MECHANICS

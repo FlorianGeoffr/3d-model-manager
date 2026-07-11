@@ -143,8 +143,27 @@ describe("QueuePage", () => {
     renderQueuePage();
     await screen.findByText("Articulated Dragon");
 
-    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove Articulated Dragon from queue" }));
 
     await waitFor(() => expect(removeMock).toHaveBeenCalledExactlyOnceWith(7));
+  });
+
+  it("gives each entry's Remove button its own accessible name so they aren't ambiguous", async () => {
+    // Fix-review F2: two Remove buttons with the bare name "Remove" are
+    // indistinguishable to assistive tech / role queries.
+    queueDataBox.current = [
+      entry({ id: 1, position: 1 }),
+      entry({ id: 2, position: 2, model: { ...entry().model, slug: "second-model", name: "Second Model" } }),
+    ];
+
+    renderQueuePage();
+    await screen.findByText("Second Model");
+
+    expect(screen.getByRole("button", { name: "Remove Articulated Dragon from queue" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove Second Model from queue" })).toBeInTheDocument();
+    expect(screen.getAllByText("Remove")).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove Second Model from queue" }));
+    await waitFor(() => expect(removeMock).toHaveBeenCalledExactlyOnceWith(2));
   });
 });

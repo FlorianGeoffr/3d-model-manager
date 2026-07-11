@@ -406,6 +406,21 @@ async def archive_model(db: AsyncSession, model: Model) -> None:
     await db.commit()
 
 
+async def _get_or_create_tag_id(db: AsyncSession, name: str) -> int:
+    """Get-or-create by name, returning just the id. Twin of the get-or-create
+    half of ``add_tag_to_model``, but never commits -- ``bulk_update_models``
+    (below) needs the id only, and commits once for the whole batch rather
+    than once per tag.
+    """
+    tag_id = await db.scalar(select(Tag.id).where(Tag.name == name))
+    if tag_id is not None:
+        return tag_id
+    tag = Tag(name=name)
+    db.add(tag)
+    await db.flush()
+    return tag.id
+
+
 async def bulk_update_models(
     db: AsyncSession,
     *,
@@ -416,34 +431,81 @@ async def bulk_update_models(
 ) -> int:
     """``POST /models/bulk`` (Branch 4 Task 1): apply the same tag/favorite
     changes to every id in one go. Every id is validated to exist BEFORE any
-    mutation runs, so an unknown id 404s with NOTHING applied -- the
-    add/remove-tag steps below reuse ``add_tag_to_model``/
-    ``remove_tag_from_model`` verbatim (the same functions backing
-    ``POST /models/{id}/tags``/``DELETE /models/{id}/tags/{name}``), which is
-    safe only because every id is already known-good by the time they run.
+    mutation runs, so an unknown id 404s with NOTHING applied.
+
+    Branch 4 fix-review F1: unlike the single-model ``POST .../tags``/
+    ``DELETE .../tags/{name}`` endpoints, tag membership here is applied
+    SET-BASED (bulk INSERT/DELETE straight against ``model_tags``) instead of
+    looping ``add_tag_to_model``/``remove_tag_from_model`` per model, and the
+    whole op -- add-tags, remove-tags, favorite -- commits ONCE at the end.
+    This matters most for remove: the UI's remove-tag popover offers the
+    UNION of tags across the selection, so "some of the selected models don't
+    have this tag" is the NORMAL case, not an error. A DELETE that just
+    matches zero rows for a given model is silently a no-op (no 404), and
+    nothing before it in the batch is left half-committed if a later step
+    were to fail.
     """
     unique_ids = list(dict.fromkeys(ids))  # de-dupe, preserve order
-    found_ids = set(
-        (await db.execute(select(Model.id).where(Model.id.in_(unique_ids)))).scalars().all()
-    )
-    missing = [i for i in unique_ids if i not in found_ids]
+    models_by_id = {
+        m.id: m
+        for m in (await db.execute(select(Model).where(Model.id.in_(unique_ids)))).scalars()
+    }
+    missing = [i for i in unique_ids if i not in models_by_id]
     if missing:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"model(s) not found: {missing}")
 
-    for model_id in unique_ids:
-        for tag_name in add_tags or []:
-            await add_tag_to_model(db, model_id, tag_name)
-        for tag_name in remove_tags or []:
-            await remove_tag_from_model(db, model_id, tag_name)
-        if favorite is not None:
-            model = await db.get(Model, model_id)
-            assert model is not None  # just validated above
-            model.favorite = favorite
-            model.updated_at = func.now()
+    touched_ids: set[int] = set()
+
+    if add_tags:
+        tag_ids = [await _get_or_create_tag_id(db, name) for name in add_tags]
+        existing_pairs = set(
+            (
+                await db.execute(
+                    select(model_tags.c.model_id, model_tags.c.tag_id).where(
+                        model_tags.c.model_id.in_(unique_ids),
+                        model_tags.c.tag_id.in_(tag_ids),
+                    )
+                )
+            ).all()
+        )
+        new_links = [
+            {"model_id": model_id, "tag_id": tag_id}
+            for model_id in unique_ids
+            for tag_id in tag_ids
+            if (model_id, tag_id) not in existing_pairs
+        ]
+        if new_links:
+            await db.execute(model_tags.insert(), new_links)
+            touched_ids.update(link["model_id"] for link in new_links)
+
+    if remove_tags:
+        remove_tag_ids = list(
+            (await db.execute(select(Tag.id).where(Tag.name.in_(remove_tags)))).scalars()
+        )
+        if remove_tag_ids:
+            result = await db.execute(
+                model_tags.delete()
+                .where(
+                    model_tags.c.model_id.in_(unique_ids),
+                    model_tags.c.tag_id.in_(remove_tag_ids),
+                )
+                .returning(model_tags.c.model_id)
+            )
+            touched_ids.update(result.scalars().all())
 
     if favorite is not None:
-        await db.commit()
+        for model_id in unique_ids:
+            models_by_id[model_id].favorite = favorite
 
+    # Backlog fold: see `finalize_upload`'s matching comment -- neither a
+    # model_tags-only insert/delete nor a same-value `favorite` assignment
+    # (SQLAlchemy skips the UPDATE entirely when nothing actually changed)
+    # otherwise issues an UPDATE against `models`. Only models whose tag
+    # membership actually changed get bumped here.
+    for model_id in touched_ids:
+        models_by_id[model_id].updated_at = func.now()
+
+    await db.commit()
     return len(unique_ids)
 
 

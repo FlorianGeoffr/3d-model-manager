@@ -112,6 +112,7 @@ function QueueRow({ entry, count }: { entry: QueueEntry; count: number }) {
           type="button"
           variant="ghost"
           size="sm"
+          aria-label={`Remove ${model.name} from queue`}
           disabled={removeEntry.isPending}
           onClick={() => removeEntry.mutate(entry.id)}
         >

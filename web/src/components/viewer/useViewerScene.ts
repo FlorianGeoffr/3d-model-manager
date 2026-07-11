@@ -44,32 +44,40 @@ export function useViewerScene({
   slug,
   files,
   initial,
-  persistColors = true,
+  persist = true,
 }: {
   slug: string;
   files: FileOut[];
   initial?: ViewerSceneInitial;
-  /** The pop-out window is seeded with a SUBSET of colors (only the parts it
-   * was opened for), so writing that subset back to the per-model store would
-   * drop every other part's color. It opts out; the tab persists as before. */
-  persistColors?: boolean;
+  /** Whether this surface writes its state back to shared storage. The tab
+   * persists (colors per-model, background/lighting globally). The pop-out
+   * window is a URL-derived VIEW and passes `false`: it's seeded with a SUBSET
+   * of colors (writing that back would drop the rest of the model's colors),
+   * and it reads its background/lighting from the URL, so persisting either
+   * would let comparing settings in a pop-out silently change the tab's saved
+   * defaults. */
+  persist?: boolean;
 }): { stageProps: StagePropsBundle } {
   const [checkedIds, setCheckedIds] = useState<ReadonlySet<number>>(
     () => new Set(initial?.checkedIds ?? (files[0] ? [files[0].id] : [])),
   );
   const [panelOpen, setPanelOpen] = useState(initial?.panelOpen ?? true);
   const [colors, setColors] = useState<PartColors>(() => initial?.colors ?? loadPartColors(slug));
-  const { preset, custom, color, setPreset, setCustom } = useViewerBackground(initial?.background);
+  const { preset, custom, color, setPreset, setCustom } = useViewerBackground(
+    initial?.background,
+    persist,
+  );
   const { preset: lightingPreset, rig: lighting, setPreset: setLighting } = useViewerLighting(
     initial?.lighting,
+    persist,
   );
   const printers = usePrinters();
   const printerId = printers.data?.[0]?.id;
 
   useEffect(() => {
-    if (!persistColors) return;
+    if (!persist) return;
     savePartColors(slug, colors);
-  }, [slug, colors, persistColors]);
+  }, [slug, colors, persist]);
 
   const parts = useMemo(
     () =>

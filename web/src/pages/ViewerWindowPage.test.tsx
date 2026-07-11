@@ -155,6 +155,24 @@ describe("ViewerWindowPage", () => {
     expect(await screen.findByTestId("model-viewer")).toHaveAttribute("data-background", "#ffffff");
   });
 
+  it("does not persist appearance changes -- the window is a URL-derived view, not the tab's prefs", async () => {
+    modelBox.current = { data: fakeModel([glbFile(1, "aaa", "a.glb")]), isLoading: false };
+    // No light param -> seeds studio (shadow on).
+    render(<ViewerWindowPage />);
+    await screen.findByTestId("model-viewer");
+
+    // "Flat" is unique to the Lighting group. Switching it proves the change
+    // took effect in-window...
+    fireEvent.click(screen.getByRole("radio", { name: "Flat" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-contact-shadow", "false"),
+    );
+
+    // ...but nothing leaked into the tab's shared localStorage prefs.
+    expect(localStorage.getItem("viewer-lighting")).toBeNull();
+    expect(localStorage.getItem("viewer-bg")).toBeNull();
+  });
+
   it("the flat lighting preset from the URL turns the contact shadow off; studio (default) keeps it on", async () => {
     modelBox.current = { data: fakeModel([glbFile(1, "aaa", "a.glb")]), isLoading: false };
     searchBox.current = { light: "flat" };

@@ -66,9 +66,10 @@ function ViewerWindow({ slug, files, search }: { slug: string; files: FileOut[];
   const { stageProps } = useViewerScene({
     slug,
     files,
-    // The URL carries only the parts this window was opened for, so writing
-    // that subset back to the per-model color store would drop the rest.
-    persistColors: false,
+    // The window is a pure URL-derived view: it reads its parts, colors,
+    // background, and lighting from the URL and writes none of them back, so
+    // popping out and comparing settings never mutates the tab's saved prefs.
+    persist: false,
     initial: {
       checkedIds,
       colors: decodePartColors(search.colors),

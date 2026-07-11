@@ -83,8 +83,13 @@ function writeStoredPreset(preset: LightingPreset): void {
  * pop-out window decodes its preset from the URL and must not clobber it
  * with whatever's in this tab's localStorage on first render. An invalid
  * `initial` degrades to the studio default the same as a corrupt persisted
- * value would. */
-export function useViewerLighting(initial?: LightingPreset): {
+ * value would. `persist=false` makes this a read/seed-only view: the pop-out
+ * window derives its lighting from the URL and must NOT write it back, or
+ * comparing lighting in a pop-out would silently change the tab's default. */
+export function useViewerLighting(
+  initial?: LightingPreset,
+  persist = true,
+): {
   preset: LightingPreset;
   rig: LightingRig;
   setPreset: (preset: LightingPreset) => void;
@@ -95,15 +100,16 @@ export function useViewerLighting(initial?: LightingPreset): {
 
   // Skip the initial run: `preset` was just seeded or read back from
   // localStorage, so persisting it again on mount would be a redundant
-  // no-op write. Only real changes (via `setPreset`) should hit storage.
+  // no-op write. Only real changes (via `setPreset`) should hit storage, and
+  // only when this surface is allowed to persist at all.
   const mounted = useRef(false);
   useEffect(() => {
     if (!mounted.current) {
       mounted.current = true;
       return;
     }
-    writeStoredPreset(preset);
-  }, [preset]);
+    if (persist) writeStoredPreset(preset);
+  }, [preset, persist]);
 
   const setPreset = useCallback((next: LightingPreset) => {
     setPresetState(next);

@@ -95,8 +95,14 @@ function writeStoredBackground(value: StoredBackground): void {
  * to seed the state directly instead of reading localStorage -- the pop-out
  * window decodes its background from its own URL and must not be clobbered by
  * whatever this tab last stored. An invalid `initial.preset` degrades to the
- * default the same as a corrupt persisted value would. */
-export function useViewerBackground(initial?: { preset: BackgroundPreset; custom?: string }) {
+ * default the same as a corrupt persisted value would. `persist=false` makes
+ * this a read/seed-only view: the pop-out window derives its background from
+ * the URL and must NOT write it back, or comparing backgrounds in a pop-out
+ * would silently change the main tab's saved default. */
+export function useViewerBackground(
+  initial?: { preset: BackgroundPreset; custom?: string },
+  persist = true,
+) {
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === "dark";
 
@@ -111,15 +117,16 @@ export function useViewerBackground(initial?: { preset: BackgroundPreset; custom
 
   // Skip the initial run: `state` was just read back from localStorage, so
   // persisting it again on mount would be a redundant no-op write. Only real
-  // changes (via the setters below) should hit storage.
+  // changes (via the setters below) should hit storage, and only when this
+  // surface is allowed to persist at all.
   const mounted = useRef(false);
   useEffect(() => {
     if (!mounted.current) {
       mounted.current = true;
       return;
     }
-    writeStoredBackground(state);
-  }, [state]);
+    if (persist) writeStoredBackground(state);
+  }, [state, persist]);
 
   const setPreset = useCallback((preset: BackgroundPreset) => {
     setState((prev) => ({ ...prev, preset }));

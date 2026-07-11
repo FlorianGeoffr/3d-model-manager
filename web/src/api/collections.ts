@@ -69,7 +69,13 @@ export function useUnfollowCollection() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: number) => api.delete<void>(`/collections/${id}`),
-    onSuccess: () => invalidateAll(queryClient),
+    onSuccess: () => {
+      invalidateAll(queryClient);
+      // Unfollowing nulls `source_collection_id` on the collection's models
+      // (FK ON DELETE SET NULL) -- refetch so ProvenanceBlock/RelatedModels
+      // drop the now-dead collection link instead of showing stale data.
+      void queryClient.invalidateQueries({ queryKey: ["models"] });
+    },
   });
 }
 

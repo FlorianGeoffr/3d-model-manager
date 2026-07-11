@@ -63,17 +63,23 @@ def _backfill_provenance_sync(session, imp: Import, collection: FollowedCollecti
     overwritten. ``imp`` is a live import (``find_live_import_sync``
     guarantees ``model_id IS NOT NULL``).
     """
-    changed = False
-    if imp.collection_id is None:
-        imp.collection_id = collection.id
-        changed = True
+    # Already healed -- skip without fetching the Model. Safe because
+    # `imp.collection_id` and the model's `source_collection_id` move
+    # together: they are stamped in the same pass (at import time the worker
+    # copies the import row's collection onto the model; this backfill sets
+    # both below) and cleared together (both FKs are ON DELETE SET NULL
+    # against the same `followed_collections` row). A non-NULL
+    # `imp.collection_id` therefore means the model side is settled too, and
+    # re-fetching it here would just be a per-item no-op query on every
+    # steady-state sync walk.
+    if imp.collection_id is not None:
+        return
+    imp.collection_id = collection.id
     model = session.get(Model, imp.model_id)
     if model is not None and model.source_collection_id is None:
         model.source_collection_id = collection.id
         model.source_collection_title = collection.title
-        changed = True
-    if changed:
-        session.commit()
+    session.commit()
 
 
 def _sync_one(session, collection: FollowedCollection) -> None:

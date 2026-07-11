@@ -88,8 +88,10 @@ class Model(Base):
     # Task 1). `source_collection_title` is a DENORMALIZED snapshot taken at
     # import time so provenance survives unfollowing/deleting the collection
     # -- ON DELETE SET NULL then nulls the FK but leaves the title behind.
+    # Indexed: the gallery's `collection=` filter is a plain equality on this
+    # column (mirrors `ix_blobs_format` for the `format=` filter).
     source_collection_id: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("followed_collections.id", ondelete="SET NULL")
+        BigInteger, ForeignKey("followed_collections.id", ondelete="SET NULL"), index=True
     )
     source_collection_title: Mapped[str | None] = mapped_column(Text)
     imported_at: Mapped[datetime | None]

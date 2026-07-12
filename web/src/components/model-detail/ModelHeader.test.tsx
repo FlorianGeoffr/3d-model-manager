@@ -109,7 +109,7 @@ describe("ModelHeader -- read-only by default", () => {
     expect(screen.queryByRole("button", { name: "Articulated Dragon" })).not.toBeInTheDocument();
   });
 
-  it("hides tag remove buttons, the Archive button, and the Delete button", async () => {
+  it("hides tag remove buttons; Archive/Delete are never direct buttons (they live in the overflow menu)", async () => {
     renderHeader(false);
 
     await screen.findByText("fantasy");
@@ -143,7 +143,7 @@ describe("ModelHeader -- edit mode", () => {
     expect(onToggleEditMode).toHaveBeenCalledOnce();
   });
 
-  it("reveals editing affordances for name/description, tags, Archive, and Delete; toggle reads Done", async () => {
+  it("reveals editing affordances for name/description and tags; toggle reads Done -- Archive/Delete stay in the overflow menu, not edit-gated", async () => {
     renderHeader(true);
 
     expect(await screen.findByRole("button", { name: "Done" })).toBeInTheDocument();
@@ -151,8 +151,8 @@ describe("ModelHeader -- edit mode", () => {
     expect(screen.getByRole("button", { name: "Edit description" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Remove tag fantasy" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add tag" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Archive" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Archive" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
   });
 
   it("keeps the name as a level-1 heading in edit mode", async () => {
@@ -162,21 +162,6 @@ describe("ModelHeader -- edit mode", () => {
     // button's label, so match on the model name rather than exactly.
     const heading = await screen.findByRole("heading", { level: 1, name: /Articulated Dragon/ });
     expect(heading).toBeInTheDocument();
-  });
-
-  it("archiving still requires confirmation and PATCHes is_archived:true (feat/import-fidelity T3: archive is reversible, no longer a DELETE)", async () => {
-    renderHeader(true);
-
-    fireEvent.click(await screen.findByRole("button", { name: "Archive" }));
-    const dialog = screen.getByRole("dialog");
-    expect(within(dialog).getByText('Archive "Articulated Dragon"?')).toBeInTheDocument();
-
-    fireEvent.click(within(dialog).getByRole("button", { name: "Archive" }));
-
-    await waitFor(() =>
-      expect(patchMock).toHaveBeenCalledExactlyOnceWith("/models/articulated-dragon", { is_archived: true }),
-    );
-    expect(deleteMock).not.toHaveBeenCalled();
   });
 
   it("editing the name commits through InlineEdit's explicit Save", async () => {
@@ -238,19 +223,102 @@ describe("ModelHeader -- Printed N× chip (Branch 5 Task 2)", () => {
   });
 });
 
-describe("ModelHeader -- delete (feat/import-fidelity T4)", () => {
-  it("hides the Delete button outside edit mode", async () => {
+/** Opens the header's "More actions" overflow menu (Radix `DropdownMenu`)
+ * and returns the menu element -- Archive, Delete, Re-download, and
+ * Move/Copy all live behind it now, reachable in or out of edit mode.
+ * `DropdownMenuTrigger` opens on `pointerdown` (not `click`, which it
+ * `preventDefault`s away to avoid a double-toggle from the synthesized
+ * click a real pointerdown+pointerup pair would also produce), so a plain
+ * `fireEvent.click` never opens it under jsdom. */
+async function openMoreActions() {
+  fireEvent.pointerDown(await screen.findByRole("button", { name: "More actions" }), { button: 0 });
+  return screen.findByRole("menu");
+}
+
+describe("ModelHeader -- More actions overflow menu", () => {
+  it("opens from 'More actions' and lists all four items in order, with a separator before Archive", async () => {
+    renderHeader(false, vi.fn(), MODEL_WITH_SOURCE);
+
+    const menu = await openMoreActions();
+
+    const nodes = Array.from(menu.querySelectorAll('[role="menuitem"], [role="separator"]'));
+    expect(nodes.map((node) => node.getAttribute("role"))).toEqual([
+      "menuitem",
+      "menuitem",
+      "separator",
+      "menuitem",
+      "menuitem",
+    ]);
+    expect(nodes.map((node) => node.textContent)).toEqual([
+      "Re-download…",
+      "Move / Copy to backend…",
+      "",
+      "Archive…",
+      "Delete…",
+    ]);
+  });
+
+  it("styles the Delete item destructive", async () => {
     renderHeader(false);
 
+    const menu = await openMoreActions();
+
+    expect(within(menu).getByRole("menuitem", { name: "Delete…" })).toHaveAttribute(
+      "data-variant",
+      "destructive",
+    );
+  });
+
+  it("'Move / Copy to backend…' opens the relocate dialog", async () => {
+    renderHeader(false);
+
+    await openMoreActions();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Move / Copy to backend…" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Move or copy to another backend")).toBeInTheDocument();
+  });
+});
+
+describe("ModelHeader -- archive & delete via the overflow menu (feat/import-fidelity T3/T4)", () => {
+  it("never renders Archive/Delete as direct buttons outside edit mode", async () => {
+    renderHeader(false);
     await screen.findByRole("heading", { name: "Articulated Dragon" });
+    expect(screen.queryByRole("button", { name: "Archive" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
   });
 
-  it("requires confirmation, calls DELETE, and navigates home on success", async () => {
-    const { router } = renderHeader(true);
+  it("never renders Archive/Delete as direct buttons in edit mode either", async () => {
+    renderHeader(true);
+    await screen.findByRole("heading", { name: "Articulated Dragon" });
+    expect(screen.queryByRole("button", { name: "Archive" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+  });
 
-    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
-    const dialog = screen.getByRole("dialog");
+  it("archiving works without edit mode: confirm dialog still gates the PATCH (feat/import-fidelity T3: archive is reversible, no longer a DELETE)", async () => {
+    renderHeader(false);
+
+    await openMoreActions();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Archive…" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText('Archive "Articulated Dragon"?')).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Archive" }));
+
+    await waitFor(() =>
+      expect(patchMock).toHaveBeenCalledExactlyOnceWith("/models/articulated-dragon", { is_archived: true }),
+    );
+    expect(deleteMock).not.toHaveBeenCalled();
+  });
+
+  it("deleting works without edit mode: requires confirmation, calls DELETE, and navigates home on success", async () => {
+    const { router } = renderHeader(false);
+
+    await openMoreActions();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Delete…" }));
+
+    const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText("Delete this model?")).toBeInTheDocument();
     expect(
       within(dialog).getByText(
@@ -266,23 +334,31 @@ describe("ModelHeader -- delete (feat/import-fidelity T4)", () => {
 });
 
 describe("ModelHeader -- re-download (feat/import-fidelity T4)", () => {
-  it("hides the Re-download button when the model has no import source", async () => {
+  it("disables the Re-download menu item when the model has no import source", async () => {
     renderHeader(false);
 
-    await screen.findByRole("heading", { name: "Articulated Dragon" });
-    expect(screen.queryByRole("button", { name: "Re-download" })).not.toBeInTheDocument();
+    const menu = await openMoreActions();
+
+    expect(within(menu).getByRole("menuitem", { name: "Re-download…" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
   });
 
-  it("shows Re-download for a model with a source, even outside edit mode", async () => {
+  it("enables Re-download for a model with a source, even outside edit mode", async () => {
     renderHeader(false, vi.fn(), MODEL_WITH_SOURCE);
 
-    expect(await screen.findByRole("button", { name: "Re-download" })).toBeInTheDocument();
+    const menu = await openMoreActions();
+
+    expect(within(menu).getByRole("menuitem", { name: "Re-download…" })).not.toHaveAttribute("aria-disabled");
   });
 
   it("defaults to 'New revision' and POSTs {mode: 'revision'} on Start", async () => {
     renderHeader(false, vi.fn(), MODEL_WITH_SOURCE);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Re-download" }));
+    await openMoreActions();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Re-download…" }));
+
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByRole("radio", { name: /New revision/ })).toHaveAttribute("aria-checked", "true");
 
@@ -298,7 +374,9 @@ describe("ModelHeader -- re-download (feat/import-fidelity T4)", () => {
   it("switching to 'Replace current files' POSTs {mode: 'replace'}", async () => {
     renderHeader(false, vi.fn(), MODEL_WITH_SOURCE);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Re-download" }));
+    await openMoreActions();
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Re-download…" }));
+
     const dialog = await screen.findByRole("dialog");
     fireEvent.click(within(dialog).getByRole("radio", { name: "Replace current files" }));
     fireEvent.click(within(dialog).getByRole("button", { name: "Start" }));

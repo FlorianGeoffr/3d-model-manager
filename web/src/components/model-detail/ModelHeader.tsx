@@ -1,6 +1,16 @@
 import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { DownloadIcon, FileStackIcon, ListPlusIcon, PencilIcon, StarIcon } from "lucide-react";
+import {
+  ArchiveIcon,
+  DownloadIcon,
+  EllipsisIcon,
+  FileStackIcon,
+  FolderInputIcon,
+  ListPlusIcon,
+  PencilIcon,
+  StarIcon,
+  Trash2Icon,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { useArchiveModel, useDeleteModel, usePatchModel, useRedownloadModel } from "@/api/library";
@@ -20,8 +30,14 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { FilamentChip } from "@/components/ui/filament-chip";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
@@ -34,22 +50,28 @@ type RedownloadMode = "revision" | "replace";
 
 /** "Re-download from source" (feat/import-fidelity T3, `POST
  * /models/{slug}/redownload`) -- an additive action, NOT gated behind edit
- * mode (same posture as "Add to queue"). Renders nothing for a model with no
+ * mode (same posture as "Add to queue"), reached via the header's "More
+ * actions" overflow menu. Its menu item is disabled for a model with no
  * resolvable import source (`check_redownload_source` on the backend 409s
- * for the same reason) rather than showing a control that would just fail. */
-function RedownloadDialog({ model }: { model: ModelDetail }) {
-  const [open, setOpen] = useState(false);
+ * for the same reason) rather than opening a dialog that would just fail. */
+function RedownloadDialog({
+  model,
+  open,
+  onOpenChange,
+}: {
+  model: ModelDetail;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
   const [mode, setMode] = useState<RedownloadMode>("revision");
   const redownload = useRedownloadModel(model.slug);
-
-  if (!model.source_site || !model.source_url) return null;
 
   function handleStart() {
     redownload.mutate(
       { mode },
       {
         onSuccess: () => {
-          setOpen(false);
+          onOpenChange(false);
           toast.success("Re-download started");
         },
       },
@@ -60,16 +82,10 @@ function RedownloadDialog({ model }: { model: ModelDetail }) {
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        setOpen(next);
+        onOpenChange(next);
         if (!next) setMode("revision");
       }}
     >
-      <DialogTrigger asChild>
-        <Button type="button" variant="outline">
-          <DownloadIcon />
-          Re-download
-        </Button>
-      </DialogTrigger>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Re-download from source</DialogTitle>
@@ -119,6 +135,12 @@ export function ModelHeader({
   const archiveModel = useArchiveModel(model.slug);
   const deleteModel = useDeleteModel(model.slug);
   const enqueueModel = useEnqueueModel();
+
+  const [redownloadOpen, setRedownloadOpen] = useState(false);
+  const [relocateOpen, setRelocateOpen] = useState(false);
+  const [archiveOpen, setArchiveOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const canRedownload = Boolean(model.source_site && model.source_url);
 
   const filaments = modelFilaments(model);
   const formats = revisionFormats(model);
@@ -196,45 +218,66 @@ export function ModelHeader({
             <ListPlusIcon />
             Add to queue
           </Button>
-          {/* Re-download is additive (re-fetches from source), not a
-              metadata edit -- also not gated behind edit mode. */}
-          <RedownloadDialog model={model} />
           <Button type="button" variant="outline" onClick={onToggleEditMode}>
             <PencilIcon />
             {editMode ? "Done" : "Edit"}
           </Button>
-          {editMode && (
-            <>
-              <ConfirmDialog
-                trigger={
-                  <Button type="button" variant="destructive">
-                    Archive
-                  </Button>
-                }
-                title={`Archive "${model.name}"?`}
-                description="Archived models are hidden from the library by default. This does not delete files."
-                confirmLabel="Archive"
-                destructive
-                onConfirm={() => archiveModel.mutate(true)}
-              />
-              <ConfirmDialog
-                trigger={
-                  <Button type="button" variant="destructive">
-                    Delete
-                  </Button>
-                }
-                title="Delete this model?"
-                description="Permanently deletes the model and every file from storage. This cannot be undone."
-                confirmLabel="Delete"
-                destructive
-                onConfirm={() =>
-                  deleteModel.mutate(undefined, {
-                    onSuccess: () => void navigate({ to: "/" }),
-                  })
-                }
-              />
-            </>
-          )}
+          {/* Lifecycle actions (re-download, relocate, archive, delete) live
+              behind this overflow menu regardless of edit mode -- edit mode
+              only gates metadata (name/description/tags). Each item opens
+              its existing dialog via controlled `open` state rather than a
+              nested `DialogTrigger`, so the dialog survives the menu
+              unmounting when it closes (standard Radix menu+dialog
+              composition). */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button type="button" variant="outline" size="icon" aria-label="More actions">
+                <EllipsisIcon />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem disabled={!canRedownload} onSelect={() => setRedownloadOpen(true)}>
+                <DownloadIcon />
+                Re-download…
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setRelocateOpen(true)}>
+                <FolderInputIcon />
+                Move / Copy to backend…
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={() => setArchiveOpen(true)}>
+                <ArchiveIcon />
+                Archive…
+              </DropdownMenuItem>
+              <DropdownMenuItem variant="destructive" onSelect={() => setDeleteOpen(true)}>
+                <Trash2Icon />
+                Delete…
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <RedownloadDialog model={model} open={redownloadOpen} onOpenChange={setRedownloadOpen} />
+          <ConfirmDialog
+            open={archiveOpen}
+            onOpenChange={setArchiveOpen}
+            title={`Archive "${model.name}"?`}
+            description="Archived models are hidden from the library by default. This does not delete files."
+            confirmLabel="Archive"
+            destructive
+            onConfirm={() => archiveModel.mutate(true)}
+          />
+          <ConfirmDialog
+            open={deleteOpen}
+            onOpenChange={setDeleteOpen}
+            title="Delete this model?"
+            description="Permanently deletes the model and every file from storage. This cannot be undone."
+            confirmLabel="Delete"
+            destructive
+            onConfirm={() =>
+              deleteModel.mutate(undefined, {
+                onSuccess: () => void navigate({ to: "/" }),
+              })
+            }
+          />
         </div>
       </div>
 
@@ -264,7 +307,7 @@ export function ModelHeader({
 
       <TagEditor model={model} editMode={editMode} />
       <ProvenanceBlock model={model} />
-      <StorageLocationBar model={model} />
+      <StorageLocationBar model={model} open={relocateOpen} onOpenChange={setRelocateOpen} />
     </div>
   );
 }

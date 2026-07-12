@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider, createMemoryHistory, createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -123,12 +124,23 @@ function mockGet(backends: StorageBackendOut[], jobs: JobOut[] = []) {
   });
 }
 
-function renderBar(model: ModelDetail) {
+// `StorageLocationBar` no longer owns a trigger button of its own -- the
+// "Move / Copy to backend…" item that opens it now lives in `ModelHeader`'s
+// overflow menu, and this dialog's `open` state is passed in as a
+// controlled pair. This harness stands in for that parent, defaulting the
+// dialog open (as if the menu item had just been selected) so these tests
+// can drive the dialog's own fields directly.
+function ControlledBar({ model, initialOpen = true }: { model: ModelDetail; initialOpen?: boolean }) {
+  const [open, setOpen] = useState(initialOpen);
+  return <StorageLocationBar model={model} open={open} onOpenChange={setOpen} />;
+}
+
+function renderBar(model: ModelDetail, { initialOpen = true }: { initialOpen?: boolean } = {}) {
   const rootRoute = createRootRoute();
   const modelRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: "/models/$slug",
-    component: () => <StorageLocationBar model={model} />,
+    component: () => <ControlledBar model={model} initialOpen={initialOpen} />,
   });
   const jobsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/jobs", component: () => null });
   const router = createRouter({
@@ -158,7 +170,7 @@ describe("StorageLocationBar", () => {
       ],
     });
 
-    renderBar(model);
+    renderBar(model, { initialOpen: false });
 
     expect(await screen.findByText("Default")).toBeInTheDocument();
     expect(screen.getByText("NAS")).toBeInTheDocument();
@@ -166,7 +178,7 @@ describe("StorageLocationBar", () => {
 
   it("shows a placeholder when the model has no known backend", async () => {
     mockGet([]);
-    renderBar(fakeModel({ backends: [] }));
+    renderBar(fakeModel({ backends: [] }), { initialOpen: false });
 
     expect(await screen.findByText("unknown")).toBeInTheDocument();
   });
@@ -176,19 +188,17 @@ describe("StorageLocationBar", () => {
     const model = fakeModel({ backends: [{ id: 1, name: "Default" }] });
 
     renderBar(model);
-    fireEvent.click(await screen.findByRole("button", { name: "Move / Copy to backend" }));
 
     const dialog = await screen.findByRole("dialog");
     const targetSelect = within(dialog).getByRole("combobox", { name: "Target backend" });
     expect(within(targetSelect).queryByText("Default")).not.toBeInTheDocument();
-    expect(within(targetSelect).getByText("NAS")).toBeInTheDocument();
+    expect(await within(targetSelect).findByText("NAS")).toBeInTheDocument();
   });
 
   it("disables Start until a target backend is chosen", async () => {
     mockGet([fakeBackend({ id: 1 }), fakeBackend({ id: 2, name: "NAS", is_default: false })]);
 
     renderBar(fakeModel({ backends: [{ id: 1, name: "Default" }] }));
-    fireEvent.click(await screen.findByRole("button", { name: "Move / Copy to backend" }));
 
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByRole("button", { name: "Start" })).toBeDisabled();
@@ -202,12 +212,11 @@ describe("StorageLocationBar", () => {
     postMock.mockResolvedValue(fakeJob({ state: "queued" }));
 
     renderBar(fakeModel({ backends: [{ id: 1, name: "Default" }] }));
-    fireEvent.click(await screen.findByRole("button", { name: "Move / Copy to backend" }));
 
     const dialog = await screen.findByRole("dialog");
-    fireEvent.change(within(dialog).getByRole("combobox", { name: "Target backend" }), {
-      target: { value: "2" },
-    });
+    const targetSelect = within(dialog).getByRole("combobox", { name: "Target backend" });
+    await within(targetSelect).findByText("NAS");
+    fireEvent.change(targetSelect, { target: { value: "2" } });
     fireEvent.change(within(dialog).getByRole("combobox", { name: "Action" }), {
       target: { value: "replicate" },
     });
@@ -229,12 +238,11 @@ describe("StorageLocationBar", () => {
     postMock.mockRejectedValue(new ApiError(409, "target backend is busy"));
 
     renderBar(fakeModel({ backends: [{ id: 1, name: "Default" }] }));
-    fireEvent.click(await screen.findByRole("button", { name: "Move / Copy to backend" }));
 
     const dialog = await screen.findByRole("dialog");
-    fireEvent.change(within(dialog).getByRole("combobox", { name: "Target backend" }), {
-      target: { value: "2" },
-    });
+    const targetSelect = within(dialog).getByRole("combobox", { name: "Target backend" });
+    await within(targetSelect).findByText("NAS");
+    fireEvent.change(targetSelect, { target: { value: "2" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Start" }));
 
     await waitFor(() => expect(postMock).toHaveBeenCalled());

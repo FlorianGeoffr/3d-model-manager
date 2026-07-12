@@ -12,7 +12,13 @@ import {
 } from "@/components/ui/dialog";
 
 interface ConfirmDialogProps {
-  trigger: ReactNode;
+  /** Omit when the dialog is opened from elsewhere (e.g. a dropdown menu
+   * item) via the controlled `open`/`onOpenChange` pair below -- a
+   * `DialogTrigger` nested inside a menu item would unmount along with the
+   * menu when it closes, taking the dialog with it. */
+  trigger?: ReactNode;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   title: string;
   description?: string;
   confirmLabel?: string;
@@ -23,17 +29,22 @@ interface ConfirmDialogProps {
 /** Reusable confirm-then-act dialog (Task 8: archive model, delete file). */
 export function ConfirmDialog({
   trigger,
+  open: openProp,
+  onOpenChange,
   title,
   description,
   confirmLabel = "Confirm",
   destructive,
   onConfirm,
 }: ConfirmDialogProps) {
-  const [open, setOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+  const isControlled = openProp !== undefined;
+  const open = isControlled ? openProp : internalOpen;
+  const setOpen = isControlled ? (onOpenChange ?? (() => {})) : setInternalOpen;
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>{trigger}</DialogTrigger>
+      {trigger ? <DialogTrigger asChild>{trigger}</DialogTrigger> : null}
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>

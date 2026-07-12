@@ -1,12 +1,18 @@
 /**
  * Where this model's current-revision files live (Workstream C task C4),
- * plus the "Move / Copy to backend" action that dispatches
+ * plus the "Move / Copy to backend" dialog that dispatches
  * `POST /models/{slug}/relocate`. `model.backends` is the PRIMARY-backend-
  * only summary `ModelDetail` carries (backend/app/services/library.py's
  * `_model_backends_summary`, from `files.backend_id`) -- it updates once a
  * "move" relocate job lands (`app.tasks.relocate` flips `backend_id`); a
  * "replicate" job leaves it unchanged (bytes now live on more than one
  * backend, but there's still exactly one PRIMARY).
+ *
+ * The dialog's `open` state is owned by `ModelHeader` (the "Move / Copy to
+ * backend…" item in its overflow menu) and passed in as a controlled pair,
+ * rather than this component rendering its own trigger button -- everything
+ * else (target/mode selection, the relocate mutation, and the "Relocation
+ * <state>" progress line) still lives here.
  *
  * No explicit query invalidation is wired here on relocate success: the
  * app-wide SSE handler (`useEvents.tsx`) already invalidates `["models"]`
@@ -31,15 +37,21 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 type RelocateMode = "move" | "replicate";
 
-export function StorageLocationBar({ model }: { model: ModelDetail }) {
-  const [open, setOpen] = useState(false);
+export function StorageLocationBar({
+  model,
+  open,
+  onOpenChange,
+}: {
+  model: ModelDetail;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
   const [targetId, setTargetId] = useState("");
   const [mode, setMode] = useState<RelocateMode>("move");
   const [jobId, setJobId] = useState<string | undefined>(undefined);
@@ -64,7 +76,7 @@ export function StorageLocationBar({ model }: { model: ModelDetail }) {
       {
         onSuccess: (job) => {
           setJobId(job.id);
-          setOpen(false);
+          onOpenChange(false);
         },
       },
     );
@@ -86,15 +98,10 @@ export function StorageLocationBar({ model }: { model: ModelDetail }) {
       <Dialog
         open={open}
         onOpenChange={(next) => {
-          setOpen(next);
+          onOpenChange(next);
           if (!next) reset();
         }}
       >
-        <DialogTrigger asChild>
-          <Button type="button" variant="outline" size="sm">
-            Move / Copy to backend
-          </Button>
-        </DialogTrigger>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Move or copy to another backend</DialogTitle>

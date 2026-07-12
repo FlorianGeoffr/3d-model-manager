@@ -35,6 +35,13 @@ This extension isn't published to the Chrome Web Store — load it from source:
   of those sites and choose **Save model to my library** from the context
   menu — no need to open the link first.
 
+After **Save to my library**, the popup polls the app for whether the
+import actually finished, and common failure causes surface right in the
+popup (e.g. "Bambu sign-in expired — reconnect your Bambu account in
+Settings.") instead of a generic "Added" that isn't actually true — the
+poll only runs while the popup stays open, so if you close it right after
+saving, check the app itself for the outcome.
+
 ## Syncing your MakerWorld collections
 
 MakerWorld blocks servers from listing your named collections (the SSR route

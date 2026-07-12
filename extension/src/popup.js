@@ -9,6 +9,15 @@
  * list AND (M10 Workstream A task 3) each collection's items, the latter
  * read straight out of the page via `chrome.scripting.executeScript` so the
  * fetch carries the page's own cookies/`cf_clearance`.
+ *
+ * After a save creates a new import (201), `handleSave` polls the real
+ * outcome with `pollImportStatus` (`saveStatus.js`, import-health branch
+ * T4) instead of stopping at "row created." The poll lives here, in the
+ * popup, rather than the background service worker: it's a plain
+ * `await`-in-a-click-handler loop, and since a closed popup simply stops
+ * running (there's no message channel to keep it alive), a poll that's
+ * mid-flight when the popup closes just stops -- acceptable, see the
+ * README.
  */
 
 import { isCollectionsPage, isModelPage } from "./detect.js";
@@ -20,6 +29,7 @@ import {
   extractHandle,
   mapDesignHits,
 } from "./collections.js";
+import { pollImportStatus } from "./saveStatus.js";
 
 const messageEl = document.getElementById("message");
 const actionsEl = document.getElementById("actions");
@@ -57,12 +67,12 @@ function renderNotAModelPage() {
   actionsEl.replaceChildren(button);
 }
 
-function renderSavable(url) {
+function renderSavable(url, config) {
   messageEl.textContent = "Send this model to your library.";
   const button = document.createElement("button");
   button.className = "primary";
   button.textContent = "Save to my library";
-  button.addEventListener("click", () => handleSave(button, url));
+  button.addEventListener("click", () => handleSave(button, url, config));
   actionsEl.replaceChildren(button);
 }
 
@@ -236,7 +246,12 @@ async function handleSyncCollections(button, tabId, url, config) {
   button.disabled = false;
 }
 
-async function handleSave(button, url) {
+/** Real `setTimeout`-backed `sleep`, injected into `pollImportStatus`. */
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function handleSave(button, url, config) {
   button.disabled = true;
   setStatus("Saving…", null);
   let response;
@@ -256,15 +271,36 @@ async function handleSave(button, url) {
     button.disabled = false;
     return;
   }
-  if (response && response.ok) {
-    setStatus(
-      response.status === 201 ? "Added to your library." : "Saved — already in your library.",
-      "ok"
-    );
+  if (!response || !response.ok) {
+    setStatus((response && response.error) || "Something went wrong.", "error");
+    button.disabled = false;
     return;
   }
-  setStatus((response && response.error) || "Something went wrong.", "error");
-  button.disabled = false;
+  if (response.status !== 201) {
+    // Already in the library (200, deduped) -- nothing new was created, so
+    // there's no import to poll.
+    setStatus("Saved — already in your library.", "ok");
+    return;
+  }
+
+  setStatus("Added to your library.", "ok");
+  const importId = response.data && response.data.id;
+  if (importId === undefined || importId === null) {
+    return;
+  }
+  const client = createClient({ baseUrl: config.appBaseUrl, token: config.apiToken });
+  const { outcome, error } = await pollImportStatus({
+    fetchStatus: (id) => client.getImportStatus(id),
+    importId,
+    sleep,
+  });
+  if (outcome === "done") {
+    setStatus("Imported ✓", "ok");
+  } else if (outcome === "failed") {
+    setStatus(error || "Import failed.", "error");
+  } else {
+    setStatus("Still importing — check the app.", null);
+  }
 }
 
 async function init() {
@@ -277,7 +313,7 @@ async function init() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   const url = tab && tab.url;
   if (url && isModelPage(url)) {
-    renderSavable(url);
+    renderSavable(url, config);
     return;
   }
   if (url && tab.id !== undefined && isCollectionsPage(url)) {

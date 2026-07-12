@@ -74,6 +74,54 @@ test("createImport: POSTs the url as JSON with Content-Type", async () => {
   );
 });
 
+test("getImportStatus: GETs /imports/<id> with the bearer header, no body", async () => {
+  await withStubFetch(
+    () => jsonResponse(200, { id: 42, state: "done", error: null }),
+    async (calls) => {
+      const client = createClient({ baseUrl: "http://nas.local:8080", token: "tok123" });
+      const result = await client.getImportStatus(42);
+
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].url, "http://nas.local:8080/api/ext/imports/42");
+      assert.equal(calls[0].init.method, "GET");
+      assert.equal(calls[0].init.headers.Authorization, "Bearer tok123");
+      assert.equal(calls[0].init.body, undefined);
+      assert.deepEqual(result, {
+        ok: true,
+        status: 200,
+        data: { id: 42, state: "done", error: null },
+        error: null,
+      });
+    }
+  );
+});
+
+test("getImportStatus: URL-encodes the importId path segment", async () => {
+  await withStubFetch(
+    () => jsonResponse(200, { id: 1, state: "done", error: null }),
+    async (calls) => {
+      const client = createClient({ baseUrl: "http://nas.local:8080", token: "tok123" });
+      await client.getImportStatus("weird id");
+
+      assert.equal(calls[0].url, "http://nas.local:8080/api/ext/imports/weird%20id");
+    }
+  );
+});
+
+test("getImportStatus: a 404 surfaces as a non-ok result", async () => {
+  await withStubFetch(
+    () => jsonResponse(404, { detail: "import 999 not found" }),
+    async () => {
+      const client = createClient({ baseUrl: "http://nas.local:8080", token: "tok123" });
+      const result = await client.getImportStatus(999);
+
+      assert.equal(result.ok, false);
+      assert.equal(result.status, 404);
+      assert.equal(result.error, "import 999 not found");
+    }
+  );
+});
+
 test("setMakerworldCredential: POSTs the cookie value as {token}", async () => {
   await withStubFetch(
     () => jsonResponse(200, { ok: true }),

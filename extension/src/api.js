@@ -73,6 +73,15 @@ export function createClient({ baseUrl, token }) {
     createImport(url) {
       return request("/imports", { method: "POST", body: { url } });
     },
+    /**
+     * Narrow status read for the popup's post-save poll (import-health
+     * branch T4) -- `{id, state, error}` only, matching the token plane's
+     * deliberately narrow response (see `app.api.ext.get_import_status`).
+     * @param {string|number} importId
+     */
+    getImportStatus(importId) {
+      return request(`/imports/${encodeURIComponent(importId)}`);
+    },
     setMakerworldCredential(cookieValue) {
       return request("/credentials/makerworld", { method: "POST", body: { token: cookieValue } });
     },

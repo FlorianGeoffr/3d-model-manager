@@ -431,3 +431,168 @@ async def test_follow_from_url_rejects_an_id_less_makerworld_url(
         "/api/collections/from-url", json={"url": "https://makerworld.com/en/collections/"}
     )
     assert r.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# R7 T1: the review queue groups by real `remote_collection_items` membership
+# instead of the stamped `pending_imports.collection_id` (whichever list's
+# sync happened to discover an item first -- historically almost always the
+# MakerWorld aggregate, see `app.services.collections
+# .resolve_display_collections`'s docstring).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pending_list_carries_group_fields(
+    authenticated_client, library_root, data_dir, db_session
+):
+    from app.models.collections import FollowedCollection, PendingImport, RemoteCollectionItem
+    from app.models.enums import CollectionSyncMode, ImportSite
+
+    aggregate = FollowedCollection(
+        site=ImportSite.MAKERWORLD,
+        list_id="agg",
+        kind="likes",
+        title="Aggregate",
+        mode=CollectionSyncMode.REVIEW,
+    )
+    specific = FollowedCollection(
+        site=ImportSite.MAKERWORLD,
+        list_id="spec",
+        kind="collection",
+        title="Specific",
+        mode=CollectionSyncMode.REVIEW,
+    )
+    db_session.add_all([aggregate, specific])
+    await db_session.commit()
+    await db_session.refresh(aggregate)
+    await db_session.refresh(specific)
+
+    db_session.add_all(
+        [
+            RemoteCollectionItem(
+                site=ImportSite.MAKERWORLD,
+                list_id=specific.list_id,
+                external_id="7",
+                title="Widget",
+                url="https://makerworld.com/en/models/7",
+                position=0,
+            ),
+            RemoteCollectionItem(
+                site=ImportSite.MAKERWORLD,
+                list_id=aggregate.list_id,
+                external_id="7",
+                title="Widget",
+                url="https://makerworld.com/en/models/7",
+                position=0,
+            ),
+            RemoteCollectionItem(
+                site=ImportSite.MAKERWORLD,
+                list_id=aggregate.list_id,
+                external_id="8",
+                title="Other",
+                url="https://makerworld.com/en/models/8",
+                position=1,
+            ),
+        ]
+    )
+    # stamped to the aggregate -- as if its sync discovered the item first
+    pending = PendingImport(
+        collection_id=aggregate.id,
+        site=ImportSite.MAKERWORLD,
+        external_id="7",
+        title="Widget",
+        url="https://makerworld.com/en/models/7",
+    )
+    db_session.add(pending)
+    await db_session.commit()
+    await db_session.refresh(pending)
+
+    r = await authenticated_client.get("/api/collections/pending")
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body) == 1
+    assert body[0]["collection_id"] == aggregate.id  # the stamp is unchanged
+    assert body[0]["group_collection_id"] == specific.id  # but display groups by the real list
+    assert body[0]["group_title"] == "Specific"
+
+
+@pytest.mark.asyncio
+async def test_approve_stamps_the_resolved_collection_not_the_stamp(
+    authenticated_client, library_root, data_dir, fake_import, db_session
+):
+    """Approving a pending item must record provenance against the RESOLVED
+    display collection, not whichever list's sync happened to stamp it --
+    downstream `source_collection_id`/`title` should read the specific list a
+    user actually recognizes."""
+    from app.models.collections import FollowedCollection, PendingImport, RemoteCollectionItem
+    from app.models.enums import CollectionSyncMode, ImportSite
+
+    fake_import.files = {"cube.stl": corpus.box_stl()}
+
+    aggregate = FollowedCollection(
+        site=ImportSite.THINGIVERSE,
+        list_id="all",
+        kind="likes",
+        title="All",
+        mode=CollectionSyncMode.REVIEW,
+    )
+    specific = FollowedCollection(
+        site=ImportSite.THINGIVERSE,
+        list_id="specific",
+        kind="collection",
+        title="Specific",
+        mode=CollectionSyncMode.REVIEW,
+    )
+    db_session.add_all([aggregate, specific])
+    await db_session.commit()
+    await db_session.refresh(aggregate)
+    await db_session.refresh(specific)
+
+    db_session.add_all(
+        [
+            RemoteCollectionItem(
+                site=ImportSite.THINGIVERSE,
+                list_id=specific.list_id,
+                external_id="42",
+                title="Thing 42",
+                url="https://fake.test/thing/42",
+                position=0,
+            ),
+            RemoteCollectionItem(
+                site=ImportSite.THINGIVERSE,
+                list_id=aggregate.list_id,
+                external_id="42",
+                title="Thing 42",
+                url="https://fake.test/thing/42",
+                position=0,
+            ),
+            RemoteCollectionItem(
+                site=ImportSite.THINGIVERSE,
+                list_id=aggregate.list_id,
+                external_id="99",
+                title="Thing 99",
+                url="https://fake.test/thing/99",
+                position=1,
+            ),
+        ]
+    )
+    pending = PendingImport(
+        collection_id=aggregate.id,
+        site=ImportSite.THINGIVERSE,
+        external_id="42",
+        title="Thing 42",
+        url="https://fake.test/thing/42",
+    )
+    db_session.add(pending)
+    await db_session.commit()
+    await db_session.refresh(pending)
+
+    approved = await authenticated_client.post(f"/api/collections/pending/{pending.id}/approve")
+    assert approved.status_code == 201, approved.text
+
+    gallery = await authenticated_client.get("/api/models")
+    items = gallery.json()["items"]
+    assert len(items) == 1
+    assert items[0]["source_collection_id"] == specific.id
+    assert items[0]["source_collection_title"] == "Specific"

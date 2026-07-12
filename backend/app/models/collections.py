@@ -61,11 +61,22 @@ class FollowedCollection(Base):
 class PendingImport(Base):
     """An item a ``review``-mode sync discovered but did NOT import. Approving
     one just POSTs its ``url`` through the normal import path (which is itself
-    dedup-guarded), then deletes this row."""
+    dedup-guarded), then deletes this row.
+
+    ``(site, external_id)`` is unique SITE-WIDE (R7 T1), not just per
+    collection: item identity for dedup purposes has always been ``(site,
+    external_id)`` (``app.services.import_dedup``), and a sync that discovers
+    the same item through two different followed lists must not queue it
+    twice. ``app.services.collections.add_pending_sync``/``drop_pending_sync``
+    enforce this at the application level; the constraint below is the DB-level
+    backstop. The older ``(collection_id, external_id)`` constraint is now
+    implied-redundant but kept -- harmless, and cheaper to leave than to prove
+    nothing relies on it."""
 
     __tablename__ = "pending_imports"
     __table_args__ = (
         UniqueConstraint("collection_id", "external_id", name="uq_pending_imports_collection_item"),
+        UniqueConstraint("site", "external_id", name="uq_pending_imports_site_external_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)

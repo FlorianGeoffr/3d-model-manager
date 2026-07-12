@@ -72,9 +72,16 @@ class PendingImportOut(BaseModel):
     url: str
     thumbnail_url: str | None
     created_at: datetime
+    # R7 T1: the collection this item should be GROUPED/DISPLAYED under, which
+    # is often more specific than the stamped `collection_id` above (that's
+    # just whichever list's sync happened to discover it first -- see
+    # `app.services.collections.resolve_display_collections`'s docstring).
+    group_collection_id: int
+    group_title: str
 
     @classmethod
-    def from_model(cls, row: PendingImport) -> PendingImportOut:
+    def from_model(cls, row: PendingImport, group: tuple[int, str]) -> PendingImportOut:
+        group_collection_id, group_title = group
         return cls(
             id=row.id,
             collection_id=row.collection_id,
@@ -84,4 +91,6 @@ class PendingImportOut(BaseModel):
             url=row.url,
             thumbnail_url=row.thumbnail_url,
             created_at=row.created_at,
+            group_collection_id=group_collection_id,
+            group_title=group_title,
         )

@@ -7,15 +7,16 @@ Async functions back the API; the ``_sync`` twins back the Celery sync task
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from fastapi import HTTPException, status
 from sqlalchemy import delete as sa_delete
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session as SyncSession
 
-from app.models.collections import FollowedCollection, PendingImport
+from app.models.collections import FollowedCollection, PendingImport, RemoteCollectionItem
 from app.models.enums import CollectionSyncMode, ImportSite
 
 # -- followed collections -------------------------------------------------
@@ -105,6 +106,99 @@ async def delete_pending(db: AsyncSession, pending_id: int) -> None:
     await db.commit()
 
 
+async def resolve_display_collections(
+    db: AsyncSession, pendings: Sequence[PendingImport]
+) -> dict[int, tuple[int, str]]:
+    """Map each pending row to the followed collection it should be GROUPED/
+    DISPLAYED under (R7 T1). ``pending.collection_id`` is only ever the list
+    whose sync happened to discover the item first -- historically that was
+    almost always the MakerWorld aggregate ("all collected models"), the only
+    list the live endpoint could tell apart before the extension started
+    pushing real per-collection membership into ``remote_collection_items``
+    (see that model's docstring). So: prefer the most SPECIFIC followed list
+    that actually contains the item per ``remote_collection_items`` --
+    "specific" meaning fewest total members, tie-broken by title then id --
+    and only fall back to the stamped ``collection_id`` when no
+    ``remote_collection_items`` membership names a better one (a site that
+    doesn't push membership at all, or an item genuinely only in the
+    aggregate).
+
+    Batched at a fixed number of queries regardless of ``len(pendings)``:
+    one to preload every stamped fallback collection, one join mapping
+    ``(site, external_id)`` -> candidate followed collections, one grouped
+    count of each candidate list's total membership. Never one query per
+    pending row.
+    """
+    if not pendings:
+        return {}
+
+    stamped_ids = {p.collection_id for p in pendings}
+    stamped_rows = (
+        await db.execute(select(FollowedCollection).where(FollowedCollection.id.in_(stamped_ids)))
+    ).scalars().all()
+    stamped_by_id = {row.id: row for row in stamped_rows}
+
+    sites = {p.site for p in pendings}
+    external_ids = {p.external_id for p in pendings}
+    candidates_stmt = (
+        select(
+            RemoteCollectionItem.site,
+            RemoteCollectionItem.external_id,
+            FollowedCollection.id,
+            FollowedCollection.list_id,
+            FollowedCollection.title,
+        )
+        .join(
+            FollowedCollection,
+            (FollowedCollection.site == RemoteCollectionItem.site)
+            & (FollowedCollection.list_id == RemoteCollectionItem.list_id),
+        )
+        .where(
+            RemoteCollectionItem.site.in_(sites),
+            RemoteCollectionItem.external_id.in_(external_ids),
+        )
+    )
+    candidate_rows = (await db.execute(candidates_stmt)).all()
+
+    counts_by_list: dict[tuple[ImportSite, str], int] = {}
+    candidate_collection_ids = {row.id for row in candidate_rows}
+    if candidate_collection_ids:
+        counts_stmt = (
+            select(RemoteCollectionItem.site, RemoteCollectionItem.list_id, func.count().label("n"))
+            .join(
+                FollowedCollection,
+                (FollowedCollection.site == RemoteCollectionItem.site)
+                & (FollowedCollection.list_id == RemoteCollectionItem.list_id),
+            )
+            .where(FollowedCollection.id.in_(candidate_collection_ids))
+            .group_by(RemoteCollectionItem.site, RemoteCollectionItem.list_id)
+        )
+        counts_by_list = {
+            (row.site, row.list_id): row.n for row in (await db.execute(counts_stmt)).all()
+        }
+
+    candidates_by_item: dict[tuple[ImportSite, str], list[tuple[int, str, int]]] = {}
+    for row in candidate_rows:
+        member_count = counts_by_list.get((row.site, row.list_id), 0)
+        candidates_by_item.setdefault((row.site, row.external_id), []).append(
+            (row.id, row.title, member_count)
+        )
+
+    result: dict[int, tuple[int, str]] = {}
+    for pending in pendings:
+        options = candidates_by_item.get((pending.site, pending.external_id))
+        if options:
+            best_id, best_title, _n = min(options, key=lambda o: (o[2], o[1], o[0]))
+            result[pending.id] = (best_id, best_title)
+        else:
+            stamped = stamped_by_id.get(pending.collection_id)
+            title = (
+                stamped.title if stamped is not None else f"Collection #{pending.collection_id}"
+            )
+            result[pending.id] = (pending.collection_id, title)
+    return result
+
+
 # -- worker-side twins ----------------------------------------------------
 
 
@@ -125,10 +219,16 @@ def drop_pending_sync(
     session: SyncSession, collection: FollowedCollection, external_id: str
 ) -> None:
     """Un-queue an item that has since landed in the library (imported from
-    search, or approved elsewhere) so a later sync doesn't keep showing it."""
+    search, or approved elsewhere) so a later sync doesn't keep showing it.
+    Site-wide (R7 T1): deletes by ``(site, external_id)`` regardless of which
+    followed list originally minted the row -- an item that lands in the
+    library must leave the review queue no matter which list's sync run
+    queued it, not just the list currently being walked. Takes the
+    ``FollowedCollection`` (rather than a bare ``site``) so existing
+    callsites keep compiling unchanged; only ``collection.site`` is used."""
     session.execute(
         sa_delete(PendingImport).where(
-            PendingImport.collection_id == collection.id,
+            PendingImport.site == collection.site,
             PendingImport.external_id == external_id,
         )
     )
@@ -145,11 +245,14 @@ def add_pending_sync(
     thumbnail_url: str | None = None,
 ) -> bool:
     """Queue an item for review. Returns True when it was newly queued, False
-    when this list had already queued it (the unique
-    ``(collection_id, external_id)`` pair) -- so a repeated sync is a no-op."""
+    when this SITE had already queued it under ``(site, external_id)`` --
+    ANY collection, not just this one (R7 T1: item identity for dedup has
+    always been ``(site, external_id)``, so a second followed list
+    discovering the same item must not queue a duplicate row) -- so a
+    repeated sync (or a second list surfacing the same item) is a no-op."""
     already = session.execute(
         select(PendingImport.id).where(
-            PendingImport.collection_id == collection.id,
+            PendingImport.site == collection.site,
             PendingImport.external_id == external_id,
         )
     ).first()

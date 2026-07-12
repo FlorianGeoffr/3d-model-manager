@@ -55,7 +55,8 @@ async def list_pending_imports(
     collection_id: int | None = None, db: AsyncSession = Depends(get_db)
 ) -> list[PendingImportOut]:
     rows = await collections_svc.list_pending(db, collection_id)
-    return [PendingImportOut.from_model(row) for row in rows]
+    groups = await collections_svc.resolve_display_collections(db, rows)
+    return [PendingImportOut.from_model(row, groups[row.id]) for row in rows]
 
 
 @router.post(
@@ -68,9 +69,19 @@ async def approve_pending_import(
 ) -> ImportOut:
     """Import a queued item, then un-queue it. Goes through the same
     dedup-guarded ``start_import`` as ``POST /imports``, so approving something
-    that arrived some other way answers 200 and creates nothing."""
+    that arrived some other way answers 200 and creates nothing.
+
+    Stamps the RESOLVED display collection (R7 T1), not the stamped
+    ``pending.collection_id`` -- ``pending.collection_id`` is just whichever
+    list's sync happened to discover the item first (often the MakerWorld
+    aggregate), while the resolved collection is the most specific real list
+    the item is actually in, so downstream provenance
+    (``source_collection_id``/``title``, stamped by the import worker) reads
+    the specific collection a user would recognize."""
     pending = await collections_svc.get_pending(db, pending_id)
-    collection = await collections_svc.get_followed(db, pending.collection_id)
+    groups = await collections_svc.resolve_display_collections(db, [pending])
+    group_collection_id, _group_title = groups[pending.id]
+    collection = await collections_svc.get_followed(db, group_collection_id)
     imp, created = await start_import(db, pending.url, collection)
     await collections_svc.delete_pending(db, pending_id)
     if not created:

@@ -242,7 +242,7 @@ export function ModelHeader({
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => setRelocateOpen(true)}>
                 <FolderInputIcon />
-                Move / Copy to backend…
+                Move / copy…
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem onSelect={() => setArchiveOpen(true)}>

@@ -251,7 +251,7 @@ describe("ModelHeader -- More actions overflow menu", () => {
     ]);
     expect(nodes.map((node) => node.textContent)).toEqual([
       "Re-download…",
-      "Move / Copy to backend…",
+      "Move / copy…",
       "",
       "Archive…",
       "Delete…",
@@ -269,11 +269,11 @@ describe("ModelHeader -- More actions overflow menu", () => {
     );
   });
 
-  it("'Move / Copy to backend…' opens the relocate dialog", async () => {
+  it("'Move / copy…' opens the relocate dialog", async () => {
     renderHeader(false);
 
     await openMoreActions();
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Move / Copy to backend…" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Move / copy…" }));
 
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText("Move or copy to another backend")).toBeInTheDocument();

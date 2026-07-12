@@ -112,7 +112,7 @@ function mockGet(backends: StorageBackendOut[] = []) {
   });
 }
 
-// SettingsPage renders inside the router in the real app (its Imports tab links
+// SettingsPage renders inside the router in the real app (its Accounts tab links
 // to /collections), so the harness needs a router context -- a bare render makes
 // TanStack's `useLinkProps` throw. Same memory-router setup as SavedPanel.test.
 function renderSettingsPage() {
@@ -147,28 +147,50 @@ beforeEach(() => {
 });
 
 describe("SettingsPage tabs", () => {
-  it("renders the Bambu account card in the Imports tab", async () => {
+  it("shows exactly Storage, Printer, and Accounts tabs -- no Scan tab", async () => {
     mockGet();
 
     renderSettingsPage();
 
-    fireEvent.click(await screen.findByRole("tab", { name: "Imports" }));
+    const tabs = await screen.findAllByRole("tab");
+    expect(tabs.map((tab) => tab.textContent)).toEqual(["Storage", "Printer", "Accounts"]);
+    expect(screen.queryByRole("tab", { name: "Scan" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Imports" })).not.toBeInTheDocument();
+  });
+
+  it("renders the Bambu account card in the Accounts tab", async () => {
+    mockGet();
+
+    renderSettingsPage();
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Accounts" }));
 
     expect(await screen.findByText("Bambu Lab account")).toBeInTheDocument();
     expect(await screen.findByLabelText("Email")).toBeInTheDocument();
   });
 
   // You connect an account here, then go looking for its collections. They live
-  // on their own page now, so the Imports tab has to say where.
-  it("points from the Imports tab to the Collections page", async () => {
+  // on their own page now, so the Accounts tab has to say where.
+  it("points from the Accounts tab to the Collections page", async () => {
     mockGet();
 
     renderSettingsPage();
 
-    fireEvent.click(await screen.findByRole("tab", { name: "Imports" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Accounts" }));
 
     const link = await screen.findByRole("link", { name: "Collections" });
     expect(link).toHaveAttribute("href", "/collections");
+  });
+
+  // The Scan tab was folded into Storage: ScanReport now renders alongside
+  // StorageBackendsCard under the Storage tab instead of its own tab.
+  it("renders the scan report under the Storage tab", async () => {
+    mockGet();
+
+    renderSettingsPage();
+
+    expect(await screen.findByText("Storage scan")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run scan" })).toBeInTheDocument();
   });
 });
 

@@ -26,7 +26,7 @@ export function SettingsPage() {
       <div>
         <h1 className="text-lg font-semibold text-foreground">Settings</h1>
         <p className="text-sm text-muted-foreground">
-          Storage backends, printer, import accounts, and library scans.
+          Storage backends, printer, and connected accounts.
         </p>
       </div>
 
@@ -51,16 +51,16 @@ export function SettingsPage() {
           <TabsList>
             <TabsTrigger value="storage">Storage</TabsTrigger>
             <TabsTrigger value="printer">Printer</TabsTrigger>
-            <TabsTrigger value="imports">Imports</TabsTrigger>
-            <TabsTrigger value="scan">Scan</TabsTrigger>
+            <TabsTrigger value="accounts">Accounts</TabsTrigger>
           </TabsList>
           <TabsContent value="storage" className="space-y-6">
             <StorageBackendsCard />
+            <ScanReport />
           </TabsContent>
           <TabsContent value="printer" className="space-y-6">
             <PrinterSetupCard />
           </TabsContent>
-          <TabsContent value="imports" className="space-y-6">
+          <TabsContent value="accounts" className="space-y-6">
             {/* Signpost, kept OUTSIDE the cards grid below: users connect an
                 account here and then look for its collections nearby. They
                 live on their own page, so say so -- and adding this as a 5th
@@ -88,9 +88,6 @@ export function SettingsPage() {
               <BambuAccountCard className="xl:col-span-2" />
               <BrowserExtensionCard />
             </div>
-          </TabsContent>
-          <TabsContent value="scan" className="space-y-6">
-            <ScanReport />
           </TabsContent>
         </Tabs>
       )}

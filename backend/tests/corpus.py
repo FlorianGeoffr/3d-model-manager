@@ -475,6 +475,16 @@ def red_png() -> bytes:
     return _solid_png(64, (255, 0, 0))
 
 
+def red_webp() -> bytes:
+    """A plain 64x64 solid-red WEBP (feat/import-fidelity T1: MakerWorld
+    ships ``Auxiliaries/Model Pictures/*.webp`` inside its 3MF containers --
+    Pillow's webp codec, same shape as ``red_png``)."""
+    image = Image.new("RGB", (64, 64), (255, 0, 0))
+    buf = BytesIO()
+    image.save(buf, format="WEBP")
+    return buf.getvalue()
+
+
 # -- on-disk corpus -----------------------------------------------------------
 
 
@@ -498,3 +508,4 @@ class CorpusPaths:
     box_step: Path
     box_iges: Path
     red_png: Path
+    red_webp: Path

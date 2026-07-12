@@ -33,6 +33,7 @@ class BlobFormat(StrEnum):
     GCODE = "gcode"
     PNG = "png"
     JPG = "jpg"
+    WEBP = "webp"
     OTHER = "other"
 
 

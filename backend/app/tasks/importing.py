@@ -4,7 +4,11 @@ in the worker's SYNC world (app.tasks.base):
 
   (a) FETCHING  -> fetch_metadata + list_files; reject paid/Club/exclusive
                    (metadata.reject_reason) BEFORE any download.
-  (b) DOWNLOADING-> stream EVERY file to spool (blake3 each). ALL must succeed.
+  (b) DOWNLOADING-> stream EVERY file to spool (blake3 each). ALL must succeed,
+                   then ``app.importers.archives.process_staged_zips`` sniffs/
+                   extracts every staged ``.zip`` (T1: mislabeled-3MF rename
+                   in place, or real extraction with the archive discarded)
+                   before anything is stored.
   (c) create model+revision (provenance) + per-file finalize/store dispatch;
       set imports.model_id; DONE.
 
@@ -60,6 +64,7 @@ from sqlalchemy import delete as sa_delete
 
 from app.config import get_settings
 from app.importers import download
+from app.importers.archives import process_staged_zips
 from app.importers.registry import IMPORTER_REGISTRY
 from app.models.collections import FollowedCollection
 from app.models.enums import ImportState
@@ -180,6 +185,15 @@ def import_from_url(import_id: int) -> None:
                 raise RuntimeError(
                     f"download failed for {resolved.filename!r} ({detail})"
                 ) from None
+
+        # T1 zip/3MF intelligence: MakerWorld's per-print-profile ".zip"
+        # downloads are actually mislabeled 3MF containers (renamed in
+        # place, no extraction); a genuine zip (e.g. Thingiverse's loose-
+        # file `ZipFile.zip`) is extracted member-by-member instead, with
+        # the original archive discarded -- either way `staged` below is
+        # replaced with the FINAL list this import actually stores, which
+        # `imp.meta["files"]` (end of this function) then reflects.
+        staged = process_staged_zips(settings, staged)
 
         with base.sync_session() as s:
             # Workstream C task C2: the model directory + sidecar (this is

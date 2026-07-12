@@ -93,4 +93,6 @@ def infer_blob_kind_format(rel_path: str) -> tuple[BlobKind, BlobFormat]:
         return BlobKind.IMAGE, BlobFormat.PNG
     if lower.endswith((".jpg", ".jpeg")):
         return BlobKind.IMAGE, BlobFormat.JPG
+    if lower.endswith(".webp"):
+        return BlobKind.IMAGE, BlobFormat.WEBP
     return BlobKind.OTHER, BlobFormat.OTHER

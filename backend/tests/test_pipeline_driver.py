@@ -49,6 +49,7 @@ def test_pipeline_steps_matches_global_constraints_table() -> None:
         BlobFormat.IGES: ("convert_to_glb", "extract_metadata", "optimize_glb", "render_thumb"),
         BlobFormat.PNG: ("render_thumb",),
         BlobFormat.JPG: ("render_thumb",),
+        BlobFormat.WEBP: ("render_thumb",),
         BlobFormat.OTHER: (),
     }
 
@@ -86,6 +87,8 @@ def test_pipeline_steps_matches_global_constraints_table() -> None:
         (BlobFormat.PNG, "render_thumb", None),
         (BlobFormat.JPG, None, "render_thumb"),
         (BlobFormat.JPG, "render_thumb", None),
+        (BlobFormat.WEBP, None, "render_thumb"),
+        (BlobFormat.WEBP, "render_thumb", None),
         (BlobFormat.OTHER, None, None),
     ],
 )

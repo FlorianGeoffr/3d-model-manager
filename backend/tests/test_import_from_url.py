@@ -1,4 +1,6 @@
+import io
 import logging
+import zipfile
 
 import httpx
 import pytest
@@ -10,8 +12,8 @@ from app.importers import download
 from app.importers.base import ResolvedDownload
 from app.importers.fake import FAKE_DL, FakeImporter
 from app.importers.registry import IMPORTER_REGISTRY
-from app.models.enums import ImportSite, ImportState
-from app.models.library import File, Model, Revision
+from app.models.enums import BlobFormat, ImportSite, ImportState
+from app.models.library import Blob, File, Model, Revision
 from app.models.system import Import
 from app.services import events, library
 from app.services.storage_config import resolve_backend_sync
@@ -462,3 +464,103 @@ async def test_redelivery_of_already_failed_import_is_a_no_op(db_session, librar
     assert imp.model_id is None
     count = await db_session.scalar(select(func.count()).select_from(Model))
     assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# feat/import-fidelity T1: zip/3MF intelligence wired into `import_from_url`,
+# running between the download loop and `create_imported_model_sync`.
+# ---------------------------------------------------------------------------
+
+
+def _zip_bytes(members: dict[str, bytes]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, content in members.items():
+            zf.writestr(name, content)
+    return buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_genuine_zip_download_lands_as_extracted_files_only(
+    db_session, library_root, data_dir, fake_import
+):
+    """A real, loose-file zip (Thingiverse's ``ZipFile.zip`` shape) must be
+    extracted BEFORE the model/files are created -- the finished model's
+    files are the extracted members, never the zip archive itself, and
+    ``imports.meta['files']`` reflects those same final rel_paths.
+    """
+    stl_bytes = corpus.box_stl()
+    fake_import.files = {"ZipFile.zip": _zip_bytes({"readme.txt": b"hello", "part.stl": stl_bytes})}
+    imp = Import(
+        url="https://fake.test/thing/42",
+        site=ImportSite.THINGIVERSE,
+        external_id="42",
+        state=ImportState.PENDING,
+    )
+    db_session.add(imp)
+    await db_session.commit()
+    await db_session.refresh(imp)
+
+    import_from_url(imp.id)
+
+    await db_session.refresh(imp)
+    assert imp.state == ImportState.DONE
+    assert imp.model_id is not None
+    assert sorted(imp.meta["files"]) == ["ZipFile/part.stl", "ZipFile/readme.txt"]
+
+    model = await db_session.get(Model, imp.model_id)
+    revision_files = (
+        (
+            await db_session.execute(
+                select(File).where(File.revision_id == model.current_revision_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    rel_paths = sorted(f.rel_path for f in revision_files)
+    assert rel_paths == ["ZipFile/part.stl", "ZipFile/readme.txt"]
+    # No lingering zip file anywhere in the stored result.
+    assert not any(f.rel_path.lower().endswith(".zip") for f in revision_files)
+
+
+@pytest.mark.asyncio
+async def test_mislabeled_3mf_zip_download_is_renamed_not_extracted(
+    db_session, library_root, data_dir, fake_import
+):
+    """MakerWorld's per-print-profile ``.zip`` download is actually a 3MF
+    container (has ``3D/3dmodel.model``) -- it must land as a SINGLE ``.3mf``
+    file, format ``THREEMF``, not be exploded into its zip members.
+    """
+    fake_import.files = {"CoolProfile-123.zip": corpus.box_3mf_generic()}
+    imp = Import(
+        url="https://fake.test/thing/42",
+        site=ImportSite.THINGIVERSE,
+        external_id="42",
+        state=ImportState.PENDING,
+    )
+    db_session.add(imp)
+    await db_session.commit()
+    await db_session.refresh(imp)
+
+    import_from_url(imp.id)
+
+    await db_session.refresh(imp)
+    assert imp.state == ImportState.DONE
+    assert imp.meta["files"] == ["CoolProfile-123.3mf"]
+
+    model = await db_session.get(Model, imp.model_id)
+    revision_files = (
+        (
+            await db_session.execute(
+                select(File).where(File.revision_id == model.current_revision_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(revision_files) == 1
+    file = revision_files[0]
+    assert file.rel_path == "CoolProfile-123.3mf"
+    blob = await db_session.get(Blob, file.blob_hash)
+    assert blob.format == BlobFormat.THREEMF

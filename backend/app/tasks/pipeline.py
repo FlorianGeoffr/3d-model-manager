@@ -81,6 +81,7 @@ PIPELINE_STEPS: dict[BlobFormat, tuple[str, ...]] = {
     BlobFormat.IGES: ("convert_to_glb", "extract_metadata", "optimize_glb", "render_thumb"),
     BlobFormat.PNG: ("render_thumb",),
     BlobFormat.JPG: ("render_thumb",),
+    BlobFormat.WEBP: ("render_thumb",),
     BlobFormat.OTHER: (),
 }
 
@@ -894,7 +895,7 @@ def optimize_glb(job_id: str, blob_hash: str) -> None:
 # bytes.
 # ---------------------------------------------------------------------------
 
-_IMAGE_FORMATS = (BlobFormat.PNG, BlobFormat.JPG)
+_IMAGE_FORMATS = (BlobFormat.PNG, BlobFormat.JPG, BlobFormat.WEBP)
 
 
 def _render_mesh_thumb(session: SyncSession, settings: Settings, blob: Blob) -> None:

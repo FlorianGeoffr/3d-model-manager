@@ -290,6 +290,56 @@ async def test_render_thumb_image_blob_uses_pillow(
     assert deriv.tool == "pillow"
 
 
+async def test_render_thumb_webp_blob_uses_pillow(
+    db_session: AsyncSession,
+    backend: LocalStorageBackend,
+    seed_file,
+    corpus: CorpusPaths,
+) -> None:
+    """feat/import-fidelity T1: ``BlobFormat.WEBP`` must route through the
+    same image branch as png/jpg (``_IMAGE_FORMATS``), not the mesh/glb
+    branch -- a blob whose format is webp but got missed there would blow up
+    on the ``glb missing`` ``RuntimeError`` instead of rendering a thumb.
+    """
+    settings = get_settings()
+    model, revision = await _seed_model_and_revision(db_session)
+    content = corpus.red_webp.read_bytes()
+    file = await seed_file(
+        model,
+        revision,
+        "cover.webp",
+        content,
+        blob_format=BlobFormat.WEBP,
+        blob_kind=BlobKind.IMAGE,
+    )
+
+    with sync_session() as session:
+        blob = session.get(Blob, file.blob_hash)
+        outcome = pipeline._render_thumb_step(session, settings, backend, blob)
+
+    assert outcome == "done"
+
+    p1024 = derivatives.derivative_path(settings, file.blob_hash, DerivativeKind.THUMB_1024)
+    p256 = derivatives.derivative_path(settings, file.blob_hash, DerivativeKind.THUMB_256)
+    # `_publish_thumb` always re-encodes as PNG regardless of the source
+    # format -- both derivatives are PNGs on disk even though the source
+    # blob was webp.
+    assert p1024.read_bytes()[:8] == _PNG_MAGIC
+    assert p256.read_bytes()[:8] == _PNG_MAGIC
+    with Image.open(p1024) as image:
+        assert image.size == (64, 64)
+
+    with sync_session() as session:
+        deriv = (
+            session.query(Derivative)
+            .filter(
+                Derivative.blob_hash == file.blob_hash, Derivative.kind == DerivativeKind.THUMB_1024
+            )
+            .one()
+        )
+    assert deriv.tool == "pillow"
+
+
 # ---------------------------------------------------------------------------
 # End-to-end: the registered step actually runs through the full pipeline
 # now that Task 6 fills it in (mesh chains no longer stop at optimize_glb).

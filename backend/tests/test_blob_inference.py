@@ -27,6 +27,8 @@ from app.services.layout import infer_blob_kind_format
         ("cover.png", BlobKind.IMAGE, BlobFormat.PNG),
         ("cover.jpg", BlobKind.IMAGE, BlobFormat.JPG),
         ("cover.jpeg", BlobKind.IMAGE, BlobFormat.JPG),
+        ("preview.webp", BlobKind.IMAGE, BlobFormat.WEBP),
+        ("PREVIEW.WEBP", BlobKind.IMAGE, BlobFormat.WEBP),
         ("readme.txt", BlobKind.OTHER, BlobFormat.OTHER),
         ("no-extension", BlobKind.OTHER, BlobFormat.OTHER),
     ],

@@ -32,7 +32,7 @@ from app.schemas.imports import (
     SearchResultOut,
     SiteSearchStatus,
 )
-from app.services.imports import start_import
+from app.services.imports import retry_failed_import, start_import
 
 router = APIRouter(prefix="/imports", tags=["imports"])
 
@@ -186,4 +186,14 @@ async def get_import(import_id: int, db: AsyncSession = Depends(get_db)) -> Impo
     imp = await db.get(Import, import_id)
     if imp is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"import {import_id} not found")
+    return ImportOut.from_model(imp)
+
+
+@router.post("/{import_id}/retry", response_model=ImportOut)
+async def retry_import(import_id: int, db: AsyncSession = Depends(get_db)) -> ImportOut:
+    """Re-enqueue a ``failed`` import (import-health branch T2) -- the
+    recovery path once whatever failed it (e.g. a dead Bambu session, T1) has
+    been fixed, without having to re-paste the URL. 404 unknown id, 409
+    unless the row is currently ``failed`` (``retry_failed_import``)."""
+    imp = await retry_failed_import(db, import_id)
     return ImportOut.from_model(imp)

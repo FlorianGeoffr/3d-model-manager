@@ -1,7 +1,26 @@
 import httpx
 import pytest
 
+from app.models.enums import ImportSite, ImportState
+from app.models.system import Import
+from app.services import imports as imports_service
 from tests import corpus
+
+
+async def _seed_import(
+    db_session, *, state: ImportState, error: str | None = None, external_id: str = "42"
+) -> Import:
+    imp = Import(
+        url=f"https://fake.test/thing/{external_id}",
+        site=ImportSite.THINGIVERSE,
+        external_id=external_id,
+        state=state,
+        error=error,
+    )
+    db_session.add(imp)
+    await db_session.commit()
+    await db_session.refresh(imp)
+    return imp
 
 
 @pytest.mark.asyncio
@@ -377,3 +396,65 @@ async def test_search_imports_federates_across_sites_and_isolates_errors(
     assert statuses["printables"]["status"] == "ok" and statuses["printables"]["count"] == 1
     assert statuses["makerworld"]["status"] == "error"
     assert "upstream down" in statuses["makerworld"]["detail"]
+
+
+# ---------------------------------------------------------------------------
+# import-health T2: POST /imports/{import_id}/retry
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_retry_failed_import_resets_state_clears_error_and_dispatches(
+    authenticated_client, library_root, data_dir, db_session, monkeypatch
+):
+    """The recovery path once whatever failed the import (e.g. T1's dead-
+    Bambu-session error) has been fixed: back to `pending`, `error` cleared,
+    re-dispatched under the SAME `import-{id}` task_id `start_import` uses.
+    `apply_async` is stubbed (not called through) so the row's `pending`
+    reset is observable in the response, rather than being immediately
+    overwritten by an inline eager-mode run."""
+    imp = await _seed_import(
+        db_session,
+        state=ImportState.FAILED,
+        error="Bambu sign-in expired -- reconnect your Bambu account in Settings.",
+    )
+
+    calls: list[tuple[list[int], str]] = []
+    monkeypatch.setattr(
+        imports_service.import_from_url,
+        "apply_async",
+        lambda *, args, task_id: calls.append((args, task_id)),
+    )
+
+    r = await authenticated_client.post(f"/api/imports/{imp.id}/retry")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["id"] == imp.id
+    assert body["state"] == "pending"
+    assert body["error"] is None
+    assert calls == [([imp.id], f"import-{imp.id}")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", [ImportState.PENDING, ImportState.DONE])
+async def test_retry_non_failed_import_is_409_and_does_not_enqueue(
+    authenticated_client, library_root, data_dir, db_session, monkeypatch, state
+):
+    imp = await _seed_import(db_session, state=state)
+
+    calls: list[tuple[list[int], str]] = []
+    monkeypatch.setattr(
+        imports_service.import_from_url,
+        "apply_async",
+        lambda *, args, task_id: calls.append((args, task_id)),
+    )
+
+    r = await authenticated_client.post(f"/api/imports/{imp.id}/retry")
+    assert r.status_code == 409
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_retry_unknown_import_is_404(authenticated_client, library_root, data_dir):
+    r = await authenticated_client.post("/api/imports/999999/retry")
+    assert r.status_code == 404

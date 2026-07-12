@@ -20,6 +20,19 @@ from app.services.import_dedup import find_live_import
 from app.tasks.importing import import_from_url
 
 
+def _enqueue(imp: Import) -> None:
+    """Dispatch ``import_from_url`` for ``imp`` -- the one place that picks
+    the task_id idiom, so ``start_import`` and a retry can't drift apart.
+    ``import-{id}`` is reused verbatim on a retry rather than suffixed per
+    attempt: Celery only needs a task_id to be unique among CONCURRENTLY
+    in-flight tasks (it keys the result backend and, with ``task_acks_late``,
+    redelivery dedup), and a retry is only ever dispatched once the prior
+    attempt has already reached its terminal ``failed`` state, so the two
+    never overlap. ``app.services.jobs.retry_job`` already relies on the same
+    reuse-on-retry idiom for `jobs.id`, so this isn't a new precedent."""
+    import_from_url.apply_async(args=[imp.id], task_id=f"import-{imp.id}")
+
+
 async def start_import(
     db: AsyncSession, url: str, collection: FollowedCollection | None = None
 ) -> tuple[Import, bool]:
@@ -61,7 +74,7 @@ async def start_import(
     await db.commit()
     await db.refresh(imp)
 
-    import_from_url.apply_async(args=[imp.id], task_id=f"import-{imp.id}")
+    _enqueue(imp)
 
     # Under eager Celery (tests) the line above ran the whole import inline
     # through its own SYNC session, driving the row to done/failed -- refresh so
@@ -69,3 +82,40 @@ async def start_import(
     # snapshot (same reasoning as app.api.settings.migrate).
     await db.refresh(imp)
     return imp, True
+
+
+async def retry_failed_import(db: AsyncSession, import_id: int) -> Import:
+    """Re-enqueue a ``failed`` import (T2, import-health branch) -- the UI's
+    "retry" action once a dead Bambu session or other transient cause has
+    been fixed. 404 unknown id, 409 unless the row is currently ``failed``.
+
+    Only a ``failed`` row is eligible, so this can never collide with
+    ``find_live_import``'s dedup guard: that guard only matches a ``done``
+    row that still points at a live Model (see ``app.services.import_dedup``),
+    and a ``failed`` row by construction has neither (the pipeline's "IMPORTS
+    ATOMIC" invariant -- ``app.tasks.importing`` -- guarantees ``model_id`` is
+    NULL on every failure path). Resetting to ``pending`` and re-dispatching
+    therefore can't ever produce a second live import for the same remote
+    model.
+    """
+    imp = await db.get(Import, import_id)
+    if imp is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"import {import_id} not found")
+    if imp.state != ImportState.FAILED:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"import {import_id} is not in a failed state"
+        )
+
+    imp.state = ImportState.PENDING
+    imp.error = None
+    await db.commit()
+    await db.refresh(imp)
+
+    _enqueue(imp)
+
+    # Same eager-Celery reasoning as `start_import` above: the dispatch just
+    # ran the whole import inline through its own sync session under tests,
+    # so refresh to hand back the real terminal state rather than the stale
+    # "pending" snapshot.
+    await db.refresh(imp)
+    return imp

@@ -15,6 +15,7 @@ import { hashToken, pickCookieValue, shouldPush } from "./courier.js";
 import {
   hashCollectionsPayload,
   readCollectionsPage,
+  shouldPersistHash,
   shouldPushCollections,
   syncCollections,
 } from "./syncFlow.js";
@@ -206,6 +207,13 @@ async function execInTab(tabId, func, args = []) {
  * "empty isn't proof of empty" caution for the courier), and blowing away
  * real cached collections on a flaky read would be worse than doing nothing
  * until the next successful visit.
+ *
+ * The same caution applies one level down: a run where the LIST read fine
+ * but one or more collections' ITEMS came back unreadable
+ * (`result.unreadable`, `syncFlow.js`) still pushed what it could, but must
+ * NOT advance `lastCollectionsHash` (`shouldPersistHash`) -- otherwise the
+ * throttle would treat that partial run as done and never retry the
+ * unreadable collections until the list itself changes.
  */
 async function runCollectionsSync(tabId, url) {
   const config = await getConfig();
@@ -228,8 +236,9 @@ async function runCollectionsSync(tabId, url) {
   }
 
   const client = createClient({ baseUrl: config.appBaseUrl, token: config.apiToken });
+  let result;
   try {
-    await syncCollections({
+    result = await syncCollections({
       tabId,
       url,
       exec: execInTab,
@@ -248,6 +257,13 @@ async function runCollectionsSync(tabId, url) {
     // `syncCollections` already logged the failure reason above via
     // `report`. Leave `lastCollectionsHash` untouched so the next visit
     // retries instead of silently giving up forever.
+    return;
+  }
+
+  if (!shouldPersistHash(result)) {
+    // Partial success -- some collections' items were unreadable. Leave
+    // `lastCollectionsHash` untouched (same reasoning as the catch above)
+    // so the next visit retries them.
     return;
   }
 
@@ -273,7 +289,15 @@ chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
     runCourier();
   }
   if (tab.id !== undefined && isCollectionsPage(url)) {
-    runCollectionsSync(tab.id, url);
+    // `runCollectionsSync` isn't awaited here (this listener can't be
+    // async-blocking), so an unhandled rejection anywhere in its chain --
+    // `getConfig`/`isConfigured`/`shouldPushCollections` sit outside its own
+    // try/catch -- would otherwise surface as an unhandled promise
+    // rejection instead of the silent-to-the-user, logged-only failure this
+    // background sync is meant to be.
+    runCollectionsSync(tab.id, url).catch((err) =>
+      console.warn("collections auto-sync failed", err),
+    );
   }
 });
 

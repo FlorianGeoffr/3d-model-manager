@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   hashCollectionsPayload,
   readCollectionsPage,
+  shouldPersistHash,
   shouldPushCollections,
   syncCollections,
 } from "../src/syncFlow.js";
@@ -344,4 +345,15 @@ test("shouldPushCollections: true when a collection's count changed (membership 
   const after = [{ list_id: "1", title: "A", slug: null, count: 4, is_default: false }];
   const beforeHash = await hashCollectionsPayload(before);
   assert.equal(await shouldPushCollections(after, beforeHash), true);
+});
+
+test("shouldPersistHash: false when the run left one or more collections unreadable", () => {
+  assert.equal(
+    shouldPersistHash({ collections: 2, items: 1, unreadable: ["Default Collection"] }),
+    false,
+  );
+});
+
+test("shouldPersistHash: true on a fully-clean run (nothing unreadable)", () => {
+  assert.equal(shouldPersistHash({ collections: 2, items: 2, unreadable: [] }), true);
 });

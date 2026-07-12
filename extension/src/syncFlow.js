@@ -162,6 +162,23 @@ export async function shouldPushCollections(entries, lastHash) {
 }
 
 /**
+ * True when a `syncCollections` result should have its throttle hash
+ * persisted (`background.js`'s `lastCollectionsHash`) -- only on a fully-
+ * clean run where every collection's items were readable. A partial read
+ * (`unreadable.length > 0`) must NOT advance the hash: MakerWorld can serve
+ * a collection's items empty transiently (same "empty isn't proof of empty"
+ * caution as the cookie courier), and persisting the hash anyway would mean
+ * auto-sync never retries those collections until the list itself changes.
+ * Pulled out as its own pure function so the persist decision is testable
+ * without a `chrome.*` stub.
+ * @param {{unreadable: string[]}} result
+ * @returns {boolean}
+ */
+export function shouldPersistHash(result) {
+  return result.unreadable.length === 0;
+}
+
+/**
  * Runs the full collections sync: read the page, push the collection list,
  * then read+push each collection's items. See the module docstring for the
  * injected-seam contract and the resolve/reject shape.

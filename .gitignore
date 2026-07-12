@@ -10,6 +10,7 @@ __pycache__/
 # Node
 node_modules/
 web/dist/
+extension/dist/
 backend/.tools/
 
 # App runtime

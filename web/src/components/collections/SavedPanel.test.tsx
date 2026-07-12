@@ -190,6 +190,13 @@ describe("SavedPanel", () => {
     expect(screen.getByRole("link", { name: /settings/i })).toBeInTheDocument();
   });
 
+  it("also points to the browser extension for MakerWorld collection sync in the empty state", async () => {
+    renderPanel();
+    expect(
+      await screen.findByText(/Your MakerWorld collections sync from the browser extension/),
+    ).toBeInTheDocument();
+  });
+
   it("follows a browsable remote list", async () => {
     remoteListsBox.current = {
       data: [{ site: "thingiverse", list_id: "likes", kind: "likes", title: "Likes", count: 3 }],

@@ -268,7 +268,9 @@ function BrowseLists() {
             <ul className="list-disc space-y-1 pl-5">
               <li>
                 <span className="font-medium text-foreground">MakerWorld</span> — paste your web
-                token under Gallery site tokens.
+                token under Gallery site tokens. Your MakerWorld collections sync from the browser
+                extension — open your MakerWorld collections page once with the extension
+                installed.
               </li>
               <li>
                 <span className="font-medium text-foreground">Thingiverse</span> — paste your App

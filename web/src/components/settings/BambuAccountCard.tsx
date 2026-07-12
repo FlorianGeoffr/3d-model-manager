@@ -30,6 +30,11 @@ const REGIONS: ReadonlyArray<{ value: BambuRegion; label: string }> = [
 
 export function BambuAccountCard({ className }: { className?: string }) {
   const status = useBambuStatus();
+  // `connected` stays true across a session expiry (the refresh token row is
+  // still on file -- only the refresh ATTEMPT failed), so `needs_reconnect`
+  // is what actually decides whether to offer the login form again here
+  // (import-health task T3; backend/app/services/bambu_auth.py).
+  const needsReconnect = status.data?.needs_reconnect ?? false;
 
   return (
     <Card className={className}>
@@ -47,10 +52,20 @@ export function BambuAccountCard({ className }: { className?: string }) {
           <p role="alert" className="text-sm text-destructive">
             {status.error instanceof ApiError ? status.error.detail : "Couldn't load Bambu account status."}
           </p>
-        ) : status.data?.connected ? (
-          <ConnectedView account={status.data.account} />
         ) : (
-          <LoginForm />
+          <>
+            {needsReconnect ? (
+              <div role="alert" className="rounded-lg border border-destructive/50 bg-destructive/10 p-3">
+                <p className="text-sm font-medium text-destructive">Bambu sign-in expired</p>
+                <p className="text-sm text-destructive">Sign in again to resume MakerWorld imports.</p>
+              </div>
+            ) : null}
+            {status.data?.connected && !needsReconnect ? (
+              <ConnectedView account={status.data.account} />
+            ) : (
+              <LoginForm initialAccount={needsReconnect ? status.data?.account : null} />
+            )}
+          </>
         )}
       </CardContent>
     </Card>
@@ -77,8 +92,8 @@ function ConnectedView({ account }: { account: string | null }) {
   );
 }
 
-function LoginForm() {
-  const [account, setAccount] = useState("");
+function LoginForm({ initialAccount = null }: { initialAccount?: string | null } = {}) {
+  const [account, setAccount] = useState(initialAccount ?? "");
   const [password, setPassword] = useState("");
   const [region, setRegion] = useState<BambuRegion>("global");
   const [code, setCode] = useState("");

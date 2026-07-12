@@ -634,6 +634,11 @@ export interface BambuStatusOut {
   connected: boolean;
   account: string | null;
   region: BambuRegion;
+  // True iff connected AND the stored refresh token's last refresh attempt
+  // failed (import-health task) -- the expiry-banner UX signal so the
+  // frontend can tell "not configured" apart from "configured but the
+  // session died" (backend/app/schemas/settings.py's BambuStatusOut).
+  needs_reconnect: boolean;
 }
 
 export interface BambuLoginIn {

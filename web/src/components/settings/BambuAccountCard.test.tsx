@@ -147,6 +147,27 @@ describe("BambuAccountCard", () => {
     await waitFor(() => expect(deleteMock).toHaveBeenCalledWith("/settings/bambu"));
   });
 
+  it("shows the expiry banner and the login form (not Disconnect) when needs_reconnect is true", async () => {
+    getMock.mockResolvedValue({ connected: true, account: "a@b.com", region: "global", needs_reconnect: true });
+
+    renderCard();
+
+    expect(await screen.findByText("Bambu sign-in expired")).toBeInTheDocument();
+    expect(screen.getByText("Sign in again to resume MakerWorld imports.")).toBeInTheDocument();
+    // Prefilled from the expired session's account, not blank.
+    expect(screen.getByLabelText("Email")).toHaveValue("a@b.com");
+    expect(screen.queryByRole("button", { name: "Disconnect" })).not.toBeInTheDocument();
+  });
+
+  it("hides the expiry banner when needs_reconnect is false", async () => {
+    getMock.mockResolvedValue({ connected: true, account: "a@b.com", region: "global", needs_reconnect: false });
+
+    renderCard();
+
+    await screen.findByText(/Connected as/);
+    expect(screen.queryByText("Bambu sign-in expired")).not.toBeInTheDocument();
+  });
+
   it("never renders a token, even one that leaks into a mocked response", async () => {
     getMock
       .mockResolvedValueOnce({ connected: false, account: null, region: "global" })

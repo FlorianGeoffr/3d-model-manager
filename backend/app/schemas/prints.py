@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.models.enums import PrintResult
 
@@ -43,6 +43,19 @@ class PrintPatchIn(BaseModel):
     result: PrintResult | None = None
     duration_min: int | None = Field(default=None, ge=0)
     notes: str | None = None
+
+    @field_validator("printed_at", "result")
+    @classmethod
+    def _reject_explicit_null(cls, value: object) -> object:
+        """``printed_at``/``result`` are NOT-NULL columns -- an *absent* field
+        is fine (``exclude_unset`` drops it before it reaches the service
+        layer), but an explicit ``null`` would otherwise sail through this
+        `T | None` typing and hit the DB as a NOT-NULL violation (500)
+        instead of a clean 422.
+        """
+        if value is None:
+            raise ValueError("field cannot be null")
+        return value
 
 
 class PrintOut(BaseModel):

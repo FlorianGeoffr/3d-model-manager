@@ -233,6 +233,61 @@ async def test_patch_print_unknown_id_is_404(authenticated_client: httpx.AsyncCl
     assert response.status_code == 404
 
 
+async def test_patch_print_explicit_null_clears_nullable_fields(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    model = await _create_model(authenticated_client, "Print Patch Null Clear")
+    created = await authenticated_client.post(
+        f"/api/models/{model['id']}/prints",
+        json={"printer_name": "Bambu X1C", "filament": "PLA Black"},
+    )
+    print_id = created.json()["id"]
+
+    response = await authenticated_client.patch(
+        f"/api/prints/{print_id}", json={"printer_name": None, "filament": None}
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["printer_name"] is None
+    assert body["filament"] is None
+
+
+async def test_patch_print_explicit_null_result_is_422(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    model = await _create_model(authenticated_client, "Print Patch Null Result")
+    created = await authenticated_client.post(
+        f"/api/models/{model['id']}/prints", json={"result": "success"}
+    )
+    print_id = created.json()["id"]
+
+    response = await authenticated_client.patch(f"/api/prints/{print_id}", json={"result": None})
+
+    assert response.status_code == 422
+    unchanged = await authenticated_client.get(f"/api/models/{model['id']}/prints")
+    assert unchanged.json()[0]["result"] == "success"
+
+
+async def test_patch_print_explicit_null_printed_at_is_422(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    model = await _create_model(authenticated_client, "Print Patch Null Printed At")
+    created = await authenticated_client.post(
+        f"/api/models/{model['id']}/prints",
+        json={"printed_at": "2026-07-01T10:00:00Z"},
+    )
+    print_id = created.json()["id"]
+
+    response = await authenticated_client.patch(
+        f"/api/prints/{print_id}", json={"printed_at": None}
+    )
+
+    assert response.status_code == 422
+    unchanged = await authenticated_client.get(f"/api/models/{model['id']}/prints")
+    assert unchanged.json()[0]["printed_at"] == "2026-07-01T10:00:00Z"
+
+
 # ---------------------------------------------------------------------------
 # delete
 # ---------------------------------------------------------------------------

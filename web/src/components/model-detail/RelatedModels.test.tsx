@@ -28,6 +28,7 @@ function summary(overrides: Partial<ModelSummary>): ModelSummary {
     file_count: 0,
     formats: [],
     cover: null,
+    render_url: null,
     print_time_s: null,
     has_sliced: false,
     source_site: null,

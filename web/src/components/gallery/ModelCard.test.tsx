@@ -30,6 +30,7 @@ const MODEL: ModelSummary = {
   file_count: 3,
   formats: ["stl", "3mf"],
   cover: null,
+  render_url: null,
   print_time_s: null,
   has_sliced: false,
   source_site: null,
@@ -231,5 +232,35 @@ describe("ModelCard", () => {
     renderCard(MODEL, { selectable: true, selected: true, onSelectChange: vi.fn() });
 
     expect(await screen.findByRole("checkbox", { name: "Select Articulated Dragon" })).toBeChecked();
+  });
+});
+
+describe("ModelCard -- photo-first cover with a render-on-hover (feat/import-fidelity T4)", () => {
+  it("renders a second (hover) image when render_url differs from cover", async () => {
+    renderCard({ ...MODEL, cover: "/covers/1.jpg", render_url: "/renders/1.png" });
+
+    await screen.findByText("Articulated Dragon");
+    expect(screen.getByTestId("render-hover-img")).toBeInTheDocument();
+  });
+
+  it("renders only the single cover image when render_url is absent", async () => {
+    renderCard({ ...MODEL, cover: "/covers/1.jpg", render_url: null });
+
+    await screen.findByText("Articulated Dragon");
+    expect(screen.queryByTestId("render-hover-img")).not.toBeInTheDocument();
+  });
+
+  it("renders only the single cover image when render_url equals cover", async () => {
+    renderCard({ ...MODEL, cover: "/covers/1.jpg", render_url: "/covers/1.jpg" });
+
+    await screen.findByText("Articulated Dragon");
+    expect(screen.queryByTestId("render-hover-img")).not.toBeInTheDocument();
+  });
+
+  it("never renders a hover image when there's no cover to begin with", async () => {
+    renderCard({ ...MODEL, cover: null, render_url: "/renders/1.png" });
+
+    await screen.findByText("Articulated Dragon");
+    expect(screen.queryByTestId("render-hover-img")).not.toBeInTheDocument();
   });
 });

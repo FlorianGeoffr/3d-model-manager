@@ -52,6 +52,12 @@ const MODEL: ModelDetail = {
   last_printed_at: null,
 };
 
+const MODEL_WITH_SOURCE: ModelDetail = {
+  ...MODEL,
+  source_url: "https://www.thingiverse.com/thing:123",
+  source_site: "thingiverse",
+};
+
 function renderHeader(editMode: boolean, onToggleEditMode = vi.fn(), model: ModelDetail = MODEL) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const rootRoute = createRootRoute();
@@ -256,5 +262,51 @@ describe("ModelHeader -- delete (feat/import-fidelity T4)", () => {
 
     await waitFor(() => expect(deleteMock).toHaveBeenCalledExactlyOnceWith("/models/articulated-dragon"));
     await waitFor(() => expect(router.state.location.pathname).toBe("/"));
+  });
+});
+
+describe("ModelHeader -- re-download (feat/import-fidelity T4)", () => {
+  it("hides the Re-download button when the model has no import source", async () => {
+    renderHeader(false);
+
+    await screen.findByRole("heading", { name: "Articulated Dragon" });
+    expect(screen.queryByRole("button", { name: "Re-download" })).not.toBeInTheDocument();
+  });
+
+  it("shows Re-download for a model with a source, even outside edit mode", async () => {
+    renderHeader(false, vi.fn(), MODEL_WITH_SOURCE);
+
+    expect(await screen.findByRole("button", { name: "Re-download" })).toBeInTheDocument();
+  });
+
+  it("defaults to 'New revision' and POSTs {mode: 'revision'} on Start", async () => {
+    renderHeader(false, vi.fn(), MODEL_WITH_SOURCE);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Re-download" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("radio", { name: /New revision/ })).toHaveAttribute("aria-checked", "true");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Start" }));
+
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledExactlyOnceWith("/models/articulated-dragon/redownload", {
+        mode: "revision",
+      }),
+    );
+  });
+
+  it("switching to 'Replace current files' POSTs {mode: 'replace'}", async () => {
+    renderHeader(false, vi.fn(), MODEL_WITH_SOURCE);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Re-download" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Replace current files" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Start" }));
+
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledExactlyOnceWith("/models/articulated-dragon/redownload", {
+        mode: "replace",
+      }),
+    );
   });
 });

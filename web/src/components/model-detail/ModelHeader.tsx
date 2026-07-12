@@ -1,8 +1,9 @@
+import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { FileStackIcon, ListPlusIcon, PencilIcon, StarIcon } from "lucide-react";
+import { DownloadIcon, FileStackIcon, ListPlusIcon, PencilIcon, StarIcon } from "lucide-react";
 import { toast } from "sonner";
 
-import { useArchiveModel, useDeleteModel, usePatchModel } from "@/api/library";
+import { useArchiveModel, useDeleteModel, usePatchModel, useRedownloadModel } from "@/api/library";
 import { useEnqueueModel } from "@/api/queue";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { InlineEdit } from "@/components/InlineEdit";
@@ -12,11 +13,97 @@ import { StorageLocationBar } from "@/components/model-detail/StorageLocationBar
 import { TagEditor } from "@/components/model-detail/TagEditor";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { FilamentChip } from "@/components/ui/filament-chip";
+import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { SpecRow, type SpecItem } from "@/components/ui/spec-row";
 import { formatDate, formatDateTime } from "@/lib/format";
 import { FORMAT_LABELS } from "@/lib/formatMeta";
 import type { ModelDetail } from "@/api/types";
+
+type RedownloadMode = "revision" | "replace";
+
+/** "Re-download from source" (feat/import-fidelity T3, `POST
+ * /models/{slug}/redownload`) -- an additive action, NOT gated behind edit
+ * mode (same posture as "Add to queue"). Renders nothing for a model with no
+ * resolvable import source (`check_redownload_source` on the backend 409s
+ * for the same reason) rather than showing a control that would just fail. */
+function RedownloadDialog({ model }: { model: ModelDetail }) {
+  const [open, setOpen] = useState(false);
+  const [mode, setMode] = useState<RedownloadMode>("revision");
+  const redownload = useRedownloadModel(model.slug);
+
+  if (!model.source_site || !model.source_url) return null;
+
+  function handleStart() {
+    redownload.mutate(
+      { mode },
+      {
+        onSuccess: () => {
+          setOpen(false);
+          toast.success("Re-download started");
+        },
+      },
+    );
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) setMode("revision");
+      }}
+    >
+      <DialogTrigger asChild>
+        <Button type="button" variant="outline">
+          <DownloadIcon />
+          Re-download
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Re-download from source</DialogTitle>
+          <DialogDescription>
+            Re-fetches this model&apos;s files fresh from where it was imported.
+          </DialogDescription>
+        </DialogHeader>
+        <RadioGroup
+          value={mode}
+          onValueChange={(next) => setMode(next as RedownloadMode)}
+          className="py-2"
+        >
+          <div className="flex items-center gap-2">
+            <RadioGroupItem value="revision" id="redownload-mode-revision" />
+            <Label htmlFor="redownload-mode-revision" className="font-normal">
+              New revision (keeps current files as history)
+            </Label>
+          </div>
+          <div className="flex items-center gap-2">
+            <RadioGroupItem value="replace" id="redownload-mode-replace" />
+            <Label htmlFor="redownload-mode-replace" className="font-normal">
+              Replace current files
+            </Label>
+          </div>
+        </RadioGroup>
+        <DialogFooter>
+          <Button type="button" disabled={redownload.isPending} onClick={handleStart}>
+            {redownload.isPending ? "Starting..." : "Start"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 export function ModelHeader({
   model,
@@ -109,6 +196,9 @@ export function ModelHeader({
             <ListPlusIcon />
             Add to queue
           </Button>
+          {/* Re-download is additive (re-fetches from source), not a
+              metadata edit -- also not gated behind edit mode. */}
+          <RedownloadDialog model={model} />
           <Button type="button" variant="outline" onClick={onToggleEditMode}>
             <PencilIcon />
             {editMode ? "Done" : "Edit"}

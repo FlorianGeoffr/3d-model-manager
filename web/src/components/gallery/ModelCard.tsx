@@ -28,12 +28,21 @@ export function ModelCard({
   onSelectChange?: (id: number, next: boolean) => void;
 }) {
   const [coverErrored, setCoverErrored] = useState(false);
+  const [renderErrored, setRenderErrored] = useState(false);
   const patchModel = usePatchModel(model.slug);
   const visibleTags = model.tags.slice(0, VISIBLE_TAGS);
   const overflowCount = model.tags.length - visibleTags.length;
   const primaryFormat = model.formats[0];
   const Icon = formatIcon(primaryFormat);
   const showCover = model.cover !== null && !coverErrored;
+  // Photo-first cards, render on hover (feat/import-fidelity T4): `cover`
+  // (now photo-first per T2) stays the card's resting image; a distinct
+  // `render_url` -- the revision's own assembly-thumbnail render -- crossfades
+  // in on hover as a second, absolutely-positioned <img> (CSS opacity only,
+  // no JS hover-state) so there's no layout shift. Only rendered at all when
+  // it would actually show something different from the resting cover.
+  const showRenderHover =
+    showCover && model.render_url !== null && model.render_url !== model.cover && !renderErrored;
   const needsReview = model.review_state === "adopted";
 
   // Datasheet spec row: only the fields the gallery summary actually carries
@@ -65,12 +74,24 @@ export function ModelCard({
       <Card className="h-full gap-3 overflow-hidden py-0 pb-4 transition-shadow hover:shadow-md">
         <div className="relative aspect-square overflow-hidden bg-muted">
           {showCover ? (
-            <img
-              src={model.cover ?? undefined}
-              alt={model.name}
-              className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.04] motion-reduce:transition-none motion-reduce:group-hover:scale-100"
-              onError={() => setCoverErrored(true)}
-            />
+            <>
+              <img
+                src={model.cover ?? undefined}
+                alt={model.name}
+                className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.04] motion-reduce:transition-none motion-reduce:group-hover:scale-100"
+                onError={() => setCoverErrored(true)}
+              />
+              {showRenderHover && (
+                <img
+                  src={model.render_url ?? undefined}
+                  alt=""
+                  aria-hidden="true"
+                  data-testid="render-hover-img"
+                  className="absolute inset-0 h-full w-full object-cover opacity-0 transition-opacity duration-300 group-hover:opacity-100 motion-reduce:transition-none"
+                  onError={() => setRenderErrored(true)}
+                />
+              )}
+            </>
           ) : (
             <div
               className="flex h-full w-full flex-col items-center justify-center gap-2 text-muted-foreground"

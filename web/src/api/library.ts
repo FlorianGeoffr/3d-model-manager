@@ -14,6 +14,7 @@ import type {
   ModelCreate,
   ModelDetail,
   ModelPatch,
+  ModelRedownloadIn,
   ModelRelocateIn,
   NoteCreate,
   NoteOut,
@@ -163,6 +164,20 @@ export function useDeleteModel(slug: string) {
       queryClient.removeQueries({ queryKey: modelQueryOptions(slug).queryKey });
       void queryClient.invalidateQueries({ queryKey: ["models", "list"] });
     },
+  });
+}
+
+/** Dispatches `POST /models/{slug}/redownload` (feat/import-fidelity T3) to
+ * re-fetch this model's files fresh from its original import source, either
+ * as a new revision or in place. Returns the tracked `JobOut` -- no explicit
+ * invalidation here: `useEvents.tsx`'s `job.updated` handler already
+ * invalidates `["models"]`/`["revisions"]` on every job's terminal state
+ * (not gated by job type), which is how the Files/Revisions tabs pick up the
+ * redownloaded files, same as `useRelocateModel` below. */
+export function useRedownloadModel(slug: string) {
+  return useMutation({
+    mutationFn: (payload: ModelRedownloadIn) =>
+      api.post<JobOut>(`/models/${encodeURIComponent(slug)}/redownload`, payload),
   });
 }
 

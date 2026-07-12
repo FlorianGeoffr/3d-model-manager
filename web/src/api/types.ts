@@ -42,6 +42,15 @@ export interface ModelPatch {
   is_archived?: boolean;
 }
 
+// `POST /models/{slug}/redownload` payload (feat/import-fidelity T3):
+// re-fetches this model's files fresh from its original import source.
+// `mode: "revision"` lands the fresh download as a new revision (old
+// revision untouched); `mode: "replace"` overwrites the current revision's
+// files in place. 409s when the model has no resolvable import source.
+export interface ModelRedownloadIn {
+  mode: "revision" | "replace";
+}
+
 // `POST /models/bulk` (Branch 4 Task 1): apply the same tag/favorite changes
 // to every model in `ids` in one call.
 export interface ModelBulkIn {
@@ -82,6 +91,11 @@ export interface ModelSummary {
   file_count: number;
   formats: BlobFormat[];
   cover: string | null;
+  // T2: the revision's own assembly-thumbnail render URL specifically
+  // (`null` until that derivative is OK) -- independent of `cover` above,
+  // which may show a site/user cover image instead even once the render is
+  // also ready.
+  render_url: string | null;
   print_time_s: number | null;
   has_sliced: boolean;
   source_site: string | null;

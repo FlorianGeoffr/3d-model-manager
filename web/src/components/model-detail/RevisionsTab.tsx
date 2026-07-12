@@ -31,6 +31,30 @@ import { Textarea } from "@/components/ui/textarea";
 import { formatDateTime } from "@/lib/format";
 import type { ModelDetail, RevisionSummary } from "@/api/types";
 
+/** The selected revision's own assembly-thumbnail render (T2's per-revision
+ * derivative, distinct from the model's gallery `cover`), as a small preview
+ * next to the "Compare revisions" pickers below -- confirms which revision
+ * is actually selected before reading the diff. Hides gracefully (renders
+ * nothing) when the derivative isn't ready yet -- same 404-hides idiom as
+ * `ModelCard`'s cover -- keyed by `revisionId` so a fresh selection gets a
+ * fresh load attempt instead of staying hidden from a previous 404. */
+function RevisionThumb({ revisionId }: { revisionId: number | undefined }) {
+  const [errored, setErrored] = useState(false);
+
+  if (revisionId === undefined || errored) return null;
+
+  return (
+    <img
+      src={`/api/revisions/${revisionId}/assembly-thumb`}
+      alt=""
+      aria-hidden="true"
+      data-testid="revision-thumb"
+      className="size-12 shrink-0 rounded-md border border-border object-cover"
+      onError={() => setErrored(true)}
+    />
+  );
+}
+
 function RevisionSelect({
   revisions,
   value,
@@ -43,7 +67,15 @@ function RevisionSelect({
   label: string;
 }) {
   return (
-    <Select value={value ? String(value) : undefined} onValueChange={(next) => onChange(Number(next))}>
+    // `aria-label` on `Select` itself (in addition to the real one on
+    // `SelectTrigger` below) is a no-op on the real Radix root but lets a
+    // jsdom test's native-<select> stand-in find this control by accessible
+    // name (same reasoning as `StorageLocationBar.tsx`'s `Select`s).
+    <Select
+      aria-label={label}
+      value={value ? String(value) : undefined}
+      onValueChange={(next) => onChange(Number(next))}
+    >
       <SelectTrigger aria-label={label}>
         <SelectValue placeholder={label} />
       </SelectTrigger>
@@ -241,8 +273,10 @@ export function RevisionsTab({ model }: { model: ModelDetail }) {
           <div className="space-y-3 rounded-lg border border-border p-4">
             <h4 className="text-sm font-semibold">Compare revisions</h4>
             <div className="flex items-center gap-2">
+              <RevisionThumb key={diffA ?? "none-a"} revisionId={diffA} />
               <RevisionSelect revisions={revisions} value={diffA} onChange={setDiffA} label="From" />
               <span className="text-muted-foreground">→</span>
+              <RevisionThumb key={diffB ?? "none-b"} revisionId={diffB} />
               <RevisionSelect revisions={revisions} value={diffB} onChange={setDiffB} label="To" />
             </div>
             {diffQuery.data ? <DiffView diff={diffQuery.data} /> : null}

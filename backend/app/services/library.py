@@ -331,6 +331,21 @@ def store_imported_file_sync(
         except IntegrityError:
             session.rollback()
             blob = session.get(Blob, staged.blob_hash)  # concurrent insert of same content
+    elif blob.format == BlobFormat.OTHER and staged.format_ != BlobFormat.OTHER:
+        # Same bytes landed before under a name `infer_blob_kind_format`
+        # couldn't classify (e.g. a MakerWorld print-profile `.zip` that's
+        # actually a 3MF container) and got stuck as `other`/`other` --
+        # PIPELINE_STEPS[OTHER] is empty, so that blob has never produced a
+        # glb/thumb for ANY file sharing its hash. A later import/re-download
+        # of the IDENTICAL content under a real extension now knows better;
+        # upgrade the stored row in place so `start_pipeline_sync` below
+        # (keyed off THIS row, not `staged`) finds a real step chain.
+        # Never downgrades (guarded by the `== OTHER` check above) and never
+        # clobbers one already-specific format with a different specific one
+        # -- which of two disagreeing specific formats is "right" is
+        # genuinely ambiguous, so that case is deliberately left untouched.
+        blob.kind = staged.kind
+        blob.format = staged.format_
     file = File(
         revision_id=revision.id,
         blob_hash=staged.blob_hash,

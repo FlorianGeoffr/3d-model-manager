@@ -20,13 +20,15 @@
  *     only (background failures are silent to the user -- see
  *     `background.js`).
  *
- * `syncCollections` resolves to `{collections, items, unreadable}` on
- * success (including a run where some collections' items came up
+ * `syncCollections` resolves to `{collections, items, unreadable, partial}`
+ * on success (including a run where some collections' items came up
  * unreadable from BOTH sources -- see `readCollectionItemsFromDataRoute`
- * and `readCollectionItems` below) and REJECTS on a hard failure (page
- * unreadable, no collections found/readable, list push rejected) -- the
- * rejection's `message` is the same user-facing text `report` was just
- * called with, so callers can surface it verbatim without re-deriving it.
+ * and `readCollectionItems` below -- or came up SHORTER than the collection's
+ * own known count even after both sources were tried, `partial`, F2
+ * hardening) and REJECTS on a hard failure (page unreadable, no collections
+ * found/readable, list push rejected) -- the rejection's `message` is the
+ * same user-facing text `report` was just called with, so callers can
+ * surface it verbatim without re-deriving it.
  */
 
 import {
@@ -198,8 +200,17 @@ async function fetchCollectionDataRouteInPage(buildId, collectionPathname) {
  * function logs which key matched via `report` (kind `null`, informational)
  * so a future drift in that field name is diagnosable instead of silently
  * falling back forever. Never throws -- a failed injection or a route with
- * no recognizable design array both just yield `[]`, which the caller
- * (`syncCollections`) falls back to `readCollectionItems` for.
+ * no recognizable design array both just yield `found: false`.
+ *
+ * Returns `found` separately from `items` (F3 hardening) so the caller
+ * (`syncCollections`) can tell "a trusted design list was located and it's
+ * just empty" (`found: true, items: []` -- a genuinely-empty collection)
+ * apart from "no recognizable design list at all" (`found: false, items: []`
+ * -- falls back to `readCollectionItems`). Before this fix both cases looked
+ * identical (`[]`) to the caller, so a genuinely-empty collection was
+ * indistinguishable from a read failure and got needlessly routed through
+ * the fallback and then flagged unreadable.
+ * @returns {Promise<{items: import("./collections.js").CollectionItemPushEntry[], found: boolean}>}
  */
 async function readCollectionItemsFromDataRoute(
   tabId,
@@ -213,11 +224,11 @@ async function readCollectionItemsFromDataRoute(
   try {
     routeJson = await exec(tabId, fetchCollectionDataRouteInPage, [buildId, collectionPathname]);
   } catch {
-    return [];
+    return { items: [], found: false };
   }
   const found = findDesignListIn(routeJson?.pageProps);
   if (!found) {
-    return [];
+    return { items: [], found: false };
   }
   report(`Matched items for "${entryTitle}" via pageProps.${found.key}.`, null);
   // Tolerant of a `name` field standing in for `title` (the deep-scan shape
@@ -226,7 +237,7 @@ async function readCollectionItemsFromDataRoute(
   const normalized = found.designs.map((design) =>
     design && !design.title && design.name ? { ...design, title: design.name } : design,
   );
-  return mapDesignHits({ hits: normalized });
+  return { items: mapDesignHits({ hits: normalized }), found: true };
 }
 
 /**
@@ -321,18 +332,23 @@ export async function shouldPushCollections(entries, lastHash) {
 /**
  * True when a `syncCollections` result should have its throttle hash
  * persisted (`background.js`'s `lastCollectionsHash`) -- only on a fully-
- * clean run where every collection's items were readable. A partial read
- * (`unreadable.length > 0`) must NOT advance the hash: MakerWorld can serve
- * a collection's items empty transiently (same "empty isn't proof of empty"
- * caution as the cookie courier), and persisting the hash anyway would mean
- * auto-sync never retries those collections until the list itself changes.
- * Pulled out as its own pure function so the persist decision is testable
- * without a `chrome.*` stub.
- * @param {{unreadable: string[]}} result
+ * clean run where every collection's items were BOTH readable AND complete.
+ * Either kind of incomplete read must NOT advance the hash: an `unreadable`
+ * collection (`unreadable.length > 0`) -- MakerWorld can serve a
+ * collection's items empty transiently (same "empty isn't proof of empty"
+ * caution as the cookie courier) -- or a `partial` one (F2 hardening,
+ * `syncCollections`'s truncation handling: pushed SOME items, but fewer than
+ * the collection's own known count even after the paged fallback was tried).
+ * Persisting the hash on either would mean auto-sync never retries those
+ * collections until the list itself changes. `result.partial` is optional in
+ * the input shape (defaults to none) so callers/tests that predate F2 don't
+ * need to thread an empty array through. Pulled out as its own pure function
+ * so the persist decision is testable without a `chrome.*` stub.
+ * @param {{unreadable: string[], partial?: string[]}} result
  * @returns {boolean}
  */
 export function shouldPersistHash(result) {
-  return result.unreadable.length === 0;
+  return result.unreadable.length === 0 && (result.partial?.length ?? 0) === 0;
 }
 
 /**
@@ -350,7 +366,7 @@ export function shouldPersistHash(result) {
  *   `syncCollections` skips its own page read and uses this instead (the
  *   background auto-sync throttle already read the page once to compute a
  *   hash; there's no need to read it again here).
- * @returns {Promise<{collections: number, items: number, unreadable: string[]}>}
+ * @returns {Promise<{collections: number, items: number, unreadable: string[], partial: string[]}>}
  */
 export async function syncCollections({ tabId, url, exec, api, report, page }) {
   report("Reading collections…", null);
@@ -399,6 +415,7 @@ export async function syncCollections({ tabId, url, exec, api, report, page }) {
 
   let totalItems = 0;
   const unreadableTitles = [];
+  const partialTitles = [];
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i];
     report(`Reading items for "${entry.title}" (${i + 1}/${entries.length})…`, null);
@@ -407,9 +424,9 @@ export async function syncCollections({ tabId, url, exec, api, report, page }) {
     // `readCollectionItemsFromDataRoute`'s doc for why this is now tried
     // first (a real sync pushed 6 collections but zero items through the
     // FALLBACK below).
-    let items = [];
+    let primary = { items: [], found: false };
     if (buildId && collectionsPathname) {
-      items = await readCollectionItemsFromDataRoute(
+      primary = await readCollectionItemsFromDataRoute(
         tabId,
         buildId,
         `${collectionsPathname}/${entry.list_id}`,
@@ -418,17 +435,46 @@ export async function syncCollections({ tabId, url, exec, api, report, page }) {
         report,
       );
     }
-    // FALLBACK: the `/api/v1` favorites-designs endpoint, which needs the
-    // account handle -- only tried when the primary source came up empty.
-    if (items.length === 0 && handle) {
-      items = await readCollectionItems(
+
+    if (primary.found && primary.items.length === 0) {
+      // F3: a TRUSTED design list was located on the data route and it's
+      // just empty -- a genuinely-empty collection, told apart from "no
+      // recognizable design list at all" by `primary.found`. Push nothing,
+      // don't treat it as unreadable, and don't even try the fallback (there
+      // is nothing to recover -- the primary source already answered
+      // definitively).
+      continue;
+    }
+
+    let items = primary.items;
+    // Needs the paged `/api/v1` fallback when either (a) the primary source
+    // found nothing at all (`found: false`, or unreachable/no buildId), or
+    // (b) it found SOME items but fewer than the collection's own known
+    // `count` (F2) -- the SSR data route can silently truncate a large
+    // collection's item array rather than paging it, so a short primary
+    // read isn't proof the collection actually has that few items. Only
+    // attempted when a handle is available (the fallback endpoint needs
+    // one).
+    const primaryCount = items.length;
+    const needsFallback =
+      Boolean(handle) && (primaryCount === 0 || (entry.count != null && primaryCount < entry.count));
+    if (needsFallback) {
+      const fallbackItems = await readCollectionItems(
         tabId,
         entry.list_id,
         handle,
         offsetsByList.get(entry.list_id) || [0],
         exec,
       );
+      // Only adopt the fallback's items when it did BETTER than the primary
+      // -- a worse/equal fallback read (e.g. the same truncation, or a
+      // transient empty response) must not throw away a longer primary
+      // result.
+      if (fallbackItems.length > primaryCount) {
+        items = fallbackItems;
+      }
     }
+
     if (items.length === 0) {
       // Both sources came up empty -- never push an empty membership set
       // (the backend's own fallback treats absence as "no data", safer
@@ -439,6 +485,16 @@ export async function syncCollections({ tabId, url, exec, api, report, page }) {
     const itemsResult = await api.pushCollectionItems("makerworld", entry.list_id, items);
     if (itemsResult.ok) {
       totalItems += items.length;
+      if (entry.count != null && items.length < entry.count) {
+        // F2: pushed what we have, but it's still short of the collection's
+        // own known count even after the fallback was tried -- flag it as
+        // `partial` rather than silently reporting success with wrong
+        // (incomplete) data. Like `unreadable`, this suppresses the
+        // background auto-sync's hash persist (`shouldPersistHash`) so the
+        // next visit retries this collection instead of treating the short
+        // read as done.
+        partialTitles.push(entry.title);
+      }
     } else {
       unreadableTitles.push(entry.title);
     }
@@ -448,6 +504,18 @@ export async function syncCollections({ tabId, url, exec, api, report, page }) {
     unreadableTitles.length > 0
       ? `; ${unreadableTitles.length} collection${unreadableTitles.length === 1 ? "" : "s"} unreadable`
       : "";
-  report(`Synced ${entries.length} collections (${totalItems} items${unreadableSuffix}).`, "ok");
-  return { collections: entries.length, items: totalItems, unreadable: unreadableTitles };
+  const partialSuffix =
+    partialTitles.length > 0
+      ? `; ${partialTitles.length} collection${partialTitles.length === 1 ? "" : "s"} partial`
+      : "";
+  report(
+    `Synced ${entries.length} collections (${totalItems} items${unreadableSuffix}${partialSuffix}).`,
+    "ok",
+  );
+  return {
+    collections: entries.length,
+    items: totalItems,
+    unreadable: unreadableTitles,
+    partial: partialTitles,
+  };
 }

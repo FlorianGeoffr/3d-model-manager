@@ -239,36 +239,81 @@ export function mapDesignHits(designHitsResponse) {
 // which key the route uses was taken for this task -- see
 // `syncFlow.js`'s `readCollectionItemsFromDataRoute` doc for why this needs
 // to be tolerant at all: the old `/api/v1/.../favorites/designs/{listId}`
-// in-page fetch produced zero items on a real sync).
+// in-page fetch produced zero items on a real sync). `"designs"` and
+// `"favoritesDesigns"` are SPECIFIC to a single collection's own item list;
+// `"list"` is generic enough that it carries no such guarantee on its own
+// (F1 hardening -- see `TRUSTED_EMPTY_KEYS` below).
 const DESIGN_LIST_KEYS = ["designs", "favoritesDesigns", "list"];
+
+// The subset of `DESIGN_LIST_KEYS` whose EMPTY array is still trusted as
+// "this collection genuinely has zero items" rather than "wrong array" (F1
+// hardening). The generic `"list"` key is deliberately excluded: MakerWorld's
+// own collections-LIST payload (`favoritesList`, `extractFavoritesListFrom`)
+// is exactly the kind of array that could plausibly land under a
+// similarly-generic key too, so an empty `"list"` proves nothing and must
+// not short-circuit the search -- see `findDesignListIn` below.
+const TRUSTED_EMPTY_KEYS = new Set(["designs", "favoritesDesigns"]);
+
+// Never a collection's OWN items -- this is the collections-LIST field
+// itself (`extractFavoritesListFrom`'s source, mapped straight off
+// `favoritesList` entries). Excluded from BOTH the named-key check and the
+// deep-scan fallback in `findDesignListIn` below (F1 hardening, the
+// important fix): a collection data-route response that also happens to
+// carry the account's full collections list under `pageProps.favoritesList`
+// must never be mistaken for THIS collection's items, even though a
+// `favoritesList` entry carries an `id` and a `title` just like a design
+// object would.
+const EXCLUDED_KEYS = new Set(["favoritesList"]);
 
 /**
  * True iff `value` looks like one MakerWorld design/model object: an object
- * with a numeric `id` and a `title`- or `name`-ish string field. Used both
- * to validate a named-key candidate and to drive the deep-scan fallback in
- * `findDesignListIn` below.
+ * with a numeric `id` and a `title`- or `name`-ish string field, and NEITHER
+ * of the markers that identify a *collection* object instead: `designCnt`
+ * (a collection's item count) or `isDefault` (a collection's "is this the
+ * account's default collection" flag) -- see `extractFavoritesListFrom`'s
+ * `CollectionPushEntry` mapping, which reads exactly these two fields off a
+ * `favoritesList` entry. This collection-marker rejection is F1 hardening's
+ * shape-level backstop: `EXCLUDED_KEYS` above only blocks the field
+ * literally named `favoritesList`, but a collections-list array could in
+ * principle turn up under some OTHER key too (a differently-shaped route
+ * response, a renamed field) -- rejecting anything carrying a collection
+ * marker, regardless of which key it's under, is the required part of the
+ * fix. Used both to validate a named-key candidate and to drive the
+ * deep-scan fallback in `findDesignListIn` below.
  * @param {unknown} value
  * @returns {boolean}
  */
 function looksLikeDesign(value) {
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    typeof value.id === "number" &&
-    (typeof value.title === "string" || typeof value.name === "string")
-  );
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    typeof value.id !== "number" ||
+    !(typeof value.title === "string" || typeof value.name === "string")
+  ) {
+    return false;
+  }
+  return !("designCnt" in value || "isDefault" in value);
 }
 
 /**
- * True iff every non-null entry of a non-empty array looks design-shaped
- * (`looksLikeDesign`). An empty array can't be shape-validated at all --
- * callers decide separately whether an empty array is still trustworthy
- * (see `findDesignListIn`'s named-key branch).
+ * True iff a non-empty array has AT LEAST ONE non-null entry that looks
+ * design-shaped (`looksLikeDesign`), and every other entry is either `null`
+ * or also design-shaped. Requiring at least one non-null hit is F4 hardening
+ * -- an array of nothing but `null`s previously passed this check (every
+ * item WAS `null`, vacuously satisfying the old all-or-nothing test) despite
+ * carrying zero actual design-shape evidence. An empty array can't be
+ * shape-validated at all -- callers decide separately whether an empty array
+ * is still trustworthy (see `findDesignListIn`'s named-key branch,
+ * `TRUSTED_EMPTY_KEYS`).
  * @param {Array} array
  * @returns {boolean}
  */
 function isDesignShapedArray(array) {
-  return array.length > 0 && array.every((item) => item === null || looksLikeDesign(item));
+  return (
+    array.length > 0 &&
+    array.some((item) => looksLikeDesign(item)) &&
+    array.every((item) => item === null || looksLikeDesign(item))
+  );
 }
 
 /**
@@ -280,16 +325,19 @@ function isDesignShapedArray(array) {
  * produced zero items on a real sync, either because handle extraction
  * failed or because that endpoint is uid-aggregate-only even in a real
  * browser). Tries known plausible keys first (`DESIGN_LIST_KEYS`, in
- * order) -- a non-empty match there is shape-validated, but an EMPTY array
- * under a named key is still trusted (the key name itself is the signal:
- * "this collection genuinely has zero items" is a legitimate outcome, and
- * an empty array can't be shape-validated anyway). Only when no named key
- * matches does it fall back to a generic deep-scan (top level, and one
- * level into any nested plain object) for ANY non-empty array whose items
- * are design-shaped -- deep-scan needs shape validation AND non-emptiness
- * to have any confidence it found the right thing, since the key name
- * carries no signal there. Returns `null` when nothing matches at either
- * level, so callers know to fall back to the `/api/v1` endpoint.
+ * order) -- a non-empty match there is shape-validated, and an EMPTY array
+ * under a SPECIFIC named key (`TRUSTED_EMPTY_KEYS`) is still trusted (the
+ * key name itself is the signal: "this collection genuinely has zero items"
+ * is a legitimate outcome, and an empty array can't be shape-validated
+ * anyway) -- but an empty array under the GENERIC `"list"` key carries no
+ * such guarantee and does NOT short-circuit the search (F1 hardening).
+ * Only when no named key matches does it fall back to a generic deep-scan
+ * (top level, and one level into any nested plain object, both skipping
+ * `EXCLUDED_KEYS`) for ANY non-empty array whose items are design-shaped --
+ * deep-scan needs shape validation AND non-emptiness to have any confidence
+ * it found the right thing, since the key name carries no signal there.
+ * Returns `null` when nothing matches at either level, so callers know to
+ * fall back to the `/api/v1` endpoint.
  * @param {unknown} pageProps a collection data-route response's `pageProps`
  * @returns {{key: string, designs: Array}|null}
  */
@@ -303,12 +351,21 @@ export function findDesignListIn(pageProps) {
     if (!Array.isArray(candidate)) {
       continue;
     }
-    if (candidate.length === 0 || isDesignShapedArray(candidate)) {
+    if (candidate.length === 0) {
+      if (TRUSTED_EMPTY_KEYS.has(key)) {
+        return { key, designs: candidate };
+      }
+      continue; // generic "list": an empty array proves nothing -- keep looking
+    }
+    if (isDesignShapedArray(candidate)) {
       return { key, designs: candidate };
     }
   }
 
   for (const [key, value] of Object.entries(pageProps)) {
+    if (EXCLUDED_KEYS.has(key)) {
+      continue; // the collections LIST itself, never a collection's items
+    }
     if (DESIGN_LIST_KEYS.includes(key)) {
       continue; // already checked above
     }
@@ -317,6 +374,9 @@ export function findDesignListIn(pageProps) {
     }
     if (value && typeof value === "object" && !Array.isArray(value)) {
       for (const [nestedKey, nestedValue] of Object.entries(value)) {
+        if (EXCLUDED_KEYS.has(nestedKey)) {
+          continue;
+        }
         if (Array.isArray(nestedValue) && isDesignShapedArray(nestedValue)) {
           return { key: `${key}.${nestedKey}`, designs: nestedValue };
         }

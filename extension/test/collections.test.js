@@ -348,3 +348,53 @@ test("findDesignListIn: no match anywhere (named keys or deep-scan) returns null
   assert.equal(findDesignListIn(undefined), null);
   assert.equal(findDesignListIn({ unrelated: "noise", other: 42 }), null);
 });
+
+// F1 hardening: `findDesignListIn` must never mistake the collections LIST
+// itself (`favoritesList`, `extractFavoritesListFrom`'s source) for a
+// collection's own items array -- live-bug-adjacent risk: a collection data
+// route response that also happened to carry `pageProps.favoritesList`
+// would previously have been deep-scanned like any other array and, since a
+// `favoritesList` entry carries a numeric `id` and a string `title` just
+// like a design does, wrongly matched.
+
+test("findDesignListIn: excludes favoritesList from the named-key/deep-scan search entirely -- pageProps carrying ONLY favoritesList (collection-shaped entries) is not-found", () => {
+  const found = findDesignListIn({
+    favoritesList: [
+      { id: 2155987, title: "Default Collection", designCnt: 7, isDefault: true },
+      { id: 18925823, title: "ESP32", designCnt: 9, isDefault: false },
+    ],
+  });
+  assert.equal(found, null);
+});
+
+test("findDesignListIn: favoritesList is excluded even when its entries would otherwise LOOK design-shaped (no collection markers) -- the key-name exclusion alone is enough to refuse it", () => {
+  const found = findDesignListIn({
+    favoritesList: [{ id: 1, title: "Looks design-shaped but is really a collection entry" }],
+  });
+  assert.equal(found, null);
+});
+
+test("findDesignListIn: collection-shaped objects (designCnt/isDefault present) are rejected by the discriminator under ANY key, named or deep-scanned -- not just favoritesList", () => {
+  assert.equal(findDesignListIn({ someUnrecognizedKey: [{ id: 1, title: "A", designCnt: 5 }] }), null);
+  assert.equal(findDesignListIn({ designs: [{ id: 1, title: "A", isDefault: true }] }), null);
+});
+
+test("findDesignListIn: an empty generic 'list' key does not short-circuit the search -- a real design array elsewhere still wins", () => {
+  const found = findDesignListIn({
+    list: [],
+    someUnrecognizedKey: [{ id: 1, title: "Real design" }],
+  });
+  assert.deepEqual(found, { key: "someUnrecognizedKey", designs: [{ id: 1, title: "Real design" }] });
+});
+
+test("findDesignListIn: an empty generic 'list' key alone (nothing better found) is NOT trusted -- unlike the specific 'designs'/'favoritesDesigns' keys", () => {
+  assert.equal(findDesignListIn({ list: [] }), null);
+});
+
+// F4 hardening: an array of nothing but `null`s carries zero positive
+// design-shape evidence and must never pass as design-shaped.
+
+test("findDesignListIn: an array of all-null entries is never design-shaped, named key or deep-scan", () => {
+  assert.equal(findDesignListIn({ designs: [null, null] }), null);
+  assert.equal(findDesignListIn({ someUnrecognizedKey: [null, null] }), null);
+});

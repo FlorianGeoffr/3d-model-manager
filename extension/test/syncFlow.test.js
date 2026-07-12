@@ -18,7 +18,15 @@ const COLLECTIONS_PATHNAME = "/en/@Terminalfoo/collections";
 // test/collections.test.js's fixtures -- two collections. Carries a
 // `buildId` (needed for the data-route reads `readCollectionsDataInPage`/
 // `readCollectionItemsFromDataRoute` build) unless a test explicitly needs
-// to exercise the no-buildId path.
+// to exercise the no-buildId path. `designCnt` is deliberately lowered to 1
+// per collection here (the live capture uses 7/9) -- most tests below stub a
+// single item per collection to keep fixtures small, and F2 hardening now
+// treats a primary/fallback read that comes up SHORTER than `designCnt` as a
+// truncation signal (see `syncCollections`'s `needsFallback`/`partial`
+// handling); keeping this shared fixture's `count` matched to what the
+// stubs actually return avoids every unrelated test having to route through
+// that machinery. The dedicated F2 tests below use their OWN fixture with a
+// deliberate count/items mismatch instead.
 const NEXT_DATA = {
   buildId: BUILD_ID,
   props: {
@@ -29,7 +37,7 @@ const NEXT_DATA = {
           title: "Default Collection",
           slug: "default-collection",
           isDefault: true,
-          designCnt: 7,
+          designCnt: 1,
           status: 1,
         },
         {
@@ -37,7 +45,7 @@ const NEXT_DATA = {
           title: "ESP32",
           slug: "esp32",
           isDefault: false,
-          designCnt: 9,
+          designCnt: 1,
           status: 1,
         },
       ],
@@ -50,10 +58,10 @@ const ENTRIES = [
     list_id: "2155987",
     title: "Default Collection",
     slug: "default-collection",
-    count: 7,
+    count: 1,
     is_default: true,
   },
-  { list_id: "18925823", title: "ESP32", slug: "esp32", count: 9, is_default: false },
+  { list_id: "18925823", title: "ESP32", slug: "esp32", count: 1, is_default: false },
 ];
 
 /** A `NEXT_DATA`-shaped fixture carrying only the first collection, for
@@ -145,7 +153,7 @@ test("syncCollections: happy path -- pushes the list, reads+pushes each collecti
     report,
   });
 
-  assert.deepEqual(summary, { collections: 2, items: 2, unreadable: [] });
+  assert.deepEqual(summary, { collections: 2, items: 2, unreadable: [], partial: [] });
   assert.deepEqual(apiCalls.pushCollections[0], { site: "makerworld", collections: ENTRIES });
   assert.equal(apiCalls.pushCollectionItems.length, 2);
   assert.equal(apiCalls.pushCollectionItems[0].listId, "2155987");
@@ -227,6 +235,7 @@ test("syncCollections: a collection unreadable from BOTH sources is skipped and 
     collections: 2,
     items: 1,
     unreadable: ["Default Collection"],
+    partial: [],
   });
   // Only the readable collection's items were pushed.
   assert.equal(apiCalls.pushCollectionItems.length, 1);
@@ -250,7 +259,7 @@ test("syncCollections: a collection whose item push is rejected is also listed a
 
   const summary = await syncCollections({ tabId: 7, url: COLLECTIONS_URL, exec, api, report });
 
-  assert.deepEqual(summary, { collections: 2, items: 1, unreadable: ["Default Collection"] });
+  assert.deepEqual(summary, { collections: 2, items: 1, unreadable: ["Default Collection"], partial: [] });
   assert.equal(apiCalls.pushCollectionItems.length, 2);
 });
 
@@ -270,7 +279,7 @@ test("syncCollections: items still sync via the handle-free primary source even 
 
   const summary = await syncCollections({ tabId: 7, url: OTHER_URL, exec, api, report });
 
-  assert.deepEqual(summary, { collections: 2, items: 2, unreadable: [] });
+  assert.deepEqual(summary, { collections: 2, items: 2, unreadable: [], partial: [] });
   assert.equal(apiCalls.pushCollectionItems.length, 2);
   assert.equal(execCalls.length, 3); // no fallback calls -- a handle was never needed
   assert.deepEqual(execCalls[1].args, [BUILD_ID, "/some/other/page/2155987"]);
@@ -292,6 +301,7 @@ test("syncCollections: no buildId (primary skipped) and no handle (fallback skip
     collections: 2,
     items: 0,
     unreadable: ["Default Collection", "ESP32"],
+    partial: [],
   });
   assert.equal(apiCalls.pushCollections.length, 1);
   assert.equal(apiCalls.pushCollectionItems.length, 0);
@@ -367,7 +377,7 @@ test("syncCollections: an injected `page` skips the module's own page read entir
     page: { nextData: NEXT_DATA, entries: ENTRIES, found: true },
   });
 
-  assert.deepEqual(summary, { collections: 2, items: 2, unreadable: [] });
+  assert.deepEqual(summary, { collections: 2, items: 2, unreadable: [], partial: [] });
   // Only the two primary item-fetch exec calls -- no exec call for the page
   // read itself.
   assert.equal(execCalls.length, 2);
@@ -386,7 +396,7 @@ test("syncCollections item-source preference: the primary data route is preferre
 
   const summary = await syncCollections({ tabId: 7, url: COLLECTIONS_URL, exec, api, report });
 
-  assert.deepEqual(summary, { collections: 1, items: 1, unreadable: [] });
+  assert.deepEqual(summary, { collections: 1, items: 1, unreadable: [], partial: [] });
   assert.equal(execCalls.length, 2);
   assert.equal(apiCalls.pushCollectionItems[0].items.length, 1);
 });
@@ -402,7 +412,7 @@ test("syncCollections item-source preference: an empty/404 primary route falls b
 
   const summary = await syncCollections({ tabId: 7, url: COLLECTIONS_URL, exec, api, report });
 
-  assert.deepEqual(summary, { collections: 1, items: 1, unreadable: [] });
+  assert.deepEqual(summary, { collections: 1, items: 1, unreadable: [], partial: [] });
   assert.equal(execCalls.length, 3);
   assert.deepEqual(apiCalls.pushCollectionItems[0].items, [
     {
@@ -426,7 +436,7 @@ test("syncCollections item-source preference: both sources empty leaves the coll
 
   const summary = await syncCollections({ tabId: 7, url: COLLECTIONS_URL, exec, api, report });
 
-  assert.deepEqual(summary, { collections: 1, items: 0, unreadable: ["Default Collection"] });
+  assert.deepEqual(summary, { collections: 1, items: 0, unreadable: ["Default Collection"], partial: [] });
   assert.equal(apiCalls.pushCollectionItems.length, 0);
 });
 
@@ -440,7 +450,7 @@ test("syncCollections: primary item source tolerates a deep-scan-discovered desi
 
   const summary = await syncCollections({ tabId: 7, url: COLLECTIONS_URL, exec, api, report });
 
-  assert.deepEqual(summary, { collections: 1, items: 1, unreadable: [] });
+  assert.deepEqual(summary, { collections: 1, items: 1, unreadable: [], partial: [] });
   assert.deepEqual(apiCalls.pushCollectionItems[0].items, [
     {
       external_id: "77",
@@ -452,6 +462,165 @@ test("syncCollections: primary item source tolerates a deep-scan-discovered desi
   ]);
   // Logs which pageProps key matched, for diagnosability.
   assert.ok(reportCalls.some((c) => c.text.includes("weirdKey")));
+});
+
+// F3 hardening: `readCollectionItemsFromDataRoute` distinguishes "a trusted
+// design list was located and it's genuinely empty" (`found: true`) from
+// "no recognizable design list at all" (`found: false`) -- only the latter
+// should fall back to the `/api/v1` endpoint and, if that's also empty, get
+// flagged unreadable.
+
+test("syncCollections F3: primary data route reports a trusted-but-EMPTY items array -- pushes nothing for it, does NOT mark it unreadable, never tries the fallback, and the hash may still advance", async () => {
+  const { exec, calls: execCalls } = stubExec([
+    pageResult({ nextData: ONE_ENTRY_NEXT_DATA }),
+    designsRoute({ designs: [] }), // trusted-empty via the named "designs" key
+  ]);
+  const { api, calls: apiCalls } = stubApi();
+  const { report, calls: reportCalls } = stubReport();
+
+  const summary = await syncCollections({ tabId: 7, url: COLLECTIONS_URL, exec, api, report });
+
+  assert.deepEqual(summary, { collections: 1, items: 0, unreadable: [], partial: [] });
+  assert.equal(apiCalls.pushCollectionItems.length, 0); // nothing pushed -- genuinely empty
+  // Page read + the one primary route fetch -- no fallback exec call at all.
+  assert.equal(execCalls.length, 2);
+  assert.equal(shouldPersistHash(summary), true); // not unreadable, not partial -- hash may advance
+  assert.equal(reportCalls[reportCalls.length - 1].text, "Synced 1 collections (0 items).");
+});
+
+// F2 hardening: the primary data route can silently truncate a large
+// collection's item array. Dedicated fixture -- ONE collection whose known
+// `designCnt` (5) deliberately exceeds what the stubbed reads return, unlike
+// `NEXT_DATA`/`ENTRIES` above (kept mismatch-free on purpose, see their own
+// doc) -- so the truncation-recovery logic has something real to exercise.
+const TRUNCATED_NEXT_DATA = {
+  buildId: BUILD_ID,
+  props: {
+    pageProps: {
+      favoritesList: [
+        {
+          id: 555,
+          title: "Big Collection",
+          slug: "big-collection",
+          isDefault: false,
+          designCnt: 5,
+          status: 1,
+        },
+      ],
+    },
+  },
+};
+
+test("syncCollections F2: a primary read shorter than the collection's known count triggers the paged /api/v1 fallback, and a LONGER fallback result replaces it (not partial)", async () => {
+  const { exec, calls: execCalls } = stubExec([
+    pageResult({ nextData: TRUNCATED_NEXT_DATA }),
+    designsRoute({ designs: [{ id: 1, title: "Item 1" }, { id: 2, title: "Item 2" }] }), // primary: 2 of 5
+    {
+      result: [
+        {
+          hits: [
+            { id: 1, title: "Item 1" },
+            { id: 2, title: "Item 2" },
+            { id: 3, title: "Item 3" },
+            { id: 4, title: "Item 4" },
+            { id: 5, title: "Item 5" },
+          ],
+          total: 5,
+        },
+      ],
+    }, // fallback: the full 5
+  ]);
+  const { api, calls: apiCalls } = stubApi();
+  const { report, calls: reportCalls } = stubReport();
+
+  const summary = await syncCollections({ tabId: 7, url: COLLECTIONS_URL, exec, api, report });
+
+  assert.deepEqual(summary, { collections: 1, items: 5, unreadable: [], partial: [] });
+  assert.equal(execCalls.length, 3); // page + primary + fallback
+  assert.equal(apiCalls.pushCollectionItems[0].items.length, 5); // the fallback's fuller set was used
+  assert.equal(shouldPersistHash(summary), true);
+  assert.equal(reportCalls[reportCalls.length - 1].text, "Synced 1 collections (5 items).");
+});
+
+test("syncCollections F2: a fallback that comes back no better than the primary is discarded -- the primary's (still-short) items are kept, pushed, and the collection is marked partial", async () => {
+  const { exec } = stubExec([
+    pageResult({ nextData: TRUNCATED_NEXT_DATA }),
+    designsRoute({
+      designs: [
+        { id: 1, title: "Item 1" },
+        { id: 2, title: "Item 2" },
+        { id: 3, title: "Item 3" },
+      ],
+    }), // primary: 3 of 5
+    { result: [{ hits: [{ id: 1, title: "Item 1" }], total: 1 }] }, // fallback: worse (1)
+  ]);
+  const { api, calls: apiCalls } = stubApi();
+  const { report, calls: reportCalls } = stubReport();
+
+  const summary = await syncCollections({ tabId: 7, url: COLLECTIONS_URL, exec, api, report });
+
+  assert.deepEqual(summary, {
+    collections: 1,
+    items: 3,
+    unreadable: [],
+    partial: ["Big Collection"],
+  });
+  assert.equal(apiCalls.pushCollectionItems[0].items.length, 3); // primary's items, not the fallback's
+  assert.equal(
+    reportCalls[reportCalls.length - 1].text,
+    "Synced 1 collections (3 items; 1 collection partial).",
+  );
+  // A partial collection must suppress the background auto-sync hash
+  // persist just like an unreadable one -- otherwise the next visit never
+  // retries it.
+  assert.equal(shouldPersistHash(summary), false);
+});
+
+test("syncCollections F2: multiple partial collections are all listed, and the status line pluralizes correctly", async () => {
+  const TWO_TRUNCATED_NEXT_DATA = {
+    buildId: BUILD_ID,
+    props: {
+      pageProps: {
+        favoritesList: [
+          {
+            id: 555,
+            title: "Big Collection",
+            slug: "big-collection",
+            isDefault: false,
+            designCnt: 5,
+            status: 1,
+          },
+          {
+            id: 556,
+            title: "Big Collection 2",
+            slug: "big-collection-2",
+            isDefault: false,
+            designCnt: 4,
+            status: 1,
+          },
+        ],
+      },
+    },
+  };
+  const { exec } = stubExec([
+    pageResult({ nextData: TWO_TRUNCATED_NEXT_DATA }),
+    designsRoute({ designs: [{ id: 1, title: "Item 1" }] }), // 1 of 5
+    { result: [{ hits: [{ id: 1, title: "Item 1" }], total: 1 }] }, // fallback no better
+    designsRoute({ designs: [{ id: 2, title: "Item 2" }] }), // 1 of 4
+    { result: [{ hits: [{ id: 2, title: "Item 2" }], total: 1 }] }, // fallback no better
+  ]);
+  const { api } = stubApi();
+  const { report, calls: reportCalls } = stubReport();
+
+  const summary = await syncCollections({ tabId: 7, url: COLLECTIONS_URL, exec, api, report });
+
+  assert.deepEqual(summary.partial, ["Big Collection", "Big Collection 2"]);
+  assert.equal(summary.unreadable.length, 0);
+  assert.equal(
+    reportCalls[reportCalls.length - 1].text,
+    "Synced 2 collections (2 items; 2 collections partial).",
+  );
+  assert.equal(shouldPersistHash(summary), false);
 });
 
 test("readCollectionsPage: returns null when exec (the page read) throws", async () => {
@@ -553,4 +722,31 @@ test("shouldPersistHash: false when the run left one or more collections unreada
 
 test("shouldPersistHash: true on a fully-clean run (nothing unreadable)", () => {
   assert.equal(shouldPersistHash({ collections: 2, items: 2, unreadable: [] }), true);
+});
+
+test("shouldPersistHash: true when the input predates F2 and carries no partial field at all (backward-compatible default)", () => {
+  assert.equal(shouldPersistHash({ collections: 2, items: 2, unreadable: [] }), true);
+});
+
+test("shouldPersistHash: false when the run left one or more collections partial (F2), even with nothing unreadable", () => {
+  assert.equal(
+    shouldPersistHash({ collections: 2, items: 2, unreadable: [], partial: ["Big Collection"] }),
+    false,
+  );
+});
+
+test("shouldPersistHash: false when a run has BOTH unreadable and partial collections", () => {
+  assert.equal(
+    shouldPersistHash({
+      collections: 3,
+      items: 2,
+      unreadable: ["Default Collection"],
+      partial: ["Big Collection"],
+    }),
+    false,
+  );
+});
+
+test("shouldPersistHash: true when unreadable and partial are both explicitly empty", () => {
+  assert.equal(shouldPersistHash({ collections: 2, items: 2, unreadable: [], partial: [] }), true);
 });

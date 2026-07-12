@@ -9,7 +9,6 @@ import {
   readCollectionDetailPage,
   readCollectionsPage,
   shouldPersistHash,
-  shouldPushCollectionItems,
   shouldPushCollections,
   syncCollectionDetail,
   syncCollections,
@@ -891,7 +890,34 @@ function detailPageResult({ nextData = null, routePageProps = null } = {}) {
   return { result: { nextData, routePageProps } };
 }
 
-test("readCollectionDetailPage: happy path -- parses id/slug from the URL, finds items + title via the fresh route pageProps", async () => {
+test("readCollectionDetailPage: happy path -- parses id/slug from the URL, finds items + title + count via the fresh route pageProps", async () => {
+  const { exec } = stubExec([
+    detailPageResult({
+      routePageProps: {
+        favoritesInfo: { id: 18925823, title: "ESP32", designCnt: 1 },
+        designs: [{ id: 1, title: "Item A" }],
+      },
+    }),
+  ]);
+
+  const page = await readCollectionDetailPage({ tabId: 7, url: DETAIL_URL, exec });
+
+  assert.deepEqual(page.parsed, { id: "18925823", slug: "esp32" });
+  assert.equal(page.found, true);
+  assert.equal(page.title, "ESP32");
+  assert.equal(page.count, 1); // I1: wired through from findCollectionTitleIn's derived count
+  assert.deepEqual(page.items, [
+    {
+      external_id: "1",
+      title: "Item A",
+      url: "https://makerworld.com/en/models/1",
+      author: null,
+      thumbnail_url: null,
+    },
+  ]);
+});
+
+test("readCollectionDetailPage: count is null when the matched collection-info object has no numeric designCnt/count field", async () => {
   const { exec } = stubExec([
     detailPageResult({
       routePageProps: {
@@ -903,18 +929,8 @@ test("readCollectionDetailPage: happy path -- parses id/slug from the URL, finds
 
   const page = await readCollectionDetailPage({ tabId: 7, url: DETAIL_URL, exec });
 
-  assert.deepEqual(page.parsed, { id: "18925823", slug: "esp32" });
-  assert.equal(page.found, true);
   assert.equal(page.title, "ESP32");
-  assert.deepEqual(page.items, [
-    {
-      external_id: "1",
-      title: "Item A",
-      url: "https://makerworld.com/en/models/1",
-      author: null,
-      thumbnail_url: null,
-    },
-  ]);
+  assert.equal(page.count, null);
 });
 
 test("readCollectionDetailPage: falls back to the inline __NEXT_DATA__ pageProps when the route is unreachable", async () => {
@@ -940,6 +956,7 @@ test("readCollectionDetailPage: found:false (with parsed id/slug still returned)
   assert.equal(page.found, false);
   assert.deepEqual(page.items, []);
   assert.equal(page.title, null);
+  assert.equal(page.count, null);
 });
 
 test("readCollectionDetailPage: title is null when no collection-info shape is recognizable (items-only fallback)", async () => {
@@ -963,11 +980,11 @@ test("readCollectionDetailPage: returns null when the page read throws", async (
   assert.equal(page, null);
 });
 
-test("syncCollectionDetail: happy path -- title derivable, pushes both a collections upsert entry and the items, reports by title", async () => {
+test("syncCollectionDetail: happy path -- derivable count == items read (I1 confirmed-complete), pushes both a collections upsert entry and the items, reports by title", async () => {
   const { exec } = stubExec([
     detailPageResult({
       routePageProps: {
-        favoritesInfo: { id: 18925823, title: "ESP32" },
+        favoritesInfo: { id: 18925823, title: "ESP32", designCnt: 1 },
         designs: [{ id: 1, title: "Item A" }],
       },
     }),
@@ -977,7 +994,13 @@ test("syncCollectionDetail: happy path -- title derivable, pushes both a collect
 
   const summary = await syncCollectionDetail({ tabId: 7, url: DETAIL_URL, exec, api, report });
 
-  assert.deepEqual(summary, { listId: "18925823", title: "ESP32", items: 1 });
+  assert.deepEqual(summary, {
+    listId: "18925823",
+    title: "ESP32",
+    items: 1,
+    partial: false,
+    countDerived: true,
+  });
   assert.deepEqual(apiCalls.pushCollections[0], {
     site: "makerworld",
     collections: [{ list_id: "18925823", title: "ESP32", slug: "esp32", count: 1, is_default: false }],
@@ -985,6 +1008,92 @@ test("syncCollectionDetail: happy path -- title derivable, pushes both a collect
   assert.equal(apiCalls.pushCollectionItems[0].listId, "18925823");
   assert.equal(apiCalls.pushCollectionItems[0].items.length, 1);
   assert.equal(reportCalls[reportCalls.length - 1].text, 'Synced "ESP32": 1 item.');
+});
+
+// I1 (BLOCKING fix): syncCollectionDetail reads a collection's items off ONE
+// un-paged SSR response with no paged fallback to retry a short read with --
+// pushing a truncated read would silently shrink the backend's cached
+// membership (pushCollectionItems is a replace-set). These three tests cover
+// the derivable-count decision tree: TRUNCATED (skip everything), COMPLETE
+// (push, stamp the derived count), and NOT DERIVABLE (push best-effort, but
+// never assert a count the read didn't actually establish).
+
+test("syncCollectionDetail I1: a derivable count greater than the items actually read is a TRUNCATED read -- pushes NOTHING, reports 'partial read', signals partial:true", async () => {
+  const { exec } = stubExec([
+    detailPageResult({
+      routePageProps: {
+        favoritesInfo: { id: 18925823, title: "ESP32", designCnt: 5 },
+        designs: [{ id: 1, title: "Item A" }],
+      },
+    }),
+  ]);
+  const { api, calls: apiCalls } = stubApi();
+  const { report, calls: reportCalls } = stubReport();
+
+  const summary = await syncCollectionDetail({ tabId: 7, url: DETAIL_URL, exec, api, report });
+
+  assert.deepEqual(summary, {
+    listId: "18925823",
+    title: "ESP32",
+    items: 0,
+    partial: true,
+    countDerived: true,
+  });
+  assert.equal(apiCalls.pushCollections.length, 0);
+  assert.equal(apiCalls.pushCollectionItems.length, 0);
+  const last = reportCalls[reportCalls.length - 1];
+  assert.equal(last.text, "Partial read (1 of 5) — skipped.");
+  assert.equal(last.kind, "ok");
+});
+
+test("syncCollectionDetail I1: items read EXCEEDING the derivable count is not truncated (>= count) -- pushes normally, stamps the DERIVED count, not items.length", async () => {
+  const { exec } = stubExec([
+    detailPageResult({
+      routePageProps: {
+        favoritesInfo: { id: 18925823, title: "ESP32", designCnt: 1 },
+        designs: [{ id: 1, title: "Item A" }, { id: 2, title: "Item B" }],
+      },
+    }),
+  ]);
+  const { api, calls: apiCalls } = stubApi();
+  const { report } = stubReport();
+
+  const summary = await syncCollectionDetail({ tabId: 7, url: DETAIL_URL, exec, api, report });
+
+  assert.deepEqual(summary, {
+    listId: "18925823",
+    title: "ESP32",
+    items: 2,
+    partial: false,
+    countDerived: true,
+  });
+  assert.equal(apiCalls.pushCollections[0].collections[0].count, 1); // derived, not items.length (2)
+  assert.equal(apiCalls.pushCollectionItems[0].items.length, 2);
+});
+
+test("syncCollectionDetail I1: no derivable count at all -- pushes items + the collections entry (best-effort), but omits (null) count rather than asserting items.length", async () => {
+  const { exec } = stubExec([
+    detailPageResult({
+      routePageProps: {
+        favoritesInfo: { id: 18925823, title: "ESP32" }, // no designCnt/count field
+        designs: [{ id: 1, title: "Item A" }, { id: 2, title: "Item B" }],
+      },
+    }),
+  ]);
+  const { api, calls: apiCalls } = stubApi();
+  const { report } = stubReport();
+
+  const summary = await syncCollectionDetail({ tabId: 7, url: DETAIL_URL, exec, api, report });
+
+  assert.deepEqual(summary, {
+    listId: "18925823",
+    title: "ESP32",
+    items: 2,
+    partial: false,
+    countDerived: false,
+  });
+  assert.equal(apiCalls.pushCollections[0].collections[0].count, null);
+  assert.equal(apiCalls.pushCollectionItems[0].items.length, 2);
 });
 
 test("syncCollectionDetail: title NOT derivable -- pushes items only (no pushCollections call), reports by id", async () => {
@@ -996,7 +1105,13 @@ test("syncCollectionDetail: title NOT derivable -- pushes items only (no pushCol
 
   const summary = await syncCollectionDetail({ tabId: 7, url: DETAIL_URL, exec, api, report });
 
-  assert.deepEqual(summary, { listId: "18925823", title: null, items: 2 });
+  assert.deepEqual(summary, {
+    listId: "18925823",
+    title: null,
+    items: 2,
+    partial: false,
+    countDerived: false,
+  });
   assert.equal(apiCalls.pushCollections.length, 0);
   assert.equal(apiCalls.pushCollectionItems[0].listId, "18925823");
   assert.equal(reportCalls[reportCalls.length - 1].text, 'Synced "18925823": 2 items.');
@@ -1011,7 +1126,13 @@ test("syncCollectionDetail: zero items -- never pushes an empty membership set, 
 
   const summary = await syncCollectionDetail({ tabId: 7, url: DETAIL_URL, exec, api, report });
 
-  assert.deepEqual(summary, { listId: "18925823", title: "ESP32", items: 0 });
+  assert.deepEqual(summary, {
+    listId: "18925823",
+    title: "ESP32",
+    items: 0,
+    partial: false,
+    countDerived: false,
+  });
   assert.equal(apiCalls.pushCollections.length, 1);
   assert.equal(apiCalls.pushCollectionItems.length, 0);
   assert.equal(reportCalls[reportCalls.length - 1].text, 'Synced "ESP32": 0 items.');
@@ -1099,7 +1220,13 @@ test("syncCollectionDetail: an injected `page` skips the module's own page read 
   });
 
   assert.equal(execCalls.length, 0);
-  assert.deepEqual(summary, { listId: "18925823", title: "ESP32", items: 1 });
+  assert.deepEqual(summary, {
+    listId: "18925823",
+    title: "ESP32",
+    items: 1,
+    partial: false,
+    countDerived: false,
+  });
   assert.equal(apiCalls.pushCollections.length, 1);
 });
 
@@ -1121,10 +1248,10 @@ test("syncCollectionDetail: no slug in the URL is carried through to a null slug
 });
 
 // hashCollectionItemsPayload / findLastCollectionItemsHash /
-// upsertCollectionItemsHash / shouldPushCollectionItems (M11): the
-// per-collection throttle for the background detail-page auto-sync
-// (`config.js`'s `lastCollectionItemsHash`). Deliberately an ARRAY of
-// `{listId, hash}` pairs, not a plain object keyed by listId -- MakerWorld
+// upsertCollectionItemsHash (M11): the per-collection throttle for the
+// background detail-page auto-sync (`config.js`'s `lastCollectionItemsHash`).
+// Deliberately an ARRAY of `{listId, hash}` pairs, not a plain object keyed
+// by listId -- MakerWorld
 // list ids are canonical-numeric-looking strings, and every JS engine
 // silently reorders a plain object's INTEGER-like keys to ascending numeric
 // order regardless of insertion order, which would break "prune to the last
@@ -1224,21 +1351,11 @@ test("upsertCollectionItemsHash: recency order survives canonical-numeric-lookin
   );
 });
 
-test("shouldPushCollectionItems: true when there's no last-pushed hash for this listId yet", async () => {
-  assert.equal(await shouldPushCollectionItems([ITEM_A], [], "1"), true);
-});
-
-test("shouldPushCollectionItems: false when the items' hash matches the last-pushed one for this listId", async () => {
-  const hash = await hashCollectionItemsPayload([ITEM_A]);
-  assert.equal(await shouldPushCollectionItems([ITEM_A], [{ listId: "1", hash }], "1"), false);
-});
-
-test("shouldPushCollectionItems: true when the items changed since the last-pushed hash for this listId", async () => {
-  const hash = await hashCollectionItemsPayload([ITEM_A]);
-  assert.equal(await shouldPushCollectionItems([ITEM_A, ITEM_B], [{ listId: "1", hash }], "1"), true);
-});
-
-test("shouldPushCollectionItems: a hash recorded for a DIFFERENT listId doesn't affect this one", async () => {
-  const hash = await hashCollectionItemsPayload([ITEM_A]);
-  assert.equal(await shouldPushCollectionItems([ITEM_A], [{ listId: "999", hash }], "1"), true);
-});
+// `shouldPushCollectionItems` (the boolean-only "has this listId's items
+// hash changed" check) was removed (M3, dead export) -- `background.js`'s
+// `runCollectionDetailSync` already needs the RAW computed hash value for
+// the later throttle-persist step, so it keeps its own inline
+// `hashCollectionItemsPayload` + `findLastCollectionItemsHash` compare
+// (covered directly by the tests above) rather than routing through a
+// boolean wrapper that would have to be reshaped to hand the hash back out
+// anyway.

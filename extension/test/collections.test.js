@@ -526,6 +526,17 @@ test("parseCollectionDetailUrl: returns null for an unrelated page or a malforme
   assert.equal(parseCollectionDetailUrl("not a url"), null);
 });
 
+// M1 hardening: parseCollectionDetailUrl (unlike matchCollectionLinks, whose
+// matches are pre-filtered to ids we already trust) must stay PLURAL-ONLY --
+// tolerating the singular "collection" spelling here would let an unrelated
+// future `/collection/{id}` route on the site get parsed and synced as if
+// it were one of our collections.
+
+test("parseCollectionDetailUrl: the singular '/collection/<id>' spelling no longer matches (M1)", () => {
+  assert.equal(parseCollectionDetailUrl("https://makerworld.com/en/collection/18925823-esp32"), null);
+  assert.equal(parseCollectionDetailUrl("https://makerworld.com/collection/18925823"), null);
+});
+
 test("collectionDetailPathnameFrom: builds the ground-truth shape with a locale and a slug", () => {
   assert.equal(
     collectionDetailPathnameFrom("https://makerworld.com/en/@Terminalfoo/collections", "18925823", "esp32"),
@@ -551,43 +562,97 @@ test("collectionDetailPathnameFrom: falls back to no locale when the URL doesn't
   assert.equal(collectionDetailPathnameFrom("not a url", "18925823", "esp32"), "/collections/18925823-esp32");
 });
 
+// M2: the slug comes straight off MakerWorld's own page data, not something
+// this extension controls -- it must be encoded before being glued into a
+// pathname, or a space/`%`/`#`/`?` in it would corrupt the constructed
+// route (a literal `#`/`?` would otherwise be read back as the
+// fragment/query start instead of part of the path).
+
+test("collectionDetailPathnameFrom: encodes special characters (space/percent/hash) in the slug", () => {
+  assert.equal(
+    collectionDetailPathnameFrom("https://makerworld.com/en/@Terminalfoo/collections", "18925823", "esp32 100% #1"),
+    "/en/collections/18925823-esp32%20100%25%20%231",
+  );
+});
+
+test("collectionDetailPathnameFrom: a plain slug (the real 18925823-esp32 fixture) is unchanged by encoding", () => {
+  assert.equal(
+    collectionDetailPathnameFrom("https://makerworld.com/en/@Terminalfoo/collections", "18925823", "esp32"),
+    "/en/collections/18925823-esp32",
+  );
+});
+
 // findCollectionTitleIn (M11): tolerant discovery of a collection DETAIL
 // page's own title, mirroring `findDesignListIn`'s tolerant discovery of
 // the items array -- UNVERIFIED field name, so tries known plausible keys
-// first, then a shallow deep-scan.
+// first, then a shallow deep-scan. Returns `{title, count}` (I1 hardening:
+// `count` is `syncCollectionDetail`'s only signal that a single-SSR-response
+// item read might have been truncated -- see its own doc).
 
-test("findCollectionTitleIn: matches a known key ('favoritesInfo') directly", () => {
-  const title = findCollectionTitleIn({ favoritesInfo: { id: 18925823, title: "ESP32" } }, "18925823");
-  assert.equal(title, "ESP32");
+test("findCollectionTitleIn: matches a known key ('favoritesInfo') directly, count null when no designCnt/count field is present", () => {
+  const info = findCollectionTitleIn({ favoritesInfo: { id: 18925823, title: "ESP32" } }, "18925823");
+  assert.deepEqual(info, { title: "ESP32", count: null });
+});
+
+test("findCollectionTitleIn: derives count from designCnt when present", () => {
+  const info = findCollectionTitleIn(
+    { favoritesInfo: { id: 18925823, title: "ESP32", designCnt: 9 } },
+    "18925823",
+  );
+  assert.deepEqual(info, { title: "ESP32", count: 9 });
+});
+
+test("findCollectionTitleIn: derives count from the more generic 'count' field when designCnt is absent", () => {
+  const info = findCollectionTitleIn(
+    { favoritesInfo: { id: 18925823, title: "ESP32", count: 4 } },
+    "18925823",
+  );
+  assert.deepEqual(info, { title: "ESP32", count: 4 });
+});
+
+test("findCollectionTitleIn: designCnt is preferred over count when both are present", () => {
+  const info = findCollectionTitleIn(
+    { favoritesInfo: { id: 18925823, title: "ESP32", designCnt: 9, count: 4 } },
+    "18925823",
+  );
+  assert.equal(info.count, 9);
+});
+
+test("findCollectionTitleIn: a non-numeric designCnt/count is not derived", () => {
+  const info = findCollectionTitleIn(
+    { favoritesInfo: { id: 18925823, title: "ESP32", designCnt: "9" } },
+    "18925823",
+  );
+  assert.deepEqual(info, { title: "ESP32", count: null });
 });
 
 test("findCollectionTitleIn: deep-scan fallback under an unrecognized top-level key", () => {
-  const title = findCollectionTitleIn(
-    { someUnrecognizedField: { id: 18925823, title: "ESP32" } },
+  const info = findCollectionTitleIn(
+    { someUnrecognizedField: { id: 18925823, title: "ESP32", designCnt: 2 } },
     "18925823",
   );
-  assert.equal(title, "ESP32");
+  assert.deepEqual(info, { title: "ESP32", count: 2 });
 });
 
 test("findCollectionTitleIn: deep-scan fallback one level into a nested plain object", () => {
-  const title = findCollectionTitleIn(
+  const info = findCollectionTitleIn(
     { result: { info: { id: 18925823, title: "ESP32" } } },
     "18925823",
   );
-  assert.equal(title, "ESP32");
+  assert.deepEqual(info, { title: "ESP32", count: null });
 });
 
 test("findCollectionTitleIn: never matches favoritesList (the collections LIST, not this one's own info)", () => {
-  const title = findCollectionTitleIn(
+  const info = findCollectionTitleIn(
     { favoritesList: [{ id: 18925823, title: "ESP32", designCnt: 9, isDefault: false }] },
     "18925823",
   );
-  assert.equal(title, null);
+  assert.equal(info, null);
 });
 
 test("findCollectionTitleIn: id mismatch is never matched, even with a matching title shape", () => {
-  const title = findCollectionTitleIn({ favoritesInfo: { id: 111, title: "Wrong One" } }, "18925823");
-  assert.equal(title, null);
+  const info = findCollectionTitleIn({ favoritesInfo: { id: 111, title: "Wrong One" } }, "18925823");
+  assert.equal(info, null);
 });
 
 test("findCollectionTitleIn: missing/malformed pageProps or id returns null", () => {

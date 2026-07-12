@@ -150,13 +150,27 @@ export function extractHandle(nextDataJson, url) {
 // SUPERSEDES the earlier `{collectionsPathname}/{listId}` guess
 // (`syncFlow.js`'s old `collectionsPathnameFrom`, removed) that glued the id
 // onto the LIST page's own `@handle`-having pathname -- a real sync
-// confirmed that route finds nothing. Kept tolerant of a locale prefix and
-// of "collection" (singular) in case the real markup varies elsewhere on
-// the site; explicitly does NOT match the bare `/@handle/collections` index
-// page (no `@handle` segment is accepted at all here). Two capture groups:
-// the numeric id, and the slug (without its leading `-`, or `undefined` when
-// absent).
+// confirmed that route finds nothing. Kept tolerant of a locale prefix;
+// explicitly does NOT match the bare `/@handle/collections` index page (no
+// `@handle` segment is accepted at all here). PLURAL-ONLY (M1 hardening):
+// an unknown future `/collection/{id}` (singular) entity type must never be
+// treated as one of OUR collections by this URL-parsing path -- see
+// `ANCHOR_COLLECTION_DETAIL_PATH_RE` below for the one place singular IS
+// still tolerated. Two capture groups: the numeric id, and the slug
+// (without its leading `-`, or `undefined` when absent).
 const COLLECTION_DETAIL_PATH_RE =
+  /^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?collections\/(\d+)(?:-([^/?#]*))?\/?$/i;
+
+// Same shape as `COLLECTION_DETAIL_PATH_RE` above, but tolerant of the
+// singular "collection" spelling too. Only safe HERE, in `matchCollectionLinks`:
+// its matches are already pre-filtered against `listIds`, a set of ids the
+// caller already knows are real collections just pushed via `pushCollections`
+// -- so a singular-spelled link can only ever match an id we already trust.
+// `parseCollectionDetailUrl` (and `detect.js`'s `isCollectionDetailPage` gate)
+// have no such pre-filter and must stay plural-only, or an unrelated future
+// `/collection/{id}` route on the site could get scraped as if it were one
+// of our collections and silently push a bogus membership set (M1).
+const ANCHOR_COLLECTION_DETAIL_PATH_RE =
   /^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?collections?\/(\d+)(?:-([^/?#]*))?\/?$/i;
 
 // Same MakerWorld hosts `detect.js` gates on -- duplicated locally rather
@@ -171,7 +185,8 @@ const MAKERWORLD_HOSTS = new Set(["makerworld.com", "www.makerworld.com"]);
  * `pushCollections`, returns a `Map(listId -> pathname)` of the FIRST
  * matching REAL link found for each id -- the actual pathname the browser
  * would navigate to for that collection's detail page (ground-truth shape,
- * `COLLECTION_DETAIL_PATH_RE` above), as opposed to a constructed guess.
+ * `ANCHOR_COLLECTION_DETAIL_PATH_RE` above, singular-tolerant -- see its own
+ * doc for why that's safe only here), as opposed to a constructed guess.
  * `syncFlow.js`'s `syncCollections` tries this source FIRST, before the
  * constructed `collectionDetailPathnameFrom` fallback below, since a real
  * link can never be wrong about its own shape.
@@ -204,7 +219,7 @@ export function matchCollectionLinks(hrefs, listIds) {
       // pathname, stripping any query string/hash by hand.
       pathname = href.split("?")[0].split("#")[0];
     }
-    const match = COLLECTION_DETAIL_PATH_RE.exec(pathname);
+    const match = ANCHOR_COLLECTION_DETAIL_PATH_RE.exec(pathname);
     if (!match) {
       continue;
     }
@@ -279,7 +294,12 @@ function localeFromUrl(url) {
  * far has carried a slug. `syncFlow.js`'s `syncCollections` tries this AFTER
  * an anchor-derived pathname (`matchCollectionLinks` above, when a real link
  * was found) since a real link is always more trustworthy than a
- * construction, however ground-truth-informed.
+ * construction, however ground-truth-informed. The slug is
+ * `encodeURIComponent`-ed (M2) -- it comes straight off MakerWorld's own
+ * page data (`extractFavoritesListFrom`'s `item.slug`), not something this
+ * extension controls, so a slug carrying a space/`%`/`#`/`?` must not
+ * corrupt the constructed pathname (a literal `#`/`?` would otherwise be
+ * read back as the fragment/query start instead of part of the path).
  * @param {string} url the tab's current URL (only its locale prefix, if any,
  *   is used)
  * @param {string} listId
@@ -289,7 +309,9 @@ function localeFromUrl(url) {
 export function collectionDetailPathnameFrom(url, listId, slug) {
   const locale = localeFromUrl(url);
   const prefix = locale ? `/${locale}` : "";
-  return slug ? `${prefix}/collections/${listId}-${slug}` : `${prefix}/collections/${listId}`;
+  return slug
+    ? `${prefix}/collections/${listId}-${encodeURIComponent(slug)}`
+    : `${prefix}/collections/${listId}`;
 }
 
 // Checked (in this order) before falling back to a shallow deep-scan --
@@ -320,20 +342,50 @@ function looksLikeCollectionInfo(value, id) {
 }
 
 /**
- * Tolerantly locates the CURRENT collection's own title within a collection
- * detail page's `pageProps` (`readCollectionDetailPage`, `syncFlow.js`) --
- * the detail-page counterpart to `findDesignListIn`'s tolerant item-array
- * discovery, same UNVERIFIED-field-name caveat (`COLLECTION_INFO_KEYS`
- * above). Tries the known plausible keys first, then falls back to a
- * shallow deep-scan (top level, and one level into any nested plain object)
- * for ANY object matching `looksLikeCollectionInfo`. `favoritesList` and the
- * design-list keys are excluded from the deep-scan (never a single
- * collection's own metadata). Returns `null` when nothing matches --
- * callers (`syncFlow.js`'s `syncCollectionDetail`) treat that as "title not
- * derivable" and push items only, per its doc.
+ * A `looksLikeCollectionInfo`-matched object's own item count, when present
+ * (I1 hardening): `designCnt` (the same field a `favoritesList` entry
+ * carries, `extractFavoritesListFrom`) first, then the more generic `count`,
+ * whichever is actually a NUMBER. `null` means "not derivable from this
+ * object" -- distinct from a genuinely-empty collection's explicit `0`.
+ * @param {Record<string, unknown>} value
+ * @returns {number|null}
+ */
+function extractCollectionCount(value) {
+  if (typeof value.designCnt === "number") {
+    return value.designCnt;
+  }
+  if (typeof value.count === "number") {
+    return value.count;
+  }
+  return null;
+}
+
+/**
+ * Tolerantly locates the CURRENT collection's own title AND item count
+ * within a collection detail page's `pageProps` (`readCollectionDetailPage`,
+ * `syncFlow.js`) -- the detail-page counterpart to `findDesignListIn`'s
+ * tolerant item-array discovery, same UNVERIFIED-field-name caveat
+ * (`COLLECTION_INFO_KEYS` above). Tries the known plausible keys first, then
+ * falls back to a shallow deep-scan (top level, and one level into any
+ * nested plain object) for ANY object matching `looksLikeCollectionInfo`.
+ * `favoritesList` and the design-list keys are excluded from the deep-scan
+ * (never a single collection's own metadata). Returns `null` when nothing
+ * matches -- callers (`syncFlow.js`'s `syncCollectionDetail`) treat that as
+ * "title not derivable" and push items only, per its doc.
+ *
+ * The `count` half (I1 hardening) is what lets `syncCollectionDetail` tell a
+ * COMPLETE single-SSR-response item read apart from a TRUNCATED one: that
+ * flow has no paged fallback to retry a short read with (unlike
+ * `syncCollections`'s bulk discovery, whose `/api/v1` fallback is
+ * uid-aggregate-only anyway, M11) -- a derivable count that exceeds the read
+ * item count is the only signal available that the page silently cut the
+ * list short. `count` is `null` on the returned object whenever
+ * `extractCollectionCount` couldn't find a numeric field on the matched
+ * object -- "count not derivable," handled by the caller as its own
+ * (conservative) case, never conflated with "the collection has zero items."
  * @param {unknown} pageProps
  * @param {string} id the collection id from the URL (`parseCollectionDetailUrl`)
- * @returns {string|null}
+ * @returns {{title: string, count: number|null}|null}
  */
 export function findCollectionTitleIn(pageProps, id) {
   if (!pageProps || typeof pageProps !== "object" || !id) {
@@ -343,7 +395,7 @@ export function findCollectionTitleIn(pageProps, id) {
   for (const key of COLLECTION_INFO_KEYS) {
     const candidate = pageProps[key];
     if (looksLikeCollectionInfo(candidate, id)) {
-      return candidate.title;
+      return { title: candidate.title, count: extractCollectionCount(candidate) };
     }
   }
 
@@ -352,7 +404,7 @@ export function findCollectionTitleIn(pageProps, id) {
       continue;
     }
     if (looksLikeCollectionInfo(value, id)) {
-      return value.title;
+      return { title: value.title, count: extractCollectionCount(value) };
     }
     if (value && typeof value === "object" && !Array.isArray(value)) {
       for (const [nestedKey, nestedValue] of Object.entries(value)) {
@@ -360,7 +412,7 @@ export function findCollectionTitleIn(pageProps, id) {
           continue;
         }
         if (looksLikeCollectionInfo(nestedValue, id)) {
-          return nestedValue.title;
+          return { title: nestedValue.title, count: extractCollectionCount(nestedValue) };
         }
       }
     }

@@ -43,8 +43,17 @@ const COLLECTIONS_PATH_PATTERN = /^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?@[^/]+\/collec
 // `COLLECTION_DETAIL_PATH_RE` (same shape, duplicated locally rather than
 // imported -- mirrors this file/`popup.js`/`background.js`'s already-
 // duplicated `execInTab` pattern). Anchored so the bare index page
-// (`/@handle/collections`, no id) never matches here.
-const COLLECTION_DETAIL_PATH_PATTERN = /^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?collections?\/(\d+)(?:-[^/?#]*)?\/?$/i;
+// (`/@handle/collections`, no id) never matches here. PLURAL-ONLY (M1
+// hardening): this is the gate that decides whether the background
+// auto-sync even LOOKS at a page as a collection detail page at all, so it
+// must never tolerate the singular "collection" spelling -- an unrelated
+// future `/collection/{id}` route on the site (a different entity type
+// entirely) must not be able to trigger a bogus membership push just
+// because its URL shape happens to look close enough. (`collections.js`'s
+// `matchCollectionLinks` keeps a separate, narrowly-scoped singular
+// tolerance for anchor-derived links, where matches are already
+// pre-filtered to ids we know are real collections -- see its own doc.)
+const COLLECTION_DETAIL_PATH_PATTERN = /^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?collections\/(\d+)(?:-[^/?#]*)?\/?$/i;
 
 /**
  * @param {string} url

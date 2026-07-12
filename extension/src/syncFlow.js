@@ -673,9 +673,12 @@ export async function syncCollections({ tabId, url, exec, api, report, page }) {
  * injected into) for the actual read, then the SAME tolerant
  * `findDesignListIn` discovery `syncCollections` uses for the items, plus
  * `findCollectionTitleIn` (`collections.js`) for the collection's own title
- * (best-effort -- see its doc; `null` when not derivable).
+ * AND its own derivable item count (best-effort -- see its doc; both `null`
+ * when not derivable). The count (I1 hardening) is what `syncCollectionDetail`
+ * uses to tell a complete single-SSR-response item read apart from a
+ * truncated one -- see its own doc.
  * @param {{tabId: number, url: string, exec: (tabId: number, func: Function, args?: unknown[]) => Promise<unknown>}} opts
- * @returns {Promise<{parsed: {id: string, slug: string|null}, pageProps: unknown, items: import("./collections.js").CollectionItemPushEntry[], title: string|null, found: boolean}|null>}
+ * @returns {Promise<{parsed: {id: string, slug: string|null}, pageProps: unknown, items: import("./collections.js").CollectionItemPushEntry[], title: string|null, count: number|null, found: boolean}|null>}
  *   `null` when `url` isn't a collection detail page at all, or the page
  *   itself couldn't be read (the `exec` injection threw). `found` is `true`
  *   when a design list was located (even an empty, genuinely-empty one);
@@ -699,14 +702,14 @@ export async function readCollectionDetailPage({ tabId, url, exec }) {
 
   const found = findDesignListIn(pageProps);
   if (!found) {
-    return { parsed, pageProps, items: [], title: null, found: false };
+    return { parsed, pageProps, items: [], title: null, count: null, found: false };
   }
   const normalized = found.designs.map((design) =>
     design && !design.title && design.name ? { ...design, title: design.name } : design,
   );
   const items = mapDesignHits({ hits: normalized });
-  const title = findCollectionTitleIn(pageProps, parsed.id);
-  return { parsed, pageProps, items, title, found: true };
+  const info = findCollectionTitleIn(pageProps, parsed.id);
+  return { parsed, pageProps, items, title: info ? info.title : null, count: info ? info.count : null, found: true };
 }
 
 /**
@@ -765,20 +768,6 @@ export function upsertCollectionItemsHash(entries, listId, hash, limit = DEFAULT
 }
 
 /**
- * True when `items`' id hash differs from the last-pushed hash recorded for
- * `listId` in `entries` -- mirrors `shouldPushCollections`'s shape, scoped
- * to one collection's items instead of the whole collections list.
- * @param {import("./collections.js").CollectionItemPushEntry[]} items
- * @param {Array<{listId: string, hash: string}>|null|undefined} entries
- * @param {string} listId
- * @returns {Promise<boolean>}
- */
-export async function shouldPushCollectionItems(items, entries, listId) {
-  const hash = await hashCollectionItemsPayload(items);
-  return hash !== findLastCollectionItemsHash(entries, listId);
-}
-
-/**
  * Syncs a SINGLE collection straight from its own detail page (M11) --
  * a guaranteed-correct fallback/complement to `syncCollections`'s bulk
  * discovery: the user is looking right at this collection's items, so
@@ -790,6 +779,34 @@ export async function shouldPushCollectionItems(items, entries, listId) {
  * items for that id -- see `backend/app/api/ext.py`). Also pushes nothing
  * for a genuinely-empty collection (`items.length === 0`) -- same "never
  * push an empty membership set" caution as `syncCollections`.
+ *
+ * I1 hardening: this flow reads a collection's items off ONE un-paged SSR
+ * response (`readCollectionDetailPage`) -- unlike `syncCollections`'s bulk
+ * discovery, there's no paged `/api/v1` fallback to retry a short read with
+ * here (that endpoint is uid-aggregate-only, M11's `syncCollections` doc).
+ * `pushCollectionItems` is a REPLACE-SET on the backend (ids missing from
+ * the push get deleted from the collection), so pushing a truncated `items`
+ * array would silently SHRINK the backend's cached membership. This uses
+ * the collection's own derivable item count (`readCollectionDetailPage`'s
+ * `count`, via `findCollectionTitleIn`) to tell a complete read apart from a
+ * truncated one:
+ *   - count derivable AND `items.length < count`: a TRUNCATED read -- push
+ *     NOTHING (neither the collections entry nor the items), report/log a
+ *     "partial read" message, and return `partial: true` so the caller
+ *     (`background.js`) knows NOT to persist its per-collection throttle
+ *     hash -- the next visit retries instead of treating a short read as
+ *     done.
+ *   - count NOT derivable at all: can't tell complete from truncated, so
+ *     push the items anyway (best available data -- same spirit as
+ *     `syncCollections`'s "empty isn't proof of empty") but NEVER stamp the
+ *     collections entry's `count` as `items.length` (that would assert a
+ *     fact about the collection this one read never actually established --
+ *     omitted as `null` instead), and return `countDerived: false` so the
+ *     caller still doesn't persist the throttle hash (a future visit may
+ *     yet reveal this read was short).
+ *   - count derivable AND `items.length >= count`: a confirmed-complete
+ *     read -- push as usual, and stamping `count` with the DERIVED value
+ *     (not `items.length`, which only happens to match here) is legitimate.
  * @param {object} opts
  * @param {number} opts.tabId
  * @param {string} opts.url the tab's URL -- must be a collection detail page
@@ -800,7 +817,12 @@ export async function shouldPushCollectionItems(items, entries, listId) {
  *   pre-fetched `readCollectionDetailPage` result -- when supplied, skips
  *   the module's own page read (the background auto-sync throttle already
  *   read the page once to compute a hash).
- * @returns {Promise<{listId: string, title: string|null, items: number}>}
+ * @returns {Promise<{listId: string, title: string|null, items: number, partial: boolean, countDerived: boolean}>}
+ *   `partial` is `true` only for the truncated-read case above (nothing was
+ *   pushed that run). `countDerived` is `false` whenever the collection's
+ *   own count couldn't be read off the page at all. `background.js` only
+ *   persists its throttle hash when `partial` is `false` AND `countDerived`
+ *   is `true` -- i.e. a confirmed-complete read.
  */
 export async function syncCollectionDetail({ tabId, url, exec, api, report, page }) {
   report("Reading this collection…", null);
@@ -817,14 +839,21 @@ export async function syncCollectionDetail({ tabId, url, exec, api, report, page
     throw new Error(message);
   }
 
-  const { parsed, items, title } = resolvedPage;
+  const { parsed, items, title, count } = resolvedPage;
+  const countDerived = typeof count === "number";
+
+  if (countDerived && items.length < count) {
+    const message = `Partial read (${items.length} of ${count}) — skipped.`;
+    report(message, "ok");
+    return { listId: parsed.id, title: title || null, items: 0, partial: true, countDerived };
+  }
 
   if (title) {
     const entry = {
       list_id: parsed.id,
       title,
       slug: parsed.slug,
-      count: items.length,
+      count: countDerived ? count : null,
       is_default: false,
     };
     const listResult = await api.pushCollections("makerworld", [entry]);
@@ -846,5 +875,5 @@ export async function syncCollectionDetail({ tabId, url, exec, api, report, page
 
   const label = title || parsed.id;
   report(`Synced "${label}": ${items.length} item${items.length === 1 ? "" : "s"}.`, "ok");
-  return { listId: parsed.id, title: title || null, items: items.length };
+  return { listId: parsed.id, title: title || null, items: items.length, partial: false, countDerived };
 }

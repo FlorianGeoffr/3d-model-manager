@@ -108,8 +108,9 @@ test("isCollectionDetailPage: true with/without a locale prefix, www, slug, or t
   assert.equal(isCollectionDetailPage("https://makerworld.com/collections/18925823/"), true);
 });
 
-test("isCollectionDetailPage: true for the singular '/collection/<id>' spelling too", () => {
-  assert.equal(isCollectionDetailPage("https://makerworld.com/en/collection/18925823-esp32"), true);
+test("isCollectionDetailPage: false for the singular '/collection/<id>' spelling (M1 -- plural-only gate, so an unrelated future /collection/{id} entity type can never trigger auto-sync)", () => {
+  assert.equal(isCollectionDetailPage("https://makerworld.com/en/collection/18925823-esp32"), false);
+  assert.equal(isCollectionDetailPage("https://makerworld.com/collection/18925823"), false);
 });
 
 test("isCollectionDetailPage: false for the collections LIST/index page (/@handle/collections), with or without a trailing id-looking segment", () => {

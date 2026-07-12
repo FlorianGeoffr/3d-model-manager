@@ -292,6 +292,16 @@ async function runCollectionsSync(tabId, url) {
  * (or this one after its membership actually changed) still does. An empty
  * `items` read is treated as "nothing to sync" and never pushed, same
  * "empty isn't proof of empty" caution as `runCollectionsSync`.
+ *
+ * I1 hardening: `syncCollectionDetail` reads this collection's items off ONE
+ * un-paged SSR response, with no paged fallback to retry a short read with
+ * -- pushing a truncated read would silently shrink the backend's cached
+ * membership (`pushCollectionItems` is a replace-set). It signals that back
+ * via `partial`/`countDerived` on its resolved result (see its own doc); the
+ * throttle hash below is only persisted for a CONFIRMED-COMPLETE read
+ * (`!partial && countDerived`) -- persisting it for a truncated or
+ * uncertain-completeness read would make the throttle think this collection
+ * is done syncing and stop retrying it.
  */
 async function runCollectionDetailSync(tabId, url) {
   const config = await getConfig();
@@ -316,8 +326,9 @@ async function runCollectionDetailSync(tabId, url) {
   }
 
   const client = createClient({ baseUrl: config.appBaseUrl, token: config.apiToken });
+  let result;
   try {
-    await syncCollectionDetail({
+    result = await syncCollectionDetail({
       tabId,
       url,
       exec: execInTab,
@@ -335,6 +346,14 @@ async function runCollectionDetailSync(tabId, url) {
   } catch {
     // `syncCollectionDetail` already logged the failure reason above via
     // `report`. Leave the throttle hash untouched so the next visit retries.
+    return;
+  }
+
+  if (result.partial || !result.countDerived) {
+    // A truncated read (nothing was pushed) or a read whose completeness
+    // couldn't even be confirmed (pushed, but no count to check it against)
+    // -- either way, leave the throttle hash untouched so the next visit
+    // retries instead of treating this run as done (I1).
     return;
   }
 

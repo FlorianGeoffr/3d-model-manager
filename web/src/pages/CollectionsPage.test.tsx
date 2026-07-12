@@ -20,25 +20,51 @@ import type { PendingImport } from "@/api/types";
 // (default tab, the queue trigger's count badge, and the `?tab=` URL
 // contract), so `usePendingImports` is the only hook whose return value
 // varies per test.
-const { pendingBox } = vi.hoisted(() => ({
-  pendingBox: { current: { data: [] as PendingImport[], isLoading: false } },
-}));
+//
+// It's backed by `useSyncExternalStore` (not a bare closure read) so tests
+// can simulate a background refetch resolving mid-test via `setPending`
+// and have the page actually re-render with the new value -- a plain
+// `() => pendingBox.current` mock only ever reflects the value at mount.
+const { pendingBox, pendingListeners, setPending } = vi.hoisted(() => {
+  const listeners = new Set<() => void>();
+  const box = { current: { data: [] as PendingImport[], isLoading: false } };
+  return {
+    pendingBox: box,
+    pendingListeners: listeners,
+    setPending: (next: typeof box.current) => {
+      box.current = next;
+      listeners.forEach((listener) => listener());
+    },
+  };
+});
 
 const idle = { isPending: false, isError: false, error: null };
 const empty = { data: [], isLoading: false };
 
-vi.mock("@/api/collections", () => ({
-  useFollowedCollections: () => empty,
-  usePendingImports: () => pendingBox.current,
-  useRemoteLists: () => empty,
-  useSyncCollectionsNow: () => ({ ...idle, mutate: vi.fn() }),
-  useApprovePending: () => ({ ...idle, mutate: vi.fn() }),
-  useDismissPending: () => ({ ...idle, mutate: vi.fn() }),
-  useFollowCollection: () => ({ ...idle, mutate: vi.fn() }),
-  useFollowCollectionByUrl: () => ({ ...idle, mutate: vi.fn() }),
-  useUnfollowCollection: () => ({ ...idle, mutate: vi.fn() }),
-  useSetCollectionMode: () => ({ ...idle, mutate: vi.fn() }),
-}));
+vi.mock("@/api/collections", async () => {
+  const React = await vi.importActual<typeof import("react")>("react");
+  return {
+    useFollowedCollections: () => empty,
+    usePendingImports: () =>
+      React.useSyncExternalStore(
+        (onStoreChange) => {
+          pendingListeners.add(onStoreChange);
+          return () => {
+            pendingListeners.delete(onStoreChange);
+          };
+        },
+        () => pendingBox.current,
+      ),
+    useRemoteLists: () => empty,
+    useSyncCollectionsNow: () => ({ ...idle, mutate: vi.fn() }),
+    useApprovePending: () => ({ ...idle, mutate: vi.fn() }),
+    useDismissPending: () => ({ ...idle, mutate: vi.fn() }),
+    useFollowCollection: () => ({ ...idle, mutate: vi.fn() }),
+    useFollowCollectionByUrl: () => ({ ...idle, mutate: vi.fn() }),
+    useUnfollowCollection: () => ({ ...idle, mutate: vi.fn() }),
+    useSetCollectionMode: () => ({ ...idle, mutate: vi.fn() }),
+  };
+});
 
 // `ImportsPanel`'s own behavior is covered by ImportsPanel.test.tsx; here it
 // just needs to not make a real network call when the page mounts it.
@@ -229,5 +255,56 @@ describe("CollectionsPage", () => {
     expect(
       await screen.findByText(/No imports yet\. Save a model from the extension/),
     ).toBeInTheDocument();
+  });
+
+  // Regression coverage for the R7 fix: the default tab used to be recomputed
+  // from `pending.data` on every render, so a background refetch that
+  // resolved with a different pending count could move the user off a tab
+  // they were already on -- either a tab they'd explicitly clicked into, or
+  // the pinned no-`?tab=` default. Both cases below simulate that refetch via
+  // `setPending`, which (unlike reassigning `pendingBox.current` before
+  // `renderPage`) notifies the mounted component through the mocked
+  // `useSyncExternalStore`-backed `usePendingImports`.
+
+  it("does not move the user off a tab they explicitly selected when the pending query changes", async () => {
+    pendingBox.current = { data: [fakePending()], isLoading: false };
+    const router = renderPage(["/collections"]);
+
+    // Defaults to Review queue since an item is already pending.
+    expect(await screen.findByRole("tab", { name: /Review queue/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+
+    // User explicitly switches to Collections, which always wins via `?tab=`.
+    fireEvent.click(await screen.findByRole("tab", { name: "Collections" }));
+    await waitFor(() => expect(router.state.location.search).toEqual({ tab: "collections" }));
+
+    // A background refetch resolves with more pending items -- must not yank
+    // the user back to Review queue.
+    setPending({ data: [fakePending({ id: 11 }), fakePending({ id: 12 })], isLoading: false });
+
+    expect(await screen.findByRole("tab", { name: /Review queue/ })).toHaveTextContent("2");
+    expect(screen.getByRole("tab", { name: "Collections" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("Followed collections")).toBeInTheDocument();
+  });
+
+  it("does not change the pinned default tab when the pending query refetches in the background", async () => {
+    const router = renderPage(["/collections"]);
+
+    // No `?tab=` and nothing pending yet -> pins to Collections.
+    expect(await screen.findByRole("tab", { name: "Collections" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+
+    // A background refetch (e.g. window refocus after a sync) resolves with
+    // newly-pending items. The pinned default must not move to Review queue.
+    setPending({ data: [fakePending()], isLoading: false });
+
+    expect(await screen.findByRole("tab", { name: /Review queue/ })).toHaveTextContent("1");
+    expect(screen.getByRole("tab", { name: "Collections" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("Followed collections")).toBeInTheDocument();
+    expect(router.state.location.search).toEqual({});
   });
 });

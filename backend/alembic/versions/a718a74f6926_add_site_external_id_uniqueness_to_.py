@@ -15,9 +15,14 @@ backstop.
 
 Live data already satisfies the new constraint (98 distinct external_ids
 verified against the live ``pending_imports`` table before writing this
-migration), so no cleanup/dedup step is needed before adding it. The older
-``(collection_id, external_id)`` constraint is left in place -- it's now
-implied-redundant but harmless.
+migration). Other instances may not be so lucky -- any DB that ran the old,
+buggy ``add_pending_sync`` while following both an aggregate and a specific
+named collection could have accumulated true ``(site, external_id)`` dupes,
+which would make ``create_unique_constraint`` below raise. ``upgrade()``
+therefore deletes duplicates (keeping the lowest id) before adding the
+constraint; this is a no-op on an already-clean table such as this repo's.
+The older ``(collection_id, external_id)`` constraint is left in place --
+it's now implied-redundant but harmless.
 """
 
 from collections.abc import Sequence
@@ -38,6 +43,14 @@ _CONSTRAINT_NAME = op.f("uq_pending_imports_site_external_id")
 
 def upgrade() -> None:
     """Upgrade schema."""
+    # Defensive pre-dedup: remove all but the lowest-id row per (site,
+    # external_id) group so the constraint below can't fail on an instance
+    # that accumulated dupes under the old, buggy sync. No-op if the table
+    # is already clean.
+    op.execute(
+        "DELETE FROM pending_imports a USING pending_imports b "
+        "WHERE a.site = b.site AND a.external_id = b.external_id AND a.id > b.id"
+    )
     op.create_unique_constraint(_CONSTRAINT_NAME, "pending_imports", ["site", "external_id"])
 
 

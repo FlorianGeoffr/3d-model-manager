@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { getRouteApi } from "@tanstack/react-router";
 
 import { usePendingImports } from "@/api/collections";
@@ -23,15 +24,30 @@ const routeApi = getRouteApi("/authenticated/collections");
  * shares its React Query cache with `ReviewQueueCard`'s own call (same
  * `["collections", "pending"]` key), so this is not a second network
  * request; it only needs the count for the default-tab rule and the trigger
- * badge. */
+ * badge.
+ *
+ * R7 fix: the no-`?tab=` default is resolved ONCE, the first time the
+ * pending query settles, and then pinned in state. Without this, a cold
+ * load flashes Collections before flipping to Review once the count
+ * resolves, and a later background refetch (e.g. window refocus after a
+ * sync surfaces new review rows) can yank the user off a tab they're
+ * already looking at. While the query is still loading with no `?tab=`,
+ * the tabs render a stable provisional "collections" selection instead of
+ * flipping. An explicit tab click always writes `?tab=`, which wins over
+ * the pinned default regardless of its value. */
 export function CollectionsPage() {
   const search = routeApi.useSearch();
   const navigate = routeApi.useNavigate();
   const pending = usePendingImports();
   const pendingCount = pending.data?.length ?? 0;
 
-  const defaultTab: CollectionsTab = pendingCount > 0 ? "review" : "collections";
-  const activeTab = search.tab ?? defaultTab;
+  const [pinnedDefaultTab, setPinnedDefaultTab] = useState<CollectionsTab | null>(null);
+  useEffect(() => {
+    if (pinnedDefaultTab !== null || pending.isLoading) return;
+    setPinnedDefaultTab(pendingCount > 0 ? "review" : "collections");
+  }, [pinnedDefaultTab, pending.isLoading, pendingCount]);
+
+  const activeTab = search.tab ?? pinnedDefaultTab ?? "collections";
 
   function handleTabChange(value: string) {
     void navigate({

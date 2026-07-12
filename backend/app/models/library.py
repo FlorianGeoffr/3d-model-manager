@@ -22,11 +22,12 @@ from sqlalchemy import (
     UniqueConstraint,
     false,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, str_enum
-from app.models.enums import BlobFormat, BlobKind
+from app.models.enums import BlobFormat, BlobKind, PrintResult
 
 if TYPE_CHECKING:
     # Only for static analysis / the `Mapped[...]` string annotations below
@@ -177,6 +178,35 @@ class PrintQueueEntry(Base):
     )
     position: Mapped[int] = mapped_column(Integer, nullable=False)
     added_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+
+
+class Print(Base):
+    """One logged print attempt against a model (Branch 5 Task 1): a
+    user-entered per-model print history, distinct from the ``print_queue``
+    "to print" worklist above and ``print_jobs``' live send-to-printer
+    telemetry (``app.models.printing``, M4).
+
+    ``printer_name`` is a plain TEXT snapshot, NOT an FK to ``printers`` --
+    printers are deletable and this history must survive their removal.
+    """
+
+    __tablename__ = "prints"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    model_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("models.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    printed_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+    printer_name: Mapped[str | None] = mapped_column(Text)
+    filament: Mapped[str | None] = mapped_column(Text)
+    result: Mapped[PrintResult] = mapped_column(
+        str_enum(PrintResult, "print_result"),
+        nullable=False,
+        server_default=text("'success'"),
+    )
+    duration_min: Mapped[int | None] = mapped_column(Integer)
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
 
 
 class Revision(Base):

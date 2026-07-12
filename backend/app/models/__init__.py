@@ -13,7 +13,17 @@ from app.models.collections import (
     RemoteCollectionCache,
     RemoteCollectionItem,
 )
-from app.models.library import Blob, File, Model, Note, PrintQueueEntry, Revision, Tag, model_tags
+from app.models.library import (
+    Blob,
+    File,
+    Model,
+    Note,
+    Print,
+    PrintQueueEntry,
+    Revision,
+    Tag,
+    model_tags,
+)
 from app.models.printing import Printer, PrintJob
 from app.models.processing import AssemblyThumb, BlobMeta, Derivative
 from app.models.storage import FileLocation, StorageBackendRow
@@ -34,6 +44,7 @@ __all__ = [
     "Model",
     "Note",
     "PendingImport",
+    "Print",
     "Printer",
     "PrintJob",
     "PrintQueueEntry",

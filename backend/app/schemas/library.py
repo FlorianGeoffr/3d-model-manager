@@ -328,6 +328,12 @@ class ModelDetail(BaseModel):
     review_state: str | None = None
     backends: list[ModelBackendOut] = []
     favorite: bool = False
+    # Branch 5 Task 1: print history aggregates, populated by
+    # `build_model_detail`'s one count/max(printed_at) query. NOT on
+    # `ModelSummary` -- the gallery list doesn't need per-model print stats
+    # (keeps `list_models` lean, Branch 5 Task 1 brief).
+    print_count: int = 0
+    last_printed_at: datetime | None = None
 
 
 # -- diff -------------------------------------------------------------

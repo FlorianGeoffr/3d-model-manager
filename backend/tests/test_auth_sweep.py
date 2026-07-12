@@ -65,6 +65,8 @@ _PATH_PARAM_VALUES = {
     "token_id": "1",
     # Branch 4 Task 1: print queue entries.
     "entry_id": "1",
+    # Branch 5 Task 1: per-model print history.
+    "print_id": "1",
 }
 
 

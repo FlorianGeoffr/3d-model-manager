@@ -1,0 +1,337 @@
+"""Per-model print history (Branch 5 Task 1): a user-entered log of print
+attempts.
+
+``POST /models/{model_id}/prints``/``GET /models/{model_id}/prints``/
+``PATCH /prints/{id}``/``DELETE /prints/{id}``, plus ``ModelDetail``'s
+``print_count``/``last_printed_at`` aggregates.
+"""
+
+from __future__ import annotations
+
+import httpx
+import pytest
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.library import Print
+
+pytestmark = pytest.mark.usefixtures("library_root")
+
+
+async def _create_model(client: httpx.AsyncClient, name: str) -> dict:
+    response = await client.post("/api/models", json={"name": name})
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+# ---------------------------------------------------------------------------
+# create
+# ---------------------------------------------------------------------------
+
+
+async def test_create_print_defaults_printed_at_and_result(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    model = await _create_model(authenticated_client, "Print Defaults")
+
+    response = await authenticated_client.post(f"/api/models/{model['id']}/prints", json={})
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["model_id"] == model["id"]
+    assert body["result"] == "success"
+    assert body["printed_at"] is not None
+    assert body["printer_name"] is None
+    assert body["filament"] is None
+    assert body["duration_min"] is None
+    assert body["notes"] is None
+    assert body["created_at"] is not None
+
+
+async def test_create_print_accepts_all_fields(authenticated_client: httpx.AsyncClient) -> None:
+    model = await _create_model(authenticated_client, "Print Full")
+
+    response = await authenticated_client.post(
+        f"/api/models/{model['id']}/prints",
+        json={
+            "printed_at": "2026-07-01T10:00:00Z",
+            "printer_name": "Bambu X1C",
+            "filament": "PLA Black",
+            "result": "fail",
+            "duration_min": 125,
+            "notes": "warped corner",
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["printed_at"] == "2026-07-01T10:00:00Z"
+    assert body["printer_name"] == "Bambu X1C"
+    assert body["filament"] == "PLA Black"
+    assert body["result"] == "fail"
+    assert body["duration_min"] == 125
+    assert body["notes"] == "warped corner"
+
+
+async def test_create_print_unknown_model_is_404(authenticated_client: httpx.AsyncClient) -> None:
+    response = await authenticated_client.post("/api/models/999999/prints", json={})
+
+    assert response.status_code == 404
+
+
+async def test_create_print_invalid_result_is_422(authenticated_client: httpx.AsyncClient) -> None:
+    model = await _create_model(authenticated_client, "Print Invalid Result")
+
+    response = await authenticated_client.post(
+        f"/api/models/{model['id']}/prints", json={"result": "bogus"}
+    )
+
+    assert response.status_code == 422
+
+
+async def test_create_print_negative_duration_is_422(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    model = await _create_model(authenticated_client, "Print Negative Duration")
+
+    response = await authenticated_client.post(
+        f"/api/models/{model['id']}/prints", json={"duration_min": -1}
+    )
+
+    assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# list / ordering
+# ---------------------------------------------------------------------------
+
+
+async def test_list_prints_unknown_model_is_404(authenticated_client: httpx.AsyncClient) -> None:
+    response = await authenticated_client.get("/api/models/999999/prints")
+
+    assert response.status_code == 404
+
+
+async def test_list_prints_is_reverse_chronological_with_id_tiebreak(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    model = await _create_model(authenticated_client, "Print Ordering")
+
+    # Two rows share the SAME `printed_at` -- the higher id (created second)
+    # must sort first, proving the `id desc` tiebreak actually fires.
+    earliest = await authenticated_client.post(
+        f"/api/models/{model['id']}/prints",
+        json={"printed_at": "2026-06-01T00:00:00Z"},
+    )
+    tied_a = await authenticated_client.post(
+        f"/api/models/{model['id']}/prints",
+        json={"printed_at": "2026-06-15T00:00:00Z"},
+    )
+    tied_b = await authenticated_client.post(
+        f"/api/models/{model['id']}/prints",
+        json={"printed_at": "2026-06-15T00:00:00Z"},
+    )
+    latest = await authenticated_client.post(
+        f"/api/models/{model['id']}/prints",
+        json={"printed_at": "2026-07-01T00:00:00Z"},
+    )
+    for r in (earliest, tied_a, tied_b, latest):
+        assert r.status_code == 201, r.text
+
+    listing = await authenticated_client.get(f"/api/models/{model['id']}/prints")
+    assert listing.status_code == 200
+    ids = [row["id"] for row in listing.json()]
+    assert ids == [
+        latest.json()["id"],
+        tied_b.json()["id"],
+        tied_a.json()["id"],
+        earliest.json()["id"],
+    ]
+
+
+async def test_list_prints_only_returns_rows_for_that_model(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    model_a = await _create_model(authenticated_client, "Print Scope A")
+    model_b = await _create_model(authenticated_client, "Print Scope B")
+
+    await authenticated_client.post(f"/api/models/{model_a['id']}/prints", json={})
+    await authenticated_client.post(f"/api/models/{model_b['id']}/prints", json={})
+    await authenticated_client.post(f"/api/models/{model_b['id']}/prints", json={})
+
+    listing_a = await authenticated_client.get(f"/api/models/{model_a['id']}/prints")
+    listing_b = await authenticated_client.get(f"/api/models/{model_b['id']}/prints")
+
+    assert len(listing_a.json()) == 1
+    assert len(listing_b.json()) == 2
+    assert all(row["model_id"] == model_a["id"] for row in listing_a.json())
+    assert all(row["model_id"] == model_b["id"] for row in listing_b.json())
+
+
+async def test_list_prints_empty_for_model_with_no_prints(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    model = await _create_model(authenticated_client, "Print None Yet")
+
+    listing = await authenticated_client.get(f"/api/models/{model['id']}/prints")
+
+    assert listing.status_code == 200
+    assert listing.json() == []
+
+
+# ---------------------------------------------------------------------------
+# patch
+# ---------------------------------------------------------------------------
+
+
+async def test_patch_print_only_changes_sent_fields(authenticated_client: httpx.AsyncClient) -> None:
+    model = await _create_model(authenticated_client, "Print Patch")
+    created = await authenticated_client.post(
+        f"/api/models/{model['id']}/prints",
+        json={"printer_name": "Bambu X1C", "filament": "PLA Black", "result": "success"},
+    )
+    print_id = created.json()["id"]
+
+    response = await authenticated_client.patch(
+        f"/api/prints/{print_id}", json={"result": "fail", "notes": "nozzle clog"}
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["result"] == "fail"
+    assert body["notes"] == "nozzle clog"
+    # Untouched fields survive the partial patch.
+    assert body["printer_name"] == "Bambu X1C"
+    assert body["filament"] == "PLA Black"
+
+
+async def test_patch_print_invalid_result_is_422(authenticated_client: httpx.AsyncClient) -> None:
+    model = await _create_model(authenticated_client, "Print Patch Invalid")
+    created = await authenticated_client.post(f"/api/models/{model['id']}/prints", json={})
+    print_id = created.json()["id"]
+
+    response = await authenticated_client.patch(f"/api/prints/{print_id}", json={"result": "bogus"})
+
+    assert response.status_code == 422
+
+
+async def test_patch_print_negative_duration_is_422(authenticated_client: httpx.AsyncClient) -> None:
+    model = await _create_model(authenticated_client, "Print Patch Negative")
+    created = await authenticated_client.post(f"/api/models/{model['id']}/prints", json={})
+    print_id = created.json()["id"]
+
+    response = await authenticated_client.patch(
+        f"/api/prints/{print_id}", json={"duration_min": -5}
+    )
+
+    assert response.status_code == 422
+
+
+async def test_patch_print_unknown_id_is_404(authenticated_client: httpx.AsyncClient) -> None:
+    response = await authenticated_client.patch("/api/prints/999999", json={"result": "fail"})
+
+    assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# delete
+# ---------------------------------------------------------------------------
+
+
+async def test_delete_print_removes_it(authenticated_client: httpx.AsyncClient) -> None:
+    model = await _create_model(authenticated_client, "Print Delete")
+    created = await authenticated_client.post(f"/api/models/{model['id']}/prints", json={})
+    print_id = created.json()["id"]
+
+    response = await authenticated_client.delete(f"/api/prints/{print_id}")
+    assert response.status_code == 204
+
+    listing = await authenticated_client.get(f"/api/models/{model['id']}/prints")
+    assert listing.json() == []
+
+
+async def test_delete_print_unknown_id_is_404(authenticated_client: httpx.AsyncClient) -> None:
+    response = await authenticated_client.delete("/api/prints/999999")
+
+    assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# model delete cascades prints
+# ---------------------------------------------------------------------------
+
+
+async def test_model_hard_delete_cascades_prints(
+    authenticated_client: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    """M1 only supports soft-delete (archive) via the API -- the cascade is
+    exercised at the DB level directly (a raw SQL DELETE, since there is no
+    hard-delete endpoint to drive it through HTTP), mirroring the print
+    queue's matching cascade test.
+    """
+    model = await _create_model(authenticated_client, "Print Cascade")
+    created = await authenticated_client.post(f"/api/models/{model['id']}/prints", json={})
+    print_id = created.json()["id"]
+
+    await db_session.execute(text("DELETE FROM models WHERE id = :id"), {"id": model["id"]})
+    await db_session.commit()
+
+    remaining = (
+        await db_session.execute(select(Print).where(Print.id == print_id))
+    ).scalar_one_or_none()
+    assert remaining is None
+
+
+# ---------------------------------------------------------------------------
+# ModelDetail aggregates
+# ---------------------------------------------------------------------------
+
+
+async def test_model_detail_print_aggregates_zero_state(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    model = await _create_model(authenticated_client, "Print Aggregate Zero")
+
+    detail = await authenticated_client.get(f"/api/models/{model['slug']}")
+
+    assert detail.status_code == 200
+    body = detail.json()
+    assert body["print_count"] == 0
+    assert body["last_printed_at"] is None
+
+
+async def test_model_detail_print_aggregates_reflect_rows(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    model = await _create_model(authenticated_client, "Print Aggregate Rows")
+
+    await authenticated_client.post(
+        f"/api/models/{model['id']}/prints", json={"printed_at": "2026-06-01T00:00:00Z"}
+    )
+    await authenticated_client.post(
+        f"/api/models/{model['id']}/prints", json={"printed_at": "2026-07-01T00:00:00Z"}
+    )
+    await authenticated_client.post(
+        f"/api/models/{model['id']}/prints", json={"printed_at": "2026-05-01T00:00:00Z"}
+    )
+
+    detail = await authenticated_client.get(f"/api/models/{model['slug']}")
+
+    assert detail.status_code == 200
+    body = detail.json()
+    assert body["print_count"] == 3
+    assert body["last_printed_at"] == "2026-07-01T00:00:00Z"
+
+
+async def test_model_detail_print_aggregates_do_not_leak_across_models(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    model_a = await _create_model(authenticated_client, "Print Aggregate A")
+    model_b = await _create_model(authenticated_client, "Print Aggregate B")
+
+    await authenticated_client.post(f"/api/models/{model_a['id']}/prints", json={})
+
+    detail_b = await authenticated_client.get(f"/api/models/{model_b['slug']}")
+
+    assert detail_b.json()["print_count"] == 0
+    assert detail_b.json()["last_printed_at"] is None

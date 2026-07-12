@@ -111,3 +111,13 @@ class CollectionSyncMode(StrEnum):
 
     AUTO = "auto"  # import it straight into the library
     REVIEW = "review"  # queue it in `pending_imports` for one-click approval
+
+
+class PrintResult(StrEnum):
+    """Outcome of a logged print attempt (Branch 5 Task 1 ``prints.result``) --
+    a user-entered per-model print history, distinct from ``print_jobs.state``
+    (live send-to-printer telemetry, M4)."""
+
+    SUCCESS = "success"
+    FAIL = "fail"
+    PARTIAL = "partial"

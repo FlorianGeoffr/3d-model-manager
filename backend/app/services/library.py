@@ -34,7 +34,7 @@ from sqlalchemy.orm import selectinload
 
 from app.config import Settings
 from app.models.enums import BlobFormat, BlobKind, DerivativeKind, DerivativeStatus
-from app.models.library import Blob, File, Model, Note, Revision, Tag, model_tags
+from app.models.library import Blob, File, Model, Note, Print, Revision, Tag, model_tags
 from app.models.processing import AssemblyThumb, BlobMeta, Derivative
 from app.models.storage import FileLocation, StorageBackendRow
 from app.models.system import Job
@@ -880,6 +880,19 @@ async def build_model_detail(db: AsyncSession, model: Model, settings: Settings)
         revision = await get_revision_or_404(db, model.current_revision_id)
         current_revision = await build_revision_detail(db, revision, settings)
         backends = await _model_backends_summary(db, settings, revision.files)
+
+    # Branch 5 Task 1: print history aggregates -- one query for both
+    # (count + max(printed_at)) rather than two round trips. `func.count`
+    # over zero rows is 0, not None; `func.max` over zero rows is None
+    # (zero-state: `print_count=0, last_printed_at=None`).
+    print_count, last_printed_at = (
+        await db.execute(
+            select(func.count(Print.id), func.max(Print.printed_at)).where(
+                Print.model_id == model.id
+            )
+        )
+    ).one()
+
     return ModelDetail(
         id=model.id,
         slug=model.slug,
@@ -902,6 +915,8 @@ async def build_model_detail(db: AsyncSession, model: Model, settings: Settings)
         review_state=model.review_state,
         backends=backends,
         favorite=model.favorite,
+        print_count=print_count,
+        last_printed_at=last_printed_at,
     )
 
 

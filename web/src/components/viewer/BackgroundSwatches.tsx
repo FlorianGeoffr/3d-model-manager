@@ -13,9 +13,16 @@ import {
  * hue around the circle instead of a flat fill. */
 const RAINBOW_CONIC = "conic-gradient(red, yellow, lime, cyan, blue, magenta, red)";
 
+// `border-border/60` was nearly invisible against the panel's `bg-card` in
+// both themes -- a black/white hairline at low opacity (rather than the
+// theme's `border` token) reads as a real edge regardless of which color the
+// swatch itself is painted, plus a faint `shadow-sm` for depth.
 const SWATCH_CLASS =
-  "size-6 shrink-0 cursor-pointer rounded-full border border-border/60 outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-ring/50";
-const SWATCH_SELECTED_CLASS = "ring-2 ring-ring";
+  "size-6 shrink-0 cursor-pointer rounded-full border border-black/25 dark:border-white/30 shadow-sm outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-ring/50";
+// `ring-offset` separates the selection ring from the swatch's own edge --
+// without it the ring sat flush against the border above and the two blurred
+// together.
+const SWATCH_SELECTED_CLASS = "ring-2 ring-ring ring-offset-1 ring-offset-background";
 
 /** `studio`/`white`/`dark`/`custom` resolve to one hex regardless of theme --
  * `resolveBackground` ignores its `isDark` argument for those, so `false` is

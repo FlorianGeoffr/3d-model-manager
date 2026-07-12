@@ -420,8 +420,12 @@ async def get_bambu_status(
     db: AsyncSession = Depends(get_db), settings: Settings = Depends(get_settings)
 ) -> BambuStatusOut:
     state = await bambu_auth.get_bambu_auth(db, settings)
+    connected = bool(state.refresh_token)
     return BambuStatusOut(
-        connected=bool(state.refresh_token), account=state.account, region=state.region
+        connected=connected,
+        account=state.account,
+        region=state.region,
+        needs_reconnect=connected and bool(state.refresh_failed_at),
     )
 
 

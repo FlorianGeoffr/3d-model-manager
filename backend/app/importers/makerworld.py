@@ -73,6 +73,12 @@ _SEARCH_PAGE_SIZE = 20
 _BAMBU_AUTH_REQUIRED = (
     "MakerWorld downloads require signing in with a Bambu account (configure in Settings)."
 )
+# Distinct from `_BAMBU_AUTH_REQUIRED` above: the account IS configured, but
+# its stored refresh token was rejected on the last attempt
+# (`app.services.bambu_auth.BambuAuthError.kind == "expired"`) -- telling the
+# operator to "configure" an already-configured account is misleading (task:
+# import-health truthful-failure surfacing).
+_BAMBU_SESSION_EXPIRED = "Bambu sign-in expired — reconnect your Bambu account in Settings."
 
 
 def parse_collection_url(url: str) -> str | None:
@@ -183,15 +189,19 @@ def _bambu_session() -> tuple[str, str]:
 
 def _require_bambu_session() -> tuple[str, str]:
     """Hard variant for ``list_files``/``resolve_download``: not being
-    connected (or a dead refresh token) becomes the same clear, user-facing
-    ``ImportRejected`` the B1 stub raised unconditionally."""
+    connected (or a dead refresh token) becomes a clear, user-facing
+    ``ImportRejected`` -- the exact message depends on WHICH of those two it
+    is (``BambuAuthError.kind``, task: import-health truthful-failure
+    surfacing) so an operator with a configured-but-expired session isn't
+    told to go configure something that's already configured."""
     from app.services.bambu_auth import BambuAuthError
     from app.tasks.importing import ImportRejected
 
     try:
         return _bambu_session()
     except BambuAuthError as exc:
-        raise ImportRejected(_BAMBU_AUTH_REQUIRED) from exc
+        message = _BAMBU_SESSION_EXPIRED if exc.kind == "expired" else _BAMBU_AUTH_REQUIRED
+        raise ImportRejected(message) from exc
 
 
 def _favorites_client(token: str) -> httpx.Client:

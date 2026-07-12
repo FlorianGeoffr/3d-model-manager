@@ -42,8 +42,13 @@ refresh token is ever logged.
   too. The full design doc separately notes Bambu's refresh endpoint has
   historically been unreliable ("refresh endpoint is broken -> re-login UX
   with expiry banner") -- ``get_access_token_sync`` surfaces a refresh
-  failure as a plain ``BambuAuthError`` so a caller can prompt reconnection
-  rather than crash.
+  failure as a ``kind="expired"`` ``BambuAuthError`` so a caller can prompt
+  reconnection rather than crash, AND persists a non-secret
+  ``refresh_failed_at`` marker on the stored row (``mark_refresh_failed``/
+  ``_sync``, cleared by ``clear_refresh_failed``/``_sync`` or any fresh
+  ``set_bambu_auth``/``_sync`` write) so ``GET /settings/bambu`` can report
+  ``needs_reconnect`` -- the actual expiry-banner UX this module's contract
+  note above always promised.
 """
 
 from __future__ import annotations
@@ -53,6 +58,7 @@ import contextlib
 import json
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 import httpx
 from cryptography.fernet import InvalidToken
@@ -93,7 +99,20 @@ class BambuAuthError(Exception):
     """A Bambu auth call failed in an expected way (bad credentials, bad/
     expired verification code, invalid/expired refresh token, or no account
     connected at all) -- always a clean, user-facing message, never a raw
-    httpx/JSON exception leaking upward."""
+    httpx/JSON exception leaking upward.
+
+    ``kind`` lets a caller distinguish two flavors WITHOUT string-matching
+    the message (Task: expiry-banner UX):
+    - ``"not_configured"`` -- no Bambu account is stored at all.
+    - ``"expired"`` -- an account IS stored but its refresh token was
+      rejected (HTTP 401 from ``POST /user-service/user/refreshtoken``).
+    - ``None`` -- any other failure (bad login credentials, bad/expired MFA
+      code, a malformed refresh response, ...) that doesn't fit either
+      bucket above."""
+
+    def __init__(self, message: str, *, kind: str | None = None) -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 @dataclass(frozen=True)
@@ -122,11 +141,17 @@ class BambuAccessToken:
 
 class BambuAuthState(BaseModel):
     """Decrypted at-rest shape. ``refresh_token`` is ``None`` when no
-    account is connected."""
+    account is connected. ``refresh_failed_at`` (UTC ISO string, non-secret)
+    is set when the LAST refresh attempt against the currently-stored
+    refresh token failed (``mark_refresh_failed``/``_sync``) and cleared by
+    a subsequent successful refresh or a fresh login -- ``GET /settings/
+    bambu``'s ``needs_reconnect`` is ``bool(refresh_token and
+    refresh_failed_at)``."""
 
     account: str | None = None
     region: str = "global"
     refresh_token: str | None = None
+    refresh_failed_at: str | None = None
 
 
 def base_url_for_region(region: str) -> str:
@@ -147,14 +172,16 @@ def _client(region: str = "global") -> httpx.Client:
     )
 
 
-def _raise_on_error_status(r: httpx.Response, *, unauthorized_message: str) -> None:
+def _raise_on_error_status(
+    r: httpx.Response, *, unauthorized_message: str, kind: str | None = None
+) -> None:
     if r.status_code == 400:
         detail = "Incorrect account or password."
         with contextlib.suppress(ValueError, AttributeError):
             detail = r.json().get("error") or detail
         raise BambuAuthError(detail)
     if r.status_code == 401:
-        raise BambuAuthError(unauthorized_message)
+        raise BambuAuthError(unauthorized_message, kind=kind)
     r.raise_for_status()
 
 
@@ -223,10 +250,13 @@ def verify_code(
 
 
 def refresh(refresh_token: str, region: str = "global") -> BambuAccessToken:
-    """Exchange a stored refresh token for a fresh access token. Raises
-    ``BambuAuthError`` on an invalid/expired refresh token (HTTP 401,
-    live-verified) -- the caller (``get_access_token_sync``) surfaces this as
-    "reconnect your Bambu account" rather than crashing."""
+    """Exchange a stored refresh token for a fresh access token. Raises a
+    ``kind="expired"`` ``BambuAuthError`` on an invalid/expired refresh token
+    (HTTP 401, live-verified) -- the caller (``get_access_token_sync``)
+    surfaces this as "reconnect your Bambu account" rather than crashing,
+    AND persists a ``refresh_failed_at`` marker (``mark_refresh_failed_sync``)
+    so the expiry survives past this one process/request (expiry-banner UX,
+    ``GET /settings/bambu``'s ``needs_reconnect``)."""
     with _client(region) as c:
         r = c.post("/user-service/user/refreshtoken", json={"refreshToken": refresh_token})
     _raise_on_error_status(
@@ -234,6 +264,7 @@ def refresh(refresh_token: str, region: str = "global") -> BambuAccessToken:
         unauthorized_message=(
             "Bambu refresh token is invalid or expired -- reconnect the Bambu account in Settings."
         ),
+        kind="expired",
     )
     body = r.json()
     access = body.get("accessToken") or body.get("access_token") or body.get("token")
@@ -277,14 +308,22 @@ def _decrypt_state(settings: Settings, value: dict | None) -> BambuAuthState:
     if not value:
         return BambuAuthState()
     raw = value.get("refresh_token")
+    refresh_failed_at = value.get("refresh_failed_at")
     if not raw:
-        return BambuAuthState(account=value.get("account"), region=value.get("region") or "global")
+        return BambuAuthState(
+            account=value.get("account"),
+            region=value.get("region") or "global",
+            refresh_failed_at=refresh_failed_at,
+        )
     try:
         token = decrypt_secret(settings, raw)
     except InvalidToken:
         token = raw  # defensive legacy-plaintext fallback, mirrors import_tokens.py
     return BambuAuthState(
-        account=value.get("account"), region=value.get("region") or "global", refresh_token=token
+        account=value.get("account"),
+        region=value.get("region") or "global",
+        refresh_token=token,
+        refresh_failed_at=refresh_failed_at,
     )
 
 
@@ -301,6 +340,12 @@ def get_bambu_auth_sync(session: SyncSession, settings: Settings) -> BambuAuthSt
 async def set_bambu_auth(
     db: AsyncSession, settings: Settings, *, account: str | None, region: str, refresh_token: str
 ) -> None:
+    # Whole-row replace, deliberately WITHOUT a `refresh_failed_at` key: this
+    # is always called with a token Bambu just accepted (a fresh login, or
+    # `get_access_token_sync` persisting a rotated-on-use refresh token after
+    # a SUCCESSFUL refresh), so any stale expiry marker from a previous
+    # attempt must not survive it -- see `mark_refresh_failed`/`_sync` below
+    # for the ONLY place that key gets written.
     value = {
         "account": account,
         "region": region,
@@ -323,6 +368,8 @@ def set_bambu_auth_sync(
     region: str,
     refresh_token: str,
 ) -> None:
+    # See the async twin above -- same whole-row-replace-clears-the-marker
+    # reasoning.
     value = {
         "account": account,
         "region": region,
@@ -345,28 +392,96 @@ async def clear_bambu_auth(db: AsyncSession, settings: Settings) -> None:
     _ACCESS_TOKEN_CACHE.clear()
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Expiry marker (`refresh_failed_at`, task: expiry-banner UX -- see module
+# docstring's "re-login UX with expiry banner"). A NON-SECRET, UTC-ISO
+# timestamp patched onto the SAME `bambu_auth` settings row, next to
+# `account`/`region`/the encrypted `refresh_token` -- never a new row, never
+# logged, never containing a token value itself. `mark_*` is only ever
+# called right after a `refresh()` call that raised `kind="expired"`
+# (see `get_access_token_sync`); `clear_*` handles the one case a fresh
+# `set_bambu_auth(_sync)` write doesn't already cover for free (a refresh
+# that succeeds WITHOUT rotating the refresh token, so no such write
+# happens) -- see `get_access_token_sync` below. Both are no-ops when
+# nothing is connected (nothing to stamp/clear) so a caller never needs to
+# guard the call itself.
+# ---------------------------------------------------------------------------
+
+
+async def mark_refresh_failed(db: AsyncSession, settings: Settings) -> None:
+    row = await db.get(Setting, SETTINGS_KEY)
+    if row is None or not row.value or not row.value.get("refresh_token"):
+        return
+    row.value = {**row.value, "refresh_failed_at": _utc_now_iso()}
+    await db.commit()
+
+
+def mark_refresh_failed_sync(session: SyncSession, settings: Settings) -> None:
+    row = session.get(Setting, SETTINGS_KEY)
+    if row is None or not row.value or not row.value.get("refresh_token"):
+        return
+    row.value = {**row.value, "refresh_failed_at": _utc_now_iso()}
+    session.commit()
+
+
+async def clear_refresh_failed(db: AsyncSession, settings: Settings) -> None:
+    row = await db.get(Setting, SETTINGS_KEY)
+    if row is None or not row.value or "refresh_failed_at" not in row.value:
+        return
+    value = dict(row.value)
+    value.pop("refresh_failed_at", None)
+    row.value = value
+    await db.commit()
+
+
+def clear_refresh_failed_sync(session: SyncSession, settings: Settings) -> None:
+    row = session.get(Setting, SETTINGS_KEY)
+    if row is None or not row.value or "refresh_failed_at" not in row.value:
+        return
+    value = dict(row.value)
+    value.pop("refresh_failed_at", None)
+    row.value = value
+    session.commit()
+
+
 def get_access_token_sync(session: SyncSession, settings: Settings) -> str:
     """A currently-valid Bambu access token for worker use (MakerWorld's
     authenticated download/search calls, ``app.importers.makerworld``). An
     in-memory cache (module-level, NOT persisted -- see module docstring)
     keyed by the stored refresh token avoids re-hitting Bambu's refresh
-    endpoint for every file within a multi-file import. Raises
-    ``BambuAuthError`` with a clear "not connected" message when no account
-    is connected, or whatever ``refresh()`` raises when the stored refresh
-    token itself is no longer valid.
+    endpoint for every file within a multi-file import. Raises a
+    ``kind="not_configured"`` ``BambuAuthError`` with a clear "not connected"
+    message when no account is connected, or whatever ``refresh()`` raises
+    (``kind="expired"`` on an invalid/expired refresh token) when the stored
+    refresh token itself is no longer valid -- THAT case also persists
+    ``refresh_failed_at`` (``mark_refresh_failed_sync``) so the expiry
+    survives past this one call (expiry-banner UX).
     """
     state = get_bambu_auth_sync(session, settings)
     if not state.refresh_token:
-        raise BambuAuthError("no Bambu account is connected -- connect one in Settings.")
+        raise BambuAuthError(
+            "no Bambu account is connected -- connect one in Settings.", kind="not_configured"
+        )
     cached = _ACCESS_TOKEN_CACHE.get(state.refresh_token)
     if cached is not None and cached[1] > time.time():
         return cached[0]
-    token = refresh(state.refresh_token, state.region)
+    try:
+        token = refresh(state.refresh_token, state.region)
+    except BambuAuthError as exc:
+        if exc.kind == "expired":
+            mark_refresh_failed_sync(session, settings)
+        raise
     if token.refresh_token != state.refresh_token:
         # Bambu may rotate the refresh token on use -- persist the new one
         # BEFORE caching the access token below (set_bambu_auth_sync clears
         # the whole cache as part of a credential change), so the entry we
-        # add next isn't immediately wiped out by that same clear.
+        # add next isn't immediately wiped out by that same clear. This also
+        # clears any stale `refresh_failed_at` marker for free (whole-row
+        # replace -- see set_bambu_auth_sync's comment).
         set_bambu_auth_sync(
             session,
             settings,
@@ -374,5 +489,11 @@ def get_access_token_sync(session: SyncSession, settings: Settings) -> str:
             region=state.region,
             refresh_token=token.refresh_token,
         )
+    elif state.refresh_failed_at:
+        # No rotation, so the write above didn't happen -- but this refresh
+        # JUST succeeded, so a marker from an earlier failed attempt on this
+        # same still-valid refresh token must not keep reporting
+        # `needs_reconnect: true` forever.
+        clear_refresh_failed_sync(session, settings)
     _ACCESS_TOKEN_CACHE[token.refresh_token] = (token.access_token, token.expires_at)
     return token.access_token

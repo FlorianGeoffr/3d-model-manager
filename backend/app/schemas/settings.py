@@ -134,6 +134,11 @@ class BambuStatusOut(BaseModel):
     connected: bool
     account: str | None = None
     region: str = "global"
+    # True iff connected AND the stored refresh token's last refresh attempt
+    # failed (``bambu_auth.BambuAuthState.refresh_failed_at`` set) -- the
+    # expiry-banner UX signal so the frontend can tell "not configured" (task:
+    # import-health) apart from "configured but the session died".
+    needs_reconnect: bool = False
 
 
 # Printables account connect flow (Workstream A task A1; M9 saved-collections

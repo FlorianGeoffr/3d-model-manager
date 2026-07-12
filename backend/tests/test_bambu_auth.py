@@ -169,6 +169,31 @@ def test_refresh_invalid_token_raises(monkeypatch):
         bambu_auth.refresh("bad-token", "global")
 
 
+def test_refresh_invalid_token_raises_with_expired_kind(monkeypatch):
+    # `BambuAuthError.kind` is what `get_access_token_sync` (and eventually
+    # `_require_bambu_session`) use to pick the "expired" flavor WITHOUT
+    # string-matching the message.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": "invalid token"})
+
+    monkeypatch.setattr(bambu_auth, "_client", _mock_client(handler))
+    with pytest.raises(bambu_auth.BambuAuthError) as exc_info:
+        bambu_auth.refresh("bad-token", "global")
+    assert exc_info.value.kind == "expired"
+
+
+def test_login_bad_credentials_error_has_no_kind(monkeypatch):
+    # A 400 (bad credentials) is neither "not_configured" nor "expired" --
+    # it's a live login attempt Bambu rejected, not a stored-session problem.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"code": 1, "error": "Incorrect account or password."})
+
+    monkeypatch.setattr(bambu_auth, "_client", _mock_client(handler))
+    with pytest.raises(bambu_auth.BambuAuthError) as exc_info:
+        bambu_auth.login("a@b.com", "wrong")
+    assert exc_info.value.kind is None
+
+
 # ---------------------------------------------------------------------------
 # Storage: Fernet-encrypted at rest, masked shape, async+sync twins
 # ---------------------------------------------------------------------------
@@ -213,6 +238,72 @@ async def test_clear_bambu_auth_removes_the_row(db_session):
 
 
 # ---------------------------------------------------------------------------
+# refresh_failed_at marker -- expiry-banner UX (mark_refresh_failed/_sync,
+# clear_refresh_failed/_sync, and set_bambu_auth's implicit whole-row clear)
+# ---------------------------------------------------------------------------
+
+
+async def test_mark_refresh_failed_stamps_a_non_secret_timestamp(db_session):
+    settings = get_settings()
+    await bambu_auth.set_bambu_auth(
+        db_session, settings, account="a@b.com", region="global", refresh_token="RT-x"
+    )
+    await bambu_auth.mark_refresh_failed(db_session, settings)
+
+    row = await db_session.get(Setting, bambu_auth.SETTINGS_KEY)
+    assert row.value["refresh_failed_at"]  # non-empty ISO string
+    assert "RT-x" not in row.value["refresh_failed_at"]  # never a token value
+
+    state = await bambu_auth.get_bambu_auth(db_session, settings)
+    assert state.refresh_failed_at
+    # The refresh token itself must still be readable -- the marker is
+    # patched onto the row alongside it, not a wholesale overwrite.
+    assert state.refresh_token == "RT-x"
+
+
+async def test_mark_refresh_failed_is_a_noop_when_nothing_connected(db_session):
+    settings = get_settings()
+    await bambu_auth.mark_refresh_failed(db_session, settings)  # must not raise
+    assert await db_session.get(Setting, bambu_auth.SETTINGS_KEY) is None
+
+
+async def test_clear_refresh_failed_removes_the_marker_only(db_session):
+    settings = get_settings()
+    await bambu_auth.set_bambu_auth(
+        db_session, settings, account="a@b.com", region="global", refresh_token="RT-x"
+    )
+    await bambu_auth.mark_refresh_failed(db_session, settings)
+    await bambu_auth.clear_refresh_failed(db_session, settings)
+
+    row = await db_session.get(Setting, bambu_auth.SETTINGS_KEY)
+    assert "refresh_failed_at" not in row.value
+    assert row.value["account"] == "a@b.com"  # untouched
+
+    state = await bambu_auth.get_bambu_auth(db_session, settings)
+    assert state.refresh_failed_at is None
+    assert state.refresh_token == "RT-x"
+
+
+async def test_set_bambu_auth_implicitly_clears_a_stale_marker(db_session):
+    """A fresh login (`set_bambu_auth`) always replaces the whole row --
+    that must clear any `refresh_failed_at` left over from a PREVIOUS
+    (now-superseded) connection, without needing an explicit clear call."""
+    settings = get_settings()
+    await bambu_auth.set_bambu_auth(
+        db_session, settings, account="a@b.com", region="global", refresh_token="RT-old"
+    )
+    await bambu_auth.mark_refresh_failed(db_session, settings)
+
+    await bambu_auth.set_bambu_auth(
+        db_session, settings, account="a@b.com", region="global", refresh_token="RT-new"
+    )
+
+    state = await bambu_auth.get_bambu_auth(db_session, settings)
+    assert state.refresh_failed_at is None
+    assert state.refresh_token == "RT-new"
+
+
+# ---------------------------------------------------------------------------
 # get_access_token_sync -- the worker-facing seam MakerWorld calls
 # ---------------------------------------------------------------------------
 
@@ -221,8 +312,9 @@ async def test_get_access_token_sync_raises_when_not_connected(db_session):
     from app.tasks.base import sync_session
 
     settings = get_settings()
-    with sync_session() as s, pytest.raises(bambu_auth.BambuAuthError):
+    with sync_session() as s, pytest.raises(bambu_auth.BambuAuthError) as exc_info:
         bambu_auth.get_access_token_sync(s, settings)
+    assert exc_info.value.kind == "not_configured"
 
 
 async def test_get_access_token_sync_caches_then_refreshes_when_expired(db_session, monkeypatch):
@@ -282,3 +374,99 @@ async def test_get_access_token_sync_persists_a_rotated_refresh_token(db_session
     row = await db_session.get(Setting, bambu_auth.SETTINGS_KEY)
     await db_session.refresh(row)  # sync-session write -- refresh past the identity map
     assert decrypt_secret(settings, row.value["refresh_token"]) == "RT-new"
+
+
+async def test_get_access_token_sync_stamps_refresh_failed_at_on_a_dead_refresh_token(
+    db_session, monkeypatch
+):
+    """The live-evidence scenario this task exists for: a stored refresh
+    token that Bambu now 401s (worker log: `POST .../refreshtoken -> 401`).
+    `get_access_token_sync` must both re-raise (kind="expired") AND persist
+    `refresh_failed_at` so `GET /settings/bambu` can report it afterwards --
+    not just log-and-lose the fact in this one request."""
+    from app.tasks.base import sync_session
+
+    settings = get_settings()
+    await bambu_auth.set_bambu_auth(
+        db_session, settings, account="a@b.com", region="global", refresh_token="RT-dead"
+    )
+
+    def fake_refresh(refresh_token: str, region: str) -> bambu_auth.BambuAccessToken:
+        raise bambu_auth.BambuAuthError(
+            "Bambu refresh token is invalid or expired -- reconnect the Bambu account in Settings.",
+            kind="expired",
+        )
+
+    monkeypatch.setattr(bambu_auth, "refresh", fake_refresh)
+
+    with sync_session() as s, pytest.raises(bambu_auth.BambuAuthError) as exc_info:
+        bambu_auth.get_access_token_sync(s, settings)
+    assert exc_info.value.kind == "expired"
+
+    row = await db_session.get(Setting, bambu_auth.SETTINGS_KEY)
+    await db_session.refresh(row)  # sync-session write -- refresh past the identity map
+    assert row.value["refresh_failed_at"]
+    # No token value leaks into the stamped marker or the raised message.
+    assert "RT-dead" not in str(exc_info.value)
+    assert "RT-dead" not in row.value["refresh_failed_at"]
+
+    state = await bambu_auth.get_bambu_auth(db_session, settings)
+    assert state.refresh_failed_at
+
+
+async def test_get_access_token_sync_clears_a_stale_marker_on_the_next_success_without_rotation(
+    db_session, monkeypatch
+):
+    """Covers the ONE persistence path a rotated-refresh-token write doesn't
+    already handle for free: a refresh that succeeds WITHOUT rotating the
+    refresh token must still clear a `refresh_failed_at` left over from an
+    earlier failed attempt against that same still-valid token (e.g. a
+    transient 401) -- otherwise `needs_reconnect` would stay stuck `true`
+    forever even though the account is working again."""
+    from app.tasks.base import sync_session
+
+    settings = get_settings()
+    await bambu_auth.set_bambu_auth(
+        db_session, settings, account="a@b.com", region="global", refresh_token="RT-seed"
+    )
+    await bambu_auth.mark_refresh_failed(db_session, settings)
+
+    def fake_refresh(refresh_token: str, region: str) -> bambu_auth.BambuAccessToken:
+        return bambu_auth.BambuAccessToken(
+            access_token="AT-1", refresh_token=refresh_token, expires_at=time.time() + 3600
+        )
+
+    monkeypatch.setattr(bambu_auth, "refresh", fake_refresh)
+
+    with sync_session() as s:
+        token = bambu_auth.get_access_token_sync(s, settings)
+    assert token == "AT-1"
+
+    state = await bambu_auth.get_bambu_auth(db_session, settings)
+    assert state.refresh_failed_at is None
+
+
+async def test_get_access_token_sync_rotated_write_also_clears_a_stale_marker(
+    db_session, monkeypatch
+):
+    from app.tasks.base import sync_session
+
+    settings = get_settings()
+    await bambu_auth.set_bambu_auth(
+        db_session, settings, account="a@b.com", region="global", refresh_token="RT-old"
+    )
+    await bambu_auth.mark_refresh_failed(db_session, settings)
+
+    def fake_refresh(refresh_token: str, region: str) -> bambu_auth.BambuAccessToken:
+        return bambu_auth.BambuAccessToken(
+            access_token="AT-1", refresh_token="RT-rotated", expires_at=time.time() + 3600
+        )
+
+    monkeypatch.setattr(bambu_auth, "refresh", fake_refresh)
+
+    with sync_session() as s:
+        bambu_auth.get_access_token_sync(s, settings)
+
+    state = await bambu_auth.get_bambu_auth(db_session, settings)
+    assert state.refresh_failed_at is None
+    assert state.refresh_token == "RT-rotated"

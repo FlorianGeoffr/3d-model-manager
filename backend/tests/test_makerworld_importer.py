@@ -98,7 +98,16 @@ def _items_db(migrated_db):
 
 
 def _raise_not_connected():
-    raise BambuAuthError("no Bambu account is connected -- connect one in Settings.")
+    raise BambuAuthError(
+        "no Bambu account is connected -- connect one in Settings.", kind="not_configured"
+    )
+
+
+def _raise_expired():
+    raise BambuAuthError(
+        "Bambu refresh token is invalid or expired -- reconnect the Bambu account in Settings.",
+        kind="expired",
+    )
 
 
 @pytest.mark.parametrize(
@@ -214,16 +223,43 @@ def test_search_empty_query_returns_empty_list():
 
 def test_list_files_raises_bambu_auth_required_when_not_connected(monkeypatch):
     monkeypatch.setattr(makerworld, "_bambu_session", lambda: _raise_not_connected())
-    with pytest.raises(ImportRejected, match="Bambu"):
+    with pytest.raises(ImportRejected, match="Bambu") as exc_info:
         MakerWorldImporter().list_files(fx.DESIGN_ID)
+    # "Not configured" keeps the original "configure in Settings" wording --
+    # NOT the "sign-in expired" one (task: import-health truthful failure).
+    assert str(exc_info.value) == makerworld._BAMBU_AUTH_REQUIRED
+    assert "expired" not in str(exc_info.value)
 
 
 def test_resolve_download_raises_bambu_auth_required_when_not_connected(monkeypatch):
     monkeypatch.setattr(makerworld, "_bambu_session", lambda: _raise_not_connected())
-    with pytest.raises(ImportRejected, match="Bambu"):
+    with pytest.raises(ImportRejected, match="Bambu") as exc_info:
         MakerWorldImporter().resolve_download(
             fx.DESIGN_ID, ImportFile(remote_id="x", filename="x.stl")
         )
+    assert str(exc_info.value) == makerworld._BAMBU_AUTH_REQUIRED
+
+
+def test_list_files_raises_session_expired_message_when_refresh_failed(monkeypatch):
+    # The live-evidence scenario this task exists for: the account IS
+    # configured, but its stored refresh token 401s -- the message must say
+    # so, not misleadingly tell the operator to "configure" a Bambu account
+    # they already configured.
+    monkeypatch.setattr(makerworld, "_bambu_session", lambda: _raise_expired())
+    with pytest.raises(ImportRejected) as exc_info:
+        MakerWorldImporter().list_files(fx.DESIGN_ID)
+    assert str(exc_info.value) == makerworld._BAMBU_SESSION_EXPIRED
+    assert str(exc_info.value) != makerworld._BAMBU_AUTH_REQUIRED
+    assert "configure in Settings" not in str(exc_info.value)
+
+
+def test_resolve_download_raises_session_expired_message_when_refresh_failed(monkeypatch):
+    monkeypatch.setattr(makerworld, "_bambu_session", lambda: _raise_expired())
+    with pytest.raises(ImportRejected) as exc_info:
+        MakerWorldImporter().resolve_download(
+            fx.DESIGN_ID, ImportFile(remote_id="x", filename="x.stl")
+        )
+    assert str(exc_info.value) == makerworld._BAMBU_SESSION_EXPIRED
 
 
 def test_list_files_with_connected_account_maps_zip_stl_instances(monkeypatch):

@@ -21,7 +21,12 @@ pytestmark = pytest.mark.usefixtures("data_dir")
 async def test_get_status_when_not_connected(authenticated_client: httpx.AsyncClient) -> None:
     r = await authenticated_client.get("/api/settings/bambu")
     assert r.status_code == 200
-    assert r.json() == {"connected": False, "account": None, "region": "global"}
+    assert r.json() == {
+        "connected": False,
+        "account": None,
+        "region": "global",
+        "needs_reconnect": False,
+    }
 
 
 async def test_login_success_connects_and_never_returns_a_token(
@@ -49,7 +54,12 @@ async def test_login_success_connects_and_never_returns_a_token(
     assert "AT-secret" not in r.text and "RT-secret" not in r.text
 
     status_response = await authenticated_client.get("/api/settings/bambu")
-    assert status_response.json() == {"connected": True, "account": "a@b.com", "region": "global"}
+    assert status_response.json() == {
+        "connected": True,
+        "account": "a@b.com",
+        "region": "global",
+        "needs_reconnect": False,
+    }
 
     # M6-posture parity: the refresh token is Fernet-encrypted at rest.
     row = await db_session.get(Setting, bambu_auth.SETTINGS_KEY)
@@ -145,7 +155,12 @@ async def test_verify_completes_mfa_and_connects(
     assert "AT-2" not in r.text and "RT-2" not in r.text
 
     status_response = await authenticated_client.get("/api/settings/bambu")
-    assert status_response.json() == {"connected": True, "account": "a@b.com", "region": "global"}
+    assert status_response.json() == {
+        "connected": True,
+        "account": "a@b.com",
+        "region": "global",
+        "needs_reconnect": False,
+    }
 
 
 async def test_verify_rejected_code_returns_400(
@@ -185,5 +200,38 @@ async def test_disconnect_clears_stored_state(
     assert r.status_code == 204
 
     status_response = await authenticated_client.get("/api/settings/bambu")
-    assert status_response.json() == {"connected": False, "account": None, "region": "global"}
+    assert status_response.json() == {
+        "connected": False,
+        "account": None,
+        "region": "global",
+        "needs_reconnect": False,
+    }
     assert await db_session.get(Setting, bambu_auth.SETTINGS_KEY) is None
+
+
+async def test_status_reports_needs_reconnect_after_a_stamped_refresh_failure(
+    authenticated_client: httpx.AsyncClient, db_session
+) -> None:
+    """A stamped `refresh_failed_at` marker (`mark_refresh_failed`/`_sync` --
+    see test_bambu_auth.py for the worker-side stamping path itself) must
+    surface as `needs_reconnect: true` here, and clearing it (`clear_
+    refresh_failed`) must flip it back -- this is the whole point of the
+    marker: telling "configured but the session died" apart from "not
+    configured" (task: import-health)."""
+    settings = get_settings()
+    await bambu_auth.set_bambu_auth(
+        db_session, settings, account="a@b.com", region="global", refresh_token="RT-dead"
+    )
+    await bambu_auth.mark_refresh_failed(db_session, settings)
+
+    r = await authenticated_client.get("/api/settings/bambu")
+    assert r.json() == {
+        "connected": True,
+        "account": "a@b.com",
+        "region": "global",
+        "needs_reconnect": True,
+    }
+
+    await bambu_auth.clear_refresh_failed(db_session, settings)
+    r = await authenticated_client.get("/api/settings/bambu")
+    assert r.json()["needs_reconnect"] is False

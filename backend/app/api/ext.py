@@ -4,12 +4,12 @@ on ``api_router`` (``app/api/__init__.py``), outside ``protected_router``,
 so it carries only its own ``require_api_token`` dependency and none of the
 session-cookie surface.
 
-Deliberately narrow: exactly five endpoints, matching what the extension
-needs to do (prove it has a live token, start an import, hand over a
-MakerWorld cookie, push the real MakerWorld collection list it can see in the
-user's authenticated browser, push one of those collections' items) and
-nothing else -- a leaked extension token must not be able to delete models,
-read other secrets, or touch storage config.
+Deliberately narrow: exactly six endpoints, matching what the extension
+needs to do (prove it has a live token, start an import, check an import's
+status, hand over a MakerWorld cookie, push the real MakerWorld collection
+list it can see in the user's authenticated browser, push one of those
+collections' items) and nothing else -- a leaked extension token must not be
+able to delete models, read other secrets, or touch storage config.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from app.config import Settings, get_settings
 from app.db import get_db
 from app.importers.registry import get_importer
 from app.models.enums import ImportSite
+from app.models.system import Import
 from app.schemas.imports import ImportCreate, ImportOut, NonEmptyStr
 from app.services import import_tokens, remote_collections
 from app.services.imports import start_import
@@ -57,6 +58,19 @@ class ExtCredentialIn(BaseModel):
 
 class OkOut(BaseModel):
     ok: bool = True
+
+
+class ImportStatusOut(BaseModel):
+    """The token plane's read of an import -- deliberately just these three
+    fields (id-scoped, nothing enumerable): unlike the session-gated
+    ``ImportOut``, this omits ``url``/``site``/``external_id``/``model_id``/
+    ``meta`` on purpose, so a leaked extension token can't be turned into a
+    data-exfiltration read surface over the library.
+    """
+
+    id: int
+    state: str
+    error: str | None
 
 
 class ExtCollectionEntryIn(BaseModel):
@@ -114,6 +128,19 @@ async def create_import(
     if not created:
         response.status_code = status.HTTP_200_OK
     return ImportOut.from_model(imp)
+
+
+@router.get("/imports/{import_id}", response_model=ImportStatusOut)
+async def get_import_status(import_id: int, db: AsyncSession = Depends(get_db)) -> ImportStatusOut:
+    """Lets the popup poll for the real outcome of a save it just made via
+    ``POST /ext/imports`` (import-health branch T4) -- the 201/200 from that
+    call only means a row exists, not that the import finished or succeeded.
+    404 unknown id.
+    """
+    imp = await db.get(Import, import_id)
+    if imp is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"import {import_id} not found")
+    return ImportStatusOut(id=imp.id, state=imp.state, error=imp.error)
 
 
 @router.post("/credentials/makerworld", response_model=OkOut)

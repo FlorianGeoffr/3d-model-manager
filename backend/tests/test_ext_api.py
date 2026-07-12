@@ -91,6 +91,35 @@ async def test_create_import_requires_bearer(client: httpx.AsyncClient):
     assert r.status_code == 401
 
 
+async def test_get_import_status_returns_narrow_shape(
+    client: httpx.AsyncClient, ext_token: str, fake_import
+):
+    fake_import.files = {"cube.stl": corpus.box_stl()}
+    created = await client.post(
+        "/api/ext/imports", json={"url": "https://fake.test/thing/42"}, headers=_bearer(ext_token)
+    )
+    assert created.status_code == 201, created.text
+    import_id = created.json()["id"]
+
+    r = await client.get(f"/api/ext/imports/{import_id}", headers=_bearer(ext_token))
+    assert r.status_code == 200, r.text
+    # Exactly {id, state, error} -- no url/site/external_id/model_id/meta:
+    # the ext plane must not become a data-exfiltration read surface.
+    assert set(r.json()) == {"id", "state", "error"}
+    assert r.json()["id"] == import_id
+    assert r.json()["state"] in {"pending", "fetching", "downloading", "done", "failed"}
+
+
+async def test_get_import_status_unknown_id_is_404(client: httpx.AsyncClient, ext_token: str):
+    r = await client.get("/api/ext/imports/999999", headers=_bearer(ext_token))
+    assert r.status_code == 404
+
+
+async def test_get_import_status_requires_bearer(client: httpx.AsyncClient):
+    r = await client.get("/api/ext/imports/1")
+    assert r.status_code == 401
+
+
 async def test_set_makerworld_credential_preserves_thingiverse_token(
     client: httpx.AsyncClient, db_session, ext_token: str
 ):

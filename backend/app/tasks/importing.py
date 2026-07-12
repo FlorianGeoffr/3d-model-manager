@@ -194,6 +194,51 @@ def _download_gallery_images(
     return cover_staged, staged_images
 
 
+def _is_auto_import_cover(s, model_id: int, blob_hash: str) -> bool:
+    """True when ``blob_hash`` is (still) exactly an auto-set import cover --
+    i.e. it matches some ``images/01-cover.*`` file's blob in ANY revision of
+    this model, not just the current one (``mode="revision"`` leaves old
+    revisions in place, so an old auto cover surviving under an old,
+    non-current revision must still read as "auto", not "user-picked").
+    Anything else -- including NULL, checked separately by callers -- is
+    read as a user-picked cover and must never be silently replaced by a
+    redownload's refresh.
+    """
+    from app.models.library import File, Revision
+
+    return (
+        s.execute(
+            select(File.id)
+            .join(Revision, Revision.id == File.revision_id)
+            .where(
+                Revision.model_id == model_id,
+                File.blob_hash == blob_hash,
+                File.rel_path.like("images/01-cover.%"),
+            )
+            .limit(1)
+        ).first()
+        is not None
+    )
+
+
+def _should_refresh_cover(s, model, cover_staged: download.StagedFile | None) -> bool:
+    """Shared refresh rule for both redownload apply paths (T3 review
+    finding): a redownload's freshly-fetched cover overwrites
+    ``model.cover_blob_hash`` ONLY when there's a new cover to set AND the
+    CURRENT value is either unset or still just the auto-set import cover --
+    never a user-picked one. Must be called (and its result captured) BEFORE
+    either apply path mutates/deletes any current-revision file: ``mode=
+    "replace"`` deletes the old ``images/01-cover.*`` row before storing the
+    new one, which would make ``_is_auto_import_cover`` unable to find it
+    after the fact.
+    """
+    if cover_staged is None:
+        return False
+    if model.cover_blob_hash is None:
+        return True
+    return _is_auto_import_cover(s, model.id, model.cover_blob_hash)
+
+
 def _stage_and_process_files(
     settings: Settings,
     importer: SiteImporter,
@@ -473,6 +518,11 @@ def _store_redownload_as_new_revision(
     """
     from app.models.library import Revision
 
+    # F2 review finding: captured BEFORE anything below is stored -- reads
+    # only the OLD (still current-until-the-end-of-this-function) cover
+    # value, per `_should_refresh_cover`'s docstring.
+    refresh_cover = _should_refresh_cover(s, model, cover_staged)
+
     backend, _default_backend_id = resolve_default_backend_sync(s, settings)
     max_number = s.scalar(select(func.max(Revision.number)).where(Revision.model_id == model.id))
     next_number = (max_number or 0) + 1
@@ -490,7 +540,10 @@ def _store_redownload_as_new_revision(
     # revision the SAME way any other imported file does.
     for sf in staged_images:
         library.store_imported_file_sync(s, model=model, revision=revision, staged=sf)
-    if cover_staged is not None:
+    # F2: only overwrite a cover this redownload is entitled to touch -- NULL
+    # or still the auto-set import cover. A user-picked cover (any other
+    # blob) is left exactly as the user set it.
+    if refresh_cover:
         model.cover_blob_hash = cover_staged.blob_hash
 
     model.current_revision_id = revision.id
@@ -530,6 +583,11 @@ def _store_redownload_in_place(
                 "a file in the current revision is still processing; retry once stored"
             )
 
+    # F2 review finding: captured BEFORE the delete pass below removes the
+    # old `images/01-cover.*` row -- `_is_auto_import_cover` couldn't find it
+    # (to confirm the CURRENT cover is still "auto") after that row is gone.
+    refresh_cover = _should_refresh_cover(s, model, cover_staged)
+
     for file in current_files:
         file_backend = resolve_backend_for_file_sync(s, settings, file)
         with contextlib.suppress(StorageKeyNotFound):
@@ -543,7 +601,10 @@ def _store_redownload_in_place(
     # current-revision file was just replaced above.
     for sf in staged_images:
         library.store_imported_file_sync(s, model=model, revision=revision, staged=sf)
-    if cover_staged is not None:
+    # F2: only overwrite a cover this redownload is entitled to touch -- NULL
+    # or still the auto-set import cover. A user-picked cover (any other
+    # blob) is left exactly as the user set it.
+    if refresh_cover:
         model.cover_blob_hash = cover_staged.blob_hash
     model.updated_at = func.now()
     s.commit()

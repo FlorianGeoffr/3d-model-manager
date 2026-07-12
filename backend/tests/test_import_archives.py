@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import uuid
+import warnings
 import zipfile
 
 import pytest
@@ -263,3 +264,101 @@ def test_mixed_list_preserves_relative_order_of_non_zip_entries() -> None:
 
     rel_paths = [r.rel_path for r in result]
     assert rel_paths == ["a.stl", "b/c.txt", "b/d.txt", "e.obj"]
+
+
+# ---------------------------------------------------------------------------
+# F1 (post-review fix): duplicate zip member names are RENAMED, never
+# skipped or allowed to collide -- ``File`` has a UNIQUE("revision_id",
+# "rel_path") constraint, so two members staging to the identical rel_path
+# would IntegrityError the whole import (exactly the "hostile archive fails
+# the import" outcome this module's docstring promises never happens).
+# Content can differ between duplicates, so both must survive.
+#
+# Note: ``_sanitize_member_name`` returns a safe member's name VERBATIM (it
+# only validates, never normalizes/rewrites it), so two DIFFERENT raw names
+# can never sanitize to the same string -- the only way to collide is a
+# genuine duplicate member name already in the archive. These tests cover
+# that case only.
+# ---------------------------------------------------------------------------
+
+
+def _build_zip_from_pairs(pairs: list[tuple[str, bytes]]) -> bytes:
+    """Like ``_build_zip``, but takes an ORDERED LIST instead of a dict so a
+    test can smuggle in a genuine duplicate member name (a dict's keys can't
+    repeat; ``zipfile.ZipFile.writestr`` doesn't care, though it does warn --
+    suppressed here since it's the exact scenario under test, not test
+    pollution).
+    """
+    buf = io.BytesIO()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name, content in pairs:
+                zf.writestr(name, content)
+    return buf.getvalue()
+
+
+def test_duplicate_member_name_is_renamed_not_skipped_and_both_survive() -> None:
+    zip_bytes = _build_zip_from_pairs(
+        [("part.stl", b"first copy"), ("part.stl", b"second copy, different bytes")]
+    )
+    settings = get_settings()
+    sf = _stage_bytes(settings, "Dupe.zip", zip_bytes)
+
+    result = archives.process_staged_zips(settings, [sf])
+
+    by_rel_path = {r.rel_path: r for r in result}
+    assert set(by_rel_path) == {"Dupe/part.stl", "Dupe/part (2).stl"}
+    assert by_rel_path["Dupe/part.stl"].spool_path.read_bytes() == b"first copy"
+    assert (
+        by_rel_path["Dupe/part (2).stl"].spool_path.read_bytes()
+        == b"second copy, different bytes"
+    )
+    # Two distinct staged files -- own token, own spool path -- not a rename
+    # of one in place.
+    assert by_rel_path["Dupe/part.stl"].token != by_rel_path["Dupe/part (2).stl"].token
+    assert (
+        by_rel_path["Dupe/part.stl"].spool_path != by_rel_path["Dupe/part (2).stl"].spool_path
+    )
+
+
+def test_three_way_duplicate_member_name_gets_sequential_suffixes() -> None:
+    zip_bytes = _build_zip_from_pairs(
+        [("readme.txt", b"a"), ("readme.txt", b"b"), ("readme.txt", b"c")]
+    )
+    settings = get_settings()
+    sf = _stage_bytes(settings, "Triple.zip", zip_bytes)
+
+    result = archives.process_staged_zips(settings, [sf])
+
+    by_rel_path = {r.rel_path: r for r in result}
+    assert set(by_rel_path) == {
+        "Triple/readme.txt",
+        "Triple/readme (2).txt",
+        "Triple/readme (3).txt",
+    }
+    assert by_rel_path["Triple/readme.txt"].spool_path.read_bytes() == b"a"
+    assert by_rel_path["Triple/readme (2).txt"].spool_path.read_bytes() == b"b"
+    assert by_rel_path["Triple/readme (3).txt"].spool_path.read_bytes() == b"c"
+
+
+def test_duplicate_member_name_in_a_subdirectory_keeps_the_directory_prefix() -> None:
+    zip_bytes = _build_zip_from_pairs([("sub/dir/cover.png", b"a"), ("sub/dir/cover.png", b"b")])
+    settings = get_settings()
+    sf = _stage_bytes(settings, "Nested.zip", zip_bytes)
+
+    result = archives.process_staged_zips(settings, [sf])
+
+    rel_paths = {r.rel_path for r in result}
+    assert rel_paths == {"Nested/sub/dir/cover.png", "Nested/sub/dir/cover (2).png"}
+
+
+def test_extensionless_duplicate_member_name_is_renamed_too() -> None:
+    zip_bytes = _build_zip_from_pairs([("README", b"a"), ("README", b"b")])
+    settings = get_settings()
+    sf = _stage_bytes(settings, "NoExt.zip", zip_bytes)
+
+    result = archives.process_staged_zips(settings, [sf])
+
+    rel_paths = {r.rel_path for r in result}
+    assert rel_paths == {"NoExt/README", "NoExt/README (2)"}

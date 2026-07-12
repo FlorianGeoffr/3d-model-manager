@@ -121,6 +121,35 @@ def _sanitize_member_name(name: str) -> str | None:
     return name
 
 
+def _dedupe_member_name(name: str, seen: set[str]) -> str:
+    """Two zip members can sanitize to the identical name (a hostile or
+    merely careless archive can contain outright duplicate entries) -- the
+    eventual ``rel_path`` is unique per ``(revision_id, rel_path)`` at the DB
+    layer, so an unresolved collision would ``IntegrityError`` the whole
+    import (the very thing this module exists to prevent -- module docstring
+    "a weird/hostile/corrupt archive must never fail an otherwise-successful
+    import"). Content may differ between the duplicates, so neither is
+    dropped: a repeat gets a deterministic ``name (2).ext``, ``name (3).ext``,
+    ... suffix -- same convention a desktop file manager uses to resolve a
+    copy conflict -- checked against ``seen`` so a generated name can never
+    itself collide with either an original member name or an earlier
+    rename.
+    """
+    if name not in seen:
+        seen.add(name)
+        return name
+    pure = PurePosixPath(name)
+    parent, stem, suffix = pure.parent, pure.stem, pure.suffix
+    n = 2
+    while True:
+        candidate = f"{stem} ({n}){suffix}"
+        deduped = candidate if str(parent) == "." else str(parent / candidate)
+        if deduped not in seen:
+            seen.add(deduped)
+            return deduped
+        n += 1
+
+
 def _extract(settings: Settings, zf: zipfile.ZipFile, sf: StagedFile) -> list[StagedFile] | None:
     """Stream every safe member of ``zf`` to its own staged file, or return
     ``None`` (caller falls back to keeping the original zip untouched) when
@@ -128,6 +157,7 @@ def _extract(settings: Settings, zf: zipfile.ZipFile, sf: StagedFile) -> list[St
     archive turns out corrupt partway through.
     """
     candidates: list[tuple[zipfile.ZipInfo, str]] = []
+    seen_names: set[str] = set()
     total_size = 0
     for info in zf.infolist():
         if info.is_dir():
@@ -139,7 +169,15 @@ def _extract(settings: Settings, zf: zipfile.ZipFile, sf: StagedFile) -> list[St
         if sanitized is None:
             logger.warning("skipping unsafe zip member %r in %r", name, sf.rel_path)
             continue
-        candidates.append((info, sanitized))
+        deduped = _dedupe_member_name(sanitized, seen_names)
+        if deduped != sanitized:
+            logger.warning(
+                "staged zip %r: renaming duplicate member %r to %r",
+                sf.rel_path,
+                sanitized,
+                deduped,
+            )
+        candidates.append((info, deduped))
         total_size += info.file_size
 
     if not candidates:

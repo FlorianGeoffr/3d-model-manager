@@ -425,7 +425,13 @@ async def get_bambu_status(
         connected=connected,
         account=state.account,
         region=state.region,
-        needs_reconnect=connected and bool(state.refresh_failed_at),
+        # A stamped `refresh_failed_at` alone isn't reconnect-worthy if the
+        # stored access token (long-lived JWT -- see bambu_auth's module
+        # docstring) is still valid; refresh is best-effort now, so a failed
+        # refresh attempt next to a still-good access token is not an outage.
+        needs_reconnect=connected
+        and bool(state.refresh_failed_at)
+        and not state.has_valid_access_token(),
     )
 
 
@@ -448,6 +454,8 @@ async def post_bambu_login(
             account=payload.account,
             region=payload.region,
             refresh_token=result.refresh_token or "",
+            access_token=result.access_token,
+            access_expires_at=result.expires_at,
         )
         return BambuLoginOut(status="connected", account=payload.account, region=payload.region)
     return BambuLoginOut(
@@ -480,6 +488,8 @@ async def post_bambu_verify(
         account=payload.account,
         region=payload.region,
         refresh_token=result.refresh_token or "",
+        access_token=result.access_token,
+        access_expires_at=result.expires_at,
     )
     return BambuLoginOut(status="connected", account=payload.account, region=payload.region)
 

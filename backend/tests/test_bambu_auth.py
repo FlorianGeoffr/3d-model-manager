@@ -65,6 +65,11 @@ def test_login_success_returns_connected_result(monkeypatch):
     assert result.status == "connected"
     assert result.access_token == "AT1"
     assert result.refresh_token == "RT1"
+    # The headline fix depends on the connected path always yielding an
+    # expiry estimate -- `verify_code` shares `_parse_login_response`, so it
+    # gets this for free (see the MFA-then-verify test below).
+    assert result.expires_at is not None
+    assert result.expires_at > time.time()
 
 
 def test_login_bad_credentials_raises(monkeypatch):
@@ -98,6 +103,7 @@ def test_login_mfa_challenge_then_verify_completes(monkeypatch):
     assert second.status == "connected"
     assert second.access_token == "AT2"
     assert second.refresh_token == "RT2"
+    assert second.expires_at is not None  # MFA path gets the expiry estimate for free
 
 
 def test_verify_code_rejected_raises(monkeypatch):
@@ -216,6 +222,64 @@ async def test_set_and_get_bambu_auth_roundtrip_is_encrypted_at_rest(db_session)
     assert state.account == "a@b.com"
     assert state.region == "global"
     assert state.refresh_token == "RT-secret"
+
+
+async def test_set_bambu_auth_stores_access_token_encrypted_with_float_expiry(db_session):
+    settings = get_settings()
+    expiry = time.time() + 3600
+    await bambu_auth.set_bambu_auth(
+        db_session,
+        settings,
+        account="a@b.com",
+        region="global",
+        refresh_token="RT-secret",
+        access_token="AT-secret",
+        access_expires_at=expiry,
+    )
+
+    row = await db_session.get(Setting, bambu_auth.SETTINGS_KEY)
+    # M6-posture parity with the refresh token: Fernet ciphertext at rest,
+    # never the raw plaintext, and the expiry is a plain (non-secret) float.
+    assert row.value["access_token"] != "AT-secret"
+    assert decrypt_secret(settings, row.value["access_token"]) == "AT-secret"
+    assert isinstance(row.value["access_expires_at"], float)
+    assert row.value["access_expires_at"] == expiry
+
+    state = await bambu_auth.get_bambu_auth(db_session, settings)
+    assert state.access_token == "AT-secret"
+    assert state.access_expires_at == expiry
+
+
+async def test_set_bambu_auth_omits_access_token_keys_when_none_given(db_session):
+    """A caller with only a refresh token (should not happen in practice,
+    per the module's own note, but tolerated) must not write null/garbage
+    access-token keys onto the row."""
+    settings = get_settings()
+    await bambu_auth.set_bambu_auth(
+        db_session, settings, account="a@b.com", region="global", refresh_token="RT-only"
+    )
+
+    row = await db_session.get(Setting, bambu_auth.SETTINGS_KEY)
+    assert "access_token" not in row.value
+    assert "access_expires_at" not in row.value
+
+    state = await bambu_auth.get_bambu_auth(db_session, settings)
+    assert state.access_token is None
+    assert state.access_expires_at is None
+
+
+def test_has_valid_access_token():
+    now = time.time()
+    assert bambu_auth.BambuAuthState(
+        access_token="AT", access_expires_at=now + 60
+    ).has_valid_access_token(now)
+    assert not bambu_auth.BambuAuthState(
+        access_token="AT", access_expires_at=now - 1
+    ).has_valid_access_token(now)
+    no_token = bambu_auth.BambuAuthState(access_token=None, access_expires_at=now + 60)
+    assert not no_token.has_valid_access_token(now)
+    no_expiry = bambu_auth.BambuAuthState(access_token="AT", access_expires_at=None)
+    assert not no_expiry.has_valid_access_token(now)
 
 
 async def test_get_bambu_auth_when_nothing_stored_is_not_connected(db_session):
@@ -363,7 +427,16 @@ async def test_get_access_token_sync_raises_when_not_connected(db_session):
     assert exc_info.value.kind == "not_configured"
 
 
-async def test_get_access_token_sync_caches_then_refreshes_when_expired(db_session, monkeypatch):
+async def test_get_access_token_sync_caches_then_refreshes_when_stored_token_expires(
+    db_session, monkeypatch
+):
+    """Was ``..._caches_then_refreshes_when_expired`` -- staleing only the
+    in-memory cache used to be enough to force a fresh ``refresh()`` call.
+    Post-fix, the persisted access token is the real source of truth (that's
+    the whole point): a merely-evicted cache entry next to a still-valid
+    STORED access token must NOT trigger a network call any more, so this
+    now expires the persisted token itself (as a real expiry eventually
+    would) to exercise the same "cache miss -> refresh" path honestly."""
     from app.tasks.base import sync_session
 
     settings = get_settings()
@@ -389,8 +462,18 @@ async def test_get_access_token_sync_caches_then_refreshes_when_expired(db_sessi
     assert first == second == "AT-1"
     assert calls["n"] == 1  # cached -- no second refresh() call
 
-    # Force the cached entry stale and confirm a fresh refresh happens.
-    bambu_auth._ACCESS_TOKEN_CACHE["RT-seed"] = ("AT-1", time.time() - 1)
+    # Expire the PERSISTED access token (set_bambu_auth also clears the
+    # in-memory cache as a side effect -- see its docstring) and confirm a
+    # fresh refresh happens.
+    await bambu_auth.set_bambu_auth(
+        db_session,
+        settings,
+        account="a@b.com",
+        region="global",
+        refresh_token="RT-seed",
+        access_token="AT-1",
+        access_expires_at=time.time() - 1,
+    )
     with sync_session() as s:
         third = bambu_auth.get_access_token_sync(s, settings)
     assert third == "AT-2"
@@ -560,3 +643,208 @@ async def test_get_access_token_sync_rotated_write_also_clears_a_stale_marker(
     state = await bambu_auth.get_bambu_auth(db_session, settings)
     assert state.refresh_failed_at is None
     assert state.refresh_token == "RT-rotated"
+
+
+# ---------------------------------------------------------------------------
+# get_access_token_sync -- prefer the stored login access token (the fix
+# this branch exists for: Bambu's refresh endpoint rejects even fresh
+# refresh tokens, live-verified 2026-07-12, so `refresh()` must not be
+# depended on for every first per-process use any more).
+# ---------------------------------------------------------------------------
+
+
+async def test_get_access_token_sync_returns_stored_access_token_without_calling_refresh(
+    db_session, monkeypatch
+):
+    """Headline regression: a valid stored access token must be served
+    straight off the settings row -- NEVER touching `refresh()` (Bambu's
+    refresh endpoint) at all."""
+    from app.tasks.base import sync_session
+
+    settings = get_settings()
+    await bambu_auth.set_bambu_auth(
+        db_session,
+        settings,
+        account="a@b.com",
+        region="global",
+        refresh_token="RT-1",
+        access_token="AT-stored",
+        access_expires_at=time.time() + 3600,
+    )
+
+    def fake_refresh(refresh_token: str, region: str) -> bambu_auth.BambuAccessToken:
+        raise AssertionError("refresh() must not be called when a stored access token is valid")
+
+    monkeypatch.setattr(bambu_auth, "refresh", fake_refresh)
+
+    with sync_session() as s:
+        token = bambu_auth.get_access_token_sync(s, settings)
+    assert token == "AT-stored"
+
+
+async def test_get_access_token_sync_refreshes_once_the_stored_access_token_nears_expiry(
+    db_session, monkeypatch
+):
+    """Once the stored access token is within the early-refresh margin of
+    its estimated expiry, `refresh()` IS consulted (and a successful result
+    is preferred over the near-expiry stored token)."""
+    from app.tasks.base import sync_session
+
+    settings = get_settings()
+    await bambu_auth.set_bambu_auth(
+        db_session,
+        settings,
+        account="a@b.com",
+        region="global",
+        refresh_token="RT-1",
+        access_token="AT-near-expiry",
+        access_expires_at=time.time() - 1,  # already past its estimated expiry
+    )
+
+    def fake_refresh(refresh_token: str, region: str) -> bambu_auth.BambuAccessToken:
+        assert refresh_token == "RT-1"
+        return bambu_auth.BambuAccessToken(
+            access_token="AT-fresh", refresh_token="RT-1", expires_at=time.time() + 3600
+        )
+
+    monkeypatch.setattr(bambu_auth, "refresh", fake_refresh)
+
+    with sync_session() as s:
+        token = bambu_auth.get_access_token_sync(s, settings)
+    assert token == "AT-fresh"
+
+
+async def test_get_access_token_sync_falls_back_to_still_valid_access_token_when_refresh_fails(
+    db_session, monkeypatch
+):
+    """The early-refresh-margin edge case: the stored access token is within
+    the margin (so step 2 doesn't short-circuit) but not yet ACTUALLY
+    expired. If the resulting `refresh()` attempt fails (kind="expired" --
+    Bambu's refresh endpoint is unreliable, see module docstring), the
+    still-technically-valid stored access token must be served instead of
+    raising, and the `refresh_failed_at` marker must NOT be stamped."""
+    from app.tasks.base import sync_session
+
+    settings = get_settings()
+    await bambu_auth.set_bambu_auth(
+        db_session,
+        settings,
+        account="a@b.com",
+        region="global",
+        refresh_token="RT-1",
+        access_token="AT-still-good",
+        access_expires_at=time.time() + 30,  # inside the 60s margin, not yet expired
+    )
+
+    def fake_refresh(refresh_token: str, region: str) -> bambu_auth.BambuAccessToken:
+        raise bambu_auth.BambuAuthError(
+            "Bambu refresh token is invalid or expired -- reconnect the Bambu account in Settings.",
+            kind="expired",
+        )
+
+    monkeypatch.setattr(bambu_auth, "refresh", fake_refresh)
+
+    with sync_session() as s:
+        token = bambu_auth.get_access_token_sync(s, settings)
+    assert token == "AT-still-good"
+
+    row = await db_session.get(Setting, bambu_auth.SETTINGS_KEY)
+    await db_session.refresh(row)  # sync-session write -- refresh past the identity map
+    assert "refresh_failed_at" not in row.value
+
+
+async def test_get_access_token_sync_stamps_marker_when_refresh_fails_and_no_access_token_left(
+    db_session, monkeypatch
+):
+    """The other side of the fallback above: once the stored access token
+    itself has also genuinely expired, a failed refresh IS a reconnect-
+    worthy failure again -- existing kind="expired" + marker-stamped
+    behavior must be preserved."""
+    from app.tasks.base import sync_session
+
+    settings = get_settings()
+    await bambu_auth.set_bambu_auth(
+        db_session,
+        settings,
+        account="a@b.com",
+        region="global",
+        refresh_token="RT-dead",
+        access_token="AT-also-dead",
+        access_expires_at=time.time() - 100,  # genuinely expired, no margin needed
+    )
+
+    def fake_refresh(refresh_token: str, region: str) -> bambu_auth.BambuAccessToken:
+        raise bambu_auth.BambuAuthError(
+            "Bambu refresh token is invalid or expired -- reconnect the Bambu account in Settings.",
+            kind="expired",
+        )
+
+    monkeypatch.setattr(bambu_auth, "refresh", fake_refresh)
+
+    with sync_session() as s, pytest.raises(bambu_auth.BambuAuthError) as exc_info:
+        bambu_auth.get_access_token_sync(s, settings)
+    assert exc_info.value.kind == "expired"
+    assert "RT-dead" not in str(exc_info.value) and "AT-also-dead" not in str(exc_info.value)
+
+    row = await db_session.get(Setting, bambu_auth.SETTINGS_KEY)
+    await db_session.refresh(row)
+    assert row.value["refresh_failed_at"]
+
+
+async def test_get_access_token_sync_persists_new_access_token_on_successful_refresh_with_rotation(
+    db_session, monkeypatch
+):
+    from app.tasks.base import sync_session
+
+    settings = get_settings()
+    await bambu_auth.set_bambu_auth(
+        db_session, settings, account="a@b.com", region="global", refresh_token="RT-old"
+    )
+
+    def fake_refresh(refresh_token: str, region: str) -> bambu_auth.BambuAccessToken:
+        return bambu_auth.BambuAccessToken(
+            access_token="AT-new", refresh_token="RT-new", expires_at=time.time() + 3600
+        )
+
+    monkeypatch.setattr(bambu_auth, "refresh", fake_refresh)
+
+    with sync_session() as s:
+        bambu_auth.get_access_token_sync(s, settings)
+
+    row = await db_session.get(Setting, bambu_auth.SETTINGS_KEY)
+    await db_session.refresh(row)  # sync-session write -- refresh past the identity map
+    assert decrypt_secret(settings, row.value["access_token"]) == "AT-new"
+    assert row.value["access_expires_at"] > time.time()
+
+    state = await bambu_auth.get_bambu_auth(db_session, settings)
+    assert state.access_token == "AT-new"
+    assert state.refresh_token == "RT-new"
+
+
+async def test_get_access_token_sync_persists_new_access_token_on_refresh_without_rotation(
+    db_session, monkeypatch
+):
+    from app.tasks.base import sync_session
+
+    settings = get_settings()
+    await bambu_auth.set_bambu_auth(
+        db_session, settings, account="a@b.com", region="global", refresh_token="RT-seed"
+    )
+    await bambu_auth.mark_refresh_failed(db_session, settings, "RT-seed")
+
+    def fake_refresh(refresh_token: str, region: str) -> bambu_auth.BambuAccessToken:
+        return bambu_auth.BambuAccessToken(
+            access_token="AT-fresh", refresh_token=refresh_token, expires_at=time.time() + 3600
+        )
+
+    monkeypatch.setattr(bambu_auth, "refresh", fake_refresh)
+
+    with sync_session() as s:
+        token = bambu_auth.get_access_token_sync(s, settings)
+    assert token == "AT-fresh"
+
+    row = await db_session.get(Setting, bambu_auth.SETTINGS_KEY)
+    await db_session.refresh(row)
+    assert decrypt_secret(settings, row.value["access_token"]) == "AT-fresh"
+    # Cleared even though the refresh token itself didn't rotate.
+    assert "refresh_failed_at" not in row.value

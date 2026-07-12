@@ -62,10 +62,15 @@ class OkOut(BaseModel):
 
 class ImportStatusOut(BaseModel):
     """The token plane's read of an import -- deliberately just these three
-    fields (id-scoped, nothing enumerable): unlike the session-gated
-    ``ImportOut``, this omits ``url``/``site``/``external_id``/``model_id``/
-    ``meta`` on purpose, so a leaked extension token can't be turned into a
-    data-exfiltration read surface over the library.
+    fields, a minimal ``{id, state, error}`` payload: unlike the session-
+    gated ``ImportOut``, this omits ``url``/``site``/``external_id``/
+    ``model_id``/``meta`` on purpose, so a leaked extension token can't be
+    turned into a data-exfiltration read surface over the library. Import
+    ids ARE sequential and therefore walkable -- a valid token holder can
+    enumerate other imports' state/error by id; that's an accepted
+    consequence of a single shared token gating this whole router
+    (``require_api_token``), not something this endpoint's narrow shape
+    defends against.
     """
 
     id: int

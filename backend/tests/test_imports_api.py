@@ -458,3 +458,32 @@ async def test_retry_non_failed_import_is_409_and_does_not_enqueue(
 async def test_retry_unknown_import_is_404(authenticated_client, library_root, data_dir):
     r = await authenticated_client.post("/api/imports/999999/retry")
     assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_retry_race_only_the_winner_enqueues(
+    authenticated_client, library_root, data_dir, db_session, monkeypatch
+):
+    """M2 (import-health post-review fix): the eligibility check and the
+    state flip are now one atomic conditional UPDATE
+    (``WHERE id=:id AND state='failed'``) rather than a SELECT followed by a
+    separate UPDATE, so two near-simultaneous retries of the SAME failed
+    import can't both pass the guard and double-enqueue the same task_id.
+    Calling retry twice in a row proves this: the first call's UPDATE flips
+    the row out of `failed`, so the second call's UPDATE matches zero rows
+    and 409s instead of also dispatching."""
+    imp = await _seed_import(db_session, state=ImportState.FAILED, error="boom")
+
+    calls: list[tuple[list[int], str]] = []
+    monkeypatch.setattr(
+        imports_service.import_from_url,
+        "apply_async",
+        lambda *, args, task_id: calls.append((args, task_id)),
+    )
+
+    first = await authenticated_client.post(f"/api/imports/{imp.id}/retry")
+    second = await authenticated_client.post(f"/api/imports/{imp.id}/retry")
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 409, second.text
+    assert calls == [([imp.id], f"import-{imp.id}")]

@@ -409,20 +409,52 @@ def _utc_now_iso() -> str:
 # happens) -- see `get_access_token_sync` below. Both are no-ops when
 # nothing is connected (nothing to stamp/clear) so a caller never needs to
 # guard the call itself.
+#
+# `mark_*` additionally take the REJECTED refresh token and only stamp when
+# the row's CURRENT refresh token still equals it (compare-and-set, post-
+# review fix M1). Two workers can race to refresh the same expiring token:
+# if worker A wins and rotates in a new, valid refresh token first (which
+# also clears any marker -- see `set_bambu_auth`/`_sync` above), worker B's
+# now-stale rejection must not stamp a failure onto that already-healthy
+# row. `populate_existing=True` forces a fresh read past this session's own
+# identity map (both sessionmakers use `expire_on_commit=False`, so a row
+# fetched earlier in the SAME session -- e.g. by `get_bambu_auth_sync` at
+# the top of `get_access_token_sync` -- would otherwise still show the
+# pre-race snapshot even after another session committed the rotation).
+# Comparison is plain equality on the DECRYPTED value -- Fernet ciphertext
+# isn't stable across encryptions of the same plaintext, and neither side of
+# the comparison is ever logged or printed.
 # ---------------------------------------------------------------------------
 
 
-async def mark_refresh_failed(db: AsyncSession, settings: Settings) -> None:
-    row = await db.get(Setting, SETTINGS_KEY)
+def _decrypt_refresh_token(settings: Settings, raw: str) -> str:
+    try:
+        return decrypt_secret(settings, raw)
+    except InvalidToken:
+        return raw  # defensive legacy-plaintext fallback, mirrors _decrypt_state
+
+
+async def mark_refresh_failed(
+    db: AsyncSession, settings: Settings, rejected_refresh_token: str
+) -> None:
+    row = await db.get(Setting, SETTINGS_KEY, populate_existing=True)
     if row is None or not row.value or not row.value.get("refresh_token"):
+        return
+    stored = _decrypt_refresh_token(settings, row.value["refresh_token"])
+    if stored != rejected_refresh_token:
         return
     row.value = {**row.value, "refresh_failed_at": _utc_now_iso()}
     await db.commit()
 
 
-def mark_refresh_failed_sync(session: SyncSession, settings: Settings) -> None:
-    row = session.get(Setting, SETTINGS_KEY)
+def mark_refresh_failed_sync(
+    session: SyncSession, settings: Settings, rejected_refresh_token: str
+) -> None:
+    row = session.get(Setting, SETTINGS_KEY, populate_existing=True)
     if row is None or not row.value or not row.value.get("refresh_token"):
+        return
+    stored = _decrypt_refresh_token(settings, row.value["refresh_token"])
+    if stored != rejected_refresh_token:
         return
     row.value = {**row.value, "refresh_failed_at": _utc_now_iso()}
     session.commit()
@@ -473,7 +505,7 @@ def get_access_token_sync(session: SyncSession, settings: Settings) -> str:
         token = refresh(state.refresh_token, state.region)
     except BambuAuthError as exc:
         if exc.kind == "expired":
-            mark_refresh_failed_sync(session, settings)
+            mark_refresh_failed_sync(session, settings, state.refresh_token)
         raise
     if token.refresh_token != state.refresh_token:
         # Bambu may rotate the refresh token on use -- persist the new one

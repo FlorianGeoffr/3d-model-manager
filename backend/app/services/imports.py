@@ -10,6 +10,7 @@ between the two call sites.
 from __future__ import annotations
 
 from fastapi import HTTPException, status
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.importers.registry import build_importer_for_url, deferred_site_for_url
@@ -97,19 +98,35 @@ async def retry_failed_import(db: AsyncSession, import_id: int) -> Import:
     NULL on every failure path). Resetting to ``pending`` and re-dispatching
     therefore can't ever produce a second live import for the same remote
     model.
+
+    The eligibility check and the state flip are ONE atomic conditional
+    ``UPDATE`` (post-review fix M2), not a SELECT followed by a separate
+    UPDATE: two near-simultaneous retries of the same failed import could
+    otherwise both pass a plain "is it failed?" read before either write
+    landed, and both go on to enqueue the same ``task_id``. The UPDATE's
+    ``WHERE ... AND state='failed'`` only ever matches for the FIRST caller
+    to reach it -- the loser's statement matches zero rows, so only one
+    caller ever proceeds to ``_enqueue``.
     """
-    imp = await db.get(Import, import_id)
-    if imp is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"import {import_id} not found")
-    if imp.state != ImportState.FAILED:
+    result = await db.execute(
+        update(Import)
+        .where(Import.id == import_id, Import.state == ImportState.FAILED)
+        .values(state=ImportState.PENDING, error=None)
+    )
+    if result.rowcount == 0:
+        # Either no such import, or one that exists but wasn't `failed` (a
+        # lost race, or just the wrong state) -- this extra read is OUTSIDE
+        # the atomic UPDATE above and only used to pick the right error, so
+        # it can't itself change which caller "wins".
+        imp = await db.get(Import, import_id)
+        if imp is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"import {import_id} not found")
         raise HTTPException(
             status.HTTP_409_CONFLICT, f"import {import_id} is not in a failed state"
         )
-
-    imp.state = ImportState.PENDING
-    imp.error = None
     await db.commit()
-    await db.refresh(imp)
+
+    imp = await db.get(Import, import_id)
 
     _enqueue(imp)
 

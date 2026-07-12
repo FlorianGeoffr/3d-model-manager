@@ -222,7 +222,7 @@ async def test_status_reports_needs_reconnect_after_a_stamped_refresh_failure(
     await bambu_auth.set_bambu_auth(
         db_session, settings, account="a@b.com", region="global", refresh_token="RT-dead"
     )
-    await bambu_auth.mark_refresh_failed(db_session, settings)
+    await bambu_auth.mark_refresh_failed(db_session, settings, "RT-dead")
 
     r = await authenticated_client.get("/api/settings/bambu")
     assert r.json() == {

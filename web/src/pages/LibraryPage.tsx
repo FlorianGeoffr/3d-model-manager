@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearch } from "@tanstack/react-router";
 import {
+  ArchiveIcon,
   BookmarkIcon,
   ListPlusIcon,
   PlusIcon,
@@ -72,6 +73,7 @@ export function LibraryPage() {
   const [activeFormat, setActiveFormat] = useState<BlobFormat | undefined>(undefined);
   const [slicedOnly, setSlicedOnly] = useState(false);
   const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [archivedOnly, setArchivedOnly] = useState(false);
   const [activeCollection, setActiveCollection] = useState<number | undefined>(search.collection);
   const [sort, setSort] = useState<string>("-updated_at");
 
@@ -107,9 +109,10 @@ export function LibraryPage() {
       has_sliced: slicedOnly || undefined,
       collection: activeCollection,
       favorite: favoritesOnly || undefined,
+      archived: archivedOnly || undefined,
       sort,
     }),
-    [debouncedSearch, activeTag, activeFormat, slicedOnly, favoritesOnly, activeCollection, sort],
+    [debouncedSearch, activeTag, activeFormat, slicedOnly, favoritesOnly, archivedOnly, activeCollection, sort],
   );
 
   const modelsQuery = useModelsQuery(filters);
@@ -206,6 +209,11 @@ export function LibraryPage() {
           <FilterChip active={favoritesOnly} onClick={() => setFavoritesOnly((prev) => !prev)}>
             <StarIcon className={favoritesOnly ? "fill-current" : undefined} />
             Favorites
+          </FilterChip>
+
+          <FilterChip active={archivedOnly} onClick={() => setArchivedOnly((prev) => !prev)}>
+            <ArchiveIcon />
+            Archived
           </FilterChip>
 
           <Popover>

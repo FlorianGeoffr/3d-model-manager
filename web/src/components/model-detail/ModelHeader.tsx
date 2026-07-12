@@ -2,7 +2,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { FileStackIcon, ListPlusIcon, PencilIcon, StarIcon } from "lucide-react";
 import { toast } from "sonner";
 
-import { useArchiveModel, usePatchModel } from "@/api/library";
+import { useArchiveModel, useDeleteModel, usePatchModel } from "@/api/library";
 import { useEnqueueModel } from "@/api/queue";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { InlineEdit } from "@/components/InlineEdit";
@@ -30,6 +30,7 @@ export function ModelHeader({
   const navigate = useNavigate();
   const patchModel = usePatchModel(model.slug);
   const archiveModel = useArchiveModel(model.slug);
+  const deleteModel = useDeleteModel(model.slug);
   const enqueueModel = useEnqueueModel();
 
   const filaments = modelFilaments(model);
@@ -113,22 +114,36 @@ export function ModelHeader({
             {editMode ? "Done" : "Edit"}
           </Button>
           {editMode && (
-            <ConfirmDialog
-              trigger={
-                <Button type="button" variant="destructive">
-                  Archive
-                </Button>
-              }
-              title={`Archive "${model.name}"?`}
-              description="Archived models are hidden from the library by default. This does not delete files."
-              confirmLabel="Archive"
-              destructive
-              onConfirm={() =>
-                archiveModel.mutate(undefined, {
-                  onSuccess: () => void navigate({ to: "/" }),
-                })
-              }
-            />
+            <>
+              <ConfirmDialog
+                trigger={
+                  <Button type="button" variant="destructive">
+                    Archive
+                  </Button>
+                }
+                title={`Archive "${model.name}"?`}
+                description="Archived models are hidden from the library by default. This does not delete files."
+                confirmLabel="Archive"
+                destructive
+                onConfirm={() => archiveModel.mutate(true)}
+              />
+              <ConfirmDialog
+                trigger={
+                  <Button type="button" variant="destructive">
+                    Delete
+                  </Button>
+                }
+                title="Delete this model?"
+                description="Permanently deletes the model and every file from storage. This cannot be undone."
+                confirmLabel="Delete"
+                destructive
+                onConfirm={() =>
+                  deleteModel.mutate(undefined, {
+                    onSuccess: () => void navigate({ to: "/" }),
+                  })
+                }
+              />
+            </>
           )}
         </div>
       </div>

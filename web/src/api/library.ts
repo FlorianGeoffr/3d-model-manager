@@ -30,6 +30,11 @@ export interface GalleryFilters {
   has_sliced?: boolean;
   collection?: number;
   favorite?: boolean;
+  // feat/import-fidelity T4: the Archived facet. Unlike `favorite` (which
+  // never hides anything when unset), the backend's `archived` param
+  // defaults to `false` server-side -- so leaving this unset already gets
+  // the "hide archived" default, and only `true` is ever worth sending.
+  archived?: boolean;
   sort: string;
 }
 
@@ -45,6 +50,7 @@ function buildModelsUrl(filters: Partial<GalleryFilters>, cursor?: string, limit
   // `false`/omitted apply no filter at all (never hides favorites) --
   // mirrors the backend's `favorite` query param semantics.
   if (filters.favorite) params.set("favorite", "true");
+  if (filters.archived) params.set("archived", "true");
   if (filters.sort) params.set("sort", filters.sort);
   params.set("limit", String(limit));
   if (cursor) params.set("cursor", cursor);
@@ -130,7 +136,26 @@ export function useBulkUpdateModels() {
   });
 }
 
+/** Archives/unarchives a model (feat/import-fidelity T3: `PATCH
+ * {is_archived}` -- reversible, and no longer what `DELETE /models/{slug}`
+ * does). Takes the target `is_archived` value as the mutate argument so the
+ * same hook drives both the header's "Archive" action (`true`) and the
+ * archived-model banner's "Unarchive" action (`false`). */
 export function useArchiveModel(slug: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (is_archived: boolean) => api.patch<ModelDetail>(`/models/${slug}`, { is_archived }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(modelQueryOptions(slug).queryKey, data);
+      void queryClient.invalidateQueries({ queryKey: ["models", "list"] });
+    },
+  });
+}
+
+/** A REAL delete (feat/import-fidelity T3): `DELETE /models/{slug}` now
+ * physically destroys every file, so there's nothing left to keep cached --
+ * mirrors the old (soft-delete) `useArchiveModel`'s cache handling exactly. */
+export function useDeleteModel(slug: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: () => api.delete<void>(`/models/${slug}`),

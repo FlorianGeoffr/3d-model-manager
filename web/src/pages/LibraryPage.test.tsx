@@ -257,6 +257,18 @@ describe("LibraryPage", () => {
     await waitFor(() => expect(lastModelsCall()).not.toContain("favorite="));
   });
 
+  it("adds archived=true to the gallery query when the Archived facet is toggled on, and clears it back off", async () => {
+    mockGalleryOk();
+    renderLibraryPage();
+    await screen.findByText("No models yet");
+
+    fireEvent.click(screen.getByRole("button", { name: "Archived" }));
+    await waitFor(() => expect(lastModelsCall()).toContain("archived=true"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Archived" }));
+    await waitFor(() => expect(lastModelsCall()).not.toContain("archived="));
+  });
+
   it("select mode reveals a checkbox per card and a floating action bar once one is checked", async () => {
     mockGalleryOkWithModels([GALLERY_MODEL]);
     renderLibraryPage();

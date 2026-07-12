@@ -2,6 +2,7 @@ import { useState } from "react";
 import { getRouteApi } from "@tanstack/react-router";
 
 import { useModel } from "@/api/library";
+import { ArchivedBanner } from "@/components/model-detail/ArchivedBanner";
 import { FilesTab } from "@/components/model-detail/FilesTab";
 import { ModelHeader } from "@/components/model-detail/ModelHeader";
 import { NotesTab } from "@/components/model-detail/NotesTab";
@@ -57,6 +58,7 @@ export function ModelDetailPage() {
   return (
     <div className="space-y-6">
       <ModelHeader model={model} editMode={editMode} onToggleEditMode={() => setEditMode((prev) => !prev)} />
+      <ArchivedBanner model={model} />
       <RelatedModels model={model} />
       <Tabs defaultValue="files">
         <TabsList>

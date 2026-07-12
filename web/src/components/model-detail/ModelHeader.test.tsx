@@ -55,19 +55,24 @@ const MODEL: ModelDetail = {
 function renderHeader(editMode: boolean, onToggleEditMode = vi.fn(), model: ModelDetail = MODEL) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const rootRoute = createRootRoute();
-  const homeRoute = createRoute({
+  // Starts on a dedicated "/detail" route (rather than "/") so a test can
+  // assert the Delete action's "navigate home" behavior by observing
+  // `router.state.location.pathname` actually change to "/".
+  const homeRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", component: () => null });
+  const detailRoute = createRoute({
     getParentRoute: () => rootRoute,
-    path: "/",
+    path: "/detail",
     component: () => (
       <ModelHeader model={model} editMode={editMode} onToggleEditMode={onToggleEditMode} />
     ),
   });
   const jobsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/jobs", component: () => null });
   const router = createRouter({
-    routeTree: rootRoute.addChildren([homeRoute, jobsRoute]),
-    history: createMemoryHistory({ initialEntries: ["/"] }),
+    routeTree: rootRoute.addChildren([homeRoute, detailRoute, jobsRoute]),
+    history: createMemoryHistory({ initialEntries: ["/detail"] }),
   });
   return {
+    router,
     onToggleEditMode,
     ...render(
       <QueryClientProvider client={queryClient}>
@@ -98,13 +103,14 @@ describe("ModelHeader -- read-only by default", () => {
     expect(screen.queryByRole("button", { name: "Articulated Dragon" })).not.toBeInTheDocument();
   });
 
-  it("hides tag remove buttons and the Archive button", async () => {
+  it("hides tag remove buttons, the Archive button, and the Delete button", async () => {
     renderHeader(false);
 
     await screen.findByText("fantasy");
     expect(screen.queryByRole("button", { name: /Remove tag/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Add tag" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Archive" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
   });
 
   it("shows an outline Edit toggle button", async () => {
@@ -131,7 +137,7 @@ describe("ModelHeader -- edit mode", () => {
     expect(onToggleEditMode).toHaveBeenCalledOnce();
   });
 
-  it("reveals editing affordances for name/description, tags, and Archive; toggle reads Done", async () => {
+  it("reveals editing affordances for name/description, tags, Archive, and Delete; toggle reads Done", async () => {
     renderHeader(true);
 
     expect(await screen.findByRole("button", { name: "Done" })).toBeInTheDocument();
@@ -140,6 +146,7 @@ describe("ModelHeader -- edit mode", () => {
     expect(screen.getByRole("button", { name: "Remove tag fantasy" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add tag" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Archive" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
   });
 
   it("keeps the name as a level-1 heading in edit mode", async () => {
@@ -151,7 +158,7 @@ describe("ModelHeader -- edit mode", () => {
     expect(heading).toBeInTheDocument();
   });
 
-  it("archiving still requires confirmation and calls the archive endpoint", async () => {
+  it("archiving still requires confirmation and PATCHes is_archived:true (feat/import-fidelity T3: archive is reversible, no longer a DELETE)", async () => {
     renderHeader(true);
 
     fireEvent.click(await screen.findByRole("button", { name: "Archive" }));
@@ -160,7 +167,10 @@ describe("ModelHeader -- edit mode", () => {
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Archive" }));
 
-    await waitFor(() => expect(deleteMock).toHaveBeenCalledExactlyOnceWith("/models/articulated-dragon"));
+    await waitFor(() =>
+      expect(patchMock).toHaveBeenCalledExactlyOnceWith("/models/articulated-dragon", { is_archived: true }),
+    );
+    expect(deleteMock).not.toHaveBeenCalled();
   });
 
   it("editing the name commits through InlineEdit's explicit Save", async () => {
@@ -219,5 +229,32 @@ describe("ModelHeader -- Printed N× chip (Branch 5 Task 2)", () => {
 
     await screen.findByRole("heading", { name: "Articulated Dragon" });
     expect(screen.queryByText(/^Printed \d+×$/)).not.toBeInTheDocument();
+  });
+});
+
+describe("ModelHeader -- delete (feat/import-fidelity T4)", () => {
+  it("hides the Delete button outside edit mode", async () => {
+    renderHeader(false);
+
+    await screen.findByRole("heading", { name: "Articulated Dragon" });
+    expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+  });
+
+  it("requires confirmation, calls DELETE, and navigates home on success", async () => {
+    const { router } = renderHeader(true);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("Delete this model?")).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(
+        "Permanently deletes the model and every file from storage. This cannot be undone.",
+      ),
+    ).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(deleteMock).toHaveBeenCalledExactlyOnceWith("/models/articulated-dragon"));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/"));
   });
 });

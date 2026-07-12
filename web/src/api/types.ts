@@ -36,6 +36,10 @@ export interface ModelPatch {
   cover_blob_hash?: string | null;
   review_state?: string | null;
   favorite?: boolean;
+  // feat/import-fidelity T3: the soft-delete toggle -- `DELETE
+  // /models/{slug}` is now a real hard delete, so archiving/unarchiving a
+  // model is reversible PATCH traffic instead (both directions).
+  is_archived?: boolean;
 }
 
 // `POST /models/bulk` (Branch 4 Task 1): apply the same tag/favorite changes

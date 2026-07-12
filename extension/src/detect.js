@@ -85,7 +85,7 @@ export function isModelPage(url) {
  * True iff `url` is a MakerWorld user's collections page --
  * `/@<handle>/collections`, optionally locale-prefixed and/or with a
  * trailing path segment or query string. Used to gate the popup's "Sync
- * collections to app" button (`extractFavoritesList` in `collections.js`
+ * collections to app" button (`extractFavoritesListFrom` in `collections.js`
  * does the actual scrape).
  * @param {string} url
  * @returns {boolean}

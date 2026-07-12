@@ -55,13 +55,23 @@ just **visit your MakerWorld collections page**
 (`makerworld.com/@<your handle>/collections`) while signed in — the
 extension notices and syncs automatically, no click required.
 
+The extension reads your collections page's *live* data — the same
+`/_next/data/...` route the page itself uses to render — rather than trusting
+whatever was embedded in the page on its first load, so it still works
+correctly if you got to the collections page by clicking around inside
+MakerWorld rather than loading it fresh. It syncs *all* of your collections,
+including private ones, not just the ones you've made public, and it reads
+each collection's own contents the same live way instead of relying on an
+endpoint that can come back empty even when you're signed in and looking
+right at the page.
+
 That visit pushes your collection list (so a collection you follow by
 pasting its URL shows its real title instead of a generic placeholder), then
-reads and pushes each visible collection's contents. It's throttled to only
-push when something's actually changed since the last sync, so revisiting
-the same unchanged page repeatedly doesn't spam the app. This happens
-silently in the background — if it fails (app unreachable, page unreadable,
-etc.), nothing is shown in the tab; check the browser's extension console if
+reads and pushes each collection's contents. It's throttled to only push
+when something's actually changed since the last sync, so revisiting the
+same unchanged page repeatedly doesn't spam the app. This happens silently
+in the background — if it fails (app unreachable, page unreadable, etc.),
+nothing is shown in the tab; check the browser's extension console if
 collections aren't showing up as expected. Turn it off on the options page
 (**Sync collections automatically when you visit your MakerWorld collections
 page**) if you'd rather trigger it by hand.
@@ -70,12 +80,13 @@ The popup's **Sync collections to app** button still works exactly as
 before, as a manual trigger: click the extension's toolbar icon while on
 your collections page, then **Sync collections to app**. The status line
 tracks progress and finishes with something like "Synced 3 collections (24
-items)." If a collection's items couldn't be read from the page, it's called
-out as "no items readable" rather than silently synced empty. Re-run any
-time your collections (or their contents) change (or just revisit the page
-for the automatic sync to pick it up) — each sync replaces what the app has
-cached for a given list with what's on the page, so a deleted/renamed
-collection or an added/removed item updates too.
+items)." If a collection's items couldn't be read from the page, the count
+is called out, e.g. "Synced 3 collections (18 items; 1 collection
+unreadable)" rather than silently synced empty. Re-run any time your
+collections (or their contents) change (or just revisit the page for the
+automatic sync to pick it up) — each sync replaces what the app has cached
+for a given list with what's on the page, so a deleted/renamed collection or
+an added/removed item updates too.
 
 ## The MakerWorld courier
 

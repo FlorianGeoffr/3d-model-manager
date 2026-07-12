@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 
 import {
   buildItemsFetchPlan,
-  extractFavoritesList,
+  extractFavoritesListFrom,
   extractHandle,
+  findDesignListIn,
+  hasFavoritesList,
   mapDesignHits,
 } from "../src/collections.js";
 
@@ -14,9 +16,14 @@ function nextData(favoritesList) {
   return { props: { pageProps: { favoritesList } } };
 }
 
-test("extractFavoritesList: happy path -- maps visible collections, skips a hidden one (status !== 1)", () => {
+test("extractFavoritesListFrom: happy path -- maps ALL collections regardless of status, including private ones", () => {
   // Mirrors backend/tests/cassettes/makerworld_fixtures.py FAVORITES_LIST.
-  const entries = extractFavoritesList(
+  // Unlike the backend's own SSR-scrape importer (which only ever sees
+  // public collections), this is the user's OWN account syncing to their
+  // OWN library manager -- private collections (status !== 1) must sync
+  // too (live bug report: the user's collections are mostly private, and
+  // the old status===1 filter dropped nearly all of them).
+  const entries = extractFavoritesListFrom(
     nextData([
       {
         id: 2155987,
@@ -40,7 +47,7 @@ test("extractFavoritesList: happy path -- maps visible collections, skips a hidd
         slug: "trays",
         isDefault: false,
         designCnt: 3,
-        status: 2, // hidden -- must be filtered out
+        status: 2, // private -- INCLUDED now (F1 fix)
       },
     ]),
   );
@@ -48,21 +55,25 @@ test("extractFavoritesList: happy path -- maps visible collections, skips a hidd
   assert.deepEqual(entries, [
     { list_id: "2155987", title: "Default Collection", slug: "default-collection", count: 7, is_default: true },
     { list_id: "18925823", title: "ESP32", slug: "esp32", count: 9, is_default: false },
+    { list_id: "1793275", title: "Trays", slug: "trays", count: 3, is_default: false },
   ]);
 });
 
-test("extractFavoritesList: missing __NEXT_DATA__/props/pageProps/favoritesList at any depth returns []", () => {
-  assert.deepEqual(extractFavoritesList(null), []);
-  assert.deepEqual(extractFavoritesList(undefined), []);
-  assert.deepEqual(extractFavoritesList({}), []);
-  assert.deepEqual(extractFavoritesList({ props: {} }), []);
-  assert.deepEqual(extractFavoritesList({ props: { pageProps: {} } }), []);
-  assert.deepEqual(extractFavoritesList({ props: { pageProps: { favoritesList: null } } }), []);
-  assert.deepEqual(extractFavoritesList({ props: { pageProps: { favoritesList: "not an array" } } }), []);
+test("extractFavoritesListFrom: missing __NEXT_DATA__/props/pageProps/favoritesList at any depth returns []", () => {
+  assert.deepEqual(extractFavoritesListFrom(null), []);
+  assert.deepEqual(extractFavoritesListFrom(undefined), []);
+  assert.deepEqual(extractFavoritesListFrom({}), []);
+  assert.deepEqual(extractFavoritesListFrom({ props: {} }), []);
+  assert.deepEqual(extractFavoritesListFrom({ props: { pageProps: {} } }), []);
+  assert.deepEqual(extractFavoritesListFrom({ props: { pageProps: { favoritesList: null } } }), []);
+  assert.deepEqual(
+    extractFavoritesListFrom({ props: { pageProps: { favoritesList: "not an array" } } }),
+    [],
+  );
 });
 
-test("extractFavoritesList: drops entries missing an id or a title", () => {
-  const entries = extractFavoritesList(
+test("extractFavoritesListFrom: drops entries missing an id or a title", () => {
+  const entries = extractFavoritesListFrom(
     nextData([
       { title: "No id", status: 1 },
       { id: 42, status: 1 }, // no title
@@ -74,10 +85,29 @@ test("extractFavoritesList: drops entries missing an id or a title", () => {
   assert.deepEqual(entries, [{ list_id: "99", title: "Kept", slug: null, count: null, is_default: false }]);
 });
 
-test("extractFavoritesList: defaults slug/count to null and is_default to false when absent", () => {
-  const entries = extractFavoritesList(nextData([{ id: 5, title: "Bare", status: 1 }]));
+test("extractFavoritesListFrom: defaults slug/count to null and is_default to false when absent", () => {
+  const entries = extractFavoritesListFrom(nextData([{ id: 5, title: "Bare", status: 1 }]));
 
   assert.deepEqual(entries, [{ list_id: "5", title: "Bare", slug: null, count: null, is_default: false }]);
+});
+
+test("extractFavoritesListFrom: accepts the data-route shape too -- pageProps passed directly, not wrapped in props", () => {
+  const entries = extractFavoritesListFrom({ favoritesList: [{ id: 5, title: "Bare", status: 2 }] });
+  assert.deepEqual(entries, [{ list_id: "5", title: "Bare", slug: null, count: null, is_default: false }]);
+});
+
+test("hasFavoritesList: true when a favoritesList array is present (inline or route shape), even when empty", () => {
+  assert.equal(hasFavoritesList(nextData([])), true);
+  assert.equal(hasFavoritesList({ favoritesList: [] }), true);
+  assert.equal(hasFavoritesList(nextData([{ id: 1, title: "A", status: 1 }])), true);
+});
+
+test("hasFavoritesList: false when favoritesList is missing/malformed at any depth", () => {
+  assert.equal(hasFavoritesList(null), false);
+  assert.equal(hasFavoritesList(undefined), false);
+  assert.equal(hasFavoritesList({}), false);
+  assert.equal(hasFavoritesList({ props: {} }), false);
+  assert.equal(hasFavoritesList({ favoritesList: "not an array" }), false);
 });
 
 test("extractHandle: reads the handle from the /@handle/collections URL path segment when __NEXT_DATA__ has no recognizable handle field", () => {
@@ -246,4 +276,75 @@ test("mapDesignHits: drops entries missing an id or a title, defaults absent aut
       thumbnail_url: null,
     },
   ]);
+});
+
+// findDesignListIn: tolerant discovery of a collection page's own
+// design-list array (M10 Workstream, live-bug fix -- the field name
+// carrying a named collection's items on its SSR data route wasn't
+// captured live, since the old /api/v1 endpoint this replaces as the
+// PRIMARY item source produced zero items on a real sync).
+
+test("findDesignListIn: matches a known key ('designs') directly, no deep-scan needed", () => {
+  const found = findDesignListIn({
+    designs: [{ id: 1, title: "Item A" }, { id: 2, title: "Item B" }],
+    unrelated: "noise",
+  });
+  assert.deepEqual(found, {
+    key: "designs",
+    designs: [{ id: 1, title: "Item A" }, { id: 2, title: "Item B" }],
+  });
+});
+
+test("findDesignListIn: matches other known keys ('favoritesDesigns', 'list') in priority order", () => {
+  assert.deepEqual(findDesignListIn({ favoritesDesigns: [{ id: 1, title: "A" }] }), {
+    key: "favoritesDesigns",
+    designs: [{ id: 1, title: "A" }],
+  });
+  assert.deepEqual(findDesignListIn({ list: [{ id: 1, name: "A" }] }), {
+    key: "list",
+    designs: [{ id: 1, name: "A" }],
+  });
+});
+
+test("findDesignListIn: a known key with an empty array is still trusted (a genuinely-empty collection)", () => {
+  assert.deepEqual(findDesignListIn({ designs: [] }), { key: "designs", designs: [] });
+});
+
+test("findDesignListIn: a known key whose array doesn't look design-shaped is skipped in favor of a later match", () => {
+  const found = findDesignListIn({
+    designs: ["not", "design", "shaped"],
+    favoritesDesigns: [{ id: 1, title: "Real design" }],
+  });
+  assert.deepEqual(found, { key: "favoritesDesigns", designs: [{ id: 1, title: "Real design" }] });
+});
+
+test("findDesignListIn: deep-scan fallback -- a non-empty array of design-shaped objects under an unrecognized top-level key", () => {
+  const found = findDesignListIn({
+    someUnrecognizedField: [{ id: 42, title: "Found via deep-scan" }],
+  });
+  assert.deepEqual(found, {
+    key: "someUnrecognizedField",
+    designs: [{ id: 42, title: "Found via deep-scan" }],
+  });
+});
+
+test("findDesignListIn: deep-scan fallback also looks one level into a nested plain object", () => {
+  const found = findDesignListIn({
+    result: { items: [{ id: 7, name: "Nested design" }] },
+  });
+  assert.deepEqual(found, { key: "result.items", designs: [{ id: 7, name: "Nested design" }] });
+});
+
+test("findDesignListIn: deep-scan requires shape validation AND non-emptiness -- an empty or non-design array under an unknown key is never trusted", () => {
+  assert.equal(findDesignListIn({ someField: [] }), null);
+  assert.equal(findDesignListIn({ someField: ["not", "designs"] }), null);
+  assert.equal(findDesignListIn({ someField: [{ id: "not-a-number", title: "A" }] }), null);
+  assert.equal(findDesignListIn({ someField: [{ id: 1 }] }), null); // no title/name
+});
+
+test("findDesignListIn: no match anywhere (named keys or deep-scan) returns null", () => {
+  assert.equal(findDesignListIn({}), null);
+  assert.equal(findDesignListIn(null), null);
+  assert.equal(findDesignListIn(undefined), null);
+  assert.equal(findDesignListIn({ unrelated: "noise", other: 42 }), null);
 });

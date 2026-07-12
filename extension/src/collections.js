@@ -1,11 +1,13 @@
 /**
- * Pure, `chrome`-free scraping of a MakerWorld collections page's
- * `__NEXT_DATA__` payload into the shape `POST /ext/collections` expects,
- * plus the pure planning/mapping helpers for pushing each collection's
- * ITEMS (M10 Workstream A task 3 -- `POST /ext/collections/{list_id}/items`).
- * The popup reads `__NEXT_DATA__`/does the actual in-page `fetch`es off the
- * live page via `chrome.scripting.executeScript` (untested, thin wiring in
- * `popup.js`) and hands the results to the pure functions here.
+ * Pure, `chrome`-free scraping of a MakerWorld collections page's data
+ * (either the inline `__NEXT_DATA__` payload or a fresh `/_next/data/...`
+ * route fetch -- see `syncFlow.js`'s `readCollectionsPage`) into the shape
+ * `POST /ext/collections` expects, plus the pure planning/mapping helpers
+ * for pushing each collection's ITEMS (M10 Workstream A task 3 -- `POST
+ * /ext/collections/{list_id}/items`). The popup reads `__NEXT_DATA__`/does
+ * the actual in-page `fetch`es off the live page via
+ * `chrome.scripting.executeScript` (untested, thin wiring in `popup.js`)
+ * and hands the results to the pure functions here.
  */
 
 /**
@@ -19,27 +21,67 @@
  */
 
 /**
- * Maps a MakerWorld collections page's `__NEXT_DATA__.props.pageProps
- * .favoritesList` (same field the backend's SSR-scrape importer reads --
- * see `backend/app/importers/makerworld.py`'s `list_user_lists`) to the
- * entries `POST /ext/collections` expects. Mirrors that importer's
- * filtering: only `status === 1` (visible) entries, and entries without an
- * `id` or `title` are dropped. Defensive throughout -- a missing/malformed
- * `__NEXT_DATA__`, `props`, `pageProps`, or `favoritesList` at any depth
+ * Locates the `favoritesList` array within either shape a collections page
+ * read can hand us: the INLINE `__NEXT_DATA__` shape
+ * (`{props: {pageProps: {favoritesList}}}`), or a Next.js data-route
+ * response's `pageProps`, already unwrapped one level
+ * (`{favoritesList: ...}`) -- see `syncFlow.js`'s `readCollectionsPage`,
+ * which tries the route first (fresh) and falls back to the inline snapshot
+ * (can go stale across a client-side SPA navigation). Returns `null` when
+ * neither shape yields an array, so callers can distinguish "found an
+ * array (even an empty one)" from "found nothing at all".
+ * @param {unknown} pagePropsOrNextData
+ * @returns {Array|null}
+ */
+function locateFavoritesList(pagePropsOrNextData) {
+  const pageProps = pagePropsOrNextData?.props?.pageProps ?? pagePropsOrNextData;
+  const favoritesList = pageProps?.favoritesList;
+  return Array.isArray(favoritesList) ? favoritesList : null;
+}
+
+/**
+ * True iff `pagePropsOrNextData` (see `locateFavoritesList` above for the
+ * two accepted shapes) carries a `favoritesList` array at all -- regardless
+ * of whether it's empty. Used by `readCollectionsPage` to tell "the page
+ * genuinely has zero collections" apart from "couldn't find the field at
+ * all" (stale/malformed snapshot), which need different user-facing
+ * messages (`syncFlow.js`).
+ * @param {unknown} pagePropsOrNextData
+ * @returns {boolean}
+ */
+export function hasFavoritesList(pagePropsOrNextData) {
+  return locateFavoritesList(pagePropsOrNextData) !== null;
+}
+
+/**
+ * Maps a MakerWorld collections page's `favoritesList` (same field the
+ * backend's SSR-scrape importer reads -- see
+ * `backend/app/importers/makerworld.py`'s `list_user_lists`) to the entries
+ * `POST /ext/collections` expects. Accepts either shape `locateFavoritesList`
+ * does (the inline `__NEXT_DATA__` object, or a data route's `pageProps`
+ * already unwrapped) so one function serves both `readCollectionsPage`
+ * read paths. Entries without an `id` or `title` are dropped. Unlike the
+ * backend importer (and this function's own prior behavior), PRIVATE
+ * collections (`status !== 1`) are now INCLUDED -- this is the user's own
+ * library manager syncing their own MakerWorld account, and most of a
+ * user's real collections are typically private, so filtering them out
+ * dropped nearly everything (live bug report). Defensive throughout -- a
+ * missing/malformed `__NEXT_DATA__`/`pageProps`/`favoritesList` at any depth
  * (the page markup changed, or this ran on the wrong page) yields `[]`
  * rather than throwing.
- * @param {unknown} nextDataJson parsed `__NEXT_DATA__` script tag content
+ * @param {unknown} pagePropsOrNextData parsed `__NEXT_DATA__` script tag
+ *   content, or a data-route response's `pageProps`
  * @returns {CollectionPushEntry[]}
  */
-export function extractFavoritesList(nextDataJson) {
-  const favoritesList = nextDataJson?.props?.pageProps?.favoritesList;
-  if (!Array.isArray(favoritesList)) {
+export function extractFavoritesListFrom(pagePropsOrNextData) {
+  const favoritesList = locateFavoritesList(pagePropsOrNextData);
+  if (!favoritesList) {
     return [];
   }
 
   const entries = [];
   for (const item of favoritesList) {
-    if (!item || item.status !== 1) {
+    if (!item) {
       continue;
     }
     const id = item.id;
@@ -116,7 +158,7 @@ export function extractHandle(nextDataJson, url) {
 const MAX_ITEMS_PER_COLLECTION = 500;
 
 /**
- * Pure paging plan: for every pushed collection (the `extractFavoritesList`
+ * Pure paging plan: for every pushed collection (the `extractFavoritesListFrom`
  * entries, each carrying its own `count`), the `{listId, offset}` requests
  * needed to walk its full item count in `pageSize`-sized pages, capped at
  * `MAX_ITEMS_PER_COLLECTION` items/collection (matching the ext push
@@ -155,7 +197,7 @@ export function buildItemsFetchPlan(collections, pageSize = 20) {
  * collections/{list_id}/items` expects. Mirrors the backend's own mapping
  * for the SAME endpoint (`MakerWorldImporter.list_list_items`'s
  * `SearchResult` construction, `backend/app/importers/makerworld.py`) --
- * same fields, same URL shape -- but, like `extractFavoritesList` above,
+ * same fields, same URL shape -- but, like `extractFavoritesListFrom` above,
  * drops any entry missing an id or a title rather than the backend's
  * `f"model {id}"` placeholder-title fallback (this is a client-side scrape
  * of live page data, not an authoritative import -- silently dropping a
@@ -189,4 +231,98 @@ export function mapDesignHits(designHitsResponse) {
     });
   }
   return items;
+}
+
+// Checked (in this order) before falling back to the generic deep-scan --
+// plausible field names for a per-collection design list on the
+// collection's own SSR data route. UNVERIFIED (no live capture of exactly
+// which key the route uses was taken for this task -- see
+// `syncFlow.js`'s `readCollectionItemsFromDataRoute` doc for why this needs
+// to be tolerant at all: the old `/api/v1/.../favorites/designs/{listId}`
+// in-page fetch produced zero items on a real sync).
+const DESIGN_LIST_KEYS = ["designs", "favoritesDesigns", "list"];
+
+/**
+ * True iff `value` looks like one MakerWorld design/model object: an object
+ * with a numeric `id` and a `title`- or `name`-ish string field. Used both
+ * to validate a named-key candidate and to drive the deep-scan fallback in
+ * `findDesignListIn` below.
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+function looksLikeDesign(value) {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    typeof value.id === "number" &&
+    (typeof value.title === "string" || typeof value.name === "string")
+  );
+}
+
+/**
+ * True iff every non-null entry of a non-empty array looks design-shaped
+ * (`looksLikeDesign`). An empty array can't be shape-validated at all --
+ * callers decide separately whether an empty array is still trustworthy
+ * (see `findDesignListIn`'s named-key branch).
+ * @param {Array} array
+ * @returns {boolean}
+ */
+function isDesignShapedArray(array) {
+  return array.length > 0 && array.every((item) => item === null || looksLikeDesign(item));
+}
+
+/**
+ * Tolerantly locates the array of design-shaped objects within a
+ * collection's own SSR data-route `pageProps` (M10 Workstream: the field
+ * name carrying a *named* collection's items on this route was NOT
+ * captured live for this task -- the old `/api/v1/design-service/favorites
+ * /designs/{listId}` in-page fetch this is now the PRIMARY replacement for
+ * produced zero items on a real sync, either because handle extraction
+ * failed or because that endpoint is uid-aggregate-only even in a real
+ * browser). Tries known plausible keys first (`DESIGN_LIST_KEYS`, in
+ * order) -- a non-empty match there is shape-validated, but an EMPTY array
+ * under a named key is still trusted (the key name itself is the signal:
+ * "this collection genuinely has zero items" is a legitimate outcome, and
+ * an empty array can't be shape-validated anyway). Only when no named key
+ * matches does it fall back to a generic deep-scan (top level, and one
+ * level into any nested plain object) for ANY non-empty array whose items
+ * are design-shaped -- deep-scan needs shape validation AND non-emptiness
+ * to have any confidence it found the right thing, since the key name
+ * carries no signal there. Returns `null` when nothing matches at either
+ * level, so callers know to fall back to the `/api/v1` endpoint.
+ * @param {unknown} pageProps a collection data-route response's `pageProps`
+ * @returns {{key: string, designs: Array}|null}
+ */
+export function findDesignListIn(pageProps) {
+  if (!pageProps || typeof pageProps !== "object") {
+    return null;
+  }
+
+  for (const key of DESIGN_LIST_KEYS) {
+    const candidate = pageProps[key];
+    if (!Array.isArray(candidate)) {
+      continue;
+    }
+    if (candidate.length === 0 || isDesignShapedArray(candidate)) {
+      return { key, designs: candidate };
+    }
+  }
+
+  for (const [key, value] of Object.entries(pageProps)) {
+    if (DESIGN_LIST_KEYS.includes(key)) {
+      continue; // already checked above
+    }
+    if (Array.isArray(value) && isDesignShapedArray(value)) {
+      return { key, designs: value };
+    }
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      for (const [nestedKey, nestedValue] of Object.entries(value)) {
+        if (Array.isArray(nestedValue) && isDesignShapedArray(nestedValue)) {
+          return { key: `${key}.${nestedKey}`, designs: nestedValue };
+        }
+      }
+    }
+  }
+
+  return null;
 }

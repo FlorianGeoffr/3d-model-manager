@@ -9,12 +9,17 @@ import { AppShell } from "@/components/AppShell";
 // `vi.mock` factories are hoisted above the module's own top-level bindings
 // (same pattern as UploadPage.test.tsx), so the mutable box the tests write
 // to has to be created through `vi.hoisted`.
-const { featuresBox } = vi.hoisted(() => ({
+const { featuresBox, failedImportsBox } = vi.hoisted(() => ({
   featuresBox: { current: { printer_enabled: false } as { printer_enabled: boolean } | undefined },
+  failedImportsBox: { current: 0 },
 }));
 
 vi.mock("@/api/features", () => ({
   useFeatures: () => ({ data: featuresBox.current, isLoading: false }),
+}));
+
+vi.mock("@/api/imports", () => ({
+  useFailedImportsCount: () => failedImportsBox.current,
 }));
 
 vi.mock("@/api/auth", () => ({
@@ -49,6 +54,7 @@ function renderShell() {
 describe("AppShell nav", () => {
   beforeEach(() => {
     featuresBox.current = { printer_enabled: false };
+    failedImportsBox.current = 0;
   });
 
   it("hides the Printer nav item when the printer feature flag is off", async () => {
@@ -84,5 +90,26 @@ describe("AppShell nav", () => {
 
     const link = await screen.findByRole("link", { name: /Collections/ });
     expect(link).toHaveAttribute("href", "/collections");
+  });
+
+  // Import-health task T3: a failed import is easy to miss on a page nobody
+  // is looking at -- the Collections nav entry surfaces a count so it's
+  // visible from anywhere in the app.
+  it("shows a failed-imports count badge on the Collections nav entry", async () => {
+    failedImportsBox.current = 3;
+
+    renderShell();
+
+    const link = await screen.findByRole("link", { name: /Collections/ });
+    expect(link).toHaveTextContent("3");
+  });
+
+  it("hides the failed-imports badge when there are no failures", async () => {
+    failedImportsBox.current = 0;
+
+    renderShell();
+
+    const link = await screen.findByRole("link", { name: /Collections/ });
+    expect(link.textContent).toBe("Collections");
   });
 });

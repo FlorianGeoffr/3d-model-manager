@@ -1,3 +1,4 @@
+import { ImportsPanel } from "@/components/collections/ImportsPanel";
 import { SavedPanel } from "@/components/collections/SavedPanel";
 import { PageContainer } from "@/components/ui/page-container";
 
@@ -20,6 +21,7 @@ export function CollectionsPage() {
       </div>
 
       <SavedPanel />
+      <ImportsPanel />
     </PageContainer>
   );
 }

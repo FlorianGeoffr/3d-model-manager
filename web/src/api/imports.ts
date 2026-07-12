@@ -26,6 +26,66 @@ import type {
 
 const ACTIVE: ReadonlyArray<ImportOut["state"]> = ["pending", "fetching", "downloading"];
 
+// How often the "Recent imports" card polls while something is mid-flight
+// (import-health task T3). `useEvents.tsx`'s `import_from_url` branch
+// already invalidates `["imports"]` on every SSE transition -- this is a
+// modest belt-and-suspenders poll for the window between "the job started"
+// and "the SSE connection/browser tab actually delivered that event".
+const LIST_POLL_MS = 5000;
+
+export const importsQueryOptions = queryOptions({
+  queryKey: ["imports"] as const,
+  queryFn: () => api.get<ImportOut[]>("/imports?limit=50"),
+});
+
+/** The "Recent imports" card's data source -- polls every `LIST_POLL_MS`
+ * ONLY while some row is non-terminal, and stops once everything has
+ * settled (mirrors `useJob`/`useImport`'s refetchInterval-stops-on-terminal-
+ * state idiom). `AppShell`'s failed-imports nav badge deliberately does NOT
+ * use this hook -- see `useFailedImportsCount` below -- so the poll only
+ * runs while the Collections page (which mounts this) is actually open. */
+export function useImportsList() {
+  return useQuery({
+    ...importsQueryOptions,
+    refetchInterval: (query) => {
+      const rows = query.state.data ?? [];
+      return rows.some((row) => ACTIVE.includes(row.state)) ? LIST_POLL_MS : false;
+    },
+  });
+}
+
+/** Failed-imports count for the nav rail's Collections badge (import-health
+ * task T3). Reuses `importsQueryOptions`'s exact query key so it dedupes
+ * with `useImportsList` -- the SAME cached list, not a second fetch -- but
+ * deliberately omits `useImportsList`'s poll: `AppShell` is mounted on every
+ * page, so giving IT a 5s interval would poll app-wide forever. Staying on
+ * the default (no interval) leaves it to the SSE invalidation (and any
+ * mutation that touches `["imports"]`) to keep the count honest, same as
+ * every other live-updated list in the app. */
+export function useFailedImportsCount(): number {
+  const { data } = useQuery(importsQueryOptions);
+  return (data ?? []).filter((row) => row.state === "failed").length;
+}
+
+/** Re-enqueues a `failed` import (`POST /imports/{id}/retry`) -- 409 if the
+ * row isn't currently `failed`, 404 unknown id. No local `onError` here:
+ * `queryClient.ts`'s global `MutationCache.onError` already toasts
+ * `ApiError.detail` for every mutation failure, which is exactly the "409 ->
+ * show the API detail" UX the retry button needs. */
+export function useRetryImport() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => api.post<ImportOut>(`/imports/${id}/retry`),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["imports"] });
+      // A retry can complete fast enough that the model shows up before the
+      // user would ever see another live update -- invalidate eagerly
+      // rather than waiting on the next SSE `job.updated`/poll tick.
+      void queryClient.invalidateQueries({ queryKey: ["models"] });
+    },
+  });
+}
+
 export function useCreateImport() {
   const qc = useQueryClient();
   return useMutation({

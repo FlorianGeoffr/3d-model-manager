@@ -126,6 +126,10 @@ export function useApprovePending() {
     onSuccess: () => {
       invalidateAll(queryClient);
       void queryClient.invalidateQueries({ queryKey: ["models"] });
+      // Approving mints a new Import row (import-health task T3) --
+      // invalidate so it shows up in the "Recent imports" card right away
+      // rather than waiting on the next SSE tick/poll.
+      void queryClient.invalidateQueries({ queryKey: ["imports"] });
     },
   });
 }

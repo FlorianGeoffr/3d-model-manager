@@ -3,6 +3,7 @@ import { Bookmark, CopyCheck, ListChecks, ListOrdered, LogOut, Plus, Printer, Se
 
 import { useAuth, useLogout } from "@/api/auth";
 import { useFeatures } from "@/api/features";
+import { useFailedImportsCount } from "@/api/imports";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { EventsProvider } from "@/hooks/useEvents";
@@ -32,6 +33,11 @@ export function AppShell() {
   const logout = useLogout();
   const navigate = useNavigate();
   const features = useFeatures();
+  // Import-health task T3: how many imports currently need attention.
+  // Deliberately not `useImportsList()` -- that hook polls while anything is
+  // mid-flight, and AppShell is mounted on every page, so giving it that
+  // poll would run it app-wide forever (see `useFailedImportsCount`'s doc).
+  const failedImports = useFailedImportsCount();
   const navItems = NAV_ITEMS.filter((item) => item.to !== "/printer" || features.data?.printer_enabled);
 
   function handleLogout() {
@@ -65,6 +71,14 @@ export function AppShell() {
               >
                 <Icon className="size-4" />
                 {label}
+                {to === "/collections" && failedImports > 0 ? (
+                  <span
+                    className="ml-auto inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-medium text-destructive-foreground"
+                    aria-label={`${failedImports} failed import${failedImports === 1 ? "" : "s"}`}
+                  >
+                    {failedImports}
+                  </span>
+                ) : null}
               </Link>
             ))}
           </nav>

@@ -31,6 +31,13 @@ vi.mock("@/api/collections", () => ({
   useSetCollectionMode: () => ({ ...idle, mutate: vi.fn() }),
 }));
 
+// `ImportsPanel`'s own behavior is covered by ImportsPanel.test.tsx; here it
+// just needs to not make a real network call when the page mounts it.
+vi.mock("@/api/imports", () => ({
+  useImportsList: () => empty,
+  useRetryImport: () => ({ ...idle, mutate: vi.fn() }),
+}));
+
 // Radix Select never opens under jsdom -- swap for a native <select>.
 vi.mock("@/components/ui/select", () => ({
   Select: ({ children }: { children?: ReactNode }) => <select>{children}</select>,
@@ -74,5 +81,6 @@ describe("CollectionsPage", () => {
     expect(screen.getByRole("button", { name: /Sync now/ })).toBeInTheDocument();
     expect(screen.getByText("Followed collections")).toBeInTheDocument();
     expect(screen.getByText("Your collections on each site")).toBeInTheDocument();
+    expect(screen.getByText("Recent imports")).toBeInTheDocument();
   });
 });

@@ -64,6 +64,26 @@ export function humanizeDuration(seconds: number): string {
   return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
 }
 
+const relativeTimeFormatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+
+/** Format an ISO datetime string as a short relative time, e.g. "5 minutes
+ * ago", "yesterday" -- falls back to `formatDate` past 30 days, since a
+ * "47 days ago" reads worse than an absolute date at that distance. */
+export function formatRelativeTime(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "—";
+
+  const diffSeconds = Math.round((date.getTime() - Date.now()) / 1000);
+  const abs = Math.abs(diffSeconds);
+
+  if (abs < 60) return "just now";
+  if (abs < 3600) return relativeTimeFormatter.format(Math.round(diffSeconds / 60), "minute");
+  if (abs < 86400) return relativeTimeFormatter.format(Math.round(diffSeconds / 3600), "hour");
+  if (abs < 30 * 86400) return relativeTimeFormatter.format(Math.round(diffSeconds / 86400), "day");
+  return formatDate(iso);
+}
+
 /** Debounce a fast-changing value; returns the value after `delayMs` of quiet. */
 export function useDebouncedValue<T>(value: T, delayMs: number): T {
   const [debounced, setDebounced] = useState(value);

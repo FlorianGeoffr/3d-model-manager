@@ -146,6 +146,7 @@ beforeEach(() => {
   pendingBox.current = { data: [], isLoading: false };
   remoteListsBox.current = { data: [], isLoading: false };
   postMock.mockReset();
+  window.localStorage.clear();
 });
 
 describe("SavedPanel", () => {
@@ -181,6 +182,95 @@ describe("SavedPanel", () => {
 
     fireEvent.click(queue.getByRole("button", { name: "Dismiss" }));
     expect(dismissMock).toHaveBeenCalledWith(11);
+  });
+
+  it("groups review items by source collection, ordered by title, with a fallback label for an unfollowed collection", async () => {
+    followedBox.current = {
+      data: [
+        fakeFollowed({ id: 2, title: "All collected models" }),
+        fakeFollowed({ id: 1, title: "Desk stuff" }),
+      ],
+      isLoading: false,
+    };
+    pendingBox.current = {
+      data: [
+        fakePending({ id: 11, collection_id: 1, title: "Cable clip" }),
+        fakePending({ id: 12, collection_id: 2, title: "Vase" }),
+        fakePending({ id: 13, collection_id: 2, title: "Planter" }),
+        fakePending({ id: 14, collection_id: 99, title: "Orphaned thing" }),
+      ],
+      isLoading: false,
+    };
+    renderPanel();
+
+    const queue = within(await screen.findByTestId("review-queue"));
+    const groupHeadings = queue.getAllByRole("heading", { level: 3 });
+    expect(groupHeadings).toHaveLength(3);
+
+    // Sorted alphabetically by resolved title: "All collected models" (2
+    // items) < "Collection #99" (fallback for the unfollowed collection, 1
+    // item) < "Desk stuff" (1 item).
+    expect(groupHeadings[0]).toHaveTextContent("All collected models");
+    expect(groupHeadings[0]).toHaveTextContent("2");
+    expect(groupHeadings[1]).toHaveTextContent("Collection #99");
+    expect(groupHeadings[2]).toHaveTextContent("Desk stuff");
+
+    expect(queue.getByText("Cable clip")).toBeInTheDocument();
+    expect(queue.getByText("Vase")).toBeInTheDocument();
+    expect(queue.getByText("Planter")).toBeInTheDocument();
+    expect(queue.getByText("Orphaned thing")).toBeInTheDocument();
+  });
+
+  it("renders an aligned Import/Dismiss actions row for every review card", async () => {
+    pendingBox.current = {
+      data: [
+        fakePending({ id: 11, collection_id: 1, title: "Cable clip" }),
+        fakePending({
+          id: 12,
+          collection_id: 1,
+          title: "A much longer title that would otherwise push its buttons out of line",
+        }),
+      ],
+      isLoading: false,
+    };
+    renderPanel();
+
+    const queue = within(await screen.findByTestId("review-queue"));
+    const actionRows = queue.getAllByTestId("review-item-actions");
+    expect(actionRows).toHaveLength(2);
+    for (const row of actionRows) {
+      expect(within(row).getByRole("button", { name: "Import" })).toBeInTheDocument();
+      expect(within(row).getByRole("button", { name: "Dismiss" })).toBeInTheDocument();
+    }
+  });
+
+  it("collapses and re-expands the review queue, persisting the choice and flipping aria-expanded", async () => {
+    pendingBox.current = { data: [fakePending()], isLoading: false };
+    renderPanel();
+
+    const toggle = await screen.findByRole("button", { name: /Review queue/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByTestId("review-queue")).toBeInTheDocument();
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByTestId("review-queue")).not.toBeInTheDocument();
+    expect(window.localStorage.getItem("review-queue-open")).toBe("false");
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByTestId("review-queue")).toBeInTheDocument();
+    expect(window.localStorage.getItem("review-queue-open")).toBe("true");
+  });
+
+  it("opens the review queue by default when nothing is persisted yet, and honors a persisted collapsed state on mount", async () => {
+    window.localStorage.setItem("review-queue-open", "false");
+    pendingBox.current = { data: [fakePending()], isLoading: false };
+    renderPanel();
+
+    const toggle = await screen.findByRole("button", { name: /Review queue/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByTestId("review-queue")).not.toBeInTheDocument();
   });
 
   it("explains how to connect each site when no collections are found", async () => {

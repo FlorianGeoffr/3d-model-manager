@@ -1,6 +1,6 @@
 import { type FormEvent, useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { ImageIcon, RefreshCwIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronRightIcon, ImageIcon, RefreshCwIcon } from "lucide-react";
 
 import { ApiError } from "@/api/client";
 import {
@@ -78,7 +78,7 @@ export function SavedPanel() {
         </CardContent>
       </Card>
 
-      <ReviewQueue items={pending.data ?? []} loading={pending.isLoading} />
+      <ReviewQueue items={pending.data ?? []} loading={pending.isLoading} followed={followed.data ?? []} />
 
       <BrowseLists />
     </div>
@@ -128,69 +128,231 @@ function FollowedRow({ collection }: { collection: FollowedCollection }) {
   );
 }
 
-function ReviewQueue({ items, loading }: { items: PendingImport[]; loading: boolean }) {
-  const approve = useApprovePending();
-  const dismiss = useDismissPending();
+const REVIEW_QUEUE_STORAGE_KEY = "review-queue-open";
+
+/** Same "lazy-read, best-effort write" localStorage idiom as
+ * `useViewerTools`'s `readStoredGrid`/`writeStoredGrid` (viewer/tools.ts):
+ * wrapped in try/catch (private browsing / quota / disabled storage), and
+ * `null` (never set) defaults to OPEN rather than collapsed. */
+function readStoredQueueOpen(): boolean {
+  if (typeof window === "undefined") return true;
+  try {
+    const raw = window.localStorage.getItem(REVIEW_QUEUE_STORAGE_KEY);
+    return raw === null ? true : raw === "true";
+  } catch {
+    return true;
+  }
+}
+
+function writeStoredQueueOpen(open: boolean): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(REVIEW_QUEUE_STORAGE_KEY, String(open));
+  } catch {
+    // Best-effort only (private browsing / quota exceeded).
+  }
+}
+
+interface PendingGroup {
+  collectionId: number;
+  title: string;
+  items: PendingImport[];
+}
+
+/** Groups pending items by their source collection: `GET /collections/pending`
+ * carries `collection_id` but not the collection's title, so this joins
+ * against the already-loaded `useFollowedCollections()` list client-side (no
+ * backend change). A `collection_id` with no matching followed row -- the
+ * user unfollowed the list after items were queued -- falls back to
+ * `Collection #<id>` instead of vanishing. Groups sort by resolved title so
+ * the section order is stable; items keep the API's own order within a
+ * group. */
+function groupPendingItems(items: PendingImport[], followed: FollowedCollection[]): PendingGroup[] {
+  const titleById = new Map(followed.map((collection) => [collection.id, collection.title]));
+  const collectionOrder: number[] = [];
+  const byCollection = new Map<number, PendingImport[]>();
+  for (const item of items) {
+    const existing = byCollection.get(item.collection_id);
+    if (existing) {
+      existing.push(item);
+    } else {
+      byCollection.set(item.collection_id, [item]);
+      collectionOrder.push(item.collection_id);
+    }
+  }
+  return collectionOrder
+    .map((collectionId) => ({
+      collectionId,
+      title: titleById.get(collectionId) ?? `Collection #${collectionId}`,
+      items: byCollection.get(collectionId) ?? [],
+    }))
+    .sort((a, b) => a.title.localeCompare(b.title));
+}
+
+function ReviewQueue({
+  items,
+  loading,
+  followed,
+}: {
+  items: PendingImport[];
+  loading: boolean;
+  followed: FollowedCollection[];
+}) {
+  // Lazy init so the very first render already reflects the persisted
+  // choice -- no flash of the wrong state.
+  const [open, setOpen] = useState(readStoredQueueOpen);
+
+  function toggleOpen() {
+    setOpen((prev) => {
+      const next = !prev;
+      writeStoredQueueOpen(next);
+      return next;
+    });
+  }
+
+  if (loading) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Review queue</CardTitle>
+          <CardDescription>
+            New models found in your <em>review</em> lists. Nothing enters the library until you
+            import it.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Skeleton className="h-24 w-full rounded-lg" />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (items.length === 0) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Review queue</CardTitle>
+          <CardDescription>
+            New models found in your <em>review</em> lists. Nothing enters the library until you
+            import it.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">Nothing waiting for review.</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const groups = groupPendingItems(items, followed);
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Review queue</CardTitle>
-        <CardDescription>
-          New models found in your <em>review</em> lists. Nothing enters the library until you
-          import it.
-        </CardDescription>
+        {/* The whole "takes up a lot of space" complaint is about this
+            non-empty case -- 100+ queued items push "Followed collections
+            to follow" way down the page -- so only this branch gets a
+            collapse toggle; the loading/empty branches above keep today's
+            fixed layout untouched. Collapsed = header row only, including
+            the description, since that's the space this exists to reclaim. */}
+        <button
+          type="button"
+          className="flex w-full items-center gap-2 text-left"
+          aria-expanded={open}
+          onClick={toggleOpen}
+        >
+          {open ? (
+            <ChevronDownIcon className="size-4 shrink-0 text-muted-foreground" />
+          ) : (
+            <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground" />
+          )}
+          <CardTitle className="flex-1">Review queue</CardTitle>
+          <Badge variant="secondary" className="font-mono">
+            {items.length}
+          </Badge>
+        </button>
       </CardHeader>
-      <CardContent>
-        {loading ? (
-          <Skeleton className="h-24 w-full rounded-lg" />
-        ) : items.length === 0 ? (
-          <p className="text-sm text-muted-foreground">Nothing waiting for review.</p>
-        ) : (
-          <div
-            className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
-            data-testid="review-queue"
-          >
-            {items.map((item) => (
-              <Card key={item.id} className="gap-2 overflow-hidden" size="sm">
-                <div className="relative flex aspect-square items-center justify-center bg-muted">
-                  {item.thumbnail_url ? (
-                    <img src={item.thumbnail_url} alt={item.title} className="h-full w-full object-cover" />
-                  ) : (
-                    <ImageIcon className="size-8 text-muted-foreground" />
-                  )}
-                  <Badge variant="secondary" className="absolute top-1.5 left-1.5 capitalize backdrop-blur-sm">
-                    {item.site}
-                  </Badge>
-                </div>
-                <CardContent className="flex flex-col gap-1.5">
-                  <h3 className="truncate text-sm font-medium" title={item.title}>
-                    {item.title}
-                  </h3>
-                  <div className="flex gap-1.5">
-                    <Button
-                      type="button"
-                      size="sm"
-                      disabled={approve.isPending}
-                      onClick={() => approve.mutate(item.id)}
-                    >
-                      Import
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      disabled={dismiss.isPending}
-                      onClick={() => dismiss.mutate(item.id)}
-                    >
-                      Dismiss
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
+      {open && (
+        <CardContent className="space-y-5">
+          <CardDescription>
+            New models found in your <em>review</em> lists. Nothing enters the library until you
+            import it.
+          </CardDescription>
+          <div className="space-y-5" data-testid="review-queue">
+            {groups.map((group) => (
+              <ReviewGroup key={group.collectionId} group={group} />
             ))}
           </div>
+        </CardContent>
+      )}
+    </Card>
+  );
+}
+
+function ReviewGroup({ group }: { group: PendingGroup }) {
+  return (
+    <div>
+      <h3 className="mb-2 text-sm font-medium text-foreground">
+        {group.title} <span className="font-normal text-muted-foreground">· {group.items.length}</span>
+      </h3>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+        {group.items.map((item) => (
+          <ReviewCard key={item.id} item={item} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Fixed-shape flex column so Import/Dismiss line up across every card in a
+ * row regardless of title length: `h-full` lets the card fill the grid
+ * row's stretched height, the thumbnail keeps its own `aspect-square` (never
+ * grows/shrinks), and `CardContent` becomes the flexible remainder --
+ * `flex-1` so it absorbs whatever height the thumbnail didn't use, and
+ * `mt-auto` on the actions row pushes the buttons to the bottom of that
+ * remainder. The clamped title reserves a 2-line box (`min-h-10` == two
+ * `text-sm`/`leading-5` lines) so a 1-line title doesn't shrink the card and
+ * a 3-line title doesn't grow it -- same fixed-height-then-clamp idiom as
+ * `ModelCard`'s tag row, just for text instead of tags. */
+function ReviewCard({ item }: { item: PendingImport }) {
+  const approve = useApprovePending();
+  const dismiss = useDismissPending();
+
+  return (
+    <Card className="flex h-full flex-col gap-2 overflow-hidden" size="sm">
+      <div className="relative flex aspect-square shrink-0 items-center justify-center bg-muted">
+        {item.thumbnail_url ? (
+          <img src={item.thumbnail_url} alt={item.title} className="h-full w-full object-cover" />
+        ) : (
+          <ImageIcon className="size-8 text-muted-foreground" />
         )}
+        <Badge variant="secondary" className="absolute top-1.5 left-1.5 capitalize backdrop-blur-sm">
+          {item.site}
+        </Badge>
+      </div>
+      <CardContent className="flex flex-1 flex-col gap-1.5">
+        <h4 className="line-clamp-2 min-h-10 text-sm leading-5 font-medium" title={item.title}>
+          {item.title}
+        </h4>
+        <div className="mt-auto flex gap-1.5" data-testid="review-item-actions">
+          <Button
+            type="button"
+            size="sm"
+            disabled={approve.isPending}
+            onClick={() => approve.mutate(item.id)}
+          >
+            Import
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={dismiss.isPending}
+            onClick={() => dismiss.mutate(item.id)}
+          >
+            Dismiss
+          </Button>
+        </div>
       </CardContent>
     </Card>
   );

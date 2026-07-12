@@ -108,6 +108,10 @@ async def test_archived_model_stays_in_group_and_is_labeled(
     """Fix-review F4: storage is per-file, so an archived model's bytes are
     still real wasted storage -- it stays in the report, just LABELED via
     ``model_archived``, rather than being silently dropped.
+
+    feat/import-fidelity T3: archiving moved from ``DELETE`` (now a real
+    hard delete that removes the row entirely) to ``PATCH {"is_archived":
+    true}`` -- updated here to match.
     """
     model_a = await _create_model(authenticated_client, "Archived Dup A")
     model_b = await _create_model(authenticated_client, "Archived Dup B")
@@ -118,8 +122,10 @@ async def test_archived_model_stays_in_group_and_is_labeled(
     b, b_rev = await _model_and_revision(db_session, model_b)
     await seed_file(b, b_rev, "clone.stl", b"archived-shared-bytes")
 
-    archived = await authenticated_client.delete(f"/api/models/{model_a['slug']}")
-    assert archived.status_code == 204
+    archived = await authenticated_client.patch(
+        f"/api/models/{model_a['slug']}", json={"is_archived": True}
+    )
+    assert archived.status_code == 200, archived.text
 
     response = await authenticated_client.get("/api/reports/duplicates")
     assert response.status_code == 200

@@ -35,7 +35,11 @@ class ModelPatch(BaseModel):
     applied (see ``model_dump(exclude_unset=True)`` in ``app.api.models``).
     Setting ``name`` never changes ``slug``/on-disk directories in M1, but
     does rewrite the ``.3dmm.json`` sidecar (Task 5 brief). ``review_state``
-    lets the UI clear the scanner's "adopted, review me" flag.
+    lets the UI clear the scanner's "adopted, review me" flag. ``is_archived``
+    (feat/import-fidelity T3) is the soft-delete toggle -- ``DELETE
+    /models/{slug}`` now performs a REAL delete instead (see
+    ``app.services.library.hard_delete_model``); archiving/unarchiving a
+    model is reversible PATCH traffic, same as any other field here.
     """
 
     name: NonEmptyStr | None = None
@@ -43,6 +47,7 @@ class ModelPatch(BaseModel):
     cover_blob_hash: str | None = None
     review_state: str | None = None
     favorite: bool | None = None
+    is_archived: bool | None = None
 
 
 class ModelRelocateIn(BaseModel):

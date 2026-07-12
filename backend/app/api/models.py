@@ -112,9 +112,21 @@ async def patch_model(
 
 
 @router.delete("/{slug}", status_code=status.HTTP_204_NO_CONTENT)
-async def archive_model(slug: str, db: AsyncSession = Depends(get_db)) -> None:
+async def delete_model(
+    slug: str,
+    db: AsyncSession = Depends(get_db),
+    backend: StorageBackend = Depends(get_storage_backend),
+    settings: Settings = Depends(get_settings),
+) -> None:
+    """A REAL delete (feat/import-fidelity T3) -- physically destroys every
+    revision's files (its primary backend AND every replica) plus the
+    model's ``.3dmm.json`` sidecar, then the ``Model`` row itself (DB
+    cascades take the rest). Soft-delete ("archive") moved to ``PATCH
+    {"is_archived": true}`` -- see ``patch_model``/``ModelPatch`` -- since
+    this endpoint no longer offers a reversible option.
+    """
     model = await library.get_model_by_slug(db, slug)
-    await library.archive_model(db, model)
+    await library.hard_delete_model(db, backend, settings, model)
 
 
 @router.post("/{slug}/relocate", response_model=JobOut)

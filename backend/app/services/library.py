@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Literal
 
 import anyio
 from fastapi import HTTPException, status
+from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, or_, select, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -393,16 +394,114 @@ async def patch_model(
             layout.write_sidecar, backend, model.id, model.slug, new_name
         )
 
-    for field in ("name", "description", "cover_blob_hash", "review_state", "favorite"):
+    for field in (
+        "name",
+        "description",
+        "cover_blob_hash",
+        "review_state",
+        "favorite",
+        "is_archived",
+    ):
         if field in changes:
             setattr(model, field, changes[field])
     await db.commit()
     return model
 
 
-async def archive_model(db: AsyncSession, model: Model) -> None:
-    """Soft-delete: hard delete is out of M1 scope (Task 5 brief)."""
-    model.is_archived = True
+async def hard_delete_model(
+    db: AsyncSession, backend: StorageBackend, settings: Settings, model: Model
+) -> None:
+    """``DELETE /models/{slug}`` (feat/import-fidelity T3): a REAL delete,
+    replacing the old soft-delete-only behavior (soft-delete is now `PATCH
+    {"is_archived": true}`, see ``patch_model`` above).
+
+    Every revision's files are physically destroyed FIRST -- the object on
+    its own primary backend AND every replica recorded in ``file_locations``
+    (Workstream C multi-backend storage: ``store_to_backend``/
+    ``relocate_model_storage`` both keep a ``file_locations`` row for the
+    PRIMARY location too, not only replicas -- see
+    ``app.tasks.ingest.store_to_backend`` -- so walking that table alone
+    already reaches every physical copy) -- plus the model's ``.3dmm.json``
+    sidecar. THEN the ``Model`` row itself is deleted: DB ``ON DELETE
+    CASCADE`` takes revisions/files/prints/print_queue/notes/tags with it
+    (``Model.favorite`` is a plain column, not a joined table, so it just
+    disappears with the row), and ``imports.model_id``'s ``ON DELETE SET
+    NULL`` frees ``(site, external_id)`` for a future re-import of the same
+    remote model (see ``app.services.import_dedup``'s module docstring).
+
+    409s -- nothing is deleted -- if ANY file across ANY revision still has
+    a ``store_to_backend`` job in flight (``_file_store_pending``'s idiom,
+    reused verbatim from ``delete_file``): a delete racing an in-flight
+    store could leak the object that job is about to write, with no row
+    left afterward to ever notice it.
+
+    Revision/model directories are deliberately left behind once empty --
+    ``StorageBackend`` (``app.storage.base``) exposes no ``rmdir``/
+    directory-delete operation, and adding one is out of this task's scope.
+
+    Orphaned ``Blob`` rows are left alone on purpose (physical storage is
+    layout-addressed per file, not garbage-collected by blob reference count
+    -- the storage explorer already tolerates a blob hash with no
+    referencing file) -- no GC here, per the T3 brief.
+    """
+    files = list(
+        (
+            await db.execute(
+                select(File)
+                .join(Revision, File.revision_id == Revision.id)
+                .where(Revision.model_id == model.id)
+            )
+        ).scalars()
+    )
+    for file in files:
+        if await _file_store_pending(db, file):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "a file is still processing; retry once stored",
+            )
+
+    def _delete_sidecar() -> None:
+        with contextlib.suppress(StorageKeyNotFound):
+            backend.delete(layout.sidecar_key(model.slug))
+
+    if files:
+        file_ids = [f.id for f in files]
+        locations = list(
+            (
+                await db.execute(select(FileLocation).where(FileLocation.file_id.in_(file_ids)))
+            ).scalars()
+        )
+        storage_path_by_file_id = {f.id: f.storage_path for f in files}
+
+        # Resolve every backend instance up front (async, off the DB) so the
+        # actual deletes below can run as one synchronous batch, off the
+        # event loop thread (`anyio.to_thread.run_sync`, per
+        # `app.storage.base`'s threading rule).
+        primary_backend_by_file_id: dict[int, StorageBackend] = {}
+        for file in files:
+            primary_backend_by_file_id[file.id] = await resolve_backend_for_file(db, settings, file)
+        location_backend_by_id: dict[int, StorageBackend] = {}
+        for loc in locations:
+            if loc.backend_id not in location_backend_by_id:
+                location_backend_by_id[loc.backend_id] = await backend_for_id(
+                    db, settings, loc.backend_id
+                )
+
+        def _delete_all() -> None:
+            for file in files:
+                with contextlib.suppress(StorageKeyNotFound):
+                    primary_backend_by_file_id[file.id].delete(file.storage_path)
+            for loc in locations:
+                storage_path = storage_path_by_file_id[loc.file_id]
+                with contextlib.suppress(StorageKeyNotFound):
+                    location_backend_by_id[loc.backend_id].delete(storage_path)
+            _delete_sidecar()
+
+        await anyio.to_thread.run_sync(_delete_all)
+    else:
+        await anyio.to_thread.run_sync(_delete_sidecar)
+
+    await db.execute(sa_delete(Model).where(Model.id == model.id))
     await db.commit()
 
 

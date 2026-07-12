@@ -1,18 +1,30 @@
-"""Model CRUD + gallery listing (Task 5 brief): slug generation/collision,
-sidecar content, PATCH/DELETE(archive) semantics, and the gallery's
+"""Model CRUD + gallery listing (Task 5 brief; feat/import-fidelity T3):
+slug generation/collision, sidecar content, PATCH archive/is_archived
+semantics, DELETE's real hard-delete, and the gallery's
 search/filter/sort/cursor-pagination behavior.
 """
 
 import json
+import uuid
 from collections.abc import Awaitable, Callable
 
+import blake3
 import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.models import AssemblyThumb, BlobMeta, Derivative, File, Model, Revision
-from app.models.enums import BlobFormat, BlobKind, DerivativeKind, DerivativeStatus
+from app.models import AssemblyThumb, Blob, BlobMeta, Derivative, File, Import, Job, Model, Revision
+from app.models.enums import (
+    BlobFormat,
+    BlobKind,
+    DerivativeKind,
+    DerivativeStatus,
+    ImportSite,
+    ImportState,
+)
+from app.services import import_dedup
+from app.services import jobs as jobs_service
 from app.services import storage_backends as sb
 from app.storage.config import LocalConfig
 from app.storage.local import LocalStorageBackend
@@ -163,16 +175,20 @@ async def test_patch_model_name_rewrites_sidecar_content(
     }
 
 
-async def test_delete_model_archives_and_excludes_from_default_gallery(
+async def test_patch_model_is_archived_round_trip_and_gallery_filter(
     authenticated_client: httpx.AsyncClient,
 ) -> None:
+    """feat/import-fidelity T3: soft-delete moved from ``DELETE`` (now a
+    real hard delete, see below) to ``PATCH {"is_archived": ...}`` -- fully
+    reversible, unlike the old DELETE-based archive.
+    """
     created = await _create_model(authenticated_client, "Archive Me")
 
-    response = await authenticated_client.delete(f"/api/models/{created['slug']}")
-    assert response.status_code == 204
-
-    detail = await authenticated_client.get(f"/api/models/{created['slug']}")
-    assert detail.json()["is_archived"] is True
+    archive = await authenticated_client.patch(
+        f"/api/models/{created['slug']}", json={"is_archived": True}
+    )
+    assert archive.status_code == 200, archive.text
+    assert archive.json()["is_archived"] is True
 
     default_gallery = await authenticated_client.get("/api/models")
     slugs = [item["slug"] for item in default_gallery.json()["items"]]
@@ -181,6 +197,172 @@ async def test_delete_model_archives_and_excludes_from_default_gallery(
     with_archived = await authenticated_client.get("/api/models?archived=true")
     slugs_with_archived = [item["slug"] for item in with_archived.json()["items"]]
     assert created["slug"] in slugs_with_archived
+
+    unarchive = await authenticated_client.patch(
+        f"/api/models/{created['slug']}", json={"is_archived": False}
+    )
+    assert unarchive.status_code == 200, unarchive.text
+    assert unarchive.json()["is_archived"] is False
+
+    default_gallery_again = await authenticated_client.get("/api/models")
+    slugs_again = [item["slug"] for item in default_gallery_again.json()["items"]]
+    assert created["slug"] in slugs_again
+
+
+# ---------------------------------------------------------------------------
+# hard delete (feat/import-fidelity T3): DELETE /models/{slug} now REALLY
+# deletes -- physical bytes (every backend, including replicas), the
+# sidecar, and the row itself, cascading DB-side. Uses `_upload` (defined
+# below, in the "detail: backends summary" section) to plant REAL files
+# through the normal store_to_backend pipeline, so `file_locations` rows
+# exist exactly as they would for any genuinely-imported/uploaded model.
+# ---------------------------------------------------------------------------
+
+
+async def test_delete_model_hard_deletes_files_sidecar_and_row(
+    authenticated_client: httpx.AsyncClient, backend: LocalStorageBackend
+) -> None:
+    created = await _create_model(authenticated_client, "Delete Me")
+    revision_id = created["current_revision"]["id"]
+    dir_name = created["current_revision"]["dir_name"]
+    upload = await authenticated_client.put(
+        "/api/uploads",
+        params={"model_id": created["id"], "revision_id": revision_id, "rel_path": "part.stl"},
+        content=b"hello-world",
+    )
+    assert upload.status_code == 201, upload.text
+    storage_path = f"{created['slug']}/{dir_name}/part.stl"
+    sidecar_path = f"{created['slug']}/.3dmm.json"
+    assert backend.exists(storage_path)
+    assert backend.exists(sidecar_path)
+
+    response = await authenticated_client.delete(f"/api/models/{created['slug']}")
+    assert response.status_code == 204
+
+    assert not backend.exists(storage_path)
+    assert not backend.exists(sidecar_path)
+    detail = await authenticated_client.get(f"/api/models/{created['slug']}")
+    assert detail.status_code == 404
+
+
+async def test_delete_model_deletes_every_replica_location(
+    authenticated_client: httpx.AsyncClient,
+    backend: LocalStorageBackend,
+    db_session: AsyncSession,
+    tmp_path,
+) -> None:
+    settings = get_settings()
+    target = await sb.create_backend(
+        db_session, settings, "Replica Target", LocalConfig(root=str(tmp_path / "target"))
+    )
+    created = await _create_model(authenticated_client, "Delete Me Replicated")
+    revision_id = created["current_revision"]["id"]
+    dir_name = created["current_revision"]["dir_name"]
+    upload = await authenticated_client.put(
+        "/api/uploads",
+        params={"model_id": created["id"], "revision_id": revision_id, "rel_path": "part.stl"},
+        content=b"hello-world",
+    )
+    assert upload.status_code == 201, upload.text
+
+    relocate = await authenticated_client.post(
+        f"/api/models/{created['slug']}/relocate",
+        json={"target_backend_id": target.id, "mode": "replicate"},
+    )
+    assert relocate.status_code == 200, relocate.text
+
+    target_backend = LocalStorageBackend(tmp_path / "target")
+    storage_path = f"{created['slug']}/{dir_name}/part.stl"
+    assert backend.exists(storage_path)
+    assert target_backend.exists(storage_path)
+
+    response = await authenticated_client.delete(f"/api/models/{created['slug']}")
+    assert response.status_code == 204
+
+    assert not backend.exists(storage_path)
+    assert not target_backend.exists(storage_path)
+
+
+async def test_delete_model_409_with_pending_store_job(
+    authenticated_client: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    """A ``File`` row seeded directly (not through ``PUT /api/uploads``, so
+    NO real ``store_to_backend``/pipeline chain ever runs for it) with
+    ``verified_at=None`` and a single ``queued`` job -- the exact "still
+    processing" state ``_file_store_pending`` guards against. Seeding
+    directly (rather than racing a real upload's own eager-Celery job
+    against a manually-inserted one) keeps this deterministic: with only
+    ONE job ever created for the file, ``ORDER BY created_at DESC LIMIT 1``
+    can't pick anything else.
+    """
+    created = await _create_model(authenticated_client, "Delete Pending")
+    revision = await db_session.get(Revision, created["current_revision"]["id"])
+    model = await db_session.get(Model, created["id"])
+
+    digest = blake3.blake3(b"hello-world").hexdigest()
+    blob = Blob(hash=digest, size=11, kind=BlobKind.MESH, format=BlobFormat.STL)
+    db_session.add(blob)
+    await db_session.flush()
+    file = File(
+        revision_id=revision.id,
+        blob_hash=digest,
+        rel_path="part.stl",
+        storage_path=f"{model.slug}/{revision.dir_name}/part.stl",
+        verified_at=None,
+    )
+    db_session.add(file)
+    await db_session.flush()
+    db_session.add(
+        Job(
+            id=uuid.uuid4(),
+            type="store_to_backend",
+            subject_type="file",
+            subject_id=file.id,
+            state=jobs_service.STATE_QUEUED,
+        )
+    )
+    await db_session.commit()
+
+    response = await authenticated_client.delete(f"/api/models/{created['slug']}")
+    assert response.status_code == 409
+
+    # nothing was deleted
+    detail = await authenticated_client.get(f"/api/models/{created['slug']}")
+    assert detail.status_code == 200
+
+
+async def test_delete_model_unknown_slug_is_404(authenticated_client: httpx.AsyncClient) -> None:
+    response = await authenticated_client.delete("/api/models/does-not-exist")
+
+    assert response.status_code == 404
+
+
+async def test_delete_model_frees_source_for_reimport(
+    authenticated_client: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    """``imports.model_id``'s ``ON DELETE SET NULL`` frees ``(site,
+    external_id)`` for a future re-import once the model it pointed at is
+    hard-deleted (``app.services.import_dedup``'s module docstring).
+    """
+    created = await _create_model(authenticated_client, "Delete Frees Import")
+    imp = Import(
+        url="https://fake.test/thing/99",
+        site=ImportSite.THINGIVERSE,
+        external_id="99",
+        state=ImportState.DONE,
+        model_id=created["id"],
+    )
+    db_session.add(imp)
+    await db_session.commit()
+    await db_session.refresh(imp)
+
+    response = await authenticated_client.delete(f"/api/models/{created['slug']}")
+    assert response.status_code == 204
+
+    live = await import_dedup.find_live_import(db_session, ImportSite.THINGIVERSE, "99")
+    assert live is None
+    await db_session.refresh(imp)
+    assert imp.model_id is None
 
 
 # ---------------------------------------------------------------------------

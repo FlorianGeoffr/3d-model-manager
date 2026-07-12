@@ -197,6 +197,32 @@ describe("ViewerWindowPage", () => {
     });
   });
 
+  it("All/None in the window variant check and uncheck every part", async () => {
+    modelBox.current = {
+      data: fakeModel([glbFile(1, "aaa", "a.glb"), glbFile(2, "bbb", "b.glb")]),
+      isLoading: false,
+    };
+    searchBox.current = { ids: "1" };
+
+    render(<ViewerWindowPage />);
+    await screen.findByTestId("model-viewer");
+
+    expect(screen.getByRole("checkbox", { name: "a.glb" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "b.glb" })).not.toBeChecked();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show all parts" }));
+    await waitFor(() => {
+      expect(screen.getByRole("checkbox", { name: "a.glb" })).toBeChecked();
+      expect(screen.getByRole("checkbox", { name: "b.glb" })).toBeChecked();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Hide all parts" }));
+    await waitFor(() => {
+      expect(screen.getByRole("checkbox", { name: "a.glb" })).not.toBeChecked();
+      expect(screen.getByRole("checkbox", { name: "b.glb" })).not.toBeChecked();
+    });
+  });
+
   it("resolves the white background preset from the URL", async () => {
     modelBox.current = { data: fakeModel([glbFile(1, "aaa", "a.glb")]), isLoading: false };
     searchBox.current = { bg: "white" };

@@ -133,6 +133,15 @@ export function useViewerScene({
     });
   }
 
+  // Parts All/None (panel header buttons): flips every file's `visible` flag
+  // in one step, the same way a single checkbox click flips one -- `parts`
+  // stays permanently mounted (B1 "toggle-fix core"), so this never remounts
+  // the scene, it only changes which parts the "N of M" count and `visible`
+  // flags cover.
+  function setAllChecked(checked: boolean) {
+    setCheckedIds(checked ? new Set(files.map((file) => file.id)) : new Set());
+  }
+
   function setPartColor(fileId: number, hex: string) {
     setColors((prev) => ({ ...prev, [fileId]: hex }));
   }
@@ -193,6 +202,7 @@ export function useViewerScene({
     files,
     checkedIds,
     onToggleFile: toggleFile,
+    onSetAllChecked: setAllChecked,
     colors,
     onSetPartColor: setPartColor,
     onClearPartColor: clearPartColor,

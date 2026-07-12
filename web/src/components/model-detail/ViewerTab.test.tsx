@@ -586,6 +586,41 @@ describe("ViewerTab", () => {
     expect(await screen.findByText("2 of 3")).toBeInTheDocument();
   });
 
+  it("All checks every part, None unchecks every part, and each button disables at its own boundary", async () => {
+    const fileA = fakeFile({ id: 1, rel_path: "a.stl", blob_hash: "hashA", glb_status: "ok" });
+    const fileB = fakeFile({ id: 2, rel_path: "b.stl", blob_hash: "hashB", glb_status: "ok" });
+    const fileC = fakeFile({ id: 3, rel_path: "c.stl", blob_hash: "hashC", glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([fileA, fileB, fileC])} />);
+    await screen.findByTestId("model-viewer");
+
+    const allButton = screen.getByRole("button", { name: "Show all parts" });
+    const noneButton = screen.getByRole("button", { name: "Hide all parts" });
+
+    // Only the first part is checked by default -- neither boundary yet.
+    expect(allButton).not.toBeDisabled();
+    expect(noneButton).not.toBeDisabled();
+
+    fireEvent.click(allButton);
+    await waitFor(() => {
+      expect(screen.getByRole("checkbox", { name: "a.stl" })).toBeChecked();
+      expect(screen.getByRole("checkbox", { name: "b.stl" })).toBeChecked();
+      expect(screen.getByRole("checkbox", { name: "c.stl" })).toBeChecked();
+    });
+    expect(screen.getByText("3 of 3")).toBeInTheDocument();
+    expect(allButton).toBeDisabled();
+    expect(noneButton).not.toBeDisabled();
+
+    fireEvent.click(noneButton);
+    await waitFor(() => {
+      expect(screen.getByRole("checkbox", { name: "a.stl" })).not.toBeChecked();
+      expect(screen.getByRole("checkbox", { name: "b.stl" })).not.toBeChecked();
+      expect(screen.getByRole("checkbox", { name: "c.stl" })).not.toBeChecked();
+    });
+    expect(screen.getByText("0 of 3")).toBeInTheDocument();
+    expect(noneButton).toBeDisabled();
+    expect(allButton).not.toBeDisabled();
+  });
+
   it("unchecking every part keeps the viewer mounted and shows a 'No parts selected' hint", async () => {
     // B1 "toggle-fix core": unmounting the canvas here would tear down the
     // WebGL context, IBL bake, and camera for no reason -- it stays mounted

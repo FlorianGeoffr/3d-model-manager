@@ -277,6 +277,10 @@ export interface ViewerStageProps {
   files: FileOut[];
   checkedIds: ReadonlySet<number>;
   onToggleFile: (fileId: number, checked: boolean) => void;
+  /** Parts header All/None buttons -- flips every file's `visible` flag in
+   * one step, the same way a single checkbox click flips one (see
+   * `useViewerScene`'s `setAllChecked`). `parts` stays mounted either way. */
+  onSetAllChecked: (checked: boolean) => void;
   colors: PartColors;
   onSetPartColor: (fileId: number, hex: string) => void;
   onClearPartColor: (fileId: number) => void;
@@ -361,6 +365,7 @@ export function ViewerStage({
   files,
   checkedIds,
   onToggleFile,
+  onSetAllChecked,
   colors,
   onSetPartColor,
   onClearPartColor,
@@ -548,6 +553,26 @@ export function ViewerStage({
                 <span className="text-xs text-muted-foreground tabular-nums">
                   {checkedList.length} of {files.length}
                 </span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="xs"
+                  aria-label="Show all parts"
+                  disabled={checkedList.length === files.length}
+                  onClick={() => onSetAllChecked(true)}
+                >
+                  All
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="xs"
+                  aria-label="Hide all parts"
+                  disabled={checkedList.length === 0}
+                  onClick={() => onSetAllChecked(false)}
+                >
+                  None
+                </Button>
               </div>
               <Button
                 type="button"

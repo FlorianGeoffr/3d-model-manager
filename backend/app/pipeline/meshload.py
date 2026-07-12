@@ -17,6 +17,30 @@ with no migration: any meter-unit (or otherwise non-mm) 3MF ingested before
 this change keeps its wrong ``BlobMeta``/GLB under the skip-if-exists
 idempotency in ``app.tasks.pipeline`` -- re-upload, or manually delete its
 ``BlobMeta``/``Derivative`` rows, to reprocess it.
+
+The trimesh branch has a second, sharper wrinkle: a multi-object 3MF (e.g. a
+Bambu Studio project referencing more than one part via the Production
+Extension's ``<component p:path=...>``, which trimesh's reader DOES follow)
+loads as a multi-geometry ``Scene``. Flattening that ``Scene`` to one mesh
+(``to_single_mesh``, below) goes through ``Scene.to_geometry()`` ->
+``trimesh.util.concatenate``, and that function's metadata merge silently
+drops ALL per-geometry ``metadata`` -- including the ``"units"`` tag trimesh
+itself already set while parsing -- whenever there's more than one source
+geometry (a trimesh bug, verified directly against this project's pinned
+version). Post-flatten, the mesh looks unit-less even for a file whose unit
+was never actually ambiguous, and ``guess=False`` would then raise on
+every such file, single-object 3MFs (no flatten-induced loss) working fine.
+``load_mesh`` below works around this by reading units off the ORIGINAL,
+not-yet-flattened ``trimesh.load()`` result (a correct read even post-bug,
+since ``Scene.units``/``Trimesh.units`` -- the un-flattened per-geometry
+metadata -- is what's actually intact) and restoring that value onto the
+flattened mesh before converting. A 3MF with truly no unit information at
+all (root ``<model>`` missing ``unit``, which trimesh's OWN reader already
+defaults to ``"millimeter"`` per the 3MF spec -- see
+``trimesh.exchange.threemf.load_3MF``) still can't trip ``guess=False``'s
+raise; the one remaining genuinely-unit-less case (an otherwise-empty
+``Scene``) never reaches this code at all, since it has zero faces and
+routes to the ``lib3mf`` fallback below instead.
 """
 
 from __future__ import annotations
@@ -77,17 +101,33 @@ def load_mesh(path: Path, fmt: BlobFormat) -> MeshLoad:
 
     mesh: trimesh.Trimesh | None = None
     try:
-        mesh = to_single_mesh(trimesh.load(path))
+        loaded = trimesh.load(path)
     except Exception:  # noqa: BLE001 - any load failure means "fall back to lib3mf"
-        mesh = None
+        loaded = None
+    if loaded is not None:
+        # Read units off the SOURCE (Scene or Trimesh) before flattening --
+        # see the module docstring's "second, sharper wrinkle": flattening a
+        # multi-geometry Scene drops this same metadata via a trimesh bug,
+        # so reading it post-flatten would be unreliable.
+        source_units = loaded.units
+        mesh = to_single_mesh(loaded)
+        if mesh.units is None:
+            mesh.units = source_units
     if mesh is not None and len(mesh.faces) > 0:
         # Apply the 3MF <model unit> attribute trimesh parsed but never
         # applies (units default to "millimeter" per the 3MF spec, so this
-        # is a no-op factor 1.0 for the common case; guess=False raises a
-        # clear ValueError on a non-spec unit string rather than silently
-        # mis-scaling -- U1, correctness map). Fixes BOTH dims/volume/area
-        # AND the GLB derivative, since convert_to_glb_file uses this loader.
-        mesh.convert_units("millimeters", guess=False)
+        # is a no-op factor 1.0 for the common case). Fixes BOTH
+        # dims/volume/area AND the GLB derivative, since convert_to_glb_file
+        # uses this loader.
+        if mesh.units is None:
+            # Genuinely no unit information reached trimesh at all (as
+            # opposed to the flatten-induced loss handled above) -- the 3MF
+            # spec's own default is millimeter, so this is the correct,
+            # deterministic value rather than a "guess" (guess=False keeps
+            # rejecting non-spec/ambiguous unit STRINGS, just not silence).
+            mesh.units = "millimeters"
+        else:
+            mesh.convert_units("millimeters", guess=False)
         return MeshLoad(mesh, "trimesh")
     return MeshLoad(load_3mf_lib3mf(path), "lib3mf")
 

@@ -267,6 +267,84 @@ def box_3mf_bambu_with_thumb() -> bytes:
     )
 
 
+def box_3mf_multi_object_no_unit() -> bytes:
+    """A hand-built, unit-less, TWO-object Production-Extension 3MF -- the
+    convert-to-glb regression fixture (feat/import-fidelity: a real Bambu
+    project with two component objects crashed ``mesh.convert_units`` with
+    "No units and not allowed to guess!").
+
+    Unlike ``box_3mf_bambu`` (single object, ``p:path`` on ``<build><item>``,
+    which trimesh's reader can't follow at all -- forcing the lib3mf
+    fallback), each object here wraps its part in a local ``<components>``
+    list (``p:path`` on ``<component>``, which trimesh DOES follow), so
+    trimesh's own reader succeeds and returns a two-geometry ``Scene`` --
+    exercising the trimesh branch of ``meshload.load_mesh``, not lib3mf.
+    Root ``<model>`` has NO ``unit`` attribute at all (the 3MF spec's default
+    -- millimeter -- applies), reproducing the exact live crash: trimesh's
+    own 3MF loader already tags every geometry with the spec-default
+    ``"millimeters"`` at load time, but ``Scene.to_geometry()``'s
+    multi-geometry flatten (``trimesh.util.concatenate``) silently drops
+    ALL per-geometry ``metadata`` -- including that units tag -- whenever
+    there's more than one source geometry (verified directly against this
+    trimesh version), so the flattened mesh looks unit-less even though the
+    file itself was never ambiguous. Object ids are kept distinct across
+    both the root file's local namespace (object ids "1"/"2") and each
+    external part's own (object ids "10"/"20") specifically to avoid an
+    unrelated trimesh loader quirk: reused ids across that flat id space
+    self-loop/collide and silently produce an EMPTY scene graph instead of
+    the intended two-geometry one.
+    """
+    root_model_xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<model xml:lang="en-US" '
+        'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" '
+        'xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06" '
+        'requiredextensions="p">'
+        "<resources>"
+        '<object id="1" type="model"><components>'
+        '<component p:path="/3D/Objects/object_1.model" objectid="10"/>'
+        "</components></object>"
+        '<object id="2" type="model"><components>'
+        '<component p:path="/3D/Objects/object_2.model" objectid="20"/>'
+        "</components></object>"
+        "</resources>"
+        '<build><item objectid="1"/><item objectid="2"/></build>'
+        "</model>"
+    )
+    object_1_model_xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<model xml:lang="en-US" '
+        'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
+        f'<resources><object id="10" type="model">{_cube_mesh_xml()}</object></resources>'
+        "<build/></model>"
+    )
+    object_2_model_xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<model xml:lang="en-US" '
+        'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
+        f'<resources><object id="20" type="model">{_cube_mesh_xml()}</object></resources>'
+        "<build/></model>"
+    )
+    object_rels_xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rel1" '
+        'Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel" '
+        'Target="/3D/Objects/object_1.model"/>'
+        "</Relationships>"
+    )
+    return _write_zip(
+        {
+            "[Content_Types].xml": _CONTENT_TYPES_XML,
+            "_rels/.rels": _ROOT_RELS_XML,
+            "3D/3dmodel.model": root_model_xml,
+            "3D/_rels/3dmodel.model.rels": object_rels_xml,
+            "3D/Objects/object_1.model": object_1_model_xml,
+            "3D/Objects/object_2.model": object_2_model_xml,
+        }
+    )
+
+
 # -- sliced Bambu gcode.3mf ------------------------------------------------
 
 

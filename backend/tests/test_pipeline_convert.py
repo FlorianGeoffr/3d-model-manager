@@ -27,6 +27,7 @@ from app.pipeline import cad, convert, meshload
 from app.storage.local import LocalStorageBackend
 from app.tasks import pipeline
 from app.tasks.base import sync_session
+from tests import corpus as corpus_module
 from tests.corpus import CorpusPaths
 
 pytestmark = pytest.mark.usefixtures("library_root", "data_dir")
@@ -227,6 +228,50 @@ async def test_convert_to_glb_step_every_format_branch(
     assert glb_path.read_bytes()[:4] == _GLB_MAGIC
     mesh = _round_trip(glb_path)
     assert len(mesh.faces) == 12
+    assert mesh.extents == pytest.approx(EXPECTED_EXTENTS_MM, abs=1e-3)
+
+
+async def test_convert_to_glb_step_multi_object_no_unit_3mf_succeeds(
+    db_session: AsyncSession,
+    backend: LocalStorageBackend,
+    seed_file,
+) -> None:
+    """Live-bug regression: a unit-less, two-object Production-Extension
+    3MF (``corpus.box_3mf_multi_object_no_unit`` -- see its docstring/
+    ``meshload``'s for the trimesh multi-geometry-Scene-flatten metadata-loss
+    bug this reproduces) must still produce an ``ok`` ``glb`` derivative with
+    real geometry, not crash ``mesh.convert_units`` with "No units and not
+    allowed to guess!".
+    """
+    content = corpus_module.box_3mf_multi_object_no_unit()
+    settings = get_settings()
+
+    blob_hash, outcome = await _run_convert_to_glb(
+        db_session,
+        backend,
+        seed_file,
+        content,
+        rel_path="part_multi_no_unit.3mf",
+        blob_format=BlobFormat.THREEMF,
+        blob_kind=BlobKind.MESH,
+    )
+
+    assert outcome == "done"
+    with sync_session() as session:
+        deriv = session.execute(
+            select(Derivative).where(
+                Derivative.blob_hash == blob_hash, Derivative.kind == DerivativeKind.GLB
+            )
+        ).scalar_one()
+    assert deriv.status == DerivativeStatus.OK
+    assert deriv.tool == "trimesh"
+
+    from app.services import derivatives as derivatives_service
+
+    glb_path = derivatives_service.derivative_path(settings, blob_hash, DerivativeKind.GLB)
+    assert glb_path.read_bytes()[:4] == _GLB_MAGIC
+    mesh = _round_trip(glb_path)
+    assert len(mesh.faces) == 24
     assert mesh.extents == pytest.approx(EXPECTED_EXTENTS_MM, abs=1e-3)
 
 

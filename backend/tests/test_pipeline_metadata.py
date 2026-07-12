@@ -77,6 +77,34 @@ def test_load_mesh_3mf_meter_unit_normalizes_to_mm(corpus: CorpusPaths) -> None:
     assert loaded.mesh.extents == pytest.approx(EXPECTED_EXTENTS_MM, abs=1e-3)
 
 
+def test_load_mesh_3mf_multi_object_no_unit_defaults_to_mm(tmp_path: Path) -> None:
+    """``box_3mf_multi_object_no_unit``: a two-object Production-Extension
+    3MF (each part wrapped in a local ``<components>``/``<component
+    p:path=...>``, which -- unlike ``<build><item p:path=...>`` -- trimesh's
+    reader DOES follow, so this loads via the trimesh branch, not lib3mf)
+    whose root ``<model>`` has NO ``unit`` attribute at all.
+
+    Live-bug regression: trimesh's OWN 3MF loader already tags every
+    geometry with the spec-default ``"millimeters"`` units at load time
+    (``trimesh.exchange.threemf.load_3MF``), but flattening a
+    multi-geometry ``Scene`` to one mesh silently drops ALL per-geometry
+    ``metadata`` -- including that units tag -- via a trimesh bug in
+    ``Scene.to_geometry()``/``trimesh.util.concatenate`` (verified directly:
+    a plain 2-box ``Scene`` loses ``mesh.units`` the same way). Before the
+    fix this made ``mesh.convert_units("millimeters", guess=False)`` raise
+    "No units and not allowed to guess!" for a file that was never actually
+    unit-ambiguous.
+    """
+    path = tmp_path / "box_multi_no_unit.3mf"
+    path.write_bytes(corpus.box_3mf_multi_object_no_unit())
+
+    loaded = meshload.load_mesh(path, BlobFormat.THREEMF)
+
+    assert loaded.tool == "trimesh"
+    assert len(loaded.mesh.faces) == 24
+    assert loaded.mesh.extents == pytest.approx(EXPECTED_EXTENTS_MM, abs=1e-3)
+
+
 def test_load_mesh_bambu_3mf_falls_back_to_lib3mf(corpus: CorpusPaths) -> None:
     """The Production-Extension fixture defeats trimesh's build-item
     resolution -- proving the lib3mf fallback actually fired, not just that
@@ -367,6 +395,36 @@ async def test_extract_metadata_3mf_meter_unit_yields_correct_mm_metadata(
     assert meta.raw == {"tool": "trimesh"}
 
 
+async def test_extract_metadata_3mf_multi_object_no_unit_succeeds(
+    db_session: AsyncSession,
+    backend: LocalStorageBackend,
+    seed_file,
+) -> None:
+    """Live-bug regression through the full pipeline step (not just the
+    pure loader above): a unit-less, two-object 3MF must extract metadata
+    successfully instead of ``extract_metadata`` (the FIRST step in
+    ``PIPELINE_STEPS`` for every mesh format, ahead of ``convert_to_glb``)
+    dying on the exact ``ValueError`` the live crash reported.
+    """
+    content = corpus.box_3mf_multi_object_no_unit()
+
+    blob_hash, outcome = await _run_extract_metadata(
+        db_session,
+        backend,
+        seed_file,
+        content,
+        rel_path="part_multi_no_unit.3mf",
+        blob_format=BlobFormat.THREEMF,
+    )
+
+    assert outcome == "done"
+    with sync_session() as session:
+        meta = session.get(BlobMeta, blob_hash)
+    assert meta.triangle_count == 24
+    assert meta.dims_mm == pytest.approx(list(EXPECTED_EXTENTS_MM), abs=1e-3)
+    assert meta.raw == {"tool": "trimesh"}
+
+
 async def test_extract_metadata_bambu_3mf_records_lib3mf_tool(
     db_session: AsyncSession,
     backend: LocalStorageBackend,
@@ -499,6 +557,70 @@ async def test_extract_metadata_unsupported_format_raises(
         blob = session.get(Blob, "f" * 64)
         with pytest.raises(UnsupportedBlobError):
             pipeline._extract_metadata_step(session, get_settings(), backend, blob)
+
+
+# -- Mesh-format parse failures: glb Derivative persistence -----------------
+#
+# extract_metadata runs BEFORE convert_to_glb for every mesh format
+# (PIPELINE_STEPS), so a load_mesh failure here means convert_to_glb -- the
+# step that actually owns the glb Derivative row -- never gets dispatched at
+# all (run_step only enqueues the next step from its success path). Without
+# `_fail_glb_derivative_from_metadata_step`, this used to leave the blob
+# with a failed Job but NO glb Derivative row whatsoever (Global Constraints
+# "Failure semantics" calls for a `failed` row, not an absent one) -- the
+# live bug's "second symptom".
+
+
+async def test_extract_metadata_mesh_load_failure_marks_glb_derivative_failed(
+    db_session: AsyncSession,
+    backend: LocalStorageBackend,
+    seed_file,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _raise(*_args: object, **_kwargs: object) -> None:
+        raise ValueError("No units and not allowed to guess!")
+
+    monkeypatch.setattr(meshload, "load_mesh", _raise)
+
+    model, revision = await _seed_model_and_revision(db_session)
+    file = await seed_file(
+        model,
+        revision,
+        "part.3mf",
+        b"irrelevant -- load_mesh is monkeypatched to always raise",
+        blob_format=BlobFormat.THREEMF,
+        blob_kind=BlobKind.MESH,
+    )
+    job = Job(type="extract_metadata", subject_type="file", subject_id=file.id, state="queued")
+    db_session.add(job)
+    await db_session.commit()
+    await db_session.refresh(job)
+
+    with pytest.raises(ValueError, match="No units and not allowed to guess"):
+        pipeline.extract_metadata(str(job.id), file.blob_hash)
+
+    await db_session.refresh(job)
+    assert job.state == "failed"
+    assert "No units and not allowed to guess" in job.error
+
+    with sync_session() as session:
+        deriv = session.execute(
+            select(Derivative).where(
+                Derivative.blob_hash == file.blob_hash, Derivative.kind == DerivativeKind.GLB
+            )
+        ).scalar_one()
+        assert deriv.status == DerivativeStatus.FAILED
+        assert deriv.error is not None
+        assert "No units and not allowed to guess" in deriv.error
+
+        # convert_to_glb never even got the chance to run -- extract_metadata
+        # failing means run_step never dispatches the next step.
+        convert_jobs = list(
+            session.execute(
+                select(Job).where(Job.type == "convert_to_glb", Job.subject_id == file.id)
+            ).scalars()
+        )
+    assert convert_jobs == []
 
 
 # -- CAD branch: reads the already-converted GLB derivative -----------------

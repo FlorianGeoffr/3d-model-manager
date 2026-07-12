@@ -502,6 +502,38 @@ def _cad_blob_meta(session: SyncSession, settings: Settings, blob: Blob) -> Blob
     return _mesh_blob_meta(blob.hash, mesh, "glb-derived")
 
 
+# Mirrors `_run_gltfpack`'s own `stderr_tail`/`[-2000:]` precedent -- a raw
+# `str(exc)` from a deep parse-library failure (trimesh/lib3mf) can run long
+# enough to be unpleasant to store/display; a few KB of context is plenty.
+_DERIVATIVE_ERROR_MAX_LEN = 2000
+
+
+def _fail_glb_derivative_from_metadata_step(
+    session: SyncSession, blob_hash: str, exc: Exception
+) -> None:
+    """Record ``exc`` on the ``glb`` derivative when ``extract_metadata``'s
+    OWN mesh load (below) fails for a mesh-format (stl/obj/3mf) blob.
+
+    ``extract_metadata`` runs BEFORE ``convert_to_glb`` for every mesh format
+    (``PIPELINE_STEPS``), and both steps parse the exact same source bytes
+    through the exact same loader (``meshload.load_mesh``) -- so a failure
+    here is deterministic and would identically doom ``convert_to_glb`` too.
+    But a failed step never dispatches its successor (``run_step`` only
+    enqueues ``next_step`` from its success path), so ``convert_to_glb`` --
+    the step that actually owns the ``glb`` derivative row -- never gets to
+    run at all, and never gets the chance to record its own ``failed`` row
+    the way ``_convert_to_glb_step`` normally would. Without this, the blob
+    is left with a failed ``Job`` but NO ``glb`` derivative row whatsoever
+    (Global Constraints "Failure semantics" calls for a `failed` row, not an
+    absent one) -- this mirrors ``_convert_to_glb_step``'s own mark-failed
+    pattern so that gap can't reopen.
+    """
+    deriv = derivatives.upsert_derivative(session, blob_hash, DerivativeKind.GLB)
+    derivatives.mark_derivative(
+        session, deriv, status=DerivativeStatus.FAILED, error=str(exc)[:_DERIVATIVE_ERROR_MAX_LEN]
+    )
+
+
 def _extract_metadata_step(
     session: SyncSession, settings: Settings, backend: StorageBackend, blob: Blob
 ) -> StepOutcome:
@@ -518,7 +550,11 @@ def _extract_metadata_step(
             path = derivatives.fetch_blob_to_temp(
                 session, settings, blob.hash, Path(tmp), f".{fmt.value}"
             )
-            mesh, tool = meshload.load_mesh(path, fmt)
+            try:
+                mesh, tool = meshload.load_mesh(path, fmt)
+            except Exception as exc:
+                _fail_glb_derivative_from_metadata_step(session, blob.hash, exc)
+                raise
         meta = _mesh_blob_meta(blob.hash, mesh, tool)
     elif fmt is BlobFormat.GCODE_3MF:
         with tempfile.TemporaryDirectory(prefix="tdmm-pipe-") as tmp:

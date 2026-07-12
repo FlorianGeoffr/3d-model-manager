@@ -10,10 +10,11 @@ import { modelFilaments, revisionFormats } from "@/components/model-detail/model
 import { ProvenanceBlock } from "@/components/model-detail/ProvenanceBlock";
 import { StorageLocationBar } from "@/components/model-detail/StorageLocationBar";
 import { TagEditor } from "@/components/model-detail/TagEditor";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { FilamentChip } from "@/components/ui/filament-chip";
 import { SpecRow, type SpecItem } from "@/components/ui/spec-row";
-import { formatDate } from "@/lib/format";
+import { formatDate, formatDateTime } from "@/lib/format";
 import { FORMAT_LABELS } from "@/lib/formatMeta";
 import type { ModelDetail } from "@/api/types";
 
@@ -133,7 +134,16 @@ export function ModelHeader({
       </div>
 
       <div className="space-y-2">
-        <SpecRow items={specItems} />
+        <div className="flex flex-wrap items-center gap-2">
+          <SpecRow items={specItems} />
+          {/* Not edit-gated -- a print history fact, not editable metadata,
+              same treatment as the favorite star. */}
+          {model.print_count > 0 ? (
+            <Badge variant="secondary" title={`Last printed ${formatDateTime(model.last_printed_at)}`}>
+              Printed {model.print_count}×
+            </Badge>
+          ) : null}
+        </div>
         {filaments.length > 0 && (
           <div className="flex flex-wrap gap-2" data-testid="filament-strip">
             {filaments.map((filament, index) => (

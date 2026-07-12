@@ -52,14 +52,14 @@ const MODEL: ModelDetail = {
   last_printed_at: null,
 };
 
-function renderHeader(editMode: boolean, onToggleEditMode = vi.fn()) {
+function renderHeader(editMode: boolean, onToggleEditMode = vi.fn(), model: ModelDetail = MODEL) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const rootRoute = createRootRoute();
   const homeRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: "/",
     component: () => (
-      <ModelHeader model={MODEL} editMode={editMode} onToggleEditMode={onToggleEditMode} />
+      <ModelHeader model={model} editMode={editMode} onToggleEditMode={onToggleEditMode} />
     ),
   });
   const jobsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/jobs", component: () => null });
@@ -200,5 +200,24 @@ describe("ModelHeader -- favorite + queue actions", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Add to queue" }));
 
     await waitFor(() => expect(postMock).toHaveBeenCalledExactlyOnceWith("/queue", { model_id: 1 }));
+  });
+});
+
+describe("ModelHeader -- Printed N× chip (Branch 5 Task 2)", () => {
+  it("shows a 'Printed N×' chip once the model has logged prints", async () => {
+    renderHeader(false, vi.fn(), {
+      ...MODEL,
+      print_count: 3,
+      last_printed_at: "2026-07-01T10:00:00Z",
+    });
+
+    expect(await screen.findByText("Printed 3×")).toBeInTheDocument();
+  });
+
+  it("hides the chip for a model with no logged prints", async () => {
+    renderHeader(false);
+
+    await screen.findByRole("heading", { name: "Articulated Dragon" });
+    expect(screen.queryByText(/^Printed \d+×$/)).not.toBeInTheDocument();
   });
 });

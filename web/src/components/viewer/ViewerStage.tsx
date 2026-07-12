@@ -573,7 +573,7 @@ export function ViewerStage({
                   type="button"
                   variant="ghost"
                   size="xs"
-                  aria-label="Hide all parts"
+                  aria-label="None — hide all parts"
                   disabled={checkedList.length === 0}
                   onClick={() => onSetAllChecked(false)}
                 >

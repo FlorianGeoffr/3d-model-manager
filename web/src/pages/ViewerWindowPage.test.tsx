@@ -216,7 +216,7 @@ describe("ViewerWindowPage", () => {
       expect(screen.getByRole("checkbox", { name: "b.glb" })).toBeChecked();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Hide all parts" }));
+    fireEvent.click(screen.getByRole("button", { name: "None — hide all parts" }));
     await waitFor(() => {
       expect(screen.getByRole("checkbox", { name: "a.glb" })).not.toBeChecked();
       expect(screen.getByRole("checkbox", { name: "b.glb" })).not.toBeChecked();

@@ -594,7 +594,7 @@ describe("ViewerTab", () => {
     await screen.findByTestId("model-viewer");
 
     const allButton = screen.getByRole("button", { name: "Show all parts" });
-    const noneButton = screen.getByRole("button", { name: "Hide all parts" });
+    const noneButton = screen.getByRole("button", { name: "None — hide all parts" });
 
     // Only the first part is checked by default -- neither boundary yet.
     expect(allButton).not.toBeDisabled();

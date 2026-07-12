@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import uuid
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,6 +28,28 @@ from app.services import layout, spool
 _CHUNK_SIZE = 1024 * 1024  # 1 MiB, matching store_to_backend's read chunking
 _TIMEOUT = httpx.Timeout(30.0, read=300.0)
 _USER_AGENT = "3d-model-manager/1.0 (+https://github.com/metril/3d-model-manager)"
+
+# T2 (site cover + gallery images): a plain image URL often carries no
+# recognizable extension (a signed CDN path, a bare numeric id, ...) -- the
+# response's own Content-Type is the fallback signal ``app.tasks.importing``
+# uses to pick the final ``rel_path`` extension. Kept here (not in the task
+# module) since it's a property of the HTTP response this module already
+# owns fetching.
+_IMAGE_EXT_FROM_CONTENT_TYPE = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/webp": "webp",
+}
+
+
+def image_ext_from_content_type(content_type: str | None) -> str | None:
+    """Normalize a response ``Content-Type`` header to a bare image
+    extension (``png``/``jpg``/``webp``), or ``None`` for anything else
+    (including a missing header) -- any ``; charset=...`` suffix is ignored."""
+    if not content_type:
+        return None
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    return _IMAGE_EXT_FROM_CONTENT_TYPE.get(media_type)
 
 
 @dataclass(frozen=True)
@@ -47,8 +70,22 @@ def _download_client() -> httpx.Client:
 
 
 def stream_remote_to_spool(
-    settings: Settings, *, url: str, rel_path: str, headers: dict[str, str] | None = None
+    settings: Settings,
+    *,
+    url: str,
+    rel_path: str,
+    headers: dict[str, str] | None = None,
+    rel_path_from_response: Callable[[httpx.Response], str] | None = None,
 ) -> StagedFile:
+    """``rel_path_from_response`` (T2 gallery-image download): when the
+    caller doesn't yet know the real extension (a plain image URL with no
+    recognizable suffix), it passes a placeholder ``rel_path`` plus this
+    callback -- called once the response headers are in (status already
+    raised for) to compute the REAL ``rel_path`` from e.g. Content-Type,
+    overriding the placeholder before anything is written. Raising from it
+    (an unrecognized Content-Type) aborts the download exactly like any
+    other mid-stream failure -- the ``except BaseException`` cleanup below
+    still fires, so no spool file is left behind."""
     spool.ensure_spool_dir(settings)
     token = uuid.uuid4()
     path = spool.spool_path(settings, token)
@@ -57,6 +94,8 @@ def stream_remote_to_spool(
     try:
         with _download_client() as client, client.stream("GET", url, headers=headers or {}) as resp:
             resp.raise_for_status()
+            if rel_path_from_response is not None:
+                rel_path = rel_path_from_response(resp)
             with path.open("wb") as fh:
                 for chunk in resp.iter_bytes(_CHUNK_SIZE):
                     if not chunk:

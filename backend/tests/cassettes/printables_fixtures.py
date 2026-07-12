@@ -14,6 +14,17 @@ PRINT_3161 = {
             "license": {"name": "CC-BY-4.0"},
             "tags": [{"name": "boat"}, {"name": "calibration"}],
             "image": {"filePath": "media/prints/3161/cover.png"},
+            # UNVERIFIED (feat/import-fidelity T2): a gallery `images` list
+            # hand-built to exercise the importer's image_urls parsing --
+            # NOT captured against the live schema (see printables.py's
+            # PRINT_QUERY comment). Includes a filePath equal to the cover's
+            # own (exercises dedup) and one without a filePath at all
+            # (exercises tolerant parsing of a malformed entry).
+            "images": [
+                {"filePath": "media/prints/3161/cover.png"},
+                {"filePath": "media/prints/3161/images/side.jpg"},
+                {"filePath": None},
+            ],
             "premium": False,
             "stls": [
                 {"id": 90001, "name": "3DBenchy.stl", "fileSize": 2400000},

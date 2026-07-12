@@ -8,9 +8,13 @@ in the worker's SYNC world (app.tasks.base):
                    then ``app.importers.archives.process_staged_zips`` sniffs/
                    extracts every staged ``.zip`` (T1: mislabeled-3MF rename
                    in place, or real extraction with the archive discarded)
-                   before anything is stored.
-  (c) create model+revision (provenance) + per-file finalize/store dispatch;
-      set imports.model_id; DONE.
+                   before anything is stored. T2's site cover + gallery
+                   images (``_download_gallery_images``) are the ONE
+                   exception to "ALL must succeed" -- each is independently
+                   best-effort, never fails the import.
+  (c) create model+revision (provenance) + per-file finalize/store dispatch
+      (T1's files, then T2's gallery images, then ``cover_blob_hash`` set
+      from whichever staged image was the cover); set imports.model_id; DONE.
 
 Any failure in (a), (b), OR (c) ⇒ FAILED, model_id NULL, ZERO orphan
 Model/Revision/File rows (Global Constraints "IMPORTS ATOMIC"): a failure
@@ -57,6 +61,8 @@ from __future__ import annotations
 import contextlib
 import logging
 from datetime import UTC, datetime
+from pathlib import PurePosixPath
+from urllib.parse import urlparse
 
 import httpx
 from redis import Redis
@@ -94,6 +100,88 @@ class ImportRejected(Exception):
     a clean FAILED with a human message, never a crash."""
 
 
+# T2 (site cover + gallery images): at most this many of `meta.image_urls`
+# (already cover-first + deduped by the importer) are downloaded per import
+# -- a gallery card, not a full mirror of the site's photo album.
+MAX_IMPORT_IMAGES = 8
+
+_IMAGE_EXT_FROM_URL_SUFFIX = {"png": "png", "jpg": "jpg", "jpeg": "jpg", "webp": "webp"}
+
+
+def _image_ext_from_url(url: str) -> str | None:
+    """A recognizable image extension straight off the URL's path suffix
+    (``.png``/``.jpg``/``.jpeg``/``.webp``, case-insensitive), or ``None`` --
+    the caller falls back to sniffing the response's Content-Type instead."""
+    suffix = PurePosixPath(urlparse(url).path).suffix.lower().lstrip(".")
+    return _IMAGE_EXT_FROM_URL_SUFFIX.get(suffix)
+
+
+def _image_rel_path_from_response(base: str):
+    """Builds the ``rel_path_from_response`` callback ``download.
+    stream_remote_to_spool`` calls once a gallery image's response headers
+    are in, for a URL whose path suffix alone didn't resolve to a known
+    image extension. Raising (unrecognized Content-Type) aborts THIS image's
+    download only -- the per-image try/except in the loop below turns that
+    into a skip, never an import failure."""
+
+    def _resolve(resp: httpx.Response) -> str:
+        ext = download.image_ext_from_content_type(resp.headers.get("content-type"))
+        if ext is None:
+            raise ValueError(
+                f"unrecognized image content-type {resp.headers.get('content-type')!r}"
+            )
+        return f"{base}.{ext}"
+
+    return _resolve
+
+
+def _download_gallery_images(
+    settings, import_id: int, image_urls: list[str]
+) -> tuple[download.StagedFile | None, list[download.StagedFile]]:
+    """Best-effort download of up to ``MAX_IMPORT_IMAGES`` unique
+    ``image_urls`` (cover-first, per the importer contract) straight to
+    spool -- mirrors the per-file download loop above, but ANY single
+    image's failure (HTTP error, timeout, unrecognized content type) just
+    skips that one image rather than failing the whole import (unlike a
+    model's actual files, which must ALL succeed). Returns ``(cover_staged,
+    all_staged)``: ``cover_staged`` is set ONLY when ``image_urls[0]``
+    itself was among the ones that succeeded -- a failed cover is never
+    silently promoted to the next successful image, it just means no
+    ``cover_blob_hash`` gets set at all (the existing revision/assembly-thumb
+    cover chain still applies).
+    """
+    cover_staged: download.StagedFile | None = None
+    staged_images: list[download.StagedFile] = []
+    unique_urls = list(dict.fromkeys(u for u in image_urls if u))[:MAX_IMPORT_IMAGES]
+    for idx, url in enumerate(unique_urls, start=1):
+        base = "images/01-cover" if idx == 1 else f"images/{idx:02d}"
+        try:
+            ext = _image_ext_from_url(url)
+            if ext is not None:
+                staged_image = download.stream_remote_to_spool(
+                    settings, url=url, rel_path=f"{base}.{ext}"
+                )
+            else:
+                staged_image = download.stream_remote_to_spool(
+                    settings,
+                    url=url,
+                    rel_path=f"{base}.img",  # placeholder -- overwritten below
+                    rel_path_from_response=_image_rel_path_from_response(base),
+                )
+        except Exception as exc:  # noqa: BLE001 -- a bad image must never fail the import
+            logger.warning(
+                "import %s: gallery image %d download failed: %s",
+                import_id,
+                idx,
+                type(exc).__name__,
+            )
+            continue
+        staged_images.append(staged_image)
+        if idx == 1:
+            cover_staged = staged_image
+    return cover_staged, staged_images
+
+
 def _set_state(session, imp: Import, state: ImportState, *, error: str | None = None) -> None:
     imp.state = state
     if error is not None:
@@ -125,6 +213,7 @@ def import_from_url(import_id: int) -> None:
         return
 
     staged: list[download.StagedFile] = []
+    staged_images: list[download.StagedFile] = []
     created_model_id: int | None = None
     try:
         with base.sync_session() as s:
@@ -195,6 +284,13 @@ def import_from_url(import_id: int) -> None:
         # `imp.meta["files"]` (end of this function) then reflects.
         staged = process_staged_zips(settings, staged)
 
+        # T2: the site's own cover + gallery photos, best-effort (a bad/
+        # missing image never fails the import -- see
+        # `_download_gallery_images`'s docstring).
+        cover_staged, staged_images = _download_gallery_images(
+            settings, import_id, meta.image_urls
+        )
+
         with base.sync_session() as s:
             # Workstream C task C2: the model directory + sidecar (this is
             # the only DIRECT storage write in this task -- every imported
@@ -244,15 +340,25 @@ def import_from_url(import_id: int) -> None:
             rev = s.get(Revision, model.current_revision_id)
             for sf in staged:
                 library.store_imported_file_sync(s, model=model, revision=rev, staged=sf)
+            # T2: gallery images land the SAME way as any other imported
+            # file (Blob + File in this revision, thumb derivative pipeline
+            # dispatched as usual) -- `store_imported_file_sync` is what
+            # gets the Blob row that `cover_blob_hash` below points at
+            # actually committed, so the FK it sets is always valid.
+            for sf in staged_images:
+                library.store_imported_file_sync(s, model=model, revision=rev, staged=sf)
+            if cover_staged is not None:
+                model.cover_blob_hash = cover_staged.blob_hash
             imp = s.get(Import, import_id)
             imp.meta = {
                 "cover_url": meta.cover_url,
                 "license": meta.license,
                 "files": [sf.rel_path for sf in staged],
+                "images": len(staged_images),
             }
             _set_state(s, imp, ImportState.DONE)
     except Exception as exc:  # noqa: BLE001 -- failure is a recorded terminal state, not a crash
-        for sf in staged:
+        for sf in [*staged, *staged_images]:
             sf.spool_path.unlink(missing_ok=True)
         message = str(exc) if isinstance(exc, ImportRejected) else f"import failed: {exc}"
         if not isinstance(exc, ImportRejected):

@@ -34,6 +34,11 @@ class ImportMetadata:
     author: str | None = None
     license: str | None = None
     cover_url: str | None = None
+    # T2 (site cover + gallery images): every picture the site's own model
+    # page carries, cover first, deduped -- ``cover_url`` above stays a plain
+    # mirror of ``image_urls[0]`` for compatibility with existing readers.
+    # May be empty (a model with no captured pictures at all).
+    image_urls: list[str] = field(default_factory=list)
     tags: tuple[str, ...] = ()
     reject_reason: str | None = None
 

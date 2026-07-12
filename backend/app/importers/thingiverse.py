@@ -96,6 +96,16 @@ class ThingiverseImporter:
     def fetch_metadata(self, external_id: str) -> ImportMetadata:
         d = self._thing(external_id)
         images = (d.get("zip_data") or {}).get("images") or []
+        # T2: gallery download wants every zip_data image, cover (images[0])
+        # first -- deduped since the site occasionally repeats an asset URL
+        # across entries.
+        image_urls: list[str] = []
+        seen: set[str] = set()
+        for img in images:
+            url = (img or {}).get("url")
+            if url and url not in seen:
+                seen.add(url)
+                image_urls.append(url)
         return ImportMetadata(
             site=self.site,
             external_id=str(external_id),
@@ -105,6 +115,7 @@ class ThingiverseImporter:
             author=(d.get("creator") or {}).get("name"),
             license=_map_license(d.get("license")),
             cover_url=images[0].get("url") if images else None,
+            image_urls=image_urls,
             tags=tuple(t["name"] for t in d.get("tags", []) if t.get("name")),
         )
 

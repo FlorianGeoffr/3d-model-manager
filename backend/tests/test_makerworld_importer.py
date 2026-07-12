@@ -163,6 +163,40 @@ def test_fetch_metadata_maps_verified_fields(monkeypatch):
     assert meta.reject_reason is None
 
 
+def test_fetch_metadata_image_urls_are_cover_first_and_deduped(monkeypatch):
+    # DESIGN_3018898's one instance carries a "pictures" list distinct from
+    # the design-level "coverUrl" -- image_urls must lead with coverUrl, then
+    # append the instance picture(s), with no duplicates.
+    monkeypatch.setattr(makerworld, "_client", lambda: _mock_design_client(fx.DESIGN_3018898))
+    meta = MakerWorldImporter().fetch_metadata(fx.DESIGN_ID)
+    assert meta.image_urls == [
+        fx.DESIGN_3018898["coverUrl"],
+        fx.DESIGN_3018898["instances"][0]["pictures"][0]["url"],
+    ]
+
+
+def test_fetch_metadata_image_urls_falls_back_to_cover_alone_without_instances(monkeypatch):
+    design = {**fx.DESIGN_3018898, "instances": []}
+    monkeypatch.setattr(makerworld, "_client", lambda: _mock_design_client(design))
+    meta = MakerWorldImporter().fetch_metadata(fx.DESIGN_ID)
+    assert meta.image_urls == [fx.DESIGN_3018898["coverUrl"]]
+
+
+def test_fetch_metadata_image_urls_dedupes_a_picture_matching_the_cover(monkeypatch):
+    design = {
+        **fx.DESIGN_3018898,
+        "instances": [
+            {
+                **fx.DESIGN_3018898["instances"][0],
+                "pictures": [{"url": fx.DESIGN_3018898["coverUrl"]}],
+            }
+        ],
+    }
+    monkeypatch.setattr(makerworld, "_client", lambda: _mock_design_client(design))
+    meta = MakerWorldImporter().fetch_metadata(fx.DESIGN_ID)
+    assert meta.image_urls == [fx.DESIGN_3018898["coverUrl"]]
+
+
 def test_paid_model_is_rejected_with_clear_message(monkeypatch):
     monkeypatch.setattr(makerworld, "_client", lambda: _mock_design_client(fx.DESIGN_PAID))
     meta = MakerWorldImporter().fetch_metadata(str(fx.DESIGN_PAID["id"]))

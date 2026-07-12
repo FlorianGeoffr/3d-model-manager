@@ -645,6 +645,21 @@ def _gallery_cover_url(
     return None
 
 
+def _gallery_render_url(model: Model, aggregate: _GalleryAggregate | None) -> str | None:
+    """The revision's own assembly-thumbnail render URL alone (T2), when its
+    derivative is OK -- deliberately NOT the ``_gallery_cover_url`` priority
+    chain above, which may prefer ``cover_blob_hash`` (a site cover image, or
+    a user-picked file) over the assembly render even when both are ready.
+    ``render_url`` always names the render specifically, independent of
+    whatever ``cover`` is currently showing; ``None`` until it's ready.
+    Reuses the SAME aggregate `_gallery_aggregates` already computed for
+    ``cover`` -- no extra query.
+    """
+    if aggregate is not None and aggregate.assembly_ok:
+        return f"/api/revisions/{model.current_revision_id}/assembly-thumb"
+    return None
+
+
 async def build_model_summaries(db: AsyncSession, models: list[Model]) -> list[ModelSummary]:
     """Build ``ModelSummary`` rows for an arbitrary list of already-loaded
     ``models`` (Branch 4 Task 1) -- not just one gallery page. Shared by
@@ -670,6 +685,7 @@ async def build_model_summaries(db: AsyncSession, models: list[Model]) -> list[M
                 file_count=agg.file_count if agg else 0,
                 formats=agg.formats if agg else [],
                 cover=_gallery_cover_url(m, agg, cover_ok_hashes),
+                render_url=_gallery_render_url(m, agg),
                 print_time_s=agg.print_time_s if agg else None,
                 has_sliced=agg.has_sliced if agg else False,
                 source_site=m.source_site,

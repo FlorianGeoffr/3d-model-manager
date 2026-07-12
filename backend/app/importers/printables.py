@@ -42,11 +42,24 @@ query PrintProfile($id: ID!) {
     license { name }
     tags { name }
     image { filePath }
+    images { filePath }
     premium
     stls { id name fileSize }
   }
 }
 """.strip()
+# `images { filePath }` (T2, gallery download) is UNVERIFIED against the live
+# schema -- introspection/grounding only confirmed the singular cover `image`
+# field (SPEC/FULL line 229); this plural sibling is a best guess at the
+# gallery-list shape, named/shaped consistently with `image` and with
+# `searchPrints2`'s own `image { filePath }` below. `_image_urls` parses it
+# tolerantly (missing key, empty list, or an item without `filePath` all
+# degrade to "just the cover", never an error) -- but if the live field name
+# or nesting differs, the GraphQL response would carry a top-level `errors`
+# entry for it, which `_post` turns into a hard `RuntimeError` that would
+# regress `fetch_metadata` itself. MUST be reconciled against a live query
+# before this is trusted in production (mirrors makerworld.py's own
+# UNVERIFIED `_fetch_authed_download_url` posture).
 
 # Discovered live (Workstream B task B1) via GraphQL introspection on the
 # anonymous endpoint: the root Query type has no field literally named
@@ -224,6 +237,32 @@ def _paged_items(client: httpx.Client, query: str, base_variables: dict, page: i
     return items[(page - 1) * _SEARCH_PAGE_SIZE :]
 
 
+def _image_urls(p: dict) -> list[str]:
+    """Cover-first, deduped gallery picture list (T2) for print JSON ``p``:
+    the singular ``image.filePath`` (the existing, verified cover) plus every
+    ``images[].filePath`` (the UNVERIFIED gallery field -- see PRINT_QUERY's
+    comment), all resolved through the same ``_IMG_BASE`` the cover already
+    uses. Tolerant of a missing/empty/malformed ``images`` list -- degrades
+    to just the cover, never raises."""
+    urls: list[str] = []
+    seen: set[str] = set()
+    image = p.get("image") or {}
+    cover_path = image.get("filePath")
+    if cover_path:
+        cover = f"{_IMG_BASE}{cover_path}"
+        urls.append(cover)
+        seen.add(cover)
+    for img in p.get("images") or []:
+        path = (img or {}).get("filePath")
+        if not path:
+            continue
+        url = f"{_IMG_BASE}{path}"
+        if url not in seen:
+            seen.add(url)
+            urls.append(url)
+    return urls
+
+
 class PrintablesImporter:
     site: ClassVar[ImportSite] = ImportSite.PRINTABLES
 
@@ -259,6 +298,7 @@ class PrintablesImporter:
             author=(p.get("user") or {}).get("publicUsername"),
             license=(p.get("license") or {}).get("name"),
             cover_url=cover,
+            image_urls=_image_urls(p),
             tags=tuple(t["name"] for t in p.get("tags", []) if t.get("name")),
             reject_reason=reject,
         )

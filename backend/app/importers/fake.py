@@ -25,9 +25,19 @@ class FakeImporter:
     author: str | None = "fakeuser"
     license: str | None = "CC-BY-4.0"
     cover_url: str | None = "https://fake.test/cover.png"
+    # T2: gallery-image URLs to report from fetch_metadata -- empty by
+    # default so existing tests (that never set this) don't suddenly start
+    # attempting image downloads. Tests exercising the image-download flow
+    # set this to FAKE_DL-prefixed URLs and populate matching `image_bytes`.
+    image_urls: tuple[str, ...] = ()
     tags: tuple[str, ...] = ("fake", "test")
     reject_reason: str | None = None
     files: dict[str, bytes] = field(default_factory=dict)
+    # T2: byte content served for `image_urls` entries -- kept SEPARATE from
+    # `files` above (rather than reusing it) because `list_files()` treats
+    # EVERY `files` entry as one of the model's own downloadable files;
+    # gallery images are the site's own photos, never one of those.
+    image_bytes: dict[str, bytes] = field(default_factory=dict)
 
     def canonicalize(self, url: str) -> str | None:
         if url.startswith(FAKE_BASE):
@@ -44,6 +54,7 @@ class FakeImporter:
             author=self.author,
             license=self.license,
             cover_url=self.cover_url,
+            image_urls=list(self.image_urls),
             tags=self.tags,
             reject_reason=self.reject_reason,
         )

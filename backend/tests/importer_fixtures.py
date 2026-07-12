@@ -24,6 +24,12 @@ def fake_import(monkeypatch: pytest.MonkeyPatch) -> FakeImporter:
         name = str(request.url).removeprefix(FAKE_DL)
         if name in fake.files:
             return httpx.Response(200, content=fake.files[name])
+        # T2: gallery-image bytes -- a SEPARATE map from `files` above (see
+        # FakeImporter.image_bytes's docstring) so setting up an image
+        # download in a test never also makes that image show up as one of
+        # the model's own files via `list_files()`.
+        if name in fake.image_bytes:
+            return httpx.Response(200, content=fake.image_bytes[name])
         return httpx.Response(404, text="not found")
 
     monkeypatch.setattr(

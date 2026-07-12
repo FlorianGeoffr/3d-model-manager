@@ -564,3 +564,193 @@ async def test_mislabeled_3mf_zip_download_is_renamed_not_extracted(
     assert file.rel_path == "CoolProfile-123.3mf"
     blob = await db_session.get(Blob, file.blob_hash)
     assert blob.format == BlobFormat.THREEMF
+
+
+# ---------------------------------------------------------------------------
+# feat/import-fidelity T2: site cover + gallery image download, wired into
+# `import_from_url` right after T1's zip/3MF step.
+# ---------------------------------------------------------------------------
+
+
+async def _revision_rel_paths(db_session, model_id: int) -> list[str]:
+    model = await db_session.get(Model, model_id)
+    rows = (
+        (await db_session.execute(select(File).where(File.revision_id == model.current_revision_id)))
+        .scalars()
+        .all()
+    )
+    return sorted(f.rel_path for f in rows)
+
+
+@pytest.mark.asyncio
+async def test_gallery_images_are_downloaded_stored_and_set_as_cover(
+    db_session, library_root, data_dir, fake_import
+):
+    fake_import.files = {"cube.stl": corpus.box_stl()}
+    fake_import.image_bytes = {
+        "cover.png": corpus.red_png(),
+        "gallery1.webp": corpus.red_webp(),
+    }
+    fake_import.image_urls = (f"{FAKE_DL}cover.png", f"{FAKE_DL}gallery1.webp")
+    imp = Import(
+        url="https://fake.test/thing/42",
+        site=ImportSite.THINGIVERSE,
+        external_id="42",
+        state=ImportState.PENDING,
+    )
+    db_session.add(imp)
+    await db_session.commit()
+    await db_session.refresh(imp)
+
+    import_from_url(imp.id)
+
+    await db_session.refresh(imp)
+    assert imp.state == ImportState.DONE
+    assert imp.meta["images"] == 2
+    assert imp.meta["files"] == ["cube.stl"]  # gallery images are separate from `files`
+
+    rel_paths = await _revision_rel_paths(db_session, imp.model_id)
+    assert rel_paths == ["cube.stl", "images/01-cover.png", "images/02.webp"]
+
+    model = await db_session.get(Model, imp.model_id)
+    cover_file = next(
+        f
+        for f in (
+            await db_session.execute(select(File).where(File.revision_id == model.current_revision_id))
+        )
+        .scalars()
+        .all()
+        if f.rel_path == "images/01-cover.png"
+    )
+    assert model.cover_blob_hash == cover_file.blob_hash
+
+
+@pytest.mark.asyncio
+async def test_a_non_cover_gallery_image_404_still_completes_the_import_with_cover_set(
+    db_session, library_root, data_dir, fake_import
+):
+    fake_import.files = {"cube.stl": corpus.box_stl()}
+    fake_import.image_bytes = {
+        "cover.png": corpus.red_png(),
+        # "missing.png" is deliberately absent -> the fake transport 404s
+        # it, same convention as the file-download 404 tests above.
+    }
+    fake_import.image_urls = (f"{FAKE_DL}cover.png", f"{FAKE_DL}missing.png")
+    imp = Import(
+        url="https://fake.test/thing/42",
+        site=ImportSite.THINGIVERSE,
+        external_id="42",
+        state=ImportState.PENDING,
+    )
+    db_session.add(imp)
+    await db_session.commit()
+    await db_session.refresh(imp)
+
+    import_from_url(imp.id)
+
+    await db_session.refresh(imp)
+    assert imp.state == ImportState.DONE  # a bad gallery image never fails the import
+    assert imp.meta["images"] == 1  # only the cover made it
+
+    rel_paths = await _revision_rel_paths(db_session, imp.model_id)
+    assert rel_paths == ["cube.stl", "images/01-cover.png"]
+
+    model = await db_session.get(Model, imp.model_id)
+    assert model.cover_blob_hash is not None
+
+
+@pytest.mark.asyncio
+async def test_a_failed_cover_image_leaves_no_cover_blob_hash_but_still_stores_the_rest(
+    db_session, library_root, data_dir, fake_import
+):
+    """Brief's explicit second scenario: when the COVER itself (image_urls[0])
+    fails, `cover_blob_hash` must stay unset -- NOT get promoted to the next
+    successfully-downloaded image -- while that next image is still stored as
+    an ordinary gallery file."""
+    fake_import.files = {"cube.stl": corpus.box_stl()}
+    fake_import.image_bytes = {
+        "gallery1.png": corpus.red_png(),
+        # "cover.png" deliberately absent -> the cover slot 404s.
+    }
+    fake_import.image_urls = (f"{FAKE_DL}cover.png", f"{FAKE_DL}gallery1.png")
+    imp = Import(
+        url="https://fake.test/thing/42",
+        site=ImportSite.THINGIVERSE,
+        external_id="42",
+        state=ImportState.PENDING,
+    )
+    db_session.add(imp)
+    await db_session.commit()
+    await db_session.refresh(imp)
+
+    import_from_url(imp.id)
+
+    await db_session.refresh(imp)
+    assert imp.state == ImportState.DONE
+    assert imp.meta["images"] == 1
+
+    rel_paths = await _revision_rel_paths(db_session, imp.model_id)
+    # Numbered by ORIGINAL position (2nd URL), not renumbered down to "01"
+    # just because the cover slot failed.
+    assert rel_paths == ["cube.stl", "images/02.png"]
+
+    model = await db_session.get(Model, imp.model_id)
+    assert model.cover_blob_hash is None
+
+
+@pytest.mark.asyncio
+async def test_no_image_urls_means_zero_images_and_no_cover_blob_hash(
+    db_session, library_root, data_dir, fake_import
+):
+    # Default FakeImporter.image_urls is empty -- confirms the T2 addition
+    # is a pure no-op for importers/tests that never populate it.
+    fake_import.files = {"cube.stl": corpus.box_stl()}
+    imp = Import(
+        url="https://fake.test/thing/42",
+        site=ImportSite.THINGIVERSE,
+        external_id="42",
+        state=ImportState.PENDING,
+    )
+    db_session.add(imp)
+    await db_session.commit()
+    await db_session.refresh(imp)
+
+    import_from_url(imp.id)
+
+    await db_session.refresh(imp)
+    assert imp.state == ImportState.DONE
+    assert imp.meta["images"] == 0
+
+    model = await db_session.get(Model, imp.model_id)
+    assert model.cover_blob_hash is None
+    assert await _revision_rel_paths(db_session, imp.model_id) == ["cube.stl"]
+
+
+@pytest.mark.asyncio
+async def test_more_than_eight_image_urls_are_capped_at_eight(
+    db_session, library_root, data_dir, fake_import
+):
+    urls = tuple(f"{FAKE_DL}img{i}.png" for i in range(10))
+    fake_import.files = {"cube.stl": corpus.box_stl()}
+    fake_import.image_bytes = {f"img{i}.png": corpus.red_png() for i in range(10)}
+    fake_import.image_urls = urls
+    imp = Import(
+        url="https://fake.test/thing/42",
+        site=ImportSite.THINGIVERSE,
+        external_id="42",
+        state=ImportState.PENDING,
+    )
+    db_session.add(imp)
+    await db_session.commit()
+    await db_session.refresh(imp)
+
+    import_from_url(imp.id)
+
+    await db_session.refresh(imp)
+    assert imp.state == ImportState.DONE
+    assert imp.meta["images"] == 8
+
+    rel_paths = await _revision_rel_paths(db_session, imp.model_id)
+    image_paths = [p for p in rel_paths if p.startswith("images/")]
+    assert len(image_paths) == 8
+    assert "images/09.png" not in image_paths and "images/10.png" not in image_paths

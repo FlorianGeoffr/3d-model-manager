@@ -87,6 +87,12 @@ class ModelSummary(BaseModel):
     file_count: int
     formats: list[BlobFormat]
     cover: str | None = None
+    # T2: the revision's own assembly-thumbnail render URL specifically
+    # (``None`` until that derivative is OK) -- independent of ``cover``
+    # above, which may show a site/user cover image instead even once the
+    # render is also ready. Lets the gallery card offer "view the render"
+    # separately from whatever it's using as the card's cover.
+    render_url: str | None = None
     print_time_s: int | None = None
     has_sliced: bool = False
     source_site: str | None = None

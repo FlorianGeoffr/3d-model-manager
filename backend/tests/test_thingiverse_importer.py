@@ -59,6 +59,39 @@ def test_fetch_metadata_normalizes(imp):
     assert meta.reject_reason is None
 
 
+def test_fetch_metadata_image_urls_cover_first_from_zip_data_images(imp):
+    meta = imp.fetch_metadata(fx.THING_ID)
+    assert meta.image_urls == [
+        "https://cdn.thingiverse.com/renders/cover.jpg",
+        "https://cdn.thingiverse.com/renders/side.jpg",
+    ]
+    assert meta.image_urls[0] == meta.cover_url
+
+
+def test_fetch_metadata_image_urls_dedupes_repeated_urls(monkeypatch):
+    thing = {
+        **fx.THING_763622,
+        "zip_data": {
+            **fx.THING_763622["zip_data"],
+            "images": [
+                {"name": "cover.jpg", "url": "https://cdn.thingiverse.com/renders/cover.jpg"},
+                {"name": "dup.jpg", "url": "https://cdn.thingiverse.com/renders/cover.jpg"},
+            ],
+        },
+    }
+    monkeypatch.setattr(thingiverse, "_client", lambda token=None: _mock_client(thing))
+    meta = ThingiverseImporter().fetch_metadata(fx.THING_ID)
+    assert meta.image_urls == ["https://cdn.thingiverse.com/renders/cover.jpg"]
+
+
+def test_fetch_metadata_image_urls_empty_without_images(monkeypatch):
+    thing = {**fx.THING_763622, "zip_data": {**fx.THING_763622["zip_data"], "images": []}}
+    monkeypatch.setattr(thingiverse, "_client", lambda token=None: _mock_client(thing))
+    meta = ThingiverseImporter().fetch_metadata(fx.THING_ID)
+    assert meta.image_urls == []
+    assert meta.cover_url is None
+
+
 def test_list_files_from_zip_data(imp):
     files = imp.list_files(fx.THING_ID)
     assert [f.filename for f in files] == ["Marvin.stl", "Marvin_v2.stl"]

@@ -475,6 +475,72 @@ async def test_gallery_cover_is_none_when_nothing_is_ready(
 
 
 # ---------------------------------------------------------------------------
+# gallery: render_url (feat/import-fidelity T2) -- the assembly-thumb render
+# URL specifically, independent of whatever `cover` is showing.
+# ---------------------------------------------------------------------------
+
+
+async def test_gallery_render_url_present_when_assembly_thumb_is_ok(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    created = await _create_model(authenticated_client, "Render Ready")
+    model = await db_session.get(Model, created["id"])
+    revision = await db_session.get(Revision, model.current_revision_id)
+    await seed_file(model, revision, "part.stl", b"solid render-bytes")
+    db_session.add(AssemblyThumb(revision_id=revision.id, status=DerivativeStatus.OK))
+    await db_session.commit()
+
+    item = await _gallery_item(authenticated_client, created["slug"])
+
+    assert item["render_url"] == f"/api/revisions/{revision.id}/assembly-thumb"
+
+
+async def test_gallery_render_url_is_none_when_assembly_thumb_not_ok(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    created = await _create_model(authenticated_client, "Render Not Ready")
+    model = await db_session.get(Model, created["id"])
+    revision = await db_session.get(Revision, model.current_revision_id)
+    await seed_file(model, revision, "part.stl", b"no-assembly-thumb-yet")
+
+    item = await _gallery_item(authenticated_client, created["slug"])
+
+    assert item["render_url"] is None
+
+
+async def test_gallery_render_url_independent_of_cover_blob_hash_chain(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    """`cover_blob_hash` outranks the assembly thumb in the `cover` chain --
+    but `render_url` must still surface the assembly-thumb URL on its own,
+    proving the two fields are genuinely independent (T2 brief: "expose it
+    as its own field WITHOUT changing the existing cover chain semantics")."""
+    created = await _create_model(authenticated_client, "Cover And Render Both Ready")
+    model = await db_session.get(Model, created["id"])
+    revision = await db_session.get(Revision, model.current_revision_id)
+    file = await seed_file(model, revision, "cover.png", b"solid cover-bytes")
+    db_session.add(
+        Derivative(
+            blob_hash=file.blob_hash, kind=DerivativeKind.THUMB_256, status=DerivativeStatus.OK
+        )
+    )
+    db_session.add(AssemblyThumb(revision_id=revision.id, status=DerivativeStatus.OK))
+    model.cover_blob_hash = file.blob_hash
+    await db_session.commit()
+
+    item = await _gallery_item(authenticated_client, created["slug"])
+
+    assert item["cover"] == f"/api/blobs/{file.blob_hash}/thumb?size=256"
+    assert item["render_url"] == f"/api/revisions/{revision.id}/assembly-thumb"
+
+
+# ---------------------------------------------------------------------------
 # gallery: has_sliced filter + print_time_s aggregation (Task 7)
 # ---------------------------------------------------------------------------
 

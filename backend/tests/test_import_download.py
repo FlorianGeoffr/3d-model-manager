@@ -36,3 +36,81 @@ def test_stream_remote_to_spool_http_error_leaves_no_spool(monkeypatch, data_dir
     # spool dir exists but holds no leftover file
     spooled = list((get_settings().data_dir / "spool").glob("*"))
     assert spooled == []
+
+
+# ---------------------------------------------------------------------------
+# feat/import-fidelity T2: Content-Type -> extension mapping + the
+# `rel_path_from_response` override `app.tasks.importing`'s gallery-image
+# download uses when a URL's own path suffix isn't a recognizable image
+# extension.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "content_type,expected",
+    [
+        ("image/png", "png"),
+        ("image/jpeg", "jpg"),
+        ("image/webp", "webp"),
+        ("image/png; charset=binary", "png"),
+        ("IMAGE/PNG", "png"),
+        ("text/html", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_image_ext_from_content_type(content_type, expected):
+    assert download.image_ext_from_content_type(content_type) == expected
+
+
+def test_stream_remote_to_spool_rel_path_from_response_overrides_the_placeholder(
+    monkeypatch, data_dir
+):
+    body = b"fake-webp-bytes"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body, headers={"content-type": "image/webp"})
+
+    monkeypatch.setattr(
+        download,
+        "_download_client",
+        lambda: httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True),
+    )
+    get_settings.cache_clear()
+    staged = download.stream_remote_to_spool(
+        get_settings(),
+        url="https://files.test/cover",  # no recognizable suffix
+        rel_path="images/01-cover.placeholder",
+        rel_path_from_response=lambda resp: (
+            f"images/01-cover.{download.image_ext_from_content_type(resp.headers.get('content-type'))}"
+        ),
+    )
+    assert staged.rel_path == "images/01-cover.webp"
+    assert staged.spool_path.read_bytes() == body
+
+
+def test_stream_remote_to_spool_rel_path_from_response_raising_leaves_no_spool(
+    monkeypatch, data_dir
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"<html>not an image</html>", headers={"content-type": "text/html"})
+
+    monkeypatch.setattr(
+        download,
+        "_download_client",
+        lambda: httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True),
+    )
+    get_settings.cache_clear()
+
+    def _boom(resp: httpx.Response) -> str:
+        raise ValueError(f"unrecognized image content-type {resp.headers.get('content-type')!r}")
+
+    with pytest.raises(ValueError, match="unrecognized image content-type"):
+        download.stream_remote_to_spool(
+            get_settings(),
+            url="https://files.test/cover",
+            rel_path="images/01-cover.placeholder",
+            rel_path_from_response=_boom,
+        )
+    spooled = list((get_settings().data_dir / "spool").glob("*"))
+    assert spooled == []

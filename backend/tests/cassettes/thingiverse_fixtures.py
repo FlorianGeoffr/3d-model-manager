@@ -23,6 +23,10 @@ THING_763622 = {
         ],
         "images": [
             {"name": "cover.jpg", "url": "https://cdn.thingiverse.com/renders/cover.jpg"},
+            # T2 (gallery download): a second real-shaped image entry, added
+            # to exercise image_urls beyond just the cover -- same {name,
+            # url} shape as the first, not independently live-captured.
+            {"name": "side.jpg", "url": "https://cdn.thingiverse.com/renders/side.jpg"},
         ],
     },
 }

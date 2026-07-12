@@ -60,6 +60,30 @@ def test_fetch_metadata_free_model(monkeypatch):
     assert meta.reject_reason is None
 
 
+def test_fetch_metadata_image_urls_cover_first_deduped_and_tolerant(monkeypatch):
+    monkeypatch.setattr(printables, "_client", lambda: _mock_client(fx.PRINT_3161))
+    meta = PrintablesImporter().fetch_metadata(fx.MODEL_ID)
+    assert meta.image_urls == [
+        "https://media.printables.com/media/prints/3161/cover.png",
+        "https://media.printables.com/media/prints/3161/images/side.jpg",
+    ]
+    assert meta.image_urls[0] == meta.cover_url
+
+
+def test_fetch_metadata_image_urls_falls_back_to_cover_alone_without_images_field(monkeypatch):
+    print_body = {
+        "data": {
+            "print": {
+                **fx.PRINT_3161["data"]["print"],
+                "images": [],
+            }
+        }
+    }
+    monkeypatch.setattr(printables, "_client", lambda: _mock_client(print_body))
+    meta = PrintablesImporter().fetch_metadata(fx.MODEL_ID)
+    assert meta.image_urls == ["https://media.printables.com/media/prints/3161/cover.png"]
+
+
 def test_premium_model_is_rejected_with_clear_message(monkeypatch):
     monkeypatch.setattr(printables, "_client", lambda: _mock_client(fx.PRINT_3161_PREMIUM))
     meta = PrintablesImporter().fetch_metadata(fx.MODEL_ID)

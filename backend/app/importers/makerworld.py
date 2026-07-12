@@ -256,6 +256,28 @@ def _profile(token: str) -> tuple[int, str]:
     return int(body["uid"]), str(body["name"])
 
 
+def _image_urls(d: dict) -> list[str]:
+    """Cover-first, deduped gallery picture list (T2) for the design JSON
+    ``d``. There is no single design-level "designPictures"/"modelPictures"
+    field on the real payload (grounding probe design 3018898, mirrored in
+    ``tests/cassettes/makerworld_fixtures.py``) -- the only actual picture
+    list is each ``instances[].pictures[].url`` (per-print-profile photos).
+    Falls back to just ``[coverUrl]`` when no instance carries pictures."""
+    urls: list[str] = []
+    seen: set[str] = set()
+    cover = d.get("coverUrl")
+    if cover:
+        urls.append(cover)
+        seen.add(cover)
+    for inst in d.get("instances") or []:
+        for pic in inst.get("pictures") or []:
+            url = (pic or {}).get("url")
+            if url and url not in seen:
+                seen.add(url)
+                urls.append(url)
+    return urls
+
+
 class MakerWorldImporter:
     site: ClassVar[ImportSite] = ImportSite.MAKERWORLD
 
@@ -289,6 +311,7 @@ class MakerWorldImporter:
             author=(d.get("designCreator") or {}).get("name"),
             license=d.get("license"),
             cover_url=d.get("coverUrl"),
+            image_urls=_image_urls(d),
             tags=tuple(t for t in d.get("tags", []) if t),
             reject_reason=reject,
         )

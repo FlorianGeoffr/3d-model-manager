@@ -14,6 +14,7 @@ import { PrinterPage } from "@/pages/PrinterPage";
 import { QueuePage } from "@/pages/QueuePage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { ViewerWindowPage } from "@/pages/ViewerWindowPage";
+import { parseCollectionsSearch } from "@/pages/collectionsSearch";
 import { parseLibrarySearch } from "@/pages/librarySearch";
 import { parseViewerWindowSearch } from "@/pages/viewerWindowSearch";
 
@@ -106,6 +107,7 @@ const importRedirectRoute = createRoute({
 const collectionsRoute = createRoute({
   getParentRoute: () => authenticatedRoute,
   path: "/collections",
+  validateSearch: parseCollectionsSearch,
   component: CollectionsPage,
 });
 

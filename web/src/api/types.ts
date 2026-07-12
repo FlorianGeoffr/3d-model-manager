@@ -638,6 +638,12 @@ export interface PendingImport {
   url: string;
   thumbnail_url: string | null;
   created_at: string;
+  // R7 T1: the collection this item should be GROUPED/DISPLAYED under,
+  // resolved server-side from real membership (often more specific than the
+  // stamped `collection_id` above -- see `PendingImportOut` in
+  // backend/app/schemas/collections.py).
+  group_collection_id: number;
+  group_title: string;
 }
 
 // -- Bambu Lab account (backend/app/schemas/settings.py, Workstream B task

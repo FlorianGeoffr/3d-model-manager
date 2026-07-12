@@ -29,59 +29,60 @@ import { formatDate } from "@/lib/format";
  * should do with each (auto-import vs review), the review queue, and a manual
  * "Sync now". Browsing a site's lists needs that site's credential connected in
  * Settings (MakerWorld web token / Thingiverse App Token / Printables account);
- * a site without one contributes nothing, hence the explicit empty state. */
-export function SavedPanel() {
+ * a site without one contributes nothing, hence the explicit empty state.
+ *
+ * R7 T2: `CollectionsPage` used to stack all three cards below; the page is
+ * now three tabs, so each card is its own export placed independently
+ * (Followed + Browse under "Collections", the queue under its own "Review
+ * queue" tab) instead of one `SavedPanel` wrapper. Each card fetches its own
+ * data via React Query, which dedupes by query key, so calling e.g.
+ * `useFollowedCollections()` from both `FollowedCard` and `BrowseCard` is a
+ * single shared request, not two. */
+export function FollowedCard() {
   const followed = useFollowedCollections();
-  const pending = usePendingImports();
   const syncNow = useSyncCollectionsNow();
 
   return (
-    <div className="space-y-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>Followed collections</CardTitle>
-          <CardDescription>
-            Lists you follow are re-checked on each sync. New models are imported straight away
-            (auto) or queued for you to approve (review).
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              type="button"
-              disabled={syncNow.isPending}
-              onClick={() => syncNow.mutate()}
-            >
-              <RefreshCwIcon />
-              {syncNow.isPending ? "Syncing…" : "Sync now"}
-            </Button>
-            {syncNow.isError && (
-              <p role="alert" className="text-sm text-destructive">
-                {syncNow.error instanceof ApiError ? syncNow.error.detail : "Could not start the sync."}
-              </p>
-            )}
-          </div>
-
-          {followed.isLoading ? (
-            <Skeleton className="h-20 w-full rounded-lg" />
-          ) : (followed.data ?? []).length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              You aren&apos;t following any collections yet.
+    <Card>
+      <CardHeader>
+        <CardTitle>Followed collections</CardTitle>
+        <CardDescription>
+          Lists you follow are re-checked on each sync. New models are imported straight away
+          (auto) or queued for you to approve (review).
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            disabled={syncNow.isPending}
+            onClick={() => syncNow.mutate()}
+          >
+            <RefreshCwIcon />
+            {syncNow.isPending ? "Syncing…" : "Sync now"}
+          </Button>
+          {syncNow.isError && (
+            <p role="alert" className="text-sm text-destructive">
+              {syncNow.error instanceof ApiError ? syncNow.error.detail : "Could not start the sync."}
             </p>
-          ) : (
-            <div className="space-y-2">
-              {(followed.data ?? []).map((collection) => (
-                <FollowedRow key={collection.id} collection={collection} />
-              ))}
-            </div>
           )}
-        </CardContent>
-      </Card>
+        </div>
 
-      <ReviewQueue items={pending.data ?? []} loading={pending.isLoading} followed={followed.data ?? []} />
-
-      <BrowseLists />
-    </div>
+        {followed.isLoading ? (
+          <Skeleton className="h-20 w-full rounded-lg" />
+        ) : (followed.data ?? []).length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            You aren&apos;t following any collections yet.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {(followed.data ?? []).map((collection) => (
+              <FollowedRow key={collection.id} collection={collection} />
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -128,89 +129,59 @@ function FollowedRow({ collection }: { collection: FollowedCollection }) {
   );
 }
 
-const REVIEW_QUEUE_STORAGE_KEY = "review-queue-open";
-
-/** Same "lazy-read, best-effort write" localStorage idiom as
- * `useViewerTools`'s `readStoredGrid`/`writeStoredGrid` (viewer/tools.ts):
- * wrapped in try/catch (private browsing / quota / disabled storage), and
- * `null` (never set) defaults to OPEN rather than collapsed. */
-function readStoredQueueOpen(): boolean {
-  if (typeof window === "undefined") return true;
-  try {
-    const raw = window.localStorage.getItem(REVIEW_QUEUE_STORAGE_KEY);
-    return raw === null ? true : raw === "true";
-  } catch {
-    return true;
-  }
-}
-
-function writeStoredQueueOpen(open: boolean): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(REVIEW_QUEUE_STORAGE_KEY, String(open));
-  } catch {
-    // Best-effort only (private browsing / quota exceeded).
-  }
-}
-
 interface PendingGroup {
-  collectionId: number;
+  groupCollectionId: number;
   title: string;
   items: PendingImport[];
 }
 
-/** Groups pending items by their source collection: `GET /collections/pending`
- * carries `collection_id` but not the collection's title, so this joins
- * against the already-loaded `useFollowedCollections()` list client-side (no
- * backend change). A `collection_id` with no matching followed row -- the
- * user unfollowed the list after items were queued -- falls back to
- * `Collection #<id>` instead of vanishing. Groups sort by resolved title so
- * the section order is stable; items keep the API's own order within a
- * group. */
-function groupPendingItems(items: PendingImport[], followed: FollowedCollection[]): PendingGroup[] {
-  const titleById = new Map(followed.map((collection) => [collection.id, collection.title]));
-  const collectionOrder: number[] = [];
-  const byCollection = new Map<number, PendingImport[]>();
+/** Groups pending items by the server-resolved `group_collection_id`/
+ * `group_title` (R7 T1: `GET /collections/pending` now carries both, so this
+ * no longer joins against `useFollowedCollections()` client-side -- the
+ * backend already resolves real membership, including cases where two items
+ * share a legacy `collection_id` but belong to different display groups). A
+ * missing/empty `group_title` -- shouldn't happen given the field is
+ * required, but a defensive fallback costs nothing -- reads as
+ * `Collection #<id>` instead of a blank header. Groups sort by title so the
+ * section order is stable; items keep the API's own order within a group. */
+function groupPendingItems(items: PendingImport[]): PendingGroup[] {
+  const groupOrder: number[] = [];
+  const byGroup = new Map<number, PendingImport[]>();
+  const titleByGroup = new Map<number, string>();
   for (const item of items) {
-    const existing = byCollection.get(item.collection_id);
+    const key = item.group_collection_id;
+    const existing = byGroup.get(key);
     if (existing) {
       existing.push(item);
     } else {
-      byCollection.set(item.collection_id, [item]);
-      collectionOrder.push(item.collection_id);
+      byGroup.set(key, [item]);
+      groupOrder.push(key);
+      titleByGroup.set(key, item.group_title || `Collection #${key}`);
     }
   }
-  return collectionOrder
-    .map((collectionId) => ({
-      collectionId,
-      title: titleById.get(collectionId) ?? `Collection #${collectionId}`,
-      items: byCollection.get(collectionId) ?? [],
+  return groupOrder
+    .map((groupCollectionId) => ({
+      groupCollectionId,
+      title: titleByGroup.get(groupCollectionId) ?? `Collection #${groupCollectionId}`,
+      items: byGroup.get(groupCollectionId) ?? [],
     }))
     .sort((a, b) => a.title.localeCompare(b.title));
 }
 
-function ReviewQueue({
-  items,
-  loading,
-  followed,
-}: {
-  items: PendingImport[];
-  loading: boolean;
-  followed: FollowedCollection[];
-}) {
-  // Lazy init so the very first render already reflects the persisted
-  // choice -- no flash of the wrong state.
-  const [open, setOpen] = useState(readStoredQueueOpen);
+/** The queue's own tab (R7 T2) already gives the whole card room to breathe,
+ * so the card itself keeps a static header (title + count) -- only each
+ * GROUP inside it collapses now, independently, via a plain `useState` map
+ * (no localStorage; per-tab session state is enough). Every group defaults
+ * OPEN, so an id absent from the map (never toggled) reads as open. */
+export function ReviewQueueCard() {
+  const pending = usePendingImports();
+  const [openGroups, setOpenGroups] = useState<Record<number, boolean>>({});
 
-  function toggleOpen() {
-    setOpen((prev) => {
-      const next = !prev;
-      writeStoredQueueOpen(next);
-      return next;
-    });
+  function toggleGroup(groupCollectionId: number) {
+    setOpenGroups((prev) => ({ ...prev, [groupCollectionId]: !(prev[groupCollectionId] ?? true) }));
   }
 
-  if (loading) {
+  if (pending.isLoading) {
     return (
       <Card>
         <CardHeader>
@@ -226,6 +197,8 @@ function ReviewQueue({
       </Card>
     );
   }
+
+  const items = pending.data ?? [];
 
   if (items.length === 0) {
     return (
@@ -244,62 +217,71 @@ function ReviewQueue({
     );
   }
 
-  const groups = groupPendingItems(items, followed);
+  const groups = groupPendingItems(items);
 
   return (
     <Card>
       <CardHeader>
-        {/* The whole "takes up a lot of space" complaint is about this
-            non-empty case -- 100+ queued items push "Followed collections
-            to follow" way down the page -- so only this branch gets a
-            collapse toggle; the loading/empty branches above keep today's
-            fixed layout untouched. Collapsed = header row only, including
-            the description, since that's the space this exists to reclaim. */}
-        <button
-          type="button"
-          className="flex w-full items-center gap-2 text-left"
-          aria-expanded={open}
-          onClick={toggleOpen}
-        >
-          {open ? (
-            <ChevronDownIcon className="size-4 shrink-0 text-muted-foreground" />
-          ) : (
-            <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground" />
-          )}
+        <div className="flex items-center gap-2">
           <CardTitle className="flex-1">Review queue</CardTitle>
           <Badge variant="secondary" className="font-mono">
             {items.length}
           </Badge>
-        </button>
+        </div>
+        <CardDescription>
+          New models found in your <em>review</em> lists. Nothing enters the library until you
+          import it.
+        </CardDescription>
       </CardHeader>
-      {open && (
-        <CardContent className="space-y-5">
-          <CardDescription>
-            New models found in your <em>review</em> lists. Nothing enters the library until you
-            import it.
-          </CardDescription>
-          <div className="space-y-5" data-testid="review-queue">
-            {groups.map((group) => (
-              <ReviewGroup key={group.collectionId} group={group} />
-            ))}
-          </div>
-        </CardContent>
-      )}
+      <CardContent className="space-y-5">
+        <div className="space-y-5" data-testid="review-queue">
+          {groups.map((group) => (
+            <ReviewGroup
+              key={group.groupCollectionId}
+              group={group}
+              open={openGroups[group.groupCollectionId] ?? true}
+              onToggle={() => toggleGroup(group.groupCollectionId)}
+            />
+          ))}
+        </div>
+      </CardContent>
     </Card>
   );
 }
 
-function ReviewGroup({ group }: { group: PendingGroup }) {
+function ReviewGroup({
+  group,
+  open,
+  onToggle,
+}: {
+  group: PendingGroup;
+  open: boolean;
+  onToggle: () => void;
+}) {
   return (
     <div>
-      <h3 className="mb-2 text-sm font-medium text-foreground">
-        {group.title} <span className="font-normal text-muted-foreground">· {group.items.length}</span>
-      </h3>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
-        {group.items.map((item) => (
-          <ReviewCard key={item.id} item={item} />
-        ))}
-      </div>
+      <button
+        type="button"
+        className="mb-2 flex w-full items-center gap-2 text-left"
+        aria-expanded={open}
+        onClick={onToggle}
+      >
+        {open ? (
+          <ChevronDownIcon className="size-4 shrink-0 text-muted-foreground" />
+        ) : (
+          <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground" />
+        )}
+        <h3 className="text-sm font-medium text-foreground">
+          {group.title} <span className="font-normal text-muted-foreground">· {group.items.length}</span>
+        </h3>
+      </button>
+      {open && (
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+          {group.items.map((item) => (
+            <ReviewCard key={item.id} item={item} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -402,7 +384,7 @@ function AddCollectionByUrl() {
   );
 }
 
-function BrowseLists() {
+export function BrowseCard() {
   const lists = useRemoteLists();
   const follow = useFollowCollection();
   const followed = useFollowedCollections();

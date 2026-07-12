@@ -11,7 +11,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "@/api/client";
-import { SavedPanel } from "@/components/collections/SavedPanel";
+import { BrowseCard, FollowedCard, ReviewQueueCard } from "@/components/collections/SavedPanel";
 import type { FollowedCollection, PendingImport, RemoteList } from "@/api/types";
 
 const {
@@ -116,13 +116,19 @@ function fakePending(overrides: Partial<PendingImport> = {}): PendingImport {
     url: "https://makerworld.com/en/models/42",
     thumbnail_url: null,
     created_at: "2026-07-09T00:00:00Z",
+    group_collection_id: 1,
+    group_title: "Desk stuff",
     ...overrides,
   };
 }
 
-function renderPanel() {
+// Each card is now mounted standalone (R7 T2 split `SavedPanel` into
+// `FollowedCard`/`ReviewQueueCard`/`BrowseCard`, placed under different tabs
+// by `CollectionsPage`) -- still wrapped in a router since `BrowseCard`
+// links to `/settings`.
+function renderCard(Component: () => ReactNode) {
   const rootRoute = createRootRoute();
-  const home = createRoute({ getParentRoute: () => rootRoute, path: "/", component: SavedPanel });
+  const home = createRoute({ getParentRoute: () => rootRoute, path: "/", component: Component });
   const settings = createRoute({
     getParentRoute: () => rootRoute,
     path: "/settings",
@@ -149,16 +155,16 @@ beforeEach(() => {
   window.localStorage.clear();
 });
 
-describe("SavedPanel", () => {
+describe("FollowedCard", () => {
   it("runs a sync on demand", async () => {
-    renderPanel();
+    renderCard(FollowedCard);
     fireEvent.click(await screen.findByRole("button", { name: /Sync now/ }));
     expect(syncNowMock).toHaveBeenCalled();
   });
 
   it("lists a followed collection and switches its sync mode", async () => {
     followedBox.current = { data: [fakeFollowed()], isLoading: false };
-    renderPanel();
+    renderCard(FollowedCard);
 
     expect(await screen.findByText("Desk stuff")).toBeInTheDocument();
     expect(screen.getByText(/never synced/)).toBeInTheDocument();
@@ -169,10 +175,12 @@ describe("SavedPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Unfollow" }));
     expect(unfollowMock).toHaveBeenCalledWith(1);
   });
+});
 
+describe("ReviewQueueCard", () => {
   it("shows queued review items and imports or dismisses one", async () => {
     pendingBox.current = { data: [fakePending()], isLoading: false };
-    renderPanel();
+    renderCard(ReviewQueueCard);
 
     const queue = within(await screen.findByTestId("review-queue"));
     expect(queue.getByText("Cable clip")).toBeInTheDocument();
@@ -184,32 +192,31 @@ describe("SavedPanel", () => {
     expect(dismissMock).toHaveBeenCalledWith(11);
   });
 
-  it("groups review items by source collection, ordered by title, with a fallback label for an unfollowed collection", async () => {
-    followedBox.current = {
-      data: [
-        fakeFollowed({ id: 2, title: "All collected models" }),
-        fakeFollowed({ id: 1, title: "Desk stuff" }),
-      ],
-      isLoading: false,
-    };
+  it("groups review items by the server-resolved group_title, ordered by title, splitting items that share a legacy collection_id into different groups", async () => {
     pendingBox.current = {
       data: [
-        fakePending({ id: 11, collection_id: 1, title: "Cable clip" }),
-        fakePending({ id: 12, collection_id: 2, title: "Vase" }),
-        fakePending({ id: 13, collection_id: 2, title: "Planter" }),
-        fakePending({ id: 14, collection_id: 99, title: "Orphaned thing" }),
+        fakePending({ id: 11, collection_id: 1, group_collection_id: 1, group_title: "Desk stuff", title: "Cable clip" }),
+        // Same legacy `collection_id` (1) as "Cable clip" above, but a
+        // different `group_collection_id` -- these must land in different
+        // groups even though the old client-side join (by `collection_id`)
+        // would have merged them.
+        fakePending({ id: 12, collection_id: 1, group_collection_id: 2, group_title: "All collected models", title: "Vase" }),
+        fakePending({ id: 13, collection_id: 2, group_collection_id: 2, group_title: "All collected models", title: "Planter" }),
+        // Empty `group_title` -- shouldn't happen given the backend field is
+        // required, but exercises the defensive fallback anyway.
+        fakePending({ id: 14, collection_id: 99, group_collection_id: 99, group_title: "", title: "Orphaned thing" }),
       ],
       isLoading: false,
     };
-    renderPanel();
+    renderCard(ReviewQueueCard);
 
     const queue = within(await screen.findByTestId("review-queue"));
     const groupHeadings = queue.getAllByRole("heading", { level: 3 });
     expect(groupHeadings).toHaveLength(3);
 
-    // Sorted alphabetically by resolved title: "All collected models" (2
-    // items) < "Collection #99" (fallback for the unfollowed collection, 1
-    // item) < "Desk stuff" (1 item).
+    // Sorted alphabetically by title: "All collected models" (2 items) <
+    // "Collection #99" (fallback for the missing title) < "Desk stuff" (1
+    // item).
     expect(groupHeadings[0]).toHaveTextContent("All collected models");
     expect(groupHeadings[0]).toHaveTextContent("2");
     expect(groupHeadings[1]).toHaveTextContent("Collection #99");
@@ -221,19 +228,48 @@ describe("SavedPanel", () => {
     expect(queue.getByText("Orphaned thing")).toBeInTheDocument();
   });
 
+  it("collapses and re-expands a single group's grid without touching other groups", async () => {
+    pendingBox.current = {
+      data: [
+        fakePending({ id: 11, group_collection_id: 1, group_title: "Desk stuff", title: "Cable clip" }),
+        fakePending({ id: 12, group_collection_id: 2, group_title: "Patio parts", title: "Planter" }),
+      ],
+      isLoading: false,
+    };
+    renderCard(ReviewQueueCard);
+
+    await screen.findByTestId("review-queue");
+    const deskToggle = screen.getByRole("button", { name: /Desk stuff/ });
+    const patioToggle = screen.getByRole("button", { name: /Patio parts/ });
+    expect(deskToggle).toHaveAttribute("aria-expanded", "true");
+    expect(patioToggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("Cable clip")).toBeInTheDocument();
+    expect(screen.getByText("Planter")).toBeInTheDocument();
+
+    fireEvent.click(deskToggle);
+    expect(deskToggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Cable clip")).not.toBeInTheDocument();
+    // The other group is untouched: still open, its card still rendered.
+    expect(patioToggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("Planter")).toBeInTheDocument();
+
+    fireEvent.click(deskToggle);
+    expect(deskToggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("Cable clip")).toBeInTheDocument();
+  });
+
   it("renders an aligned Import/Dismiss actions row for every review card", async () => {
     pendingBox.current = {
       data: [
-        fakePending({ id: 11, collection_id: 1, title: "Cable clip" }),
+        fakePending({ id: 11, title: "Cable clip" }),
         fakePending({
           id: 12,
-          collection_id: 1,
           title: "A much longer title that would otherwise push its buttons out of line",
         }),
       ],
       isLoading: false,
     };
-    renderPanel();
+    renderCard(ReviewQueueCard);
 
     const queue = within(await screen.findByTestId("review-queue"));
     const actionRows = queue.getAllByTestId("review-item-actions");
@@ -243,45 +279,18 @@ describe("SavedPanel", () => {
       expect(within(row).getByRole("button", { name: "Dismiss" })).toBeInTheDocument();
     }
   });
+});
 
-  it("collapses and re-expands the review queue, persisting the choice and flipping aria-expanded", async () => {
-    pendingBox.current = { data: [fakePending()], isLoading: false };
-    renderPanel();
-
-    const toggle = await screen.findByRole("button", { name: /Review queue/ });
-    expect(toggle).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByTestId("review-queue")).toBeInTheDocument();
-
-    fireEvent.click(toggle);
-    expect(toggle).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByTestId("review-queue")).not.toBeInTheDocument();
-    expect(window.localStorage.getItem("review-queue-open")).toBe("false");
-
-    fireEvent.click(toggle);
-    expect(toggle).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByTestId("review-queue")).toBeInTheDocument();
-    expect(window.localStorage.getItem("review-queue-open")).toBe("true");
-  });
-
-  it("opens the review queue by default when nothing is persisted yet, and honors a persisted collapsed state on mount", async () => {
-    window.localStorage.setItem("review-queue-open", "false");
-    pendingBox.current = { data: [fakePending()], isLoading: false };
-    renderPanel();
-
-    const toggle = await screen.findByRole("button", { name: /Review queue/ });
-    expect(toggle).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByTestId("review-queue")).not.toBeInTheDocument();
-  });
-
+describe("BrowseCard", () => {
   it("explains how to connect each site when no collections are found", async () => {
-    renderPanel();
+    renderCard(BrowseCard);
     expect(await screen.findByText(/No collections found yet/)).toBeInTheDocument();
     expect(screen.getByText(/paste your web\s+token/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /settings/i })).toBeInTheDocument();
   });
 
   it("also points to the browser extension for MakerWorld collection sync in the empty state", async () => {
-    renderPanel();
+    renderCard(BrowseCard);
     expect(
       await screen.findByText(/Your MakerWorld collections sync from the browser extension/),
     ).toBeInTheDocument();
@@ -292,7 +301,7 @@ describe("SavedPanel", () => {
       data: [{ site: "thingiverse", list_id: "likes", kind: "likes", title: "Likes", count: 3 }],
       isLoading: false,
     };
-    renderPanel();
+    renderCard(BrowseCard);
 
     // Scoped to the remote-lists row -- the "Add collection by URL" form
     // above it also has a button named "Follow".
@@ -319,7 +328,7 @@ describe("SavedPanel", () => {
       last_error: null,
       created_at: "2026-07-11T00:00:00Z",
     });
-    renderPanel();
+    renderCard(BrowseCard);
 
     const input = await screen.findByPlaceholderText(/makerworld\.com/);
     fireEvent.change(input, { target: { value: "https://makerworld.com/en/collections/555" } });
@@ -335,7 +344,7 @@ describe("SavedPanel", () => {
 
   it("shows the API's error detail inline when following by URL fails", async () => {
     postMock.mockRejectedValueOnce(new ApiError(422, "Unsupported or invalid URL"));
-    renderPanel();
+    renderCard(BrowseCard);
 
     fireEvent.change(await screen.findByPlaceholderText(/makerworld\.com/), {
       target: { value: "https://example.com/not-a-collection" },

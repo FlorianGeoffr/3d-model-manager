@@ -1,15 +1,23 @@
 /**
  * MV3 service worker. Wires together the pure modules (`detect.js`,
- * `courier.js`, `api.js`, `config.js`) with the `chrome.*` APIs. Nothing in
- * here is unit-tested directly (it needs a live extension context); the
- * logic it delegates to (site/model-page detection, the cookie-changed
- * diff) IS covered by `test/detect.test.js` and `test/courier.test.js`.
+ * `courier.js`, `api.js`, `config.js`, `syncFlow.js`) with the `chrome.*`
+ * APIs. Nothing in here is unit-tested directly (it needs a live extension
+ * context); the logic it delegates to (site/model-page/collections-page
+ * detection, the cookie-changed diff, the collections sync flow itself) IS
+ * covered by `test/detect.test.js`, `test/courier.test.js`, and
+ * `test/syncFlow.test.js`.
  */
 
-import { isModelPage } from "./detect.js";
+import { isCollectionsPage, isModelPage } from "./detect.js";
 import { createClient } from "./api.js";
 import { getConfig, isConfigured, setConfig } from "./config.js";
 import { hashToken, pickCookieValue, shouldPush } from "./courier.js";
+import {
+  hashCollectionsPayload,
+  readCollectionsPage,
+  shouldPushCollections,
+  syncCollections,
+} from "./syncFlow.js";
 
 const GALLERY_HOST_PATTERNS = [
   "*://makerworld.com/*",
@@ -155,6 +163,98 @@ async function runCourier() {
   }
 }
 
+/**
+ * `exec(tabId, func, args)` seam `syncFlow.js` needs -- the one place this
+ * file wraps `chrome.scripting.executeScript` for the collections flow
+ * (mirrors `popup.js`'s identically-named helper; both wrap the same
+ * `chrome.*` call, but each file owns its own thin copy rather than adding
+ * a shared module just for this).
+ */
+async function execInTab(tabId, func, args = []) {
+  const results = await chrome.scripting.executeScript({ target: { tabId }, func, args });
+  return results && results[0] && results[0].result;
+}
+
+/**
+ * Auto-sync entry point (import-health branch T5): runs the SAME shared
+ * flow the popup's "Sync collections to app" button uses (`syncFlow.js`),
+ * triggered by simply VISITING the MakerWorld collections page instead of
+ * requiring a manual click. Mirrors `runCourier`'s shape -- gated on its
+ * own setting (`autoSyncCollections`), and since there's no popup open to
+ * show an error to, failures are logged to `console.*` only and NEVER
+ * thrown/surfaced to the tab.
+ *
+ * Throttled like the cookie courier (`shouldPush`/`lastMakerworldHash`),
+ * but on the pushed collections payload instead of the cookie
+ * (`shouldPushCollections`/`lastCollectionsHash`, `syncFlow.js`). The
+ * comparison happens BEFORE any push (list or items) -- an unchanged page
+ * costs nothing but the one in-page read that produced `entries`. Note:
+ * `entries` carries each collection's `count` (MakerWorld's `designCnt`),
+ * so adding/removing an item from a named collection necessarily changes
+ * that collection's `count` and therefore the hash -- membership changes
+ * are covered by hashing the list alone, without needing to hash the
+ * fetched item ids too. (Not independently re-verified live for this task
+ * -- `designCnt` being a literal per-collection item count makes this the
+ * only sane reading, and M9's capture notes found no way to probe MakerWorld
+ * from a server IP to double-check; if a future capture ever shows
+ * `designCnt` staying put across a real membership edit, this reasoning --
+ * and the throttle -- needs revisiting.)
+ *
+ * An empty `entries` read is treated as "nothing to sync" and never pushed
+ * automatically -- MakerWorld's own scrape can come back transiently empty
+ * from a real browser same as it does from the server (see the README's
+ * "empty isn't proof of empty" caution for the courier), and blowing away
+ * real cached collections on a flaky read would be worse than doing nothing
+ * until the next successful visit.
+ */
+async function runCollectionsSync(tabId, url) {
+  const config = await getConfig();
+  if (!config.autoSyncCollections || !isConfigured(config)) {
+    return;
+  }
+
+  const page = await readCollectionsPage({ tabId, exec: execInTab });
+  if (!page) {
+    console.error("[collections auto-sync] couldn't read the collections page");
+    return;
+  }
+  if (page.entries.length === 0) {
+    return;
+  }
+
+  const needsPush = await shouldPushCollections(page.entries, config.lastCollectionsHash);
+  if (!needsPush) {
+    return;
+  }
+
+  const client = createClient({ baseUrl: config.appBaseUrl, token: config.apiToken });
+  try {
+    await syncCollections({
+      tabId,
+      url,
+      exec: execInTab,
+      api: client,
+      page,
+      report: (text, kind) => {
+        const line = `[collections auto-sync] ${text}`;
+        if (kind === "error") {
+          console.error(line);
+        } else {
+          console.log(line);
+        }
+      },
+    });
+  } catch {
+    // `syncCollections` already logged the failure reason above via
+    // `report`. Leave `lastCollectionsHash` untouched so the next visit
+    // retries instead of silently giving up forever.
+    return;
+  }
+
+  const newHash = await hashCollectionsPayload(page.entries);
+  await setConfig({ lastCollectionsHash: newHash });
+}
+
 chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
   if (changeInfo.status !== "complete") {
     return;
@@ -171,6 +271,9 @@ chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
   }
   if (MAKERWORLD_COOKIE_HOSTS.has(hostname)) {
     runCourier();
+  }
+  if (tab.id !== undefined && isCollectionsPage(url)) {
+    runCollectionsSync(tab.id, url);
   }
 });
 

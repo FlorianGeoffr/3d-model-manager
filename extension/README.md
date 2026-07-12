@@ -50,23 +50,32 @@ also serves each *named* collection's own item list as empty from a server
 IP even when the request itself succeeds (the app only ever gets your
 "all collected models" aggregate back) — so the app can't enumerate either
 your per-collection structure or a named collection's contents on its own.
-Your browser, already signed in, can see both just fine. To hand that over:
+Your browser, already signed in, can see both just fine. To hand that over,
+just **visit your MakerWorld collections page**
+(`makerworld.com/@<your handle>/collections`) while signed in — the
+extension notices and syncs automatically, no click required.
 
-1. Open your MakerWorld collections page (`makerworld.com/@<your
-   handle>/collections`).
-2. Click the extension's toolbar icon.
-3. Click **Sync collections to app**.
+That visit pushes your collection list (so a collection you follow by
+pasting its URL shows its real title instead of a generic placeholder), then
+reads and pushes each visible collection's contents. It's throttled to only
+push when something's actually changed since the last sync, so revisiting
+the same unchanged page repeatedly doesn't spam the app. This happens
+silently in the background — if it fails (app unreachable, page unreadable,
+etc.), nothing is shown in the tab; check the browser's extension console if
+collections aren't showing up as expected. Turn it off on the options page
+(**Sync collections automatically when you visit your MakerWorld collections
+page**) if you'd rather trigger it by hand.
 
-The same click now does two things: it pushes your collection list (so a
-collection you follow by pasting its URL shows its real title instead of a
-generic placeholder), then reads and pushes each visible collection's
-contents, one at a time — the status line tracks progress and finishes with
-something like "Synced 3 collections (24 items)." If a collection's items
-couldn't be read from the page, it's called out as "no items readable"
-rather than silently synced empty. Re-run any time your collections (or
-their contents) change — each sync replaces what the app has cached for a
-given list with what's on the page, so a deleted/renamed collection or an
-added/removed item updates too.
+The popup's **Sync collections to app** button still works exactly as
+before, as a manual trigger: click the extension's toolbar icon while on
+your collections page, then **Sync collections to app**. The status line
+tracks progress and finishes with something like "Synced 3 collections (24
+items)." If a collection's items couldn't be read from the page, it's called
+out as "no items readable" rather than silently synced empty. Re-run any
+time your collections (or their contents) change (or just revisit the page
+for the automatic sync to pick it up) — each sync replaces what the app has
+cached for a given list with what's on the page, so a deleted/renamed
+collection or an added/removed item updates too.
 
 ## The MakerWorld courier
 

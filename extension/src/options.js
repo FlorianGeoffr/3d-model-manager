@@ -11,6 +11,7 @@ import { createClient } from "./api.js";
 const baseUrlInput = document.getElementById("app-base-url");
 const tokenInput = document.getElementById("api-token");
 const autoCourierInput = document.getElementById("auto-courier");
+const autoSyncCollectionsInput = document.getElementById("auto-sync-collections");
 const statusEl = document.getElementById("status");
 const saveButton = document.getElementById("save");
 const testButton = document.getElementById("test");
@@ -45,6 +46,7 @@ async function load() {
   baseUrlInput.value = config.appBaseUrl || "";
   tokenInput.value = config.apiToken || "";
   autoCourierInput.checked = config.autoCourier !== false;
+  autoSyncCollectionsInput.checked = config.autoSyncCollections !== false;
 }
 
 saveButton.addEventListener("click", async () => {
@@ -73,6 +75,7 @@ saveButton.addEventListener("click", async () => {
       appBaseUrl: baseUrl,
       apiToken: token,
       autoCourier: autoCourierInput.checked,
+      autoSyncCollections: autoSyncCollectionsInput.checked,
     });
     setStatus("Saved.", "ok");
   } finally {

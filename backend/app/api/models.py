@@ -18,12 +18,14 @@ from app.schemas.library import (
     ModelCreate,
     ModelDetail,
     ModelPatch,
+    ModelRedownloadIn,
     ModelRelocateIn,
 )
 from app.services import jobs as jobs_service
 from app.services import library
 from app.services import storage_backends as storage_backends_service
 from app.storage.base import StorageBackend
+from app.tasks.importing import redownload_model as redownload_model_task
 from app.tasks.relocate import relocate_model_storage
 
 router = APIRouter(prefix="/models", tags=["models"])
@@ -127,6 +129,52 @@ async def delete_model(
     """
     model = await library.get_model_by_slug(db, slug)
     await library.hard_delete_model(db, backend, settings, model)
+
+
+@router.post("/{slug}/redownload", response_model=JobOut)
+async def redownload_model(
+    slug: str,
+    payload: ModelRedownloadIn,
+    db: AsyncSession = Depends(get_db),
+) -> JobOut:
+    """Re-fetches this model's files fresh from its original import source
+    (feat/import-fidelity T3): dispatches
+    ``app.tasks.importing.redownload_model``, which either lands the fresh
+    download as a NEW revision (``mode="revision"``, old revision untouched)
+    or overwrites the CURRENT revision's files in place
+    (``mode="replace"``). 409 unless the model still has a resolvable import
+    source -- ``library.check_redownload_source`` reuses the same registry +
+    ``canonicalize`` seam ``app.services.imports.start_import`` uses to
+    validate a fresh import's URL.
+
+    Deliberately does NOT consult
+    ``app.services.import_dedup.find_live_import`` -- that guard exists so a
+    SECOND import can't create a second Model for a remote source already in
+    the library. A re-download targets THIS existing model by id and never
+    creates a new Model, so the guard doesn't apply: it's model-scoped by
+    design, not source-scoped.
+    """
+    model = await library.get_model_by_slug(db, slug)
+    library.check_redownload_source(model)
+
+    job = await jobs_service.create_job(
+        db,
+        id=uuid.uuid4(),
+        type="redownload_model",
+        subject_type="model",
+        subject_id=model.id,
+    )
+    redownload_model_task.apply_async(
+        args=[str(job.id), model.id, payload.mode], task_id=str(job.id)
+    )
+
+    # Under the test suite's eager Celery mode, the line above already ran
+    # the whole redownload inline through its own SYNC session -- refresh so
+    # this (separate, async) session's identity map doesn't hand back the
+    # stale "queued" snapshot from right after the insert (same reasoning as
+    # `relocate_model` below).
+    await db.refresh(job)
+    return JobOut.from_model(job)
 
 
 @router.post("/{slug}/relocate", response_model=JobOut)

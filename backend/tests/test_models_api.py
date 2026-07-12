@@ -1,7 +1,7 @@
 """Model CRUD + gallery listing (Task 5 brief; feat/import-fidelity T3):
 slug generation/collision, sidecar content, PATCH archive/is_archived
-semantics, DELETE's real hard-delete, and the gallery's
-search/filter/sort/cursor-pagination behavior.
+semantics, DELETE's real hard-delete, POST .../redownload's API surface, and
+the gallery's search/filter/sort/cursor-pagination behavior.
 """
 
 import json
@@ -363,6 +363,43 @@ async def test_delete_model_frees_source_for_reimport(
     assert live is None
     await db_session.refresh(imp)
     assert imp.model_id is None
+
+
+# ---------------------------------------------------------------------------
+# redownload (feat/import-fidelity T3): POST /models/{slug}/redownload
+# enqueues app.tasks.importing.redownload_model. The redownload MECHANICS
+# (mode=revision/replace, image refresh, failure ordering) are covered end
+# to end in tests/test_redownload.py -- this only exercises the API
+# surface's own guardrails, which never need a real importer.
+# ---------------------------------------------------------------------------
+
+
+async def test_redownload_no_source_is_409(authenticated_client: httpx.AsyncClient) -> None:
+    created = await _create_model(authenticated_client, "No Source Redownload")
+
+    response = await authenticated_client.post(
+        f"/api/models/{created['slug']}/redownload", json={"mode": "revision"}
+    )
+
+    assert response.status_code == 409
+
+
+async def test_redownload_bad_mode_is_422(authenticated_client: httpx.AsyncClient) -> None:
+    created = await _create_model(authenticated_client, "Bad Mode Redownload")
+
+    response = await authenticated_client.post(
+        f"/api/models/{created['slug']}/redownload", json={"mode": "duplicate"}
+    )
+
+    assert response.status_code == 422
+
+
+async def test_redownload_unknown_model_is_404(authenticated_client: httpx.AsyncClient) -> None:
+    response = await authenticated_client.post(
+        "/api/models/does-not-exist/redownload", json={"mode": "revision"}
+    )
+
+    assert response.status_code == 404
 
 
 # ---------------------------------------------------------------------------

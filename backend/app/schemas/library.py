@@ -50,6 +50,17 @@ class ModelPatch(BaseModel):
     is_archived: bool | None = None
 
 
+class ModelRedownloadIn(BaseModel):
+    """``POST /models/{slug}/redownload`` payload (feat/import-fidelity T3):
+    dispatches ``app.tasks.importing.redownload_model`` to re-fetch this
+    model's files fresh from its original import source. ``mode`` being a
+    ``Literal`` means an invalid value 422s here, before a job row is ever
+    created -- same posture as ``ModelRelocateIn.mode``.
+    """
+
+    mode: Literal["revision", "replace"]
+
+
 class ModelRelocateIn(BaseModel):
     """``POST /models/{slug}/relocate`` payload (Workstream C task C3):
     dispatches ``app.tasks.relocate.relocate_model_storage`` to move or

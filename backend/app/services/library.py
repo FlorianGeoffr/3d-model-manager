@@ -34,7 +34,9 @@ from sqlalchemy.orm import Session as SyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import Settings
-from app.models.enums import BlobFormat, BlobKind, DerivativeKind, DerivativeStatus
+from app.importers.base import SiteImporter
+from app.importers.registry import get_importer
+from app.models.enums import BlobFormat, BlobKind, DerivativeKind, DerivativeStatus, ImportSite
 from app.models.library import Blob, File, Model, Note, Print, Revision, Tag, model_tags
 from app.models.processing import AssemblyThumb, BlobMeta, Derivative
 from app.models.storage import FileLocation, StorageBackendRow
@@ -503,6 +505,33 @@ async def hard_delete_model(
 
     await db.execute(sa_delete(Model).where(Model.id == model.id))
     await db.commit()
+
+
+def check_redownload_source(model: Model) -> SiteImporter:
+    """409 unless ``model`` still has a resolvable import source: both
+    ``source_site``/``source_url`` set, AND that site's registered importer
+    still canonicalizes ``source_url`` to an id (reuses the SAME registry +
+    ``canonicalize`` seam ``app.services.imports.start_import`` uses to
+    validate a fresh import's URL). Called by ``POST
+    /models/{slug}/redownload`` BEFORE a job row is ever created. Returns
+    the resolved importer as a convenience for a caller that also needs it,
+    though ``app.tasks.importing.redownload_model`` re-resolves its own copy
+    independently (a different process, possibly much later).
+    """
+    if not model.source_site or not model.source_url:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "model has no import source to re-download from"
+        )
+    try:
+        site = ImportSite(model.source_site)
+    except ValueError:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"unrecognized source site {model.source_site!r}"
+        ) from None
+    importer = get_importer(site)
+    if importer is None or importer.canonicalize(model.source_url) is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "model's source URL is no longer importable")
+    return importer
 
 
 async def _get_or_create_tag_id(db: AsyncSession, name: str) -> int:
@@ -1270,6 +1299,22 @@ async def _file_store_pending(db: AsyncSession, file: File) -> bool:
     if file.verified_at is not None:
         return False
     latest_state = await db.scalar(
+        select(Job.state)
+        .where(Job.subject_type == "file", Job.subject_id == file.id)
+        .order_by(Job.created_at.desc())
+        .limit(1)
+    )
+    return latest_state in (jobs_service.STATE_QUEUED, jobs_service.STATE_RUNNING)
+
+
+def file_store_pending_sync(session: SyncSession, file: File) -> bool:
+    """SYNC twin of ``_file_store_pending`` for worker-side callers
+    (feat/import-fidelity T3's ``app.tasks.importing.redownload_model``
+    ``mode="replace"`` pending-job guard) that can't touch the API's async
+    engine (see ``app.tasks.base``). Same reasoning as the async version."""
+    if file.verified_at is not None:
+        return False
+    latest_state = session.scalar(
         select(Job.state)
         .where(Job.subject_type == "file", Job.subject_id == file.id)
         .order_by(Job.created_at.desc())

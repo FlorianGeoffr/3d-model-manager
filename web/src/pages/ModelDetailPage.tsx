@@ -5,6 +5,7 @@ import { useModel } from "@/api/library";
 import { FilesTab } from "@/components/model-detail/FilesTab";
 import { ModelHeader } from "@/components/model-detail/ModelHeader";
 import { NotesTab } from "@/components/model-detail/NotesTab";
+import { PrintsTab } from "@/components/model-detail/PrintsTab";
 import { RelatedModels } from "@/components/model-detail/RelatedModels";
 import { RevisionsTab } from "@/components/model-detail/RevisionsTab";
 import { ViewerTab } from "@/components/model-detail/ViewerTab";
@@ -63,6 +64,7 @@ export function ModelDetailPage() {
           <TabsTrigger value="viewer">3D View</TabsTrigger>
           <TabsTrigger value="revisions">Revisions</TabsTrigger>
           <TabsTrigger value="notes">Notes</TabsTrigger>
+          <TabsTrigger value="prints">Prints</TabsTrigger>
         </TabsList>
         <TabsContent value="files">
           <FilesTab model={model} />
@@ -75,6 +77,9 @@ export function ModelDetailPage() {
         </TabsContent>
         <TabsContent value="notes">
           <NotesTab model={model} />
+        </TabsContent>
+        <TabsContent value="prints">
+          <PrintsTab model={model} />
         </TabsContent>
       </Tabs>
     </div>

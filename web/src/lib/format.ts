@@ -44,6 +44,16 @@ export function formatDate(iso: string | null | undefined): string {
   return dateOnlyFormatter.format(date);
 }
 
+/** Format a `Date` as the local-time value an `<input type="datetime-local">`
+ * both reads and emits, e.g. `"2026-07-11T14:05"` -- no timezone, no
+ * seconds. Round-trips through `new Date(value)`, which per the Date Time
+ * String spec treats a timezone-less date-*time* form (unlike a date-only
+ * form) as local time, matching what the control itself means. */
+export function toDatetimeLocalValue(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 /** Humanize a duration in seconds, e.g. `5400` -> `"1h 30m"`, `2700` ->
  * `"45m"`, anything under a minute -> `"<1m"`. */
 export function humanizeDuration(seconds: number): string {

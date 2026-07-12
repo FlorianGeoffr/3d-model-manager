@@ -80,6 +80,8 @@ function buildModel(files: FileOut[]): ModelDetail {
     notes: [],
     backends: [],
     favorite: false,
+    print_count: 0,
+    last_printed_at: null,
     current_revision: {
       id: 1,
       model_id: 1,

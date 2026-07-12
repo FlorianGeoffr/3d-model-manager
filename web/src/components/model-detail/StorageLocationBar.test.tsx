@@ -80,6 +80,8 @@ function fakeModel(overrides: Partial<ModelDetail> = {}): ModelDetail {
     current_revision: null,
     backends: [{ id: 1, name: "Default" }],
     favorite: false,
+    print_count: 0,
+    last_printed_at: null,
     ...overrides,
   };
 }

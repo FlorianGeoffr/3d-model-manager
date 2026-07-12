@@ -220,6 +220,10 @@ export interface ModelDetail {
   review_state?: string | null;
   backends: ModelBackendOut[];
   favorite: boolean;
+  // Branch 5 Task 1 print-history aggregates -- zero-state is
+  // `print_count: 0, last_printed_at: null` for a model with no logged prints.
+  print_count: number;
+  last_printed_at: string | null;
 }
 
 // -- diff ----------------------------------------------------------
@@ -695,6 +699,49 @@ export interface ApiTokenOut {
   label: string;
   created_at: string;
   last_used_at: string | null;
+}
+
+// -- print history (backend/app/schemas/prints.py, Branch 5 Task 1) --------
+// A user-entered log of print attempts, distinct from the print queue's
+// worklist (`QueueEntry` below) and `print_jobs`' live send-to-printer
+// telemetry (M4, `PrintJobOut` above).
+
+export type PrintResult = "success" | "fail" | "partial";
+
+export interface PrintEntry {
+  id: number;
+  model_id: number;
+  printed_at: string;
+  printer_name: string | null;
+  filament: string | null;
+  result: PrintResult;
+  duration_min: number | null;
+  notes: string | null;
+  created_at: string;
+}
+
+// `POST /models/{model_id}/prints` payload -- an omitted `printed_at` lets
+// the server default to now (its own `server_default=now()`), and an
+// omitted `result` defaults to `"success"` server-side.
+export interface PrintCreateIn {
+  printed_at?: string;
+  printer_name?: string | null;
+  filament?: string | null;
+  result?: PrintResult;
+  duration_min?: number | null;
+  notes?: string | null;
+}
+
+// `PATCH /prints/{print_id}` payload -- all fields optional; only the ones
+// present are applied (backend's `exclude_unset` patch semantics, same as
+// `NotePatch`/`ModelPatch`).
+export interface PrintPatchIn {
+  printed_at?: string;
+  printer_name?: string | null;
+  filament?: string | null;
+  result?: PrintResult;
+  duration_min?: number | null;
+  notes?: string | null;
 }
 
 // -- print queue (backend/app/schemas/queue.py, Branch 4 Task 1) -----------

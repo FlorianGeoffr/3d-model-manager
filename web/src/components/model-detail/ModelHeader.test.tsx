@@ -48,6 +48,8 @@ const MODEL: ModelDetail = {
   notes: [],
   backends: [],
   favorite: false,
+  print_count: 0,
+  last_printed_at: null,
 };
 
 function renderHeader(editMode: boolean, onToggleEditMode = vi.fn()) {

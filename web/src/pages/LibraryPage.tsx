@@ -213,7 +213,7 @@ export function LibraryPage() {
 
           <FilterChip active={archivedOnly} onClick={() => setArchivedOnly((prev) => !prev)}>
             <ArchiveIcon />
-            Archived
+            Include archived
           </FilterChip>
 
           <Popover>

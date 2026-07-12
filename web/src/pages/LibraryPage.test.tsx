@@ -258,15 +258,15 @@ describe("LibraryPage", () => {
     await waitFor(() => expect(lastModelsCall()).not.toContain("favorite="));
   });
 
-  it("adds archived=true to the gallery query when the Archived facet is toggled on, and clears it back off", async () => {
+  it("adds archived=true to the gallery query when the Include archived facet is toggled on, and clears it back off", async () => {
     mockGalleryOk();
     renderLibraryPage();
     await screen.findByText("No models yet");
 
-    fireEvent.click(screen.getByRole("button", { name: "Archived" }));
+    fireEvent.click(screen.getByRole("button", { name: "Include archived" }));
     await waitFor(() => expect(lastModelsCall()).toContain("archived=true"));
 
-    fireEvent.click(screen.getByRole("button", { name: "Archived" }));
+    fireEvent.click(screen.getByRole("button", { name: "Include archived" }));
     await waitFor(() => expect(lastModelsCall()).not.toContain("archived="));
   });
 

@@ -141,6 +141,14 @@ describe("BackgroundSwatches", () => {
     expect(onPresetChange).toHaveBeenCalledWith("white");
   });
 
+  it("keeps every swatch's accessible name after wrapping it in a tooltip trigger", () => {
+    render(<Harness />);
+
+    for (const label of ["Studio", "White", "Dark", "Match theme", "Custom"]) {
+      expect(screen.getByRole("radio", { name: label })).toBeInTheDocument();
+    }
+  });
+
   it("changing the custom color input fires onCustomChange and selects custom", () => {
     const onPresetChange = vi.fn();
     const onCustomChange = vi.fn();

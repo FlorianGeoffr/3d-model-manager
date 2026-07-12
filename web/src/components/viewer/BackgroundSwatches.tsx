@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useRovingRadioGroup } from "@/components/viewer/useRovingRadioGroup";
 import {
   BACKGROUND_PRESET_LABELS,
@@ -65,53 +66,67 @@ export function BackgroundSwatches({
   const { itemProps } = useRovingRadioGroup(BACKGROUND_PRESET_ORDER, preset, onPresetChange);
 
   return (
-    <div role="radiogroup" aria-label="Background" className="flex flex-wrap items-center gap-2">
-      {BACKGROUND_PRESET_ORDER.map((option) => {
-        const selected = preset === option;
-        const label = BACKGROUND_PRESET_LABELS[option];
+    // Local `TooltipProvider` (rather than relying solely on `ViewerStage`'s
+    // outer one) keeps this component self-sufficient -- Radix's `Tooltip`
+    // throws if it's ever rendered without a `TooltipProvider` ancestor, and
+    // `BackgroundSwatches.test.tsx` renders it standalone. Nesting inside
+    // `ViewerStage`'s provider is harmless -- the nearest one just wins for
+    // this subtree.
+    <TooltipProvider>
+      <div role="radiogroup" aria-label="Background" className="flex flex-wrap items-center gap-2">
+        {BACKGROUND_PRESET_ORDER.map((option) => {
+          const selected = preset === option;
+          const label = BACKGROUND_PRESET_LABELS[option];
 
-        if (option === "custom") {
+          if (option === "custom") {
+            return (
+              <Tooltip key={option}>
+                <TooltipTrigger asChild>
+                  <span
+                    {...itemProps(option)}
+                    aria-label={label}
+                    className={cn(SWATCH_CLASS, "relative inline-flex", selected && SWATCH_SELECTED_CLASS)}
+                    style={{ background: RAINBOW_CONIC }}
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="pointer-events-none absolute inset-[3px] rounded-full"
+                      style={{ background: resolveBackground("custom", custom, false) }}
+                    />
+                    <input
+                      type="color"
+                      aria-hidden="true"
+                      tabIndex={-1}
+                      value={custom}
+                      onChange={(event) => {
+                        onCustomChange(event.target.value);
+                        onPresetChange("custom");
+                      }}
+                      className="absolute inset-0 size-full cursor-pointer opacity-0"
+                    />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>{label}</TooltipContent>
+              </Tooltip>
+            );
+          }
+
           return (
-            <span
-              key={option}
-              {...itemProps(option)}
-              aria-label={label}
-              title={label}
-              className={cn(SWATCH_CLASS, "relative inline-flex", selected && SWATCH_SELECTED_CLASS)}
-              style={{ background: RAINBOW_CONIC }}
-            >
-              <span
-                aria-hidden="true"
-                className="pointer-events-none absolute inset-[3px] rounded-full"
-                style={{ background: resolveBackground("custom", custom, false) }}
-              />
-              <input
-                type="color"
-                aria-hidden="true"
-                tabIndex={-1}
-                value={custom}
-                onChange={(event) => {
-                  onCustomChange(event.target.value);
-                  onPresetChange("custom");
-                }}
-                className="absolute inset-0 size-full cursor-pointer opacity-0"
-              />
-            </span>
+            <Tooltip key={option}>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  aria-label={label}
+                  {...itemProps(option)}
+                  className={cn(SWATCH_CLASS, selected && SWATCH_SELECTED_CLASS)}
+                  style={{ background: swatchBackground(option, custom) }}
+                />
+              </TooltipTrigger>
+              <TooltipContent>{label}</TooltipContent>
+            </Tooltip>
           );
-        }
-
-        return (
-          <button
-            key={option}
-            type="button"
-            title={label}
-            aria-label={label}
-            {...itemProps(option)}
-            className={cn(SWATCH_CLASS, selected && SWATCH_SELECTED_CLASS)}
-            style={{ background: swatchBackground(option, custom) }}
-          />
-        );
-      })}
-    </div>
+        })}
+      </div>
+    </TooltipProvider>
   );
 }

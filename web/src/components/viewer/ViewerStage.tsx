@@ -18,6 +18,7 @@ import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/ca
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { usePrinterStatus } from "@/api/printers";
 import { FilamentChip } from "@/components/ui/filament-chip";
@@ -475,20 +476,25 @@ export function ViewerStage({
   );
 
   return (
-    <>
+    <TooltipProvider>
       {stripHasContent && (
         <div className="flex flex-wrap items-center justify-end gap-2 rounded-lg border border-border bg-card px-3 py-2">
           {!panelOpen && (
-            <Button
-              type="button"
-              variant="outline"
-              size="icon-sm"
-              aria-label="Expand panel"
-              aria-expanded={false}
-              onClick={onTogglePanel}
-            >
-              <PanelRightOpenIcon />
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon-sm"
+                  aria-label="Expand panel"
+                  aria-expanded={false}
+                  onClick={onTogglePanel}
+                >
+                  <PanelRightOpenIcon />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Expand panel</TooltipContent>
+            </Tooltip>
           )}
           {showWindowButtons && (
             <>
@@ -574,16 +580,21 @@ export function ViewerStage({
                   None
                 </Button>
               </div>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                aria-label="Collapse panel"
-                aria-expanded={true}
-                onClick={onTogglePanel}
-              >
-                <PanelRightCloseIcon />
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Collapse panel"
+                    aria-expanded={true}
+                    onClick={onTogglePanel}
+                  >
+                    <PanelRightCloseIcon />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Collapse panel</TooltipContent>
+              </Tooltip>
             </div>
 
             <div className="space-y-1">
@@ -611,14 +622,19 @@ export function ViewerStage({
                       {file.rel_path}
                     </span>
                     {partColor && (
-                      <button
-                        type="button"
-                        aria-label={`Reset color for ${file.rel_path}`}
-                        onClick={() => onClearPartColor(file.id)}
-                        className="inline-flex size-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
-                      >
-                        <RotateCcwIcon className="size-3.5" />
-                      </button>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            type="button"
+                            aria-label={`Reset color for ${file.rel_path}`}
+                            onClick={() => onClearPartColor(file.id)}
+                            className="inline-flex size-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+                          >
+                            <RotateCcwIcon className="size-3.5" />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent>Reset color</TooltipContent>
+                      </Tooltip>
                     )}
                   </div>
                 );
@@ -655,77 +671,102 @@ export function ViewerStage({
                 Wireframe (Task 5) and the build-plate Grid toggle (Task 6).
                 A compact icon-button row rather than labelled buttons --
                 there's no room for both an icon and a label at this panel
-                width, so each button carries its name via `aria-label` (and
-                `title` for a hover tooltip) instead. */}
+                width, so each button carries its name via `aria-label` and a
+                `Tooltip` (see `@/components/ui/tooltip`) for a hover hint
+                instead of a native `title`. */}
             <div className="flex flex-col gap-3">
               <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
                 View
               </span>
               <div className="flex flex-wrap items-center gap-1.5">
-                <Button
-                  type="button"
-                  variant={tools.grid ? "secondary" : "outline"}
-                  size="icon-sm"
-                  aria-pressed={tools.grid}
-                  aria-label="Grid"
-                  title="Grid (G)"
-                  onClick={handleGridToggle}
-                >
-                  <Grid3x3Icon />
-                </Button>
-                <Button
-                  type="button"
-                  variant={tools.wireframe ? "secondary" : "outline"}
-                  size="icon-sm"
-                  aria-pressed={tools.wireframe}
-                  aria-label="Wireframe"
-                  title="Wireframe (W)"
-                  onClick={handleWireframeToggle}
-                >
-                  <TriangleDashedIcon />
-                </Button>
-                <Button
-                  type="button"
-                  variant={tools.autoRotate ? "secondary" : "outline"}
-                  size="icon-sm"
-                  aria-pressed={tools.autoRotate}
-                  aria-label="Auto-rotate"
-                  title="Auto-rotate (R)"
-                  onClick={handleAutoRotateToggle}
-                >
-                  <RotateCwIcon />
-                </Button>
-                <Button
-                  type="button"
-                  variant={tools.ortho ? "secondary" : "outline"}
-                  size="icon-sm"
-                  aria-pressed={tools.ortho}
-                  aria-label="Orthographic camera"
-                  title="Orthographic camera"
-                  onClick={handleOrthoToggle}
-                >
-                  <BoxIcon />
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="icon-sm"
-                  aria-label="Fit view"
-                  title="Fit view (F)"
-                  onClick={onFit}
-                >
-                  <ScanIcon />
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="icon-sm"
-                  aria-label="Screenshot"
-                  title="Screenshot"
-                  onClick={handleScreenshot}
-                >
-                  <CameraIcon />
-                </Button>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant={tools.grid ? "secondary" : "outline"}
+                      size="icon-sm"
+                      aria-pressed={tools.grid}
+                      aria-label="Grid"
+                      onClick={handleGridToggle}
+                    >
+                      <Grid3x3Icon />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Grid (G)</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant={tools.wireframe ? "secondary" : "outline"}
+                      size="icon-sm"
+                      aria-pressed={tools.wireframe}
+                      aria-label="Wireframe"
+                      onClick={handleWireframeToggle}
+                    >
+                      <TriangleDashedIcon />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Wireframe (W)</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant={tools.autoRotate ? "secondary" : "outline"}
+                      size="icon-sm"
+                      aria-pressed={tools.autoRotate}
+                      aria-label="Auto-rotate"
+                      onClick={handleAutoRotateToggle}
+                    >
+                      <RotateCwIcon />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Auto-rotate (R)</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant={tools.ortho ? "secondary" : "outline"}
+                      size="icon-sm"
+                      aria-pressed={tools.ortho}
+                      aria-label="Orthographic camera"
+                      onClick={handleOrthoToggle}
+                    >
+                      <BoxIcon />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Orthographic camera</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon-sm"
+                      aria-label="Fit view"
+                      onClick={onFit}
+                    >
+                      <ScanIcon />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Fit view (F)</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon-sm"
+                      aria-label="Screenshot"
+                      onClick={handleScreenshot}
+                    >
+                      <CameraIcon />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Screenshot</TooltipContent>
+                </Tooltip>
               </div>
             </div>
 
@@ -808,6 +849,6 @@ export function ViewerStage({
           </div>
         )}
       </div>
-    </>
+    </TooltipProvider>
   );
 }

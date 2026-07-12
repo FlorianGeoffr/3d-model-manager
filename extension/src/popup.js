@@ -1,15 +1,17 @@
 /**
- * Popup UI. Reads config + the active tab, then renders one of four
+ * Popup UI. Reads config + the active tab, then renders one of five
  * states: "set up the extension", "not a model page", "save this model",
- * or "sync collections" (on a MakerWorld collections page). All the
- * `chrome.*` calls live here; the URL detection logic they feed is
- * `isModelPage`/`isCollectionsPage` (`detect.js`). "Sync collections to
- * app" delegates the actual read/push flow to the shared `syncFlow.js`
- * module (import-health branch T5 -- extracted so the background service
- * worker can drive the identical flow for auto-sync-on-visit, see
- * `background.js`); this file's job is just to wire that module's injected
- * seams (`exec`, `api`, `report`) to `chrome.scripting`/`api.js`/the status
- * line and manage the button's disabled state.
+ * "sync collections" (on a MakerWorld collections LIST page), or "sync this
+ * collection" (M11, on a collection DETAIL page). All the `chrome.*` calls
+ * live here; the URL detection logic they feed is
+ * `isModelPage`/`isCollectionsPage`/`isCollectionDetailPage` (`detect.js`).
+ * Both "sync collections" buttons delegate the actual read/push flow to the
+ * shared `syncFlow.js` module (import-health branch T5 -- extracted so the
+ * background service worker can drive the identical flow for
+ * auto-sync-on-visit, see `background.js`); this file's job is just to wire
+ * that module's injected seams (`exec`, `api`, `report`) to
+ * `chrome.scripting`/`api.js`/the status line and manage the button's
+ * disabled state.
  *
  * After a save creates a new import (201), `handleSave` polls the real
  * outcome with `pollImportStatus` (`saveStatus.js`, import-health branch
@@ -21,10 +23,10 @@
  * README.
  */
 
-import { isCollectionsPage, isModelPage } from "./detect.js";
+import { isCollectionDetailPage, isCollectionsPage, isModelPage } from "./detect.js";
 import { getConfig, isConfigured } from "./config.js";
 import { createClient } from "./api.js";
-import { syncCollections } from "./syncFlow.js";
+import { syncCollectionDetail, syncCollections } from "./syncFlow.js";
 import { pollImportStatus } from "./saveStatus.js";
 
 const messageEl = document.getElementById("message");
@@ -77,6 +79,21 @@ function renderSyncCollections(tabId, url, config) {
 }
 
 /**
+ * M11: the collection DETAIL page's own "Sync this collection to app"
+ * button -- a guaranteed-correct complement to the bulk "Sync collections to
+ * app" button above, since the user is looking straight at this
+ * collection's items (`isCollectionDetailPage`, `detect.js`).
+ */
+function renderSyncCollectionDetail(tabId, url, config) {
+  messageEl.textContent = "Sync this collection into the app.";
+  const button = document.createElement("button");
+  button.className = "primary";
+  button.textContent = "Sync this collection to app";
+  button.addEventListener("click", () => handleSyncCollectionDetail(button, tabId, url, config));
+  actionsEl.replaceChildren(button);
+}
+
+/**
  * `exec(tabId, func, args)` seam `syncFlow.js` needs -- the one place this
  * file wraps `chrome.scripting.executeScript` for the collections flow.
  * Resolves to the injected function's return value (`results[0].result`),
@@ -105,6 +122,24 @@ async function handleSyncCollections(button, tabId, url, config) {
   } catch {
     // Already reported via `setStatus` inside `syncCollections` -- nothing
     // left to do here.
+  } finally {
+    button.disabled = false;
+  }
+}
+
+/**
+ * Mirrors `handleSyncCollections` above, delegating to `syncCollectionDetail`
+ * (`syncFlow.js`) instead -- the single-collection, guaranteed-correct sync
+ * for the detail page the user is currently on.
+ */
+async function handleSyncCollectionDetail(button, tabId, url, config) {
+  button.disabled = true;
+  const client = createClient({ baseUrl: config.appBaseUrl, token: config.apiToken });
+  try {
+    await syncCollectionDetail({ tabId, url, exec: execInTab, api: client, report: setStatus });
+  } catch {
+    // Already reported via `setStatus` inside `syncCollectionDetail` --
+    // nothing left to do here.
   } finally {
     button.disabled = false;
   }
@@ -182,6 +217,10 @@ async function init() {
   }
   if (url && tab.id !== undefined && isCollectionsPage(url)) {
     renderSyncCollections(tab.id, url, config);
+    return;
+  }
+  if (url && tab.id !== undefined && isCollectionDetailPage(url)) {
+    renderSyncCollectionDetail(tab.id, url, config);
     return;
   }
 

@@ -3,11 +3,17 @@ import assert from "node:assert/strict";
 
 import {
   describeUnreadableCollection,
+  findLastCollectionItemsHash,
+  hashCollectionItemsPayload,
   hashCollectionsPayload,
+  readCollectionDetailPage,
   readCollectionsPage,
   shouldPersistHash,
+  shouldPushCollectionItems,
   shouldPushCollections,
+  syncCollectionDetail,
   syncCollections,
+  upsertCollectionItemsHash,
 } from "../src/syncFlow.js";
 import { hashToken } from "../src/courier.js";
 
@@ -867,4 +873,372 @@ test("describeUnreadableCollection: no anchor found and no attempts at all (e.g.
     text,
     'Diagnostic for "My Collection" -- anchor link not found; fallback: skipped (no handle).',
   );
+});
+
+// readCollectionDetailPage / syncCollectionDetail (M11): the guaranteed-
+// correct single-collection sync, driven off the collection DETAIL page the
+// user is actually looking at (ground truth:
+// `https://makerworld.com/en/collections/18925823-esp32`) -- no route-
+// guessing, no anchor-hunting.
+
+const DETAIL_URL = "https://makerworld.com/en/collections/18925823-esp32";
+const DETAIL_URL_NO_SLUG = "https://makerworld.com/collections/18925823";
+
+/** A queued `stubExec` step for the detail-page read exec call --
+ * `readCollectionsDataInPage`'s `{nextData, routePageProps}` shape (reused
+ * verbatim from the collections LIST page read). */
+function detailPageResult({ nextData = null, routePageProps = null } = {}) {
+  return { result: { nextData, routePageProps } };
+}
+
+test("readCollectionDetailPage: happy path -- parses id/slug from the URL, finds items + title via the fresh route pageProps", async () => {
+  const { exec } = stubExec([
+    detailPageResult({
+      routePageProps: {
+        favoritesInfo: { id: 18925823, title: "ESP32" },
+        designs: [{ id: 1, title: "Item A" }],
+      },
+    }),
+  ]);
+
+  const page = await readCollectionDetailPage({ tabId: 7, url: DETAIL_URL, exec });
+
+  assert.deepEqual(page.parsed, { id: "18925823", slug: "esp32" });
+  assert.equal(page.found, true);
+  assert.equal(page.title, "ESP32");
+  assert.deepEqual(page.items, [
+    {
+      external_id: "1",
+      title: "Item A",
+      url: "https://makerworld.com/en/models/1",
+      author: null,
+      thumbnail_url: null,
+    },
+  ]);
+});
+
+test("readCollectionDetailPage: falls back to the inline __NEXT_DATA__ pageProps when the route is unreachable", async () => {
+  const { exec } = stubExec([
+    detailPageResult({
+      nextData: { props: { pageProps: { designs: [{ id: 1, title: "Item A" }] } } },
+      routePageProps: null,
+    }),
+  ]);
+
+  const page = await readCollectionDetailPage({ tabId: 7, url: DETAIL_URL, exec });
+
+  assert.equal(page.found, true);
+  assert.equal(page.items.length, 1);
+});
+
+test("readCollectionDetailPage: found:false (with parsed id/slug still returned) when no design list is recognizable", async () => {
+  const { exec } = stubExec([detailPageResult({ routePageProps: { unrelated: "noise" } })]);
+
+  const page = await readCollectionDetailPage({ tabId: 7, url: DETAIL_URL, exec });
+
+  assert.deepEqual(page.parsed, { id: "18925823", slug: "esp32" });
+  assert.equal(page.found, false);
+  assert.deepEqual(page.items, []);
+  assert.equal(page.title, null);
+});
+
+test("readCollectionDetailPage: title is null when no collection-info shape is recognizable (items-only fallback)", async () => {
+  const { exec } = stubExec([detailPageResult({ routePageProps: { designs: [{ id: 1, title: "Item A" }] } })]);
+
+  const page = await readCollectionDetailPage({ tabId: 7, url: DETAIL_URL, exec });
+
+  assert.equal(page.found, true);
+  assert.equal(page.title, null);
+});
+
+test("readCollectionDetailPage: returns null for a URL that isn't a collection detail page", async () => {
+  const { exec } = stubExec([]);
+  const page = await readCollectionDetailPage({ tabId: 7, url: COLLECTIONS_URL, exec });
+  assert.equal(page, null);
+});
+
+test("readCollectionDetailPage: returns null when the page read throws", async () => {
+  const { exec } = stubExec([{ throws: "no such tab" }]);
+  const page = await readCollectionDetailPage({ tabId: 7, url: DETAIL_URL, exec });
+  assert.equal(page, null);
+});
+
+test("syncCollectionDetail: happy path -- title derivable, pushes both a collections upsert entry and the items, reports by title", async () => {
+  const { exec } = stubExec([
+    detailPageResult({
+      routePageProps: {
+        favoritesInfo: { id: 18925823, title: "ESP32" },
+        designs: [{ id: 1, title: "Item A" }],
+      },
+    }),
+  ]);
+  const { api, calls: apiCalls } = stubApi();
+  const { report, calls: reportCalls } = stubReport();
+
+  const summary = await syncCollectionDetail({ tabId: 7, url: DETAIL_URL, exec, api, report });
+
+  assert.deepEqual(summary, { listId: "18925823", title: "ESP32", items: 1 });
+  assert.deepEqual(apiCalls.pushCollections[0], {
+    site: "makerworld",
+    collections: [{ list_id: "18925823", title: "ESP32", slug: "esp32", count: 1, is_default: false }],
+  });
+  assert.equal(apiCalls.pushCollectionItems[0].listId, "18925823");
+  assert.equal(apiCalls.pushCollectionItems[0].items.length, 1);
+  assert.equal(reportCalls[reportCalls.length - 1].text, 'Synced "ESP32": 1 item.');
+});
+
+test("syncCollectionDetail: title NOT derivable -- pushes items only (no pushCollections call), reports by id", async () => {
+  const { exec } = stubExec([
+    detailPageResult({ routePageProps: { designs: [{ id: 1, title: "Item A" }, { id: 2, title: "Item B" }] } }),
+  ]);
+  const { api, calls: apiCalls } = stubApi();
+  const { report, calls: reportCalls } = stubReport();
+
+  const summary = await syncCollectionDetail({ tabId: 7, url: DETAIL_URL, exec, api, report });
+
+  assert.deepEqual(summary, { listId: "18925823", title: null, items: 2 });
+  assert.equal(apiCalls.pushCollections.length, 0);
+  assert.equal(apiCalls.pushCollectionItems[0].listId, "18925823");
+  assert.equal(reportCalls[reportCalls.length - 1].text, 'Synced "18925823": 2 items.');
+});
+
+test("syncCollectionDetail: zero items -- never pushes an empty membership set, but a derivable title still upserts the collection", async () => {
+  const { exec } = stubExec([
+    detailPageResult({ routePageProps: { favoritesInfo: { id: 18925823, title: "ESP32" }, designs: [] } }),
+  ]);
+  const { api, calls: apiCalls } = stubApi();
+  const { report, calls: reportCalls } = stubReport();
+
+  const summary = await syncCollectionDetail({ tabId: 7, url: DETAIL_URL, exec, api, report });
+
+  assert.deepEqual(summary, { listId: "18925823", title: "ESP32", items: 0 });
+  assert.equal(apiCalls.pushCollections.length, 1);
+  assert.equal(apiCalls.pushCollectionItems.length, 0);
+  assert.equal(reportCalls[reportCalls.length - 1].text, 'Synced "ESP32": 0 items.');
+});
+
+test("syncCollectionDetail: rejects with \"This isn't a collection page.\" for a non-detail URL, no pushes", async () => {
+  const { exec } = stubExec([]);
+  const { api, calls: apiCalls } = stubApi();
+  const { report, calls: reportCalls } = stubReport();
+
+  await assert.rejects(
+    syncCollectionDetail({ tabId: 7, url: COLLECTIONS_URL, exec, api, report }),
+    /This isn't a collection page\./,
+  );
+  assert.equal(apiCalls.pushCollections.length, 0);
+  assert.equal(reportCalls[reportCalls.length - 1].kind, "error");
+});
+
+test("syncCollectionDetail: rejects when no design list is recognizable on the page", async () => {
+  const { exec } = stubExec([detailPageResult({ routePageProps: { unrelated: "noise" } })]);
+  const { api } = stubApi();
+  const { report, calls: reportCalls } = stubReport();
+
+  await assert.rejects(
+    syncCollectionDetail({ tabId: 7, url: DETAIL_URL, exec, api, report }),
+    /Couldn't read this collection's items from the page\./,
+  );
+  assert.equal(reportCalls[reportCalls.length - 1].kind, "error");
+});
+
+test("syncCollectionDetail: a rejected collections-upsert push reports the server's error and rejects, no item push", async () => {
+  const { exec } = stubExec([
+    detailPageResult({
+      routePageProps: { favoritesInfo: { id: 18925823, title: "ESP32" }, designs: [{ id: 1, title: "Item A" }] },
+    }),
+  ]);
+  const { api, calls: apiCalls } = stubApi({ pushCollections: errResult("nope") });
+  const { report, calls: reportCalls } = stubReport();
+
+  await assert.rejects(syncCollectionDetail({ tabId: 7, url: DETAIL_URL, exec, api, report }), /nope/);
+  assert.equal(apiCalls.pushCollectionItems.length, 0);
+  assert.equal(reportCalls[reportCalls.length - 1].text, "nope");
+});
+
+test("syncCollectionDetail: a rejected items push reports the server's error and rejects", async () => {
+  const { exec } = stubExec([
+    detailPageResult({ routePageProps: { designs: [{ id: 1, title: "Item A" }] } }),
+  ]);
+  const { api } = stubApi({ pushCollectionItems: errResult("items nope") });
+  const { report, calls: reportCalls } = stubReport();
+
+  await assert.rejects(
+    syncCollectionDetail({ tabId: 7, url: DETAIL_URL, exec, api, report }),
+    /items nope/,
+  );
+  assert.equal(reportCalls[reportCalls.length - 1].text, "items nope");
+});
+
+test("syncCollectionDetail: an injected `page` skips the module's own page read entirely", async () => {
+  const { exec, calls: execCalls } = stubExec([]);
+  const { api, calls: apiCalls } = stubApi();
+  const { report } = stubReport();
+
+  const summary = await syncCollectionDetail({
+    tabId: 7,
+    url: DETAIL_URL,
+    exec,
+    api,
+    report,
+    page: {
+      parsed: { id: "18925823", slug: "esp32" },
+      pageProps: {},
+      items: [
+        {
+          external_id: "1",
+          title: "Item A",
+          url: "https://makerworld.com/en/models/1",
+          author: null,
+          thumbnail_url: null,
+        },
+      ],
+      title: "ESP32",
+      found: true,
+    },
+  });
+
+  assert.equal(execCalls.length, 0);
+  assert.deepEqual(summary, { listId: "18925823", title: "ESP32", items: 1 });
+  assert.equal(apiCalls.pushCollections.length, 1);
+});
+
+test("syncCollectionDetail: no slug in the URL is carried through to a null slug on the pushed entry", async () => {
+  const { exec } = stubExec([
+    detailPageResult({
+      routePageProps: {
+        favoritesInfo: { id: 18925823, title: "ESP32" },
+        designs: [{ id: 1, title: "Item A" }],
+      },
+    }),
+  ]);
+  const { api, calls: apiCalls } = stubApi();
+  const { report } = stubReport();
+
+  await syncCollectionDetail({ tabId: 7, url: DETAIL_URL_NO_SLUG, exec, api, report });
+
+  assert.equal(apiCalls.pushCollections[0].collections[0].slug, null);
+});
+
+// hashCollectionItemsPayload / findLastCollectionItemsHash /
+// upsertCollectionItemsHash / shouldPushCollectionItems (M11): the
+// per-collection throttle for the background detail-page auto-sync
+// (`config.js`'s `lastCollectionItemsHash`). Deliberately an ARRAY of
+// `{listId, hash}` pairs, not a plain object keyed by listId -- MakerWorld
+// list ids are canonical-numeric-looking strings, and every JS engine
+// silently reorders a plain object's INTEGER-like keys to ascending numeric
+// order regardless of insertion order, which would break "prune to the last
+// N by recency".
+
+const ITEM_A = { external_id: "1", title: "Item A" };
+const ITEM_B = { external_id: "2", title: "Item B" };
+
+test("hashCollectionItemsPayload: stable for the same items, differs when the id set differs", async () => {
+  const a1 = await hashCollectionItemsPayload([ITEM_A, ITEM_B]);
+  const a2 = await hashCollectionItemsPayload([ITEM_A, ITEM_B]);
+  const b = await hashCollectionItemsPayload([ITEM_A]);
+  assert.equal(a1, a2);
+  assert.notEqual(a1, b);
+  assert.match(a1, /^[0-9a-f]{64}$/);
+});
+
+test("hashCollectionItemsPayload: hashes ids only -- a title/author/thumbnail change alone doesn't change the hash", async () => {
+  const before = await hashCollectionItemsPayload([{ external_id: "1", title: "Old Title" }]);
+  const after = await hashCollectionItemsPayload([{ external_id: "1", title: "New Title" }]);
+  assert.equal(before, after);
+});
+
+test("hashCollectionItemsPayload: null/undefined/empty items all hash the same", async () => {
+  const empty = await hashCollectionItemsPayload([]);
+  assert.equal(await hashCollectionItemsPayload(null), empty);
+  assert.equal(await hashCollectionItemsPayload(undefined), empty);
+});
+
+test("findLastCollectionItemsHash: finds a matching listId, null when absent or the array is empty/missing", () => {
+  const entries = [
+    { listId: "1", hash: "aaa" },
+    { listId: "2", hash: "bbb" },
+  ];
+  assert.equal(findLastCollectionItemsHash(entries, "2"), "bbb");
+  assert.equal(findLastCollectionItemsHash(entries, "99"), null);
+  assert.equal(findLastCollectionItemsHash([], "1"), null);
+  assert.equal(findLastCollectionItemsHash(null, "1"), null);
+  assert.equal(findLastCollectionItemsHash(undefined, "1"), null);
+});
+
+test("upsertCollectionItemsHash: appends a new listId at the end", () => {
+  const result = upsertCollectionItemsHash([{ listId: "1", hash: "aaa" }], "2", "bbb");
+  assert.deepEqual(result, [
+    { listId: "1", hash: "aaa" },
+    { listId: "2", hash: "bbb" },
+  ]);
+});
+
+test("upsertCollectionItemsHash: an existing listId is updated AND moved to the end (most-recently-synced)", () => {
+  const result = upsertCollectionItemsHash(
+    [
+      { listId: "1", hash: "aaa" },
+      { listId: "2", hash: "bbb" },
+    ],
+    "1",
+    "aaa-updated",
+  );
+  assert.deepEqual(result, [
+    { listId: "2", hash: "bbb" },
+    { listId: "1", hash: "aaa-updated" },
+  ]);
+});
+
+test("upsertCollectionItemsHash: prunes to the last 50 by default", () => {
+  const entries = Array.from({ length: 50 }, (_, i) => ({ listId: String(i), hash: `h${i}` }));
+  const result = upsertCollectionItemsHash(entries, "50", "h50");
+  assert.equal(result.length, 50);
+  assert.equal(result[0].listId, "1"); // the oldest ("0") was pruned
+  assert.equal(result[result.length - 1].listId, "50");
+});
+
+test("upsertCollectionItemsHash: honors a custom limit", () => {
+  const entries = [
+    { listId: "1", hash: "a" },
+    { listId: "2", hash: "b" },
+  ];
+  const result = upsertCollectionItemsHash(entries, "3", "c", 2);
+  assert.deepEqual(result, [
+    { listId: "2", hash: "b" },
+    { listId: "3", hash: "c" },
+  ]);
+});
+
+test("upsertCollectionItemsHash: recency order survives canonical-numeric-looking listIds (the array-not-object reason)", () => {
+  // If this were a plain object keyed by listId, a JS engine would silently
+  // reorder these INTEGER-like keys to ascending numeric order ("2", "10",
+  // "9999999") regardless of insertion order -- ruining "last N by
+  // recency". The array form must preserve insertion order exactly.
+  let entries = [];
+  entries = upsertCollectionItemsHash(entries, "9999999", "h1");
+  entries = upsertCollectionItemsHash(entries, "2", "h2");
+  entries = upsertCollectionItemsHash(entries, "10", "h3");
+  assert.deepEqual(
+    entries.map((e) => e.listId),
+    ["9999999", "2", "10"],
+  );
+});
+
+test("shouldPushCollectionItems: true when there's no last-pushed hash for this listId yet", async () => {
+  assert.equal(await shouldPushCollectionItems([ITEM_A], [], "1"), true);
+});
+
+test("shouldPushCollectionItems: false when the items' hash matches the last-pushed one for this listId", async () => {
+  const hash = await hashCollectionItemsPayload([ITEM_A]);
+  assert.equal(await shouldPushCollectionItems([ITEM_A], [{ listId: "1", hash }], "1"), false);
+});
+
+test("shouldPushCollectionItems: true when the items changed since the last-pushed hash for this listId", async () => {
+  const hash = await hashCollectionItemsPayload([ITEM_A]);
+  assert.equal(await shouldPushCollectionItems([ITEM_A, ITEM_B], [{ listId: "1", hash }], "1"), true);
+});
+
+test("shouldPushCollectionItems: a hash recorded for a DIFFERENT listId doesn't affect this one", async () => {
+  const hash = await hashCollectionItemsPayload([ITEM_A]);
+  assert.equal(await shouldPushCollectionItems([ITEM_A], [{ listId: "999", hash }], "1"), true);
 });

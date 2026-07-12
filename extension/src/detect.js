@@ -35,6 +35,17 @@ const MAKERWORLD_HOSTS = new Set(["makerworld.com", "www.makerworld.com"]);
 // doesn't false-positive.
 const COLLECTIONS_PATH_PATTERN = /^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?@[^/]+\/collections(?:\/.*)?$/i;
 
+// GROUND TRUTH (a real logged-in browser, M11): a MakerWorld collection
+// DETAIL page is `/{locale}/collections/{id}-{slug}`, e.g.
+// `https://makerworld.com/en/collections/18925823-esp32` -- an entirely
+// different route from `COLLECTIONS_PATH_PATTERN` above (no `@handle`
+// segment, and requires a numeric id). Kept in sync with `collections.js`'s
+// `COLLECTION_DETAIL_PATH_RE` (same shape, duplicated locally rather than
+// imported -- mirrors this file/`popup.js`/`background.js`'s already-
+// duplicated `execInTab` pattern). Anchored so the bare index page
+// (`/@handle/collections`, no id) never matches here.
+const COLLECTION_DETAIL_PATH_PATTERN = /^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?collections?\/(\d+)(?:-[^/?#]*)?\/?$/i;
+
 /**
  * @param {string} url
  * @returns {"makerworld"|"thingiverse"|"printables"|null}
@@ -102,4 +113,29 @@ export function isCollectionsPage(url) {
     return false;
   }
   return COLLECTIONS_PATH_PATTERN.test(parsed.pathname);
+}
+
+/**
+ * True iff `url` is a MakerWorld collection DETAIL page -- ground-truth
+ * shape `/collections/<id>[-slug]`, optionally locale-prefixed, NO `@handle`
+ * segment (`COLLECTION_DETAIL_PATH_PATTERN` above; a real capture:
+ * `https://makerworld.com/en/collections/18925823-esp32`). Used to gate the
+ * popup's "Sync this collection to app" button and the background auto-
+ * sync's per-page trigger (`syncFlow.js`'s `syncCollectionDetail`) --
+ * distinct from `isCollectionsPage` above, which gates the bulk LIST sync.
+ * @param {string} url
+ * @returns {boolean}
+ */
+export function isCollectionDetailPage(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  const host = (parsed.hostname || "").toLowerCase();
+  if (!MAKERWORLD_HOSTS.has(host)) {
+    return false;
+  }
+  return COLLECTION_DETAIL_PATH_PATTERN.test(parsed.pathname);
 }

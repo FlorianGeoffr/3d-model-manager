@@ -29,6 +29,10 @@
  * found/readable, list push rejected) -- the rejection's `message` is the
  * same user-facing text `report` was just called with, so callers can
  * surface it verbatim without re-deriving it.
+ *
+ * `syncCollectionDetail` (M11) is a SEPARATE, guaranteed-correct flow for
+ * the collection detail page the user is actually looking at -- see its own
+ * doc below.
  */
 
 import {
@@ -36,10 +40,12 @@ import {
   collectionDetailPathnameFrom,
   extractFavoritesListFrom,
   extractHandle,
+  findCollectionTitleIn,
   findDesignListIn,
   hasFavoritesList,
   mapDesignHits,
   matchCollectionLinks,
+  parseCollectionDetailUrl,
 } from "./collections.js";
 import { hashToken } from "./courier.js";
 
@@ -64,7 +70,11 @@ const ITEMS_PAGE_SIZE = 20;
  * `__NEXT_DATA__.props.pageProps` as whatever page loaded first) -- live bug
  * report: the popup said "No collections found" while the user was looking
  * right at their collections, until a hard refresh. The data route always
- * reflects the CURRENT page, so `readCollectionsPage` below prefers it.
+ * reflects the CURRENT page, so `readCollectionsPage` (and
+ * `readCollectionDetailPage`, M11) below prefer it. This function is
+ * pathname-agnostic (reads `location.pathname`, whatever page it's injected
+ * into) -- reused verbatim for the collection DETAIL page read, not just the
+ * collections LIST page.
  * @returns {{nextData: unknown, routePageProps: unknown}} `nextData` is the
  *   parsed `__NEXT_DATA__` (or `null` if missing/malformed). `routePageProps`
  *   is the data route response's `pageProps`, or `null` on a missing
@@ -654,3 +664,187 @@ export async function syncCollections({ tabId, url, exec, api, report, page }) {
   };
 }
 
+/**
+ * Reads a MakerWorld collection DETAIL page's live data (M11) -- the
+ * guaranteed-correct item source: the user is LOOKING AT the collection's
+ * own items right now, so there's no route-guessing or anchor-hunting
+ * involved at all, unlike `syncCollections`'s bulk item discovery. Reuses
+ * `readCollectionsDataInPage` (pathname-agnostic -- reads whatever page it's
+ * injected into) for the actual read, then the SAME tolerant
+ * `findDesignListIn` discovery `syncCollections` uses for the items, plus
+ * `findCollectionTitleIn` (`collections.js`) for the collection's own title
+ * (best-effort -- see its doc; `null` when not derivable).
+ * @param {{tabId: number, url: string, exec: (tabId: number, func: Function, args?: unknown[]) => Promise<unknown>}} opts
+ * @returns {Promise<{parsed: {id: string, slug: string|null}, pageProps: unknown, items: import("./collections.js").CollectionItemPushEntry[], title: string|null, found: boolean}|null>}
+ *   `null` when `url` isn't a collection detail page at all, or the page
+ *   itself couldn't be read (the `exec` injection threw). `found` is `true`
+ *   when a design list was located (even an empty, genuinely-empty one);
+ *   `false` when nothing recognizable was found -- `items` is `[]` either
+ *   way in that case.
+ */
+export async function readCollectionDetailPage({ tabId, url, exec }) {
+  const parsed = parseCollectionDetailUrl(url);
+  if (!parsed) {
+    return null;
+  }
+
+  let page;
+  try {
+    page = await exec(tabId, readCollectionsDataInPage);
+  } catch {
+    return null;
+  }
+  const { nextData, routePageProps } = page ?? {};
+  const pageProps = routePageProps ?? nextData?.props?.pageProps ?? null;
+
+  const found = findDesignListIn(pageProps);
+  if (!found) {
+    return { parsed, pageProps, items: [], title: null, found: false };
+  }
+  const normalized = found.designs.map((design) =>
+    design && !design.title && design.name ? { ...design, title: design.name } : design,
+  );
+  const items = mapDesignHits({ hits: normalized });
+  const title = findCollectionTitleIn(pageProps, parsed.id);
+  return { parsed, pageProps, items, title, found: true };
+}
+
+/**
+ * SHA-256 hash of a `readCollectionDetailPage` result's item ids (M11) --
+ * the payload the background auto-sync throttle compares against
+ * `lastCollectionItemsHash` (`background.js`/`config.js`) to decide whether
+ * a given collection's membership actually changed since it was last
+ * pushed. Hashes just the ids (not full item objects) since a design's
+ * title/author/thumbnail changing without a membership change isn't
+ * something this extension needs to re-sync for.
+ * @param {import("./collections.js").CollectionItemPushEntry[]} items
+ * @returns {Promise<string>}
+ */
+export function hashCollectionItemsPayload(items) {
+  return hashToken(JSON.stringify((items || []).map((item) => item.external_id)));
+}
+
+// `config.js`'s `lastCollectionItemsHash` is an ARRAY of `{listId, hash}`
+// pairs, oldest-first -- NOT a plain object keyed by listId. MakerWorld list
+// ids are canonical-numeric-looking strings (e.g. `"18925823"`), and every
+// JS engine silently reorders a plain object's INTEGER-like keys to
+// ascending numeric order regardless of insertion order -- which would
+// silently break "prune to the last 50 by recency" (`upsertCollectionItemsHash`
+// below) the same way it would for any object keyed by an id like this.
+const DEFAULT_MAX_COLLECTION_ITEM_HASHES = 50;
+
+/**
+ * Looks up `listId`'s last-pushed items hash within `entries`
+ * (`config.js`'s `lastCollectionItemsHash` array shape -- see the doc
+ * comment above `DEFAULT_MAX_COLLECTION_ITEM_HASHES`).
+ * @param {Array<{listId: string, hash: string}>|null|undefined} entries
+ * @param {string} listId
+ * @returns {string|null}
+ */
+export function findLastCollectionItemsHash(entries, listId) {
+  const match = (entries || []).find((entry) => entry && entry.listId === listId);
+  return match ? match.hash : null;
+}
+
+/**
+ * Returns a NEW array with `listId`'s hash upserted at the END (most
+ * recently synced), pruned to the last `limit` entries -- the
+ * `lastCollectionItemsHash` throttle map's update step
+ * (`background.js`'s detail-page auto-sync). Pure -- doesn't mutate
+ * `entries`.
+ * @param {Array<{listId: string, hash: string}>|null|undefined} entries
+ * @param {string} listId
+ * @param {string} hash
+ * @param {number} [limit]
+ * @returns {Array<{listId: string, hash: string}>}
+ */
+export function upsertCollectionItemsHash(entries, listId, hash, limit = DEFAULT_MAX_COLLECTION_ITEM_HASHES) {
+  const withoutListId = (entries || []).filter((entry) => entry && entry.listId !== listId);
+  withoutListId.push({ listId, hash });
+  return withoutListId.slice(-limit);
+}
+
+/**
+ * True when `items`' id hash differs from the last-pushed hash recorded for
+ * `listId` in `entries` -- mirrors `shouldPushCollections`'s shape, scoped
+ * to one collection's items instead of the whole collections list.
+ * @param {import("./collections.js").CollectionItemPushEntry[]} items
+ * @param {Array<{listId: string, hash: string}>|null|undefined} entries
+ * @param {string} listId
+ * @returns {Promise<boolean>}
+ */
+export async function shouldPushCollectionItems(items, entries, listId) {
+  const hash = await hashCollectionItemsPayload(items);
+  return hash !== findLastCollectionItemsHash(entries, listId);
+}
+
+/**
+ * Syncs a SINGLE collection straight from its own detail page (M11) --
+ * a guaranteed-correct fallback/complement to `syncCollections`'s bulk
+ * discovery: the user is looking right at this collection's items, so
+ * there's no route-guessing involved. Pushes an upsert-shaped collections
+ * entry (`pushCollections`) ONLY when a title was derivable
+ * (`findCollectionTitleIn`, best-effort, unverified field names -- see its
+ * doc); when it isn't, this pushes ITEMS ONLY, keyed by the id from the URL
+ * (a collection push isn't required for `pushCollectionItems` to accept
+ * items for that id -- see `backend/app/api/ext.py`). Also pushes nothing
+ * for a genuinely-empty collection (`items.length === 0`) -- same "never
+ * push an empty membership set" caution as `syncCollections`.
+ * @param {object} opts
+ * @param {number} opts.tabId
+ * @param {string} opts.url the tab's URL -- must be a collection detail page
+ * @param {(tabId: number, func: Function, args?: unknown[]) => Promise<unknown>} opts.exec
+ * @param {{pushCollections: Function, pushCollectionItems: Function}} opts.api
+ * @param {(text: string, kind: string|null) => void} opts.report
+ * @param {Awaited<ReturnType<typeof readCollectionDetailPage>>} [opts.page] a
+ *   pre-fetched `readCollectionDetailPage` result -- when supplied, skips
+ *   the module's own page read (the background auto-sync throttle already
+ *   read the page once to compute a hash).
+ * @returns {Promise<{listId: string, title: string|null, items: number}>}
+ */
+export async function syncCollectionDetail({ tabId, url, exec, api, report, page }) {
+  report("Reading this collection…", null);
+
+  const resolvedPage = page ?? (await readCollectionDetailPage({ tabId, url, exec }));
+  if (!resolvedPage) {
+    const message = "This isn't a collection page.";
+    report(message, "error");
+    throw new Error(message);
+  }
+  if (!resolvedPage.found) {
+    const message = "Couldn't read this collection's items from the page.";
+    report(message, "error");
+    throw new Error(message);
+  }
+
+  const { parsed, items, title } = resolvedPage;
+
+  if (title) {
+    const entry = {
+      list_id: parsed.id,
+      title,
+      slug: parsed.slug,
+      count: items.length,
+      is_default: false,
+    };
+    const listResult = await api.pushCollections("makerworld", [entry]);
+    if (!listResult.ok) {
+      const message = listResult.error || "Something went wrong.";
+      report(message, "error");
+      throw new Error(message);
+    }
+  }
+
+  if (items.length > 0) {
+    const itemsResult = await api.pushCollectionItems("makerworld", parsed.id, items);
+    if (!itemsResult.ok) {
+      const message = itemsResult.error || "Something went wrong.";
+      report(message, "error");
+      throw new Error(message);
+    }
+  }
+
+  const label = title || parsed.id;
+  report(`Synced "${label}": ${items.length} item${items.length === 1 ? "" : "s"}.`, "ok");
+  return { listId: parsed.id, title: title || null, items: items.length };
+}

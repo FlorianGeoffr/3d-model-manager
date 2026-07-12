@@ -6,10 +6,12 @@ import {
   collectionDetailPathnameFrom,
   extractFavoritesListFrom,
   extractHandle,
+  findCollectionTitleIn,
   findDesignListIn,
   hasFavoritesList,
   mapDesignHits,
   matchCollectionLinks,
+  parseCollectionDetailUrl,
 } from "../src/collections.js";
 
 /** Wraps a `favoritesList` array in the shape of a real `__NEXT_DATA__`
@@ -401,9 +403,9 @@ test("findDesignListIn: an array of all-null entries is never design-shaped, nam
   assert.equal(findDesignListIn({ someUnrecognizedKey: [null, null] }), null);
 });
 
-// matchCollectionLinks / collectionDetailPathnameFrom (M11): ground-truth
-// collection-detail shape, ANCHOR-derived pathnames -- a real logged-in
-// browser capture confirmed the detail page is
+// matchCollectionLinks / parseCollectionDetailUrl / collectionDetailPathnameFrom
+// (M11): ground-truth collection-detail shape, ANCHOR-derived pathnames --
+// a real logged-in browser capture confirmed the detail page is
 // `https://makerworld.com/en/collections/18925823-esp32` (locale-prefixed,
 // PLURAL "collections", NO `@handle` segment, optional `-slug` suffix) --
 // this SUPERSEDES the earlier `{collectionsPathname}/{listId}` guess, which
@@ -501,6 +503,29 @@ test("matchCollectionLinks: empty hrefs/listIds return an empty Map", () => {
   assert.equal(matchCollectionLinks(null, null).size, 0);
 });
 
+test("parseCollectionDetailUrl: the real ground-truth URL -> {id, slug}", () => {
+  assert.deepEqual(parseCollectionDetailUrl(REAL_DETAIL_URL), { id: "18925823", slug: "esp32" });
+});
+
+test("parseCollectionDetailUrl: no slug, no locale", () => {
+  assert.deepEqual(parseCollectionDetailUrl("https://makerworld.com/collections/18925823"), {
+    id: "18925823",
+    slug: null,
+  });
+});
+
+test("parseCollectionDetailUrl: returns null for the list/index page (/@handle/collections)", () => {
+  assert.equal(
+    parseCollectionDetailUrl("https://makerworld.com/en/@Terminalfoo/collections"),
+    null,
+  );
+});
+
+test("parseCollectionDetailUrl: returns null for an unrelated page or a malformed URL", () => {
+  assert.equal(parseCollectionDetailUrl("https://makerworld.com/en/models/643408-foo"), null);
+  assert.equal(parseCollectionDetailUrl("not a url"), null);
+});
+
 test("collectionDetailPathnameFrom: builds the ground-truth shape with a locale and a slug", () => {
   assert.equal(
     collectionDetailPathnameFrom("https://makerworld.com/en/@Terminalfoo/collections", "18925823", "esp32"),
@@ -524,4 +549,49 @@ test("collectionDetailPathnameFrom: omits the locale prefix when the URL has non
 
 test("collectionDetailPathnameFrom: falls back to no locale when the URL doesn't parse", () => {
   assert.equal(collectionDetailPathnameFrom("not a url", "18925823", "esp32"), "/collections/18925823-esp32");
+});
+
+// findCollectionTitleIn (M11): tolerant discovery of a collection DETAIL
+// page's own title, mirroring `findDesignListIn`'s tolerant discovery of
+// the items array -- UNVERIFIED field name, so tries known plausible keys
+// first, then a shallow deep-scan.
+
+test("findCollectionTitleIn: matches a known key ('favoritesInfo') directly", () => {
+  const title = findCollectionTitleIn({ favoritesInfo: { id: 18925823, title: "ESP32" } }, "18925823");
+  assert.equal(title, "ESP32");
+});
+
+test("findCollectionTitleIn: deep-scan fallback under an unrecognized top-level key", () => {
+  const title = findCollectionTitleIn(
+    { someUnrecognizedField: { id: 18925823, title: "ESP32" } },
+    "18925823",
+  );
+  assert.equal(title, "ESP32");
+});
+
+test("findCollectionTitleIn: deep-scan fallback one level into a nested plain object", () => {
+  const title = findCollectionTitleIn(
+    { result: { info: { id: 18925823, title: "ESP32" } } },
+    "18925823",
+  );
+  assert.equal(title, "ESP32");
+});
+
+test("findCollectionTitleIn: never matches favoritesList (the collections LIST, not this one's own info)", () => {
+  const title = findCollectionTitleIn(
+    { favoritesList: [{ id: 18925823, title: "ESP32", designCnt: 9, isDefault: false }] },
+    "18925823",
+  );
+  assert.equal(title, null);
+});
+
+test("findCollectionTitleIn: id mismatch is never matched, even with a matching title shape", () => {
+  const title = findCollectionTitleIn({ favoritesInfo: { id: 111, title: "Wrong One" } }, "18925823");
+  assert.equal(title, null);
+});
+
+test("findCollectionTitleIn: missing/malformed pageProps or id returns null", () => {
+  assert.equal(findCollectionTitleIn(null, "18925823"), null);
+  assert.equal(findCollectionTitleIn({}, "18925823"), null);
+  assert.equal(findCollectionTitleIn({ favoritesInfo: { id: 18925823, title: "ESP32" } }, null), null);
 });

@@ -8,16 +8,21 @@
  * `test/syncFlow.test.js`.
  */
 
-import { isCollectionsPage, isModelPage } from "./detect.js";
+import { isCollectionDetailPage, isCollectionsPage, isModelPage } from "./detect.js";
 import { createClient } from "./api.js";
 import { getConfig, isConfigured, setConfig } from "./config.js";
 import { hashToken, pickCookieValue, shouldPush } from "./courier.js";
 import {
+  findLastCollectionItemsHash,
+  hashCollectionItemsPayload,
   hashCollectionsPayload,
+  readCollectionDetailPage,
   readCollectionsPage,
   shouldPersistHash,
   shouldPushCollections,
+  syncCollectionDetail,
   syncCollections,
+  upsertCollectionItemsHash,
 } from "./syncFlow.js";
 
 const GALLERY_HOST_PATTERNS = [
@@ -271,6 +276,71 @@ async function runCollectionsSync(tabId, url) {
   await setConfig({ lastCollectionsHash: newHash });
 }
 
+/**
+ * Auto-sync entry point for a collection DETAIL page (M11) -- mirrors
+ * `runCollectionsSync` above (same setting, same silent-to-the-user/
+ * logged-only failure handling), but drives `syncCollectionDetail`
+ * (`syncFlow.js`) instead: the guaranteed-correct single-collection sync,
+ * triggered by simply VISITING that one collection's own page.
+ *
+ * Throttled per-collection via `lastCollectionItemsHash`
+ * (`config.js`/`syncFlow.js`'s `findLastCollectionItemsHash`/
+ * `upsertCollectionItemsHash`) rather than the whole-payload
+ * `lastCollectionsHash` the bulk flow uses -- a hash of just THIS
+ * collection's item ids, so visiting one collection's page repeatedly
+ * doesn't re-push it every time, but visiting a DIFFERENT collection's page
+ * (or this one after its membership actually changed) still does. An empty
+ * `items` read is treated as "nothing to sync" and never pushed, same
+ * "empty isn't proof of empty" caution as `runCollectionsSync`.
+ */
+async function runCollectionDetailSync(tabId, url) {
+  const config = await getConfig();
+  if (!config.autoSyncCollections || !isConfigured(config)) {
+    return;
+  }
+
+  const page = await readCollectionDetailPage({ tabId, url, exec: execInTab });
+  if (!page || !page.found) {
+    console.error("[collection detail auto-sync] couldn't read this collection");
+    return;
+  }
+  if (page.items.length === 0) {
+    return;
+  }
+
+  const listId = page.parsed.id;
+  const lastHashes = config.lastCollectionItemsHash || [];
+  const itemsHash = await hashCollectionItemsPayload(page.items);
+  if (findLastCollectionItemsHash(lastHashes, listId) === itemsHash) {
+    return;
+  }
+
+  const client = createClient({ baseUrl: config.appBaseUrl, token: config.apiToken });
+  try {
+    await syncCollectionDetail({
+      tabId,
+      url,
+      exec: execInTab,
+      api: client,
+      page,
+      report: (text, kind) => {
+        const line = `[collection detail auto-sync] ${text}`;
+        if (kind === "error") {
+          console.error(line);
+        } else {
+          console.log(line);
+        }
+      },
+    });
+  } catch {
+    // `syncCollectionDetail` already logged the failure reason above via
+    // `report`. Leave the throttle hash untouched so the next visit retries.
+    return;
+  }
+
+  await setConfig({ lastCollectionItemsHash: upsertCollectionItemsHash(lastHashes, listId, itemsHash) });
+}
+
 chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
   if (changeInfo.status !== "complete") {
     return;
@@ -297,6 +367,13 @@ chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
     // background sync is meant to be.
     runCollectionsSync(tab.id, url).catch((err) =>
       console.warn("collections auto-sync failed", err),
+    );
+  }
+  if (tab.id !== undefined && isCollectionDetailPage(url)) {
+    // Same not-awaited/`.catch`-guarded shape as `runCollectionsSync` above,
+    // for the same reason.
+    runCollectionDetailSync(tab.id, url).catch((err) =>
+      console.warn("collection detail auto-sync failed", err),
     );
   }
 });

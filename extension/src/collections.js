@@ -217,6 +217,30 @@ export function matchCollectionLinks(hrefs, listIds) {
   return result;
 }
 
+/**
+ * Parses a MakerWorld URL as a collection DETAIL page (ground-truth shape,
+ * `COLLECTION_DETAIL_PATH_RE` above) -- used both by `detect.js`'s
+ * `isCollectionDetailPage` gate and by `syncFlow.js`'s `syncCollectionDetail`
+ * to pull the collection id (and slug, when present) straight out of the
+ * URL the user is actually looking at.
+ * @param {string} url
+ * @returns {{id: string, slug: string|null}|null} `null` when `url` doesn't
+ *   parse or doesn't match the collection-detail shape.
+ */
+export function parseCollectionDetailUrl(url) {
+  let pathname;
+  try {
+    pathname = new URL(url).pathname;
+  } catch {
+    return null;
+  }
+  const match = COLLECTION_DETAIL_PATH_RE.exec(pathname);
+  if (!match) {
+    return null;
+  }
+  return { id: match[1], slug: match[2] || null };
+}
+
 // A plausible locale segment (`en`, `de`, `en-us`, ...) -- loose on purpose
 // (this only needs to recognize the SITE'S OWN locale prefixes, not validate
 // real ISO codes); a false positive here just means a made-up two-letter
@@ -266,6 +290,83 @@ export function collectionDetailPathnameFrom(url, listId, slug) {
   const locale = localeFromUrl(url);
   const prefix = locale ? `/${locale}` : "";
   return slug ? `${prefix}/collections/${listId}-${slug}` : `${prefix}/collections/${listId}`;
+}
+
+// Checked (in this order) before falling back to a shallow deep-scan --
+// plausible field names for a collection DETAIL page's own metadata object
+// (distinct from `DESIGN_LIST_KEYS` below, which is the collection's ITEMS).
+// UNVERIFIED (no live capture of exactly which key a detail page's own
+// title/info carries was taken for this task) -- `findCollectionTitleIn`
+// below is deliberately tolerant for the same reason `findDesignListIn` is.
+const COLLECTION_INFO_KEYS = ["favoritesInfo", "collectionInfo", "listInfo", "info", "detail"];
+
+/**
+ * True iff `value` looks like a collection-METADATA object (as opposed to a
+ * design/model object, `looksLikeDesign` below) describing the collection
+ * identified by `id`: a plain object whose own `id` stringifies to `id` and
+ * that carries a non-empty string `title`.
+ * @param {unknown} value
+ * @param {string} id
+ * @returns {boolean}
+ */
+function looksLikeCollectionInfo(value, id) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  if (typeof value.title !== "string" || !value.title) {
+    return false;
+  }
+  return String(value.id) === id;
+}
+
+/**
+ * Tolerantly locates the CURRENT collection's own title within a collection
+ * detail page's `pageProps` (`readCollectionDetailPage`, `syncFlow.js`) --
+ * the detail-page counterpart to `findDesignListIn`'s tolerant item-array
+ * discovery, same UNVERIFIED-field-name caveat (`COLLECTION_INFO_KEYS`
+ * above). Tries the known plausible keys first, then falls back to a
+ * shallow deep-scan (top level, and one level into any nested plain object)
+ * for ANY object matching `looksLikeCollectionInfo`. `favoritesList` and the
+ * design-list keys are excluded from the deep-scan (never a single
+ * collection's own metadata). Returns `null` when nothing matches --
+ * callers (`syncFlow.js`'s `syncCollectionDetail`) treat that as "title not
+ * derivable" and push items only, per its doc.
+ * @param {unknown} pageProps
+ * @param {string} id the collection id from the URL (`parseCollectionDetailUrl`)
+ * @returns {string|null}
+ */
+export function findCollectionTitleIn(pageProps, id) {
+  if (!pageProps || typeof pageProps !== "object" || !id) {
+    return null;
+  }
+
+  for (const key of COLLECTION_INFO_KEYS) {
+    const candidate = pageProps[key];
+    if (looksLikeCollectionInfo(candidate, id)) {
+      return candidate.title;
+    }
+  }
+
+  for (const [key, value] of Object.entries(pageProps)) {
+    if (COLLECTION_INFO_KEYS.includes(key) || key === "favoritesList") {
+      continue;
+    }
+    if (looksLikeCollectionInfo(value, id)) {
+      return value.title;
+    }
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      for (const [nestedKey, nestedValue] of Object.entries(value)) {
+        if (nestedKey === "favoritesList") {
+          continue;
+        }
+        if (looksLikeCollectionInfo(nestedValue, id)) {
+          return nestedValue.title;
+        }
+      }
+    }
+  }
+
+  return null;
 }
 
 /**

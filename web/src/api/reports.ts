@@ -3,14 +3,20 @@
  * files sharing a blob hash across more than one model -- reclaimable
  * storage from the same content having been imported/uploaded more than once.
  */
-import { useQuery } from "@tanstack/react-query";
+import { queryOptions, useQuery } from "@tanstack/react-query";
 
 import { api } from "@/api/client";
 import type { DuplicatesReport } from "@/api/types";
 
+// Exported as `queryOptions` (not just a bare hook) so `DuplicatesPage`'s
+// per-row delete can invalidate this query by key after a successful
+// `DELETE /files/{id}` -- same `queryOptions` pattern as `tagsQueryOptions`
+// in `api/library.ts`.
+export const duplicatesReportQueryOptions = queryOptions({
+  queryKey: ["reports", "duplicates"] as const,
+  queryFn: () => api.get<DuplicatesReport>("/reports/duplicates"),
+});
+
 export function useDuplicatesReport() {
-  return useQuery({
-    queryKey: ["reports", "duplicates"] as const,
-    queryFn: () => api.get<DuplicatesReport>("/reports/duplicates"),
-  });
+  return useQuery(duplicatesReportQueryOptions);
 }

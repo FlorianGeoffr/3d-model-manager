@@ -3,11 +3,13 @@ import assert from "node:assert/strict";
 
 import {
   buildItemsFetchPlan,
+  collectionDetailPathnameFrom,
   extractFavoritesListFrom,
   extractHandle,
   findDesignListIn,
   hasFavoritesList,
   mapDesignHits,
+  matchCollectionLinks,
 } from "../src/collections.js";
 
 /** Wraps a `favoritesList` array in the shape of a real `__NEXT_DATA__`
@@ -397,4 +399,129 @@ test("findDesignListIn: an empty generic 'list' key alone (nothing better found)
 test("findDesignListIn: an array of all-null entries is never design-shaped, named key or deep-scan", () => {
   assert.equal(findDesignListIn({ designs: [null, null] }), null);
   assert.equal(findDesignListIn({ someUnrecognizedKey: [null, null] }), null);
+});
+
+// matchCollectionLinks / collectionDetailPathnameFrom (M11): ground-truth
+// collection-detail shape, ANCHOR-derived pathnames -- a real logged-in
+// browser capture confirmed the detail page is
+// `https://makerworld.com/en/collections/18925823-esp32` (locale-prefixed,
+// PLURAL "collections", NO `@handle` segment, optional `-slug` suffix) --
+// this SUPERSEDES the earlier `{collectionsPathname}/{listId}` guess, which
+// a real sync confirmed finds nothing.
+
+const REAL_DETAIL_URL = "https://makerworld.com/en/collections/18925823-esp32";
+
+test("matchCollectionLinks: matches the real ground-truth URL shape (absolute, locale + slug)", () => {
+  const result = matchCollectionLinks([REAL_DETAIL_URL], ["18925823"]);
+  assert.deepEqual([...result], [["18925823", "/en/collections/18925823-esp32"]]);
+});
+
+test("matchCollectionLinks: matches a relative href, no locale, no slug", () => {
+  const result = matchCollectionLinks(["/collections/18925823"], ["18925823"]);
+  assert.equal(result.get("18925823"), "/collections/18925823");
+});
+
+test("matchCollectionLinks: matches the singular '/collection/<id>' spelling too", () => {
+  const result = matchCollectionLinks(["/en/collection/18925823-esp32"], ["18925823"]);
+  assert.equal(result.get("18925823"), "/en/collection/18925823-esp32");
+});
+
+test("matchCollectionLinks: strips a query string and hash before matching", () => {
+  const result = matchCollectionLinks(
+    ["https://makerworld.com/en/collections/18925823-esp32?tab=info#top"],
+    ["18925823"],
+  );
+  assert.equal(result.get("18925823"), "/en/collections/18925823-esp32");
+});
+
+test("matchCollectionLinks: matches with a trailing slash", () => {
+  const result = matchCollectionLinks(["/en/collections/18925823-esp32/"], ["18925823"]);
+  assert.equal(result.get("18925823"), "/en/collections/18925823-esp32");
+});
+
+test("matchCollectionLinks: does NOT match the bare index/list page (/@handle/collections, no id)", () => {
+  const result = matchCollectionLinks(
+    ["https://makerworld.com/en/@Terminalfoo/collections"],
+    ["18925823"],
+  );
+  assert.equal(result.size, 0);
+});
+
+test("matchCollectionLinks: does NOT match a list page with an @handle segment, even with a trailing id-looking segment", () => {
+  // The OLD, now-confirmed-wrong guess shape -- must not be resurrected by
+  // accident.
+  const result = matchCollectionLinks(
+    ["https://makerworld.com/en/@Terminalfoo/collections/18925823"],
+    ["18925823"],
+  );
+  assert.equal(result.size, 0);
+});
+
+test("matchCollectionLinks: ignores an id not in the requested listIds", () => {
+  const result = matchCollectionLinks(["/en/collections/99999999-other"], ["18925823"]);
+  assert.equal(result.size, 0);
+});
+
+test("matchCollectionLinks: ignores a foreign-origin absolute href even with a matching path shape", () => {
+  const result = matchCollectionLinks(
+    ["https://thingiverse.com/collections/18925823-esp32"],
+    ["18925823"],
+  );
+  assert.equal(result.size, 0);
+});
+
+test("matchCollectionLinks: ignores non-matching hrefs (unrelated pages, malformed input)", () => {
+  const result = matchCollectionLinks(
+    ["/en/models/643408-foo", "", null, undefined, "not a url or path??"],
+    ["18925823"],
+  );
+  assert.equal(result.size, 0);
+});
+
+test("matchCollectionLinks: dedupes -- the FIRST matching href for a given id wins", () => {
+  const result = matchCollectionLinks(
+    ["/en/collections/18925823-esp32", "/de/collections/18925823-esp32"],
+    ["18925823"],
+  );
+  assert.equal(result.get("18925823"), "/en/collections/18925823-esp32");
+});
+
+test("matchCollectionLinks: matches multiple different ids independently", () => {
+  const result = matchCollectionLinks(
+    ["/en/collections/18925823-esp32", "/en/collections/2155987-default-collection"],
+    ["18925823", "2155987"],
+  );
+  assert.equal(result.size, 2);
+  assert.equal(result.get("18925823"), "/en/collections/18925823-esp32");
+  assert.equal(result.get("2155987"), "/en/collections/2155987-default-collection");
+});
+
+test("matchCollectionLinks: empty hrefs/listIds return an empty Map", () => {
+  assert.equal(matchCollectionLinks([], []).size, 0);
+  assert.equal(matchCollectionLinks(null, null).size, 0);
+});
+
+test("collectionDetailPathnameFrom: builds the ground-truth shape with a locale and a slug", () => {
+  assert.equal(
+    collectionDetailPathnameFrom("https://makerworld.com/en/@Terminalfoo/collections", "18925823", "esp32"),
+    "/en/collections/18925823-esp32",
+  );
+});
+
+test("collectionDetailPathnameFrom: omits the slug when the entry has none", () => {
+  assert.equal(
+    collectionDetailPathnameFrom("https://makerworld.com/en/@Terminalfoo/collections", "18925823", null),
+    "/en/collections/18925823",
+  );
+});
+
+test("collectionDetailPathnameFrom: omits the locale prefix when the URL has none", () => {
+  assert.equal(
+    collectionDetailPathnameFrom("https://makerworld.com/@Terminalfoo/collections", "18925823", "esp32"),
+    "/collections/18925823-esp32",
+  );
+});
+
+test("collectionDetailPathnameFrom: falls back to no locale when the URL doesn't parse", () => {
+  assert.equal(collectionDetailPathnameFrom("not a url", "18925823", "esp32"), "/collections/18925823-esp32");
 });

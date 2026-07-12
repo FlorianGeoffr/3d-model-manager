@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  describeUnreadableCollection,
   hashCollectionsPayload,
   readCollectionsPage,
   shouldPersistHash,
@@ -12,7 +13,15 @@ import { hashToken } from "../src/courier.js";
 
 const BUILD_ID = "build-abc123";
 const COLLECTIONS_URL = "https://makerworld.com/en/@Terminalfoo/collections";
-const COLLECTIONS_PATHNAME = "/en/@Terminalfoo/collections";
+// Ground-truth (M11): a real collection DETAIL page is
+// `/{locale}/collections/{id}-{slug}`, e.g.
+// `https://makerworld.com/en/collections/18925823-esp32` -- NO `@handle`
+// segment. `collectionDetailPathnameFrom` (`collections.js`) builds this
+// from each entry's own `list_id`/`slug` plus the CURRENT page's locale
+// (`en`, from `COLLECTIONS_URL` above), replacing the old (confirmed-wrong)
+// `{collectionsPathname}/{listId}` guess this file used to assert on.
+const CONSTRUCTED_PATHNAME_2155987 = "/en/collections/2155987-default-collection";
+const CONSTRUCTED_PATHNAME_18925823 = "/en/collections/18925823-esp32"; // == the real ground-truth URL's own pathname
 
 // Mirrors backend/tests/cassettes/makerworld_fixtures.py FAVORITES_LIST /
 // test/collections.test.js's fixtures -- two collections. Carries a
@@ -102,6 +111,12 @@ function designsRoute(pageProps) {
   return { result: { pageProps } };
 }
 
+/** A queued `stubExec` step for the ONE-TIME anchor-collection exec call --
+ * `collectCollectionAnchorPathnamesInPage`'s raw pathname array shape. */
+function anchorResult(pathnames = []) {
+  return { result: pathnames };
+}
+
 function okResult(data = { ok: true }) {
   return { ok: true, status: 200, data, error: null };
 }
@@ -136,9 +151,10 @@ function stubReport() {
   return { report: (text, kind) => calls.push({ text, kind }), calls };
 }
 
-test("syncCollections: happy path -- pushes the list, reads+pushes each collection's items via the primary data route, returns the summary", async () => {
+test("syncCollections: happy path -- pushes the list, reads+pushes each collection's items via the constructed ground-truth data route, returns the summary", async () => {
   const { exec, calls: execCalls } = stubExec([
     pageResult({ nextData: NEXT_DATA }),
+    anchorResult([]), // no anchor links found on the page -- falls to the constructed pathname
     designsRoute({ designs: [{ id: 1, title: "Item A" }] }),
     designsRoute({ designs: [{ id: 2, title: "Item B" }] }),
   ]);
@@ -167,14 +183,56 @@ test("syncCollections: happy path -- pushes the list, reads+pushes each collecti
     },
   ]);
   assert.equal(apiCalls.pushCollectionItems[1].listId, "18925823");
-  // Page read + one primary data-route fetch per collection -- no fallback
-  // calls needed since the primary source succeeded for both.
-  assert.equal(execCalls.length, 3);
-  assert.deepEqual(execCalls[1].args, [BUILD_ID, `${COLLECTIONS_PATHNAME}/2155987`]);
-  assert.deepEqual(execCalls[2].args, [BUILD_ID, `${COLLECTIONS_PATHNAME}/18925823`]);
+  // Page read + one anchor-collect exec call + one constructed-pathname
+  // data-route fetch per collection -- no fallback calls needed since a
+  // primary source succeeded for both.
+  assert.equal(execCalls.length, 4);
+  assert.deepEqual(execCalls[2].args, [BUILD_ID, CONSTRUCTED_PATHNAME_2155987]);
+  assert.deepEqual(execCalls[3].args, [BUILD_ID, CONSTRUCTED_PATHNAME_18925823]);
   const last = reportCalls[reportCalls.length - 1];
   assert.equal(last.text, "Synced 2 collections (2 items).");
   assert.equal(last.kind, "ok");
+});
+
+test("syncCollections: an anchor-derived pathname is tried FIRST and preferred over the constructed one", async () => {
+  const { exec, calls: execCalls } = stubExec([
+    pageResult({ nextData: ONE_ENTRY_NEXT_DATA }),
+    // A real link to the collection was found on the page -- differs from
+    // the constructed pathname (no slug here) so the test can tell which
+    // one was actually fetched.
+    anchorResult(["/en/collections/2155987"]),
+    designsRoute({ designs: [{ id: 1, title: "Item A" }] }),
+    // No further step queued -- if the code also tried the constructed
+    // pathname, stubExec would throw "no step queued" and fail this test.
+  ]);
+  const { api, calls: apiCalls } = stubApi();
+  const { report } = stubReport();
+
+  const summary = await syncCollections({ tabId: 7, url: COLLECTIONS_URL, exec, api, report });
+
+  assert.deepEqual(summary, { collections: 1, items: 1, unreadable: [], partial: [] });
+  assert.equal(execCalls.length, 3);
+  assert.deepEqual(execCalls[2].args, [BUILD_ID, "/en/collections/2155987"]);
+  assert.equal(apiCalls.pushCollectionItems[0].items.length, 1);
+});
+
+test("syncCollections: an anchor pathname that 404s falls back to the constructed pathname", async () => {
+  const { exec, calls: execCalls } = stubExec([
+    pageResult({ nextData: ONE_ENTRY_NEXT_DATA }),
+    anchorResult(["/en/collections/2155987-wrong-slug"]),
+    { result: null }, // anchor pathname 404s
+    designsRoute({ designs: [{ id: 1, title: "Item A" }] }), // constructed pathname succeeds
+  ]);
+  const { api, calls: apiCalls } = stubApi();
+  const { report } = stubReport();
+
+  const summary = await syncCollections({ tabId: 7, url: COLLECTIONS_URL, exec, api, report });
+
+  assert.deepEqual(summary, { collections: 1, items: 1, unreadable: [], partial: [] });
+  assert.equal(execCalls.length, 4);
+  assert.deepEqual(execCalls[2].args, [BUILD_ID, "/en/collections/2155987-wrong-slug"]);
+  assert.deepEqual(execCalls[3].args, [BUILD_ID, CONSTRUCTED_PATHNAME_2155987]);
+  assert.equal(apiCalls.pushCollectionItems[0].items.length, 1);
 });
 
 test("syncCollections: route+inline both unreadable reports the hard-refresh message and pushes nothing", async () => {
@@ -219,10 +277,11 @@ test("syncCollections: a favoritesList array WAS found but is genuinely empty re
   });
 });
 
-test("syncCollections: a collection unreadable from BOTH sources is skipped and listed; a collection whose primary source succeeds never calls the fallback", async () => {
+test("syncCollections: a collection unreadable from EVERY source is skipped and listed, with a diagnostic appended; a collection whose primary source succeeds never calls the fallback", async () => {
   const { exec, calls: execCalls } = stubExec([
     pageResult({ nextData: NEXT_DATA }),
-    { throws: "data route unreachable" }, // collection 1 primary throws
+    anchorResult([]), // no anchor links found
+    { throws: "data route unreachable" }, // collection 1 constructed-pathname primary throws
     { result: [{ hits: [], total: 0 }] }, // collection 1 fallback: empty
     designsRoute({ designs: [{ id: 2, title: "Item B" }] }), // collection 2 primary succeeds
   ]);
@@ -240,15 +299,21 @@ test("syncCollections: a collection unreadable from BOTH sources is skipped and 
   // Only the readable collection's items were pushed.
   assert.equal(apiCalls.pushCollectionItems.length, 1);
   assert.equal(apiCalls.pushCollectionItems[0].listId, "18925823");
-  assert.equal(execCalls.length, 4); // page + (primary throw + fallback) + primary-only
+  assert.equal(execCalls.length, 5); // page + anchor-collect + (primary throw + fallback) + primary-only
   const last = reportCalls[reportCalls.length - 1];
-  assert.equal(last.text, "Synced 2 collections (1 items; 1 collection unreadable).");
+  assert.equal(
+    last.text,
+    "Synced 2 collections (1 items; 1 collection unreadable). " +
+      'Diagnostic for "Default Collection" -- anchor link not found; ' +
+      `constructed (${CONSTRUCTED_PATHNAME_2155987}): route unreachable; fallback: 0 items.`,
+  );
   assert.equal(last.kind, "ok");
 });
 
 test("syncCollections: a collection whose item push is rejected is also listed as unreadable", async () => {
   const { exec } = stubExec([
     pageResult({ nextData: NEXT_DATA }),
+    anchorResult([]),
     designsRoute({ designs: [{ id: 1, title: "Item A" }] }),
     designsRoute({ designs: [{ id: 2, title: "Item B" }] }),
   ]);
@@ -266,11 +331,14 @@ test("syncCollections: a collection whose item push is rejected is also listed a
 test("syncCollections: items still sync via the handle-free primary source even when the URL has no /@handle/collections shape", async () => {
   // extractHandle returns null here (URL doesn't match /@handle/collections,
   // NEXT_DATA has no recognizable handle field) -- the primary data-route
-  // source doesn't need a handle at all, only buildId + the collections
-  // pathname, both independent of the handle.
+  // sources don't need a handle at all, only buildId + (an anchor pathname
+  // or the constructed one), both independent of the handle. The
+  // constructed pathname's locale prefix is also independent of this URL's
+  // own path shape -- `OTHER_URL` has no locale segment, so no prefix.
   const OTHER_URL = "https://makerworld.com/some/other/page";
   const { exec, calls: execCalls } = stubExec([
     pageResult({ nextData: NEXT_DATA }),
+    anchorResult([]),
     designsRoute({ designs: [{ id: 1, title: "Item A" }] }),
     designsRoute({ designs: [{ id: 2, title: "Item B" }] }),
   ]);
@@ -281,12 +349,13 @@ test("syncCollections: items still sync via the handle-free primary source even 
 
   assert.deepEqual(summary, { collections: 2, items: 2, unreadable: [], partial: [] });
   assert.equal(apiCalls.pushCollectionItems.length, 2);
-  assert.equal(execCalls.length, 3); // no fallback calls -- a handle was never needed
-  assert.deepEqual(execCalls[1].args, [BUILD_ID, "/some/other/page/2155987"]);
+  assert.equal(execCalls.length, 4); // no fallback calls -- a handle was never needed
+  assert.deepEqual(execCalls[2].args, [BUILD_ID, "/collections/2155987-default-collection"]);
+  assert.deepEqual(execCalls[3].args, [BUILD_ID, "/collections/18925823-esp32"]);
   assert.equal(reportCalls[reportCalls.length - 1].text, "Synced 2 collections (2 items).");
 });
 
-test("syncCollections: no buildId (primary skipped) and no handle (fallback skipped) leaves every collection unreadable but still succeeds with a truthful count", async () => {
+test("syncCollections: no buildId (primary + anchor-collect both skipped) and no handle (fallback skipped) leaves every collection unreadable but still succeeds with a truthful count, diagnostic for the first only", async () => {
   const NEXT_DATA_NO_BUILD = {
     props: { pageProps: { favoritesList: NEXT_DATA.props.pageProps.favoritesList } },
   };
@@ -305,12 +374,14 @@ test("syncCollections: no buildId (primary skipped) and no handle (fallback skip
   });
   assert.equal(apiCalls.pushCollections.length, 1);
   assert.equal(apiCalls.pushCollectionItems.length, 0);
-  // Only the page read -- no buildId and no handle means no per-collection
-  // exec call was even attempted.
+  // Only the page read -- no buildId means neither the anchor-collect call
+  // nor any per-collection data-route call was even attempted, and no
+  // handle means the /api/v1 fallback was skipped too.
   assert.equal(execCalls.length, 1);
   assert.equal(
     reportCalls[reportCalls.length - 1].text,
-    "Synced 2 collections (0 items; 2 collections unreadable).",
+    "Synced 2 collections (0 items; 2 collections unreadable). " +
+      'Diagnostic for "Default Collection" -- anchor link not found; fallback: skipped (no handle).',
   );
 });
 
@@ -360,8 +431,9 @@ test("syncCollections: a rejected list push with no error text falls back to a g
   assert.equal(reportCalls[reportCalls.length - 1].text, "Something went wrong.");
 });
 
-test("syncCollections: an injected `page` skips the module's own page read entirely", async () => {
+test("syncCollections: an injected `page` skips the module's own page read entirely (the anchor-collect exec call still runs)", async () => {
   const { exec, calls: execCalls } = stubExec([
+    anchorResult([]),
     designsRoute({ designs: [{ id: 1, title: "Item A" }] }),
     designsRoute({ designs: [{ id: 2, title: "Item B" }] }),
   ]);
@@ -378,17 +450,18 @@ test("syncCollections: an injected `page` skips the module's own page read entir
   });
 
   assert.deepEqual(summary, { collections: 2, items: 2, unreadable: [], partial: [] });
-  // Only the two primary item-fetch exec calls -- no exec call for the page
-  // read itself.
-  assert.equal(execCalls.length, 2);
+  // The anchor-collect exec call plus the two constructed-pathname fetches
+  // -- no exec call for the page read itself (that's what `page` skips).
+  assert.equal(execCalls.length, 3);
   assert.deepEqual(apiCalls.pushCollections[0].collections, ENTRIES);
 });
 
-test("syncCollections item-source preference: the primary data route is preferred and the api fallback is never called when it yields designs", async () => {
+test("syncCollections item-source preference: the constructed ground-truth route is preferred and the api fallback is never called when it yields designs", async () => {
   const { exec, calls: execCalls } = stubExec([
     pageResult({ nextData: ONE_ENTRY_NEXT_DATA }),
+    anchorResult([]),
     designsRoute({ designs: [{ id: 1, title: "Item A" }] }),
-    // No third step queued -- if the code also called the api fallback,
+    // No fourth step queued -- if the code also called the api fallback,
     // stubExec would throw "no step queued" and fail this test.
   ]);
   const { api, calls: apiCalls } = stubApi();
@@ -397,14 +470,15 @@ test("syncCollections item-source preference: the primary data route is preferre
   const summary = await syncCollections({ tabId: 7, url: COLLECTIONS_URL, exec, api, report });
 
   assert.deepEqual(summary, { collections: 1, items: 1, unreadable: [], partial: [] });
-  assert.equal(execCalls.length, 2);
+  assert.equal(execCalls.length, 3);
   assert.equal(apiCalls.pushCollectionItems[0].items.length, 1);
 });
 
-test("syncCollections item-source preference: an empty/404 primary route falls back to the api endpoint", async () => {
+test("syncCollections item-source preference: an empty/404 constructed route falls back to the api endpoint", async () => {
   const { exec, calls: execCalls } = stubExec([
     pageResult({ nextData: ONE_ENTRY_NEXT_DATA }),
-    { result: null }, // primary route 404s/parses empty -- fetchCollectionDataRouteInPage returns null
+    anchorResult([]),
+    { result: null }, // constructed route 404s/parses empty -- fetchCollectionDataRouteInPage returns null
     { result: [{ hits: [{ id: 9, title: "Fallback Item" }], total: 1 }] }, // api fallback
   ]);
   const { api, calls: apiCalls } = stubApi();
@@ -413,7 +487,7 @@ test("syncCollections item-source preference: an empty/404 primary route falls b
   const summary = await syncCollections({ tabId: 7, url: COLLECTIONS_URL, exec, api, report });
 
   assert.deepEqual(summary, { collections: 1, items: 1, unreadable: [], partial: [] });
-  assert.equal(execCalls.length, 3);
+  assert.equal(execCalls.length, 4);
   assert.deepEqual(apiCalls.pushCollectionItems[0].items, [
     {
       external_id: "9",
@@ -425,24 +499,31 @@ test("syncCollections item-source preference: an empty/404 primary route falls b
   ]);
 });
 
-test("syncCollections item-source preference: both sources empty leaves the collection unreadable with nothing pushed for it", async () => {
+test("syncCollections item-source preference: every source empty leaves the collection unreadable with nothing pushed for it, diagnostic scrubbed to key names only", async () => {
   const { exec } = stubExec([
     pageResult({ nextData: ONE_ENTRY_NEXT_DATA }),
-    { result: null }, // primary empty/404
+    anchorResult([]),
+    designsRoute({ someOtherField: "value that must never leak", count: 3 }), // constructed: ok, but no design array
     { result: [{ hits: [], total: 0 }] }, // fallback empty
   ]);
   const { api, calls: apiCalls } = stubApi();
-  const { report } = stubReport();
+  const { report, calls: reportCalls } = stubReport();
 
   const summary = await syncCollections({ tabId: 7, url: COLLECTIONS_URL, exec, api, report });
 
   assert.deepEqual(summary, { collections: 1, items: 0, unreadable: ["Default Collection"], partial: [] });
   assert.equal(apiCalls.pushCollectionItems.length, 0);
+  const last = reportCalls[reportCalls.length - 1];
+  // The diagnostic names the pageProps KEYS ("someOtherField, count") but
+  // must never leak the leaked-looking VALUE ("value that must never leak").
+  assert.ok(last.text.includes("pageProps keys: someOtherField, count"));
+  assert.ok(!last.text.includes("value that must never leak"));
 });
 
 test("syncCollections: primary item source tolerates a deep-scan-discovered design array under an unrecognized key, normalizing 'name' to 'title'", async () => {
   const { exec } = stubExec([
     pageResult({ nextData: ONE_ENTRY_NEXT_DATA }),
+    anchorResult([]),
     designsRoute({ weirdKey: [{ id: 77, name: "Deep Item" }] }),
   ]);
   const { api, calls: apiCalls } = stubApi();
@@ -473,6 +554,7 @@ test("syncCollections: primary item source tolerates a deep-scan-discovered desi
 test("syncCollections F3: primary data route reports a trusted-but-EMPTY items array -- pushes nothing for it, does NOT mark it unreadable, never tries the fallback, and the hash may still advance", async () => {
   const { exec, calls: execCalls } = stubExec([
     pageResult({ nextData: ONE_ENTRY_NEXT_DATA }),
+    anchorResult([]),
     designsRoute({ designs: [] }), // trusted-empty via the named "designs" key
   ]);
   const { api, calls: apiCalls } = stubApi();
@@ -482,8 +564,9 @@ test("syncCollections F3: primary data route reports a trusted-but-EMPTY items a
 
   assert.deepEqual(summary, { collections: 1, items: 0, unreadable: [], partial: [] });
   assert.equal(apiCalls.pushCollectionItems.length, 0); // nothing pushed -- genuinely empty
-  // Page read + the one primary route fetch -- no fallback exec call at all.
-  assert.equal(execCalls.length, 2);
+  // Page read + anchor-collect + the one constructed-pathname route fetch --
+  // no fallback exec call at all.
+  assert.equal(execCalls.length, 3);
   assert.equal(shouldPersistHash(summary), true); // not unreadable, not partial -- hash may advance
   assert.equal(reportCalls[reportCalls.length - 1].text, "Synced 1 collections (0 items).");
 });
@@ -514,6 +597,7 @@ const TRUNCATED_NEXT_DATA = {
 test("syncCollections F2: a primary read shorter than the collection's known count triggers the paged /api/v1 fallback, and a LONGER fallback result replaces it (not partial)", async () => {
   const { exec, calls: execCalls } = stubExec([
     pageResult({ nextData: TRUNCATED_NEXT_DATA }),
+    anchorResult([]),
     designsRoute({ designs: [{ id: 1, title: "Item 1" }, { id: 2, title: "Item 2" }] }), // primary: 2 of 5
     {
       result: [
@@ -536,7 +620,7 @@ test("syncCollections F2: a primary read shorter than the collection's known cou
   const summary = await syncCollections({ tabId: 7, url: COLLECTIONS_URL, exec, api, report });
 
   assert.deepEqual(summary, { collections: 1, items: 5, unreadable: [], partial: [] });
-  assert.equal(execCalls.length, 3); // page + primary + fallback
+  assert.equal(execCalls.length, 4); // page + anchor-collect + primary + fallback
   assert.equal(apiCalls.pushCollectionItems[0].items.length, 5); // the fallback's fuller set was used
   assert.equal(shouldPersistHash(summary), true);
   assert.equal(reportCalls[reportCalls.length - 1].text, "Synced 1 collections (5 items).");
@@ -545,6 +629,7 @@ test("syncCollections F2: a primary read shorter than the collection's known cou
 test("syncCollections F2: a fallback that comes back no better than the primary is discarded -- the primary's (still-short) items are kept, pushed, and the collection is marked partial", async () => {
   const { exec } = stubExec([
     pageResult({ nextData: TRUNCATED_NEXT_DATA }),
+    anchorResult([]),
     designsRoute({
       designs: [
         { id: 1, title: "Item 1" },
@@ -604,6 +689,7 @@ test("syncCollections F2: multiple partial collections are all listed, and the s
   };
   const { exec } = stubExec([
     pageResult({ nextData: TWO_TRUNCATED_NEXT_DATA }),
+    anchorResult([]),
     designsRoute({ designs: [{ id: 1, title: "Item 1" }] }), // 1 of 5
     { result: [{ hits: [{ id: 1, title: "Item 1" }], total: 1 }] }, // fallback no better
     designsRoute({ designs: [{ id: 2, title: "Item 2" }] }), // 1 of 4
@@ -749,4 +835,36 @@ test("shouldPersistHash: false when a run has BOTH unreadable and partial collec
 
 test("shouldPersistHash: true when unreadable and partial are both explicitly empty", () => {
   assert.equal(shouldPersistHash({ collections: 2, items: 2, unreadable: [], partial: [] }), true);
+});
+
+// describeUnreadableCollection (M11): the diagnostic-line formatter, unit-
+// tested directly in addition to the integration coverage above.
+
+test("describeUnreadableCollection: composes anchor status, every attempt, and the fallback outcome", () => {
+  const text = describeUnreadableCollection("My Collection", {
+    anchorPathname: "/en/collections/18925823-esp32",
+    attempts: [
+      { label: "anchor", pathname: "/en/collections/18925823-esp32", diagnostic: "route 404 or unavailable" },
+      { label: "constructed", pathname: "/en/collections/18925823", diagnostic: "route unreachable" },
+    ],
+    fallback: "0 items",
+  });
+  assert.equal(
+    text,
+    'Diagnostic for "My Collection" -- anchor link found (/en/collections/18925823-esp32); ' +
+      "anchor (/en/collections/18925823-esp32): route 404 or unavailable; " +
+      "constructed (/en/collections/18925823): route unreachable; fallback: 0 items.",
+  );
+});
+
+test("describeUnreadableCollection: no anchor found and no attempts at all (e.g. no buildId)", () => {
+  const text = describeUnreadableCollection("My Collection", {
+    anchorPathname: null,
+    attempts: [],
+    fallback: "skipped (no handle)",
+  });
+  assert.equal(
+    text,
+    'Diagnostic for "My Collection" -- anchor link not found; fallback: skipped (no handle).',
+  );
 });

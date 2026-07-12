@@ -22,9 +22,9 @@
  *
  * `syncCollections` resolves to `{collections, items, unreadable, partial}`
  * on success (including a run where some collections' items came up
- * unreadable from BOTH sources -- see `readCollectionItemsFromDataRoute`
+ * unreadable from EVERY source tried -- see `readCollectionItemsFromDataRoute`
  * and `readCollectionItems` below -- or came up SHORTER than the collection's
- * own known count even after both sources were tried, `partial`, F2
+ * own known count even after every source was tried, `partial`, F2
  * hardening) and REJECTS on a hard failure (page unreadable, no collections
  * found/readable, list push rejected) -- the rejection's `message` is the
  * same user-facing text `report` was just called with, so callers can
@@ -33,11 +33,13 @@
 
 import {
   buildItemsFetchPlan,
+  collectionDetailPathnameFrom,
   extractFavoritesListFrom,
   extractHandle,
   findDesignListIn,
   hasFavoritesList,
   mapDesignHits,
+  matchCollectionLinks,
 } from "./collections.js";
 import { hashToken } from "./courier.js";
 
@@ -98,14 +100,60 @@ async function readCollectionsDataInPage() {
 }
 
 /**
+ * Executed IN THE COLLECTIONS PAGE (see `readCollectionsDataInPage`'s doc
+ * for the self-contained-function constraint). Collects every `a[href]` on
+ * the page whose BROWSER-RESOLVED absolute href is same-origin and whose
+ * pathname loosely looks like it MIGHT be a collection link (contains
+ * `/collection` or `/collections`) -- a cheap, coarse pre-filter only; the
+ * PRECISE "does this pathname actually match the collection-detail shape
+ * for one of OUR synced list ids" matching happens back in
+ * `matchCollectionLinks` (`collections.js`), a pure function that's unit-
+ * tested directly instead of only reachable through a DOM. Kept deliberately
+ * dumb (no list-id awareness, no shape validation) so this in-page function
+ * stays trivially self-contained.
+ * @returns {string[]} deduped pathnames (query strings/hashes dropped, same
+ *   as `location.pathname`).
+ */
+function collectCollectionAnchorPathnamesInPage() {
+  const seen = new Set();
+  const pathnames = [];
+  const anchors = document.querySelectorAll("a[href]");
+  for (const anchor of anchors) {
+    const href = anchor.href; // browser-resolved, always absolute
+    if (!href) {
+      continue;
+    }
+    let url;
+    try {
+      url = new URL(href);
+    } catch {
+      continue;
+    }
+    if (url.origin !== location.origin) {
+      continue; // same-origin only
+    }
+    if (!/\/collections?\//i.test(url.pathname)) {
+      continue;
+    }
+    if (!seen.has(url.pathname)) {
+      seen.add(url.pathname);
+      pathnames.push(url.pathname);
+    }
+  }
+  return pathnames;
+}
+
+/**
  * Executed IN THE COLLECTIONS PAGE (see `readCollectionsDataInPage` above)
  * -- same self-contained-function constraint applies. FALLBACK item source
- * (see `readCollectionItemsFromDataRoute` below for the PRIMARY one) --
+ * (see `readCollectionItemsFromDataRoute` below for the PRIMARY ones) --
  * kept because it's the one path that's confirmed to work end-to-end for
  * SOME accounts, even though a real sync on the reporting user's account
  * pushed 6 collections but zero items through it (handle extraction may
  * have failed, or this endpoint may just be uid-aggregate-only even from a
- * real signed-in browser).
+ * real signed-in browser -- CONFIRMED TWICE in-browser, M11: this endpoint
+ * serves only the uid aggregate, everywhere, so it is genuinely a
+ * last-resort fallback now, not a "maybe it works" one).
  * @param {string} listId
  * @param {string} handle
  * @param {number[]} offsets
@@ -143,7 +191,7 @@ async function fetchCollectionItemsInPage(listId, handle, offsets) {
  * pages to push entries with `mapDesignHits`. Never throws -- a failed
  * injection or an in-browser fetch that comes back empty both just yield
  * `[]`, which the caller (`syncCollections`) treats as "no items readable"
- * unless the PRIMARY data-route source (below) already found something.
+ * unless a PRIMARY data-route source (below) already found something.
  */
 async function readCollectionItems(tabId, listId, handle, offsets, exec) {
   let pages;
@@ -162,20 +210,16 @@ async function readCollectionItems(tabId, listId, handle, offsets, exec) {
 /**
  * Executed IN THE COLLECTIONS PAGE (see `readCollectionsDataInPage` above)
  * -- same self-contained-function constraint applies. Fetches ONE
- * collection's own SSR data route -- handle-free, unlike
- * `fetchCollectionItemsInPage` above, since the route URL only needs the
- * `buildId` and the collection's own pathname (`<collections-pathname>/
- * <listId>`), both already known to the caller.
+ * collection's own SSR data route for an already-known pathname (either an
+ * anchor-derived real link or the ground-truth `collectionDetailPathnameFrom`
+ * construction -- both handle-free, unlike `fetchCollectionItemsInPage`
+ * above).
  * @param {string} buildId
- * @param {string} collectionPathname e.g. `/en/@Terminalfoo/collections/18925823`
+ * @param {string} collectionPathname e.g. `/en/collections/18925823-esp32`
  * @returns {Promise<unknown>} the parsed data-route JSON (`{pageProps, ...}`),
- *   or `null` on a missing `buildId`, fetch failure, non-ok response, or
- *   parse failure.
+ *   or `null` on a fetch failure, non-ok response, or parse failure.
  */
 async function fetchCollectionDataRouteInPage(buildId, collectionPathname) {
-  if (!buildId) {
-    return null;
-  }
   try {
     const response = await fetch(`/_next/data/${buildId}${collectionPathname}.json`, {
       credentials: "include",
@@ -190,27 +234,30 @@ async function fetchCollectionDataRouteInPage(buildId, collectionPathname) {
 }
 
 /**
- * PRIMARY item source (M10 Workstream, live-bug fix): reads one
- * collection's items straight off its own SSR data route instead of the
+ * PRIMARY item source (M10/M11): reads one collection's items straight off
+ * a candidate SSR data-route pathname instead of the
  * `/api/v1/design-service/favorites/designs/{listId}` endpoint
- * (`readCollectionItems` above, now the FALLBACK) -- LIVE EVIDENCE: a real
- * sync pushed 6 collections but ZERO items through that endpoint. The exact
- * `pageProps` field carrying the design list on this route wasn't captured
- * live, so `findDesignListIn` (`collections.js`) scans tolerantly; this
- * function logs which key matched via `report` (kind `null`, informational)
- * so a future drift in that field name is diagnosable instead of silently
- * falling back forever. Never throws -- a failed injection or a route with
- * no recognizable design array both just yield `found: false`.
+ * (`readCollectionItems` above, now the LAST-RESORT fallback -- CONFIRMED
+ * uid-aggregate-only, M11). The exact `pageProps` field carrying the design
+ * list on this route wasn't captured live, so `findDesignListIn`
+ * (`collections.js`) scans tolerantly; this function logs which key matched
+ * via `report` (kind `null`, informational) so a future drift in that field
+ * name is diagnosable instead of silently falling back forever. Never
+ * throws -- a failed injection or a route with no recognizable design array
+ * both just yield `found: false`.
  *
  * Returns `found` separately from `items` (F3 hardening) so the caller
  * (`syncCollections`) can tell "a trusted design list was located and it's
  * just empty" (`found: true, items: []` -- a genuinely-empty collection)
  * apart from "no recognizable design list at all" (`found: false, items: []`
- * -- falls back to `readCollectionItems`). Before this fix both cases looked
- * identical (`[]`) to the caller, so a genuinely-empty collection was
- * indistinguishable from a read failure and got needlessly routed through
- * the fallback and then flagged unreadable.
- * @returns {Promise<{items: import("./collections.js").CollectionItemPushEntry[], found: boolean}>}
+ * -- try the next candidate pathname, then falls back to
+ * `readCollectionItems`).
+ *
+ * Also returns a `diagnostic` string (M11) describing THIS ONE source's
+ * outcome for the unreadable-collection diagnostic (`describeUnreadableCollection`
+ * below) -- top-level `pageProps` KEY NAMES only, never values, so a pasted
+ * diagnostic line can never leak a user's collection contents.
+ * @returns {Promise<{items: import("./collections.js").CollectionItemPushEntry[], found: boolean, diagnostic: string}>}
  */
 async function readCollectionItemsFromDataRoute(
   tabId,
@@ -224,11 +271,21 @@ async function readCollectionItemsFromDataRoute(
   try {
     routeJson = await exec(tabId, fetchCollectionDataRouteInPage, [buildId, collectionPathname]);
   } catch {
-    return { items: [], found: false };
+    return { items: [], found: false, diagnostic: "route unreachable" };
+  }
+  if (!routeJson) {
+    return { items: [], found: false, diagnostic: "route 404 or unavailable" };
   }
   const found = findDesignListIn(routeJson?.pageProps);
   if (!found) {
-    return { items: [], found: false };
+    const pageProps = routeJson?.pageProps;
+    const keys =
+      pageProps && typeof pageProps === "object" ? Object.keys(pageProps).join(", ") || "(none)" : "(not an object)";
+    return {
+      items: [],
+      found: false,
+      diagnostic: `route ok but no design array (pageProps keys: ${keys})`,
+    };
   }
   report(`Matched items for "${entryTitle}" via pageProps.${found.key}.`, null);
   // Tolerant of a `name` field standing in for `title` (the deep-scan shape
@@ -237,26 +294,37 @@ async function readCollectionItemsFromDataRoute(
   const normalized = found.designs.map((design) =>
     design && !design.title && design.name ? { ...design, title: design.name } : design,
   );
-  return { items: mapDesignHits({ hits: normalized }), found: true };
+  return {
+    items: mapDesignHits({ hits: normalized }),
+    found: true,
+    diagnostic: `route ok, matched pageProps.${found.key}`,
+  };
 }
 
 /**
- * Best-effort pathname for the collections page itself, derived from the
- * tab's own URL (the same value `extractHandle` trusts as current/accurate
- * -- see its doc) -- used to build each collection's own data-route
- * pathname (`<this>/<listId>`) for `readCollectionItemsFromDataRoute`.
- * Trailing slash stripped to match `readCollectionsDataInPage`'s own
- * `location.pathname` normalization. `null` when `url` doesn't parse.
- * @param {string} url
- * @returns {string|null}
+ * Composes the ONE diagnostic line surfaced for the FIRST collection that
+ * stays unreadable from every source tried (M11 -- live bug report:
+ * "Synced 7 collections (0 items; 7 collections unreadable)" with no way to
+ * tell WHY from the popup's summary alone). Exported so this formatting is
+ * unit-testable without driving the whole `syncCollections` flow. Never
+ * includes field VALUES -- `attempts[].diagnostic` strings
+ * (`readCollectionItemsFromDataRoute` above) are already scrubbed to key
+ * names only, and this function adds nothing but pathnames (already public
+ * -- they're URLs) and counts.
+ * @param {string} title
+ * @param {{anchorPathname: string|null, attempts: Array<{label: string, pathname: string, diagnostic: string}>, fallback: string}} info
+ * @returns {string}
  */
-function collectionsPathnameFrom(url) {
-  try {
-    const pathname = new URL(url).pathname;
-    return pathname.replace(/\/$/, "");
-  } catch {
-    return null;
-  }
+export function describeUnreadableCollection(title, { anchorPathname, attempts, fallback }) {
+  const attemptText = (attempts || [])
+    .map((attempt) => `${attempt.label} (${attempt.pathname}): ${attempt.diagnostic}`)
+    .join("; ");
+  const anchorText = anchorPathname ? `found (${anchorPathname})` : "not found";
+  return (
+    `Diagnostic for "${title}" -- anchor link ${anchorText}` +
+    (attemptText ? `; ${attemptText}` : "") +
+    `; fallback: ${fallback}.`
+  );
 }
 
 /**
@@ -338,7 +406,7 @@ export async function shouldPushCollections(entries, lastHash) {
  * collection's items empty transiently (same "empty isn't proof of empty"
  * caution as the cookie courier) -- or a `partial` one (F2 hardening,
  * `syncCollections`'s truncation handling: pushed SOME items, but fewer than
- * the collection's own known count even after the paged fallback was tried).
+ * the collection's own known count even after the fallback was tried).
  * Persisting the hash on either would mean auto-sync never retries those
  * collections until the list itself changes. `result.partial` is optional in
  * the input shape (defaults to none) so callers/tests that predate F2 don't
@@ -355,9 +423,21 @@ export function shouldPersistHash(result) {
  * Runs the full collections sync: read the page, push the collection list,
  * then read+push each collection's items. See the module docstring for the
  * injected-seam contract and the resolve/reject shape.
+ *
+ * Item source order per collection (M11, ground-truth-informed): (1) the
+ * ANCHOR-derived pathname (`matchCollectionLinks` on every `a[href]`
+ * collected from the page ONCE up front, `collectCollectionAnchorPathnamesInPage`)
+ * when a real link to this collection was found on the page -- an actual
+ * link can never be wrong about its own shape; (2) the ground-truth
+ * CONSTRUCTED pathname (`collectionDetailPathnameFrom`,
+ * `/{locale}/collections/{listId}[-slug]`) built straight from the entry's
+ * own pushed data -- costs one fetch, and covers every collection even when
+ * no anchor to it exists on the current page; (3) the `/api/v1` paged
+ * fallback (confirmed uid-aggregate-only, M11 -- genuinely last-resort now).
  * @param {object} opts
  * @param {number} opts.tabId
- * @param {string} opts.url the tab's URL (used to derive the handle)
+ * @param {string} opts.url the tab's URL (used to derive the handle and the
+ *   constructed pathname's locale prefix)
  * @param {(tabId: number, func: Function, args?: unknown[]) => Promise<unknown>} opts.exec
  * @param {{pushCollections: Function, pushCollectionItems: Function}} opts.api
  * @param {(text: string, kind: string|null) => void} opts.report
@@ -403,7 +483,27 @@ export async function syncCollections({ tabId, url, exec, api, report, page }) {
 
   const handle = extractHandle(nextData, url);
   const buildId = nextData?.buildId ?? null;
-  const collectionsPathname = collectionsPathnameFrom(url);
+
+  // Collect every anchor on the page ONCE (not per collection) and match it
+  // against the pushed list ids -- see `collectCollectionAnchorPathnamesInPage`
+  // and `matchCollectionLinks` docs. Only worth doing when there's a
+  // `buildId` to build a data route from (same gating as the constructed
+  // pathname below); never throws -- an unreadable page here just means no
+  // anchor pathnames were found, falling straight through to the
+  // constructed candidate.
+  let anchorPathnames = new Map();
+  if (buildId) {
+    let anchorHrefs = [];
+    try {
+      anchorHrefs = (await exec(tabId, collectCollectionAnchorPathnamesInPage)) || [];
+    } catch {
+      anchorHrefs = [];
+    }
+    anchorPathnames = matchCollectionLinks(
+      anchorHrefs,
+      entries.map((entry) => entry.list_id),
+    );
+  }
 
   const offsetsByList = new Map();
   for (const { listId, offset } of buildItemsFetchPlan(entries, ITEMS_PAGE_SIZE)) {
@@ -416,28 +516,47 @@ export async function syncCollections({ tabId, url, exec, api, report, page }) {
   let totalItems = 0;
   const unreadableTitles = [];
   const partialTitles = [];
+  let firstUnreadableDiagnostic = null;
+
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i];
     report(`Reading items for "${entry.title}" (${i + 1}/${entries.length})…`, null);
 
-    // PRIMARY: the collection's own SSR data route, handle-free -- see
-    // `readCollectionItemsFromDataRoute`'s doc for why this is now tried
-    // first (a real sync pushed 6 collections but zero items through the
-    // FALLBACK below).
+    const anchorPathname = anchorPathnames.get(entry.list_id) || null;
+    const constructedPathname = collectionDetailPathnameFrom(url, entry.list_id, entry.slug);
+
+    // PRIMARY sources, tried in order until one returns a TRUSTED result
+    // (`found: true`, even if its items are empty -- see
+    // `readCollectionItemsFromDataRoute`'s F3 doc): the anchor-derived real
+    // link first (when one was found), then the ground-truth construction.
+    const primaryAttempts = [];
     let primary = { items: [], found: false };
-    if (buildId && collectionsPathname) {
-      primary = await readCollectionItemsFromDataRoute(
-        tabId,
-        buildId,
-        `${collectionsPathname}/${entry.list_id}`,
-        entry.title,
-        exec,
-        report,
-      );
+    if (buildId) {
+      const candidates = anchorPathname
+        ? [
+            { label: "anchor", pathname: anchorPathname },
+            { label: "constructed", pathname: constructedPathname },
+          ]
+        : [{ label: "constructed", pathname: constructedPathname }];
+      for (const candidate of candidates) {
+        const attempt = await readCollectionItemsFromDataRoute(
+          tabId,
+          buildId,
+          candidate.pathname,
+          entry.title,
+          exec,
+          report,
+        );
+        primaryAttempts.push({ ...candidate, diagnostic: attempt.diagnostic });
+        if (attempt.found) {
+          primary = attempt;
+          break;
+        }
+      }
     }
 
     if (primary.found && primary.items.length === 0) {
-      // F3: a TRUSTED design list was located on the data route and it's
+      // F3: a TRUSTED design list was located on a data route and it's
       // just empty -- a genuinely-empty collection, told apart from "no
       // recognizable design list at all" by `primary.found`. Push nothing,
       // don't treat it as unreadable, and don't even try the fallback (there
@@ -447,17 +566,18 @@ export async function syncCollections({ tabId, url, exec, api, report, page }) {
     }
 
     let items = primary.items;
-    // Needs the paged `/api/v1` fallback when either (a) the primary source
-    // found nothing at all (`found: false`, or unreachable/no buildId), or
-    // (b) it found SOME items but fewer than the collection's own known
-    // `count` (F2) -- the SSR data route can silently truncate a large
-    // collection's item array rather than paging it, so a short primary
-    // read isn't proof the collection actually has that few items. Only
-    // attempted when a handle is available (the fallback endpoint needs
+    // Needs the paged `/api/v1` fallback when either (a) no primary source
+    // found anything at all (`found: false` on every candidate, or no
+    // buildId), or (b) one found SOME items but fewer than the collection's
+    // own known `count` (F2) -- an SSR data route can silently truncate a
+    // large collection's item array rather than paging it, so a short
+    // primary read isn't proof the collection actually has that few items.
+    // Only attempted when a handle is available (the fallback endpoint needs
     // one).
     const primaryCount = items.length;
     const needsFallback =
       Boolean(handle) && (primaryCount === 0 || (entry.count != null && primaryCount < entry.count));
+    let fallbackDiagnostic = handle ? null : "skipped (no handle)";
     if (needsFallback) {
       const fallbackItems = await readCollectionItems(
         tabId,
@@ -466,6 +586,7 @@ export async function syncCollections({ tabId, url, exec, api, report, page }) {
         offsetsByList.get(entry.list_id) || [0],
         exec,
       );
+      fallbackDiagnostic = `${fallbackItems.length} item${fallbackItems.length === 1 ? "" : "s"}`;
       // Only adopt the fallback's items when it did BETTER than the primary
       // -- a worse/equal fallback read (e.g. the same truncation, or a
       // transient empty response) must not throw away a longer primary
@@ -476,10 +597,18 @@ export async function syncCollections({ tabId, url, exec, api, report, page }) {
     }
 
     if (items.length === 0) {
-      // Both sources came up empty -- never push an empty membership set
+      // Every source came up empty -- never push an empty membership set
       // (the backend's own fallback treats absence as "no data", safer
       // than a wrong empty set overwriting real cached items).
       unreadableTitles.push(entry.title);
+      if (!firstUnreadableDiagnostic) {
+        firstUnreadableDiagnostic = describeUnreadableCollection(entry.title, {
+          anchorPathname,
+          attempts: primaryAttempts,
+          fallback: fallbackDiagnostic ?? "not attempted",
+        });
+        console.error(`[collections sync] ${firstUnreadableDiagnostic}`);
+      }
       continue;
     }
     const itemsResult = await api.pushCollectionItems("makerworld", entry.list_id, items);
@@ -508,8 +637,13 @@ export async function syncCollections({ tabId, url, exec, api, report, page }) {
     partialTitles.length > 0
       ? `; ${partialTitles.length} collection${partialTitles.length === 1 ? "" : "s"} partial`
       : "";
+  // The diagnostic (M11) is APPENDED to the summary rather than reported on
+  // its own -- the popup's status line only ever shows the LAST `report`
+  // call's text, so a mid-loop-only diagnostic would be overwritten by the
+  // next collection's progress line before the user ever saw it.
+  const diagnosticSuffix = firstUnreadableDiagnostic ? ` ${firstUnreadableDiagnostic}` : "";
   report(
-    `Synced ${entries.length} collections (${totalItems} items${unreadableSuffix}${partialSuffix}).`,
+    `Synced ${entries.length} collections (${totalItems} items${unreadableSuffix}${partialSuffix}).${diagnosticSuffix}`,
     "ok",
   );
   return {
@@ -519,3 +653,4 @@ export async function syncCollections({ tabId, url, exec, api, report, page }) {
     partial: partialTitles,
   };
 }
+

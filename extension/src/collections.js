@@ -142,6 +142,132 @@ export function extractHandle(nextDataJson, url) {
   return typeof fromNextData === "string" && fromNextData ? fromNextData : null;
 }
 
+// GROUND TRUTH (a real logged-in browser, M11): a MakerWorld collection
+// DETAIL page is `/{locale}/collections/{id}-{slug}`, e.g.
+// `https://makerworld.com/en/collections/18925823-esp32` -- NO `@handle`
+// segment (unlike the collections LIST page, `HANDLE_PATH_RE` above), PLURAL
+// "collections", and the id may or may not carry a `-slug` suffix. This
+// SUPERSEDES the earlier `{collectionsPathname}/{listId}` guess
+// (`syncFlow.js`'s old `collectionsPathnameFrom`, removed) that glued the id
+// onto the LIST page's own `@handle`-having pathname -- a real sync
+// confirmed that route finds nothing. Kept tolerant of a locale prefix and
+// of "collection" (singular) in case the real markup varies elsewhere on
+// the site; explicitly does NOT match the bare `/@handle/collections` index
+// page (no `@handle` segment is accepted at all here). Two capture groups:
+// the numeric id, and the slug (without its leading `-`, or `undefined` when
+// absent).
+const COLLECTION_DETAIL_PATH_RE =
+  /^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?collections?\/(\d+)(?:-([^/?#]*))?\/?$/i;
+
+// Same MakerWorld hosts `detect.js` gates on -- duplicated locally rather
+// than imported so this module stays free of a cross-file dependency for one
+// small constant (mirrors `background.js`/`popup.js`'s already-duplicated
+// `execInTab`).
+const MAKERWORLD_HOSTS = new Set(["makerworld.com", "www.makerworld.com"]);
+
+/**
+ * Given raw anchor hrefs (absolute or relative, as collected from a
+ * MakerWorld page's `a[href]` elements) and the list ids just pushed via
+ * `pushCollections`, returns a `Map(listId -> pathname)` of the FIRST
+ * matching REAL link found for each id -- the actual pathname the browser
+ * would navigate to for that collection's detail page (ground-truth shape,
+ * `COLLECTION_DETAIL_PATH_RE` above), as opposed to a constructed guess.
+ * `syncFlow.js`'s `syncCollections` tries this source FIRST, before the
+ * constructed `collectionDetailPathnameFrom` fallback below, since a real
+ * link can never be wrong about its own shape.
+ *
+ * Same-origin only (an absolute href resolving to a non-MakerWorld host is
+ * skipped -- a foreign share link could coincidentally match the path
+ * shape). A relative href (doesn't parse as an absolute URL) is treated as
+ * same-origin by construction. Query strings/hashes are stripped. When
+ * multiple hrefs match the same list id, the FIRST one wins.
+ * @param {Array<string>} hrefs
+ * @param {Array<string>} listIds
+ * @returns {Map<string, string>}
+ */
+export function matchCollectionLinks(hrefs, listIds) {
+  const ids = new Set((listIds || []).map(String));
+  const result = new Map();
+  for (const href of hrefs || []) {
+    if (typeof href !== "string" || !href) {
+      continue;
+    }
+    let pathname;
+    try {
+      const parsed = new URL(href);
+      if (!MAKERWORLD_HOSTS.has(parsed.hostname.toLowerCase())) {
+        continue; // foreign origin
+      }
+      pathname = parsed.pathname;
+    } catch {
+      // Not parseable as an absolute URL -- treat as an already-relative
+      // pathname, stripping any query string/hash by hand.
+      pathname = href.split("?")[0].split("#")[0];
+    }
+    const match = COLLECTION_DETAIL_PATH_RE.exec(pathname);
+    if (!match) {
+      continue;
+    }
+    const id = match[1];
+    if (!ids.has(id) || result.has(id)) {
+      continue;
+    }
+    result.set(id, pathname.replace(/\/$/, ""));
+  }
+  return result;
+}
+
+// A plausible locale segment (`en`, `de`, `en-us`, ...) -- loose on purpose
+// (this only needs to recognize the SITE'S OWN locale prefixes, not validate
+// real ISO codes); a false positive here just means a made-up two-letter
+// first path segment gets treated as a locale, which is harmless since the
+// resulting pathname would 404 the same way an omitted locale might.
+const LOCALE_SEGMENT_RE = /^[a-z]{2}(?:-[a-z]{2})?$/i;
+
+/**
+ * Best-effort locale prefix (`"en"`, `"de-de"`, ...) read off `url`'s own
+ * leading path segment, or `null` when there isn't one. Used by
+ * `collectionDetailPathnameFrom` below to build a same-locale detail-page
+ * pathname -- the collection's own data never carries a locale, but the
+ * page the user is currently on does.
+ * @param {string} url
+ * @returns {string|null}
+ */
+function localeFromUrl(url) {
+  let pathname;
+  try {
+    pathname = new URL(url).pathname;
+  } catch {
+    return null;
+  }
+  const first = pathname.split("/").filter(Boolean)[0];
+  return first && LOCALE_SEGMENT_RE.test(first) ? first.toLowerCase() : null;
+}
+
+/**
+ * Builds a collection's detail-page pathname straight from its OWN pushed
+ * data (ground-truth shape: `/{locale}/collections/{listId}-{slug}`, e.g.
+ * `/en/collections/18925823-esp32`) instead of guessing at a route derived
+ * from the LIST page's pathname (the old, now-confirmed-wrong
+ * `{collectionsPathname}/{listId}` construction this replaces). Omits the
+ * `-slug` suffix when the entry has no slug (`/collections/{listId}`) --
+ * still a plausible real route, just untested since every live capture so
+ * far has carried a slug. `syncFlow.js`'s `syncCollections` tries this AFTER
+ * an anchor-derived pathname (`matchCollectionLinks` above, when a real link
+ * was found) since a real link is always more trustworthy than a
+ * construction, however ground-truth-informed.
+ * @param {string} url the tab's current URL (only its locale prefix, if any,
+ *   is used)
+ * @param {string} listId
+ * @param {string|null} [slug]
+ * @returns {string}
+ */
+export function collectionDetailPathnameFrom(url, listId, slug) {
+  const locale = localeFromUrl(url);
+  const prefix = locale ? `/${locale}` : "";
+  return slug ? `${prefix}/collections/${listId}-${slug}` : `${prefix}/collections/${listId}`;
+}
+
 /**
  * @typedef {{
  *   external_id: string,

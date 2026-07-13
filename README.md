@@ -110,6 +110,11 @@ database rows. To run scans automatically on a schedule instead of only
 on demand, set `SCAN_INTERVAL` (seconds) in `.env` and start the
 optional `beat` service: `docker compose --profile beat up -d`.
 
+Followed remote collections/favourites can sync on the same schedule
+instead of only via the Settings **"Sync now"** button — set
+`COLLECTION_SYNC_INTERVAL` (seconds) in `.env` and start the same
+optional `beat` service.
+
 ## Printer integration (Bambu LAN, feature-flagged)
 
 **Off by default.** Enable it by setting `PRINTER_ENABLED=true` in

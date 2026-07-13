@@ -95,6 +95,7 @@ describe("SlicerIntegrationCard", () => {
       expect(postMock).toHaveBeenCalledWith("/settings/api-tokens", { label: "Bambu Studio" }),
     );
     expect(await screen.findByText("tdmm_secret_plaintext")).toBeInTheDocument();
+    expect(screen.getByText(/Set it as/)).toHaveTextContent("INTAKE_TOKEN");
   });
 
   it("shows the setup copy for both the post-processing script and the watched-folder loops", async () => {
@@ -106,6 +107,8 @@ describe("SlicerIntegrationCard", () => {
     expect(screen.getByText("1. Auto-upload every slice (metadata)")).toBeInTheDocument();
     expect(screen.getByText(/Process → Others → Post-processing scripts/)).toBeInTheDocument();
     expect(screen.getByText("python3 /path/to/bambu_postprocess.py")).toBeInTheDocument();
+    expect(screen.getByText("INTAKE_URL")).toBeInTheDocument();
+    expect(screen.getByText("INTAKE_TOKEN")).toBeInTheDocument();
     expect(screen.getByText(/This path uploads plain \.gcode/)).toBeInTheDocument();
     expect(screen.getByText("2. Printable file (watched folder)")).toBeInTheDocument();
     expect(screen.getByText(/Export plate sliced file/)).toBeInTheDocument();

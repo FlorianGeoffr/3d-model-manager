@@ -54,19 +54,28 @@ def test_settings_env_vars_map_to_short_watch_fields(monkeypatch: pytest.MonkeyP
     """Round 9 dropped the app prefix and the unit suffixes from the
     env var names while the ``Settings`` fields kept their unit suffixes
     (``watch_interval_s``), bridged via per-field ``validation_alias``. A
-    typo'd rename here would silently leave ``watch_dir``/``watch_interval_s``
-    at their defaults and the watcher would never turn on -- this pins the
-    env<->field mapping so a future rename can't do that unnoticed:
-    suffix-less env ``WATCH_INTERVAL`` -> aliased field ``watch_interval_s``,
-    and plain prefixless env ``PRINTER_ENABLED`` -> ``printer_enabled``."""
+    typo'd rename here would silently leave a field at its default and the
+    corresponding beat-scheduled feature would never turn on -- this pins
+    every env<->field alias bridge so a future rename can't do that
+    unnoticed: suffix-less env ``WATCH_INTERVAL`` -> aliased field
+    ``watch_interval_s``, ``WATCH_STABLE`` -> ``watch_stable_s``,
+    ``SCAN_INTERVAL`` -> ``scan_interval_s``, ``COLLECTION_SYNC_INTERVAL``
+    -> ``collection_sync_interval_s``, and plain prefixless env
+    ``PRINTER_ENABLED`` -> ``printer_enabled``."""
     monkeypatch.setenv("WATCH_DIR", "/tmp/x")
     monkeypatch.setenv("WATCH_INTERVAL", "30")
+    monkeypatch.setenv("WATCH_STABLE", "5")
+    monkeypatch.setenv("SCAN_INTERVAL", "1800")
+    monkeypatch.setenv("COLLECTION_SYNC_INTERVAL", "3600")
     monkeypatch.setenv("PRINTER_ENABLED", "true")
 
     settings = Settings()
 
     assert settings.watch_dir == Path("/tmp/x")
     assert settings.watch_interval_s == 30
+    assert settings.watch_stable_s == 5
+    assert settings.scan_interval_s == 1800
+    assert settings.collection_sync_interval_s == 3600
     assert settings.printer_enabled is True
 
 

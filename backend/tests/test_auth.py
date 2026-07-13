@@ -42,6 +42,15 @@ def _set_cookie_header(response: httpx.Response) -> str:
     return header
 
 
+def _session_token(response: httpx.Response) -> str:
+    """Pull the ``tdmm_session`` token out of a login response's Set-Cookie
+    header, as a string suitable for ``client.cookies.set``.
+    """
+    cookie: http.cookies.BaseCookie = http.cookies.SimpleCookie()
+    cookie.load(_set_cookie_header(response))
+    return cookie["tdmm_session"].value
+
+
 # ---------------------------------------------------------------------------
 # login
 # ---------------------------------------------------------------------------
@@ -178,6 +187,112 @@ async def test_unknown_session_uuid_returns_401(
 ) -> None:
     client.cookies.set("tdmm_session", str(uuid.uuid4()))
     response = await client.get("/api/auth/me")
+
+    assert response.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# change password
+# ---------------------------------------------------------------------------
+
+NEW_PASSWORD = "a different correct horse"
+
+
+async def test_change_password_success_rotates_credentials(
+    client: httpx.AsyncClient, admin_user: User
+) -> None:
+    await client.post("/api/auth/login", json={"username": USERNAME, "password": PASSWORD})
+
+    response = await client.post(
+        "/api/auth/password",
+        json={"current_password": PASSWORD, "new_password": NEW_PASSWORD},
+    )
+
+    assert response.status_code == 204
+    assert response.content == b""
+
+    old_login = await client.post(
+        "/api/auth/login", json={"username": USERNAME, "password": PASSWORD}
+    )
+    assert old_login.status_code == 401
+
+    new_login = await client.post(
+        "/api/auth/login", json={"username": USERNAME, "password": NEW_PASSWORD}
+    )
+    assert new_login.status_code == 204
+
+
+async def test_change_password_wrong_current_password_is_403_and_leaves_hash_unchanged(
+    client: httpx.AsyncClient, admin_user: User
+) -> None:
+    await client.post("/api/auth/login", json={"username": USERNAME, "password": PASSWORD})
+
+    response = await client.post(
+        "/api/auth/password",
+        json={"current_password": "wrong-password", "new_password": NEW_PASSWORD},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Current password is incorrect"
+
+    still_works = await client.post(
+        "/api/auth/login", json={"username": USERNAME, "password": PASSWORD}
+    )
+    assert still_works.status_code == 204
+
+
+async def test_change_password_rejects_short_new_password(
+    client: httpx.AsyncClient, admin_user: User
+) -> None:
+    await client.post("/api/auth/login", json={"username": USERNAME, "password": PASSWORD})
+
+    response = await client.post(
+        "/api/auth/password",
+        json={"current_password": PASSWORD, "new_password": "short1"},
+    )
+
+    assert response.status_code == 422
+
+    still_works = await client.post(
+        "/api/auth/login", json={"username": USERNAME, "password": PASSWORD}
+    )
+    assert still_works.status_code == 204
+
+
+async def test_change_password_invalidates_other_sessions_but_keeps_current(
+    client: httpx.AsyncClient, admin_user: User
+) -> None:
+    first_login = await client.post(
+        "/api/auth/login", json={"username": USERNAME, "password": PASSWORD}
+    )
+    first_token = _session_token(first_login)
+
+    second_login = await client.post(
+        "/api/auth/login", json={"username": USERNAME, "password": PASSWORD}
+    )
+    second_token = _session_token(second_login)
+
+    client.cookies.set("tdmm_session", first_token)
+    response = await client.post(
+        "/api/auth/password",
+        json={"current_password": PASSWORD, "new_password": NEW_PASSWORD},
+    )
+    assert response.status_code == 204
+
+    client.cookies.set("tdmm_session", second_token)
+    second_followup = await client.get("/api/auth/me")
+    assert second_followup.status_code == 401
+
+    client.cookies.set("tdmm_session", first_token)
+    first_followup = await client.get("/api/auth/me")
+    assert first_followup.status_code == 200
+
+
+async def test_change_password_without_cookie_is_401(client: httpx.AsyncClient) -> None:
+    response = await client.post(
+        "/api/auth/password",
+        json={"current_password": PASSWORD, "new_password": NEW_PASSWORD},
+    )
 
     assert response.status_code == 401
 

@@ -1,15 +1,16 @@
-"""Login/logout/me (SPEC requirement 1, "API surface" auth rows).
+"""Login/logout/me/password (SPEC requirement 1, "API surface" auth rows).
 
 Split into two routers: ``public_router`` (just ``/auth/login``, which must
 stay reachable without a session) and ``protected_router`` (``/auth/me``,
-``/auth/logout``), mirroring the split enforced at ``app.api`` level.
+``/auth/password``, ``/auth/logout``), mirroring the split enforced at
+``app.api`` level.
 """
 
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from pydantic import BaseModel
-from sqlalchemy import select
+from pydantic import BaseModel, Field
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import SESSION_COOKIE_NAME, SESSION_MAX_AGE, AuthContext, require_session
@@ -17,7 +18,7 @@ from app.config import get_settings
 from app.db import get_db
 from app.models import Session as SessionModel
 from app.models import User
-from app.security import DUMMY_HASH, verify_password
+from app.security import DUMMY_HASH, hash_password, verify_password
 
 public_router = APIRouter(prefix="/auth", tags=["auth"])
 protected_router = APIRouter(prefix="/auth", tags=["auth"])
@@ -86,6 +87,46 @@ async def login(
 async def me(ctx: AuthContext = Depends(require_session)) -> dict[str, str]:
     """Return the authenticated user's username."""
     return {"username": ctx.user.username}
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=8)
+
+
+@protected_router.post("/password", status_code=status.HTTP_204_NO_CONTENT)
+async def change_password(
+    payload: ChangePasswordRequest,
+    ctx: AuthContext = Depends(require_session),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Change the authenticated user's password.
+
+    ``current_password`` is checked against the stored hash with the same
+    ``verify_password`` login uses; a mismatch is a 403 (authenticated, but
+    this particular action is denied), not a 401 -- the session itself is
+    still valid.
+
+    On success, every OTHER session for this user is deleted so a stolen or
+    shared session cookie doesn't survive the password change. The CURRENT
+    session (``ctx.session``, backing the cookie this request came in on) is
+    deliberately kept so the caller isn't logged out by their own password
+    change.
+    """
+    if not verify_password(payload.current_password, ctx.user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Current password is incorrect",
+        )
+
+    ctx.user.password_hash = hash_password(payload.new_password)
+    await db.execute(
+        delete(SessionModel).where(
+            SessionModel.user_id == ctx.user.id,
+            SessionModel.id != ctx.session.id,
+        )
+    )
+    await db.commit()
 
 
 @protected_router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)

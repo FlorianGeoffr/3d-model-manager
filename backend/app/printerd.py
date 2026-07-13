@@ -36,6 +36,18 @@ _TERMINAL = {PrintJobState.FINISHED, PrintJobState.FAILED, PrintJobState.CANCELE
 _POLL_INTERVAL_S = 2.5
 
 
+def _signature(printer: Printer) -> tuple[str, str, str]:
+    """The subset of a ``Printer`` row that a running worker's MQTT session
+    is actually built from (Round 8 T2) -- ``connection_from_printer``'s
+    exact inputs, minus ``kind``/``model``/``options`` (unused by the one
+    adapter today) and minus anything cosmetic (``name``). Changing any of
+    these three columns invalidates the worker's live session; reconcile()
+    diffs this against the signature captured when the worker was started to
+    decide whether a restart is warranted -- a rename or model-label edit
+    must NOT bounce an otherwise-healthy MQTT connection."""
+    return (printer.host, printer.serial, printer.access_code_enc)
+
+
 class PrinterWorker:
     def __init__(
         self,
@@ -118,6 +130,13 @@ class PrinterDaemon:
         self._pubsubs: dict[int, redis.client.PubSub] = {}
         self._threads: dict[int, threading.Thread] = {}
         self._cmd_stops: dict[int, threading.Event] = {}
+        # The connection signature (host/serial/access_code_enc) each running
+        # worker was started with (Round 8 T2) -- reconcile() diffs this
+        # against the printer row's current signature every tick to catch a
+        # connection-settings edit that a presence-only diff would otherwise
+        # miss (the printer stays enabled the whole time, so it never leaves
+        # ``_workers``).
+        self._signatures: dict[int, tuple[str, str, str]] = {}
         self._stop = threading.Event()
 
     def enabled_printers(self) -> list[Printer]:
@@ -132,8 +151,21 @@ class PrinterDaemon:
         adapter.connect()
         adapter.request_full_status()
         self._workers[printer.id] = worker
+        self._signatures[printer.id] = _signature(printer)
         self._subscribe_commands(printer.id, worker)
         return worker
+
+    def _safe_start(self, printer: Printer) -> None:
+        """``start_printer``, swallowing a failure so one bad printer can't
+        stall ``reconcile()`` for the rest. Exception TEXT could echo the
+        plaintext access code (e.g. an MQTT/FTPS auth-failure string) -- log
+        only the type, never the full exception body."""
+        try:
+            self.start_printer(printer)
+        except Exception as exc:
+            log.error(
+                "printerd: failed to start printer %s: %s", printer.id, type(exc).__name__
+            )
 
     def _subscribe_commands(self, printer_id: int, worker: PrinterWorker) -> None:
         pubsub = self.redis.pubsub()
@@ -171,6 +203,7 @@ class PrinterDaemon:
         self._cmd_stops[printer_id] = stop
 
     def stop_printer(self, printer_id: int) -> None:
+        self._signatures.pop(printer_id, None)
         stop = self._cmd_stops.pop(printer_id, None)
         if stop is not None:
             stop.set()
@@ -194,15 +227,16 @@ class PrinterDaemon:
                 self.stop_printer(printer_id)
         for printer_id, printer in enabled.items():
             if printer_id not in self._workers:
-                try:
-                    self.start_printer(printer)
-                except Exception as exc:
-                    # Exception TEXT could echo the plaintext access code (e.g. an
-                    # MQTT/FTPS auth-failure string) -- log only the type, never
-                    # the full exception body.
-                    log.error(
-                        "printerd: failed to start printer %s: %s", printer_id, type(exc).__name__
-                    )
+                self._safe_start(printer)
+            elif self._signatures.get(printer_id) != _signature(printer):
+                # host/serial/access_code changed under a still-enabled
+                # printer (Round 8 T2) -- the running worker's MQTT session
+                # was built from the OLD values, so it must be torn down and
+                # rebuilt rather than left connected to the wrong printer (or
+                # authenticating with a stale code). A name/model-only edit
+                # leaves the signature unchanged and never reaches here.
+                self.stop_printer(printer_id)
+                self._safe_start(printer)
 
     def run(self) -> None:
         self.reconcile()  # initial start (replaces the old one-shot start loop)

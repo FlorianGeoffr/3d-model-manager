@@ -165,6 +165,9 @@ def test_run_logs_poll_failure_type_only(caplog, monkeypatch, redis_url):
 
     class _StubPrinterRow:
         id = 1
+        host = "h"
+        serial = "S"
+        access_code_enc = "x"
 
     # Task 5: run() now reconciles every tick, diffing enabled_printers()
     # against _workers -- stub printer 1 as still enabled so reconcile()
@@ -181,6 +184,12 @@ def test_run_logs_poll_failure_type_only(caplog, monkeypatch, redis_url):
         adapter = _BoomAdapter()
 
     daemon._workers[1] = _StubWorker()
+    # Round 8 T2: reconcile() now ALSO diffs each still-enabled printer's
+    # connection signature against the one its running worker was started
+    # with, to catch a host/serial/access_code edit -- pre-seed a matching
+    # signature so this poll-failure test (unrelated to that diff) doesn't
+    # trip a restart of the injected stub worker before the poll below runs.
+    daemon._signatures[1] = ("h", "S", "x")
 
     with caplog.at_level(logging.ERROR, logger="printerd"):
         daemon.run()
@@ -321,3 +330,79 @@ def test_reconcile_tears_down_disabled_printer_thread(
     finally:
         daemon.stop()
         thread.join(timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
+# Round 8 T2: reconcile() also restarts a still-enabled printer's worker when
+# its CONNECTION signature (host/serial/access_code_enc) changes -- the
+# presence-only diff above never notices this (the printer never leaves
+# `_workers`), so a running worker would otherwise keep talking to the OLD
+# host/serial or authenticating with a stale access code forever. Driven
+# directly via `reconcile()` (not the background `run()` loop) for
+# determinism; the fake-adapter fixture ignores `conn` entirely, so a
+# restart is asserted via `PrinterWorker` object identity -- `start_printer`
+# always builds a fresh one, so `is not` proves the old worker was torn down
+# and replaced, not merely left in place.
+# ---------------------------------------------------------------------------
+
+
+def test_reconcile_restarts_worker_when_host_changes(redis_url, printer_enabled, migrated_db, fake_adapter):
+    settings = get_settings()
+    pid = _seed_printer(settings, name="p", enabled=True)
+    daemon = PrinterDaemon(settings)
+    daemon.reconcile()
+    worker_before = daemon._workers[pid]
+
+    with base.sync_session() as s:
+        s.get(Printer, pid).host = "new-host"
+        s.commit()
+    daemon.reconcile()
+
+    assert daemon._workers[pid] is not worker_before
+
+
+def test_reconcile_restarts_worker_when_serial_changes(redis_url, printer_enabled, migrated_db, fake_adapter):
+    settings = get_settings()
+    pid = _seed_printer(settings, name="p", enabled=True)
+    daemon = PrinterDaemon(settings)
+    daemon.reconcile()
+    worker_before = daemon._workers[pid]
+
+    with base.sync_session() as s:
+        s.get(Printer, pid).serial = "NEWSERIAL01"
+        s.commit()
+    daemon.reconcile()
+
+    assert daemon._workers[pid] is not worker_before
+
+
+def test_reconcile_restarts_worker_when_access_code_changes(
+    redis_url, printer_enabled, migrated_db, fake_adapter
+):
+    settings = get_settings()
+    pid = _seed_printer(settings, name="p", enabled=True)
+    daemon = PrinterDaemon(settings)
+    daemon.reconcile()
+    worker_before = daemon._workers[pid]
+
+    with base.sync_session() as s:
+        s.get(Printer, pid).access_code_enc = encrypt_secret(settings, "87654321")
+        s.commit()
+    daemon.reconcile()
+
+    assert daemon._workers[pid] is not worker_before
+
+
+def test_reconcile_does_not_restart_on_name_only_change(redis_url, printer_enabled, migrated_db, fake_adapter):
+    settings = get_settings()
+    pid = _seed_printer(settings, name="p", enabled=True)
+    daemon = PrinterDaemon(settings)
+    daemon.reconcile()
+    worker_before = daemon._workers[pid]
+
+    with base.sync_session() as s:
+        s.get(Printer, pid).name = "renamed"
+        s.commit()
+    daemon.reconcile()
+
+    assert daemon._workers[pid] is worker_before

@@ -29,6 +29,8 @@ from app.schemas.settings import (
     ApiTokenCreateIn,
     ApiTokenMintOut,
     ApiTokenOut,
+    AppSettingsIn,
+    AppSettingsOut,
     BambuLoginIn,
     BambuLoginOut,
     BambuStatusOut,
@@ -42,7 +44,14 @@ from app.schemas.settings import (
     StorageConfigIn,
     StorageConfigOut,
 )
-from app.services import api_tokens, bambu_auth, import_tokens, printables_auth, storage_config
+from app.services import (
+    api_tokens,
+    app_config,
+    bambu_auth,
+    import_tokens,
+    printables_auth,
+    storage_config,
+)
 from app.services import jobs as jobs_service
 from app.services import storage_backends as storage_backends_service
 from app.services.storage_probe import probe_backend
@@ -401,6 +410,42 @@ async def put_import_tokens_settings(
         thingiverse_token=_REDACTED_SENTINEL if thingiverse_value else "",
         makerworld_token=_REDACTED_SENTINEL if makerworld_value else "",
     )
+
+
+# ---------------------------------------------------------------------------
+# Runtime feature settings (Round 10 "Settings" UI; see app.services.
+# app_config). Five knobs -- printer_enabled, scan_interval_s,
+# collection_sync_interval_s, watch_interval_s, watch_stable_s -- that used
+# to be env/`.env`-only, now DB-backed and editable without a restart.
+# Nothing here is secret, so unlike storage/import-tokens above there's no
+# redaction and no merge-on-blank: PUT is a full replace of all five fields.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/app", response_model=AppSettingsOut)
+async def get_app_settings(
+    db: AsyncSession = Depends(get_db), settings: Settings = Depends(get_settings)
+) -> AppSettingsOut:
+    """Resolved runtime feature settings: the DB row overlaid per-field onto
+    env/default (``app.services.app_config.get_app_config``)."""
+    config = await app_config.get_app_config(db, settings)
+    return AppSettingsOut.from_config(config)
+
+
+@router.put("/app", response_model=AppSettingsOut)
+async def put_app_settings(
+    payload: AppSettingsIn,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> AppSettingsOut:
+    """Persist all five fields as a full replace; every field is required
+    and independently validated (``ge=0``) at the schema boundary, so
+    there's no partial-submit case to merge unlike ``PUT /settings/import-
+    tokens``."""
+    config = await app_config.set_app_config(
+        db, settings, app_config.AppConfig(**payload.model_dump())
+    )
+    return AppSettingsOut.from_config(config)
 
 
 # ---------------------------------------------------------------------------

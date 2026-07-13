@@ -11,9 +11,10 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.schemas.imports import NonEmptyStr
+from app.services.app_config import AppConfig
 
 # Bambu account region (global = api.bambulab.com, china = api.bambulab.cn) --
 # constrained at the schema boundary so a bogus region 422s here rather than
@@ -46,6 +47,34 @@ class ConnectionTestOut(BaseModel):
     ok: bool
     detail: str
     latency_ms: int
+
+
+# ---------------------------------------------------------------------------
+# Runtime feature settings (Round 10 "Settings" UI; see
+# app.services.app_config). Unlike the storage/import-token/Bambu/Printables
+# sections above, nothing here is secret -- no redaction, no merge-on-blank:
+# `PUT` is a full replace of all five fields, each independently validated.
+# ---------------------------------------------------------------------------
+
+
+class AppSettingsIn(BaseModel):
+    printer_enabled: bool
+    scan_interval_s: int = Field(ge=0)
+    collection_sync_interval_s: int = Field(ge=0)
+    watch_interval_s: int = Field(ge=0)
+    watch_stable_s: float = Field(ge=0)
+
+
+class AppSettingsOut(BaseModel):
+    printer_enabled: bool
+    scan_interval_s: int
+    collection_sync_interval_s: int
+    watch_interval_s: int
+    watch_stable_s: float
+
+    @classmethod
+    def from_config(cls, config: AppConfig) -> AppSettingsOut:
+        return cls(**config.model_dump())
 
 
 # ---------------------------------------------------------------------------

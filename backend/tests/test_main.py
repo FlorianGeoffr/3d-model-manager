@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from app.config import get_settings
 from app.db import get_sessionmaker
 from app.main import create_app
-from app.models import User
+from app.models import Setting, User
 
 
 @pytest.fixture(autouse=True)
@@ -59,3 +59,23 @@ async def test_lifespan_bootstrap_is_idempotent_across_restarts(
         count = await session.scalar(select(func.count()).select_from(User))
 
     assert count == 1
+
+
+async def test_lifespan_seeds_app_config_from_env(
+    migrated_db: str, monkeypatch: pytest.MonkeyPatch, data_dir: Path
+) -> None:
+    """Round 10: the lifespan seeds the DB-backed ``app`` settings row from
+    env on first boot (``app.services.app_config.seed_app_config``), AFTER
+    ``ensure_admin_user`` -- see ``app.main.lifespan``.
+    """
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "lifespan-startup-pw")
+    monkeypatch.setenv("PRINTER_ENABLED", "true")
+    get_settings.cache_clear()
+
+    app = create_app()
+    async with app.router.lifespan_context(app), get_sessionmaker()() as session:
+        row = await session.get(Setting, "app")
+
+    assert row is not None
+    assert row.value["printer_enabled"] is True

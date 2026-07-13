@@ -43,6 +43,10 @@ services:
       - "8080:8080"
     environment:
       TDMM_ROLE: api
+      # Round 8: the api only REPORTS the watched folder's container path via
+      # GET /features (Settings "Slicer integration" card) -- it never reads
+      # the folder, so no /watch volume here. Must match worker-io/beat.
+      TDMM_SLICER_WATCH_DIR: /watch
       PUID: ${PUID:-}
       PGID: ${PGID:-}
     env_file:
@@ -145,6 +149,12 @@ services:
       dockerfile: docker/Dockerfile
     image: tdmm:local
     command: ["celery", "-A", "app.tasks.celery_app", "beat", "-l", "info", "-s", "/tmp/celerybeat-schedule"]
+    environment:
+      # Round 8: beat evaluates `app.tasks.celery_app`'s CONDITIONAL
+      # slicer-watch schedule entry in THIS container -- without the watch
+      # dir set here the entry never registers and the watched folder is
+      # silently dead, no matter what worker-io sees. Must match worker-io.
+      TDMM_SLICER_WATCH_DIR: /watch
     env_file:
       - .env
     depends_on:

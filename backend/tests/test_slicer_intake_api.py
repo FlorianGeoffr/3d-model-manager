@@ -14,6 +14,7 @@ an already-staged ``StagedFile`` (mirrors ``tests/test_import_blob_typing
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 
 import blake3
 import httpx
@@ -25,6 +26,7 @@ from app.importers.download import StagedFile
 from app.models import File, Model
 from app.services import api_tokens, layout, slicer_intake, spool
 from app.services.storage_config import resolve_backend_sync
+from app.storage.local import LocalStorageBackend
 from app.tasks import base as tasks_base
 
 pytestmark = pytest.mark.usefixtures("library_root", "data_dir")
@@ -224,6 +226,38 @@ async def test_intake_empty_body_is_400(
     assert count == 0  # no model created for a rejected empty upload
 
 
+async def test_resolve_and_attach_model_creation_rolls_back_when_finalize_fails(
+    db_session, backend: LocalStorageBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M2 fix-review: `create_model`'s commit is deferred into the SAME
+    transaction as `finalize_upload`'s -- a failure in `finalize_upload`
+    (here simulated directly; in practice the rare concurrent-identical-
+    blob 409) must roll back the just-created Model+Revision too, instead
+    of leaving an empty, file-less model durably committed."""
+    settings = get_settings()
+
+    async def _boom(*_a, **_kw):
+        raise RuntimeError("simulated finalize failure")
+
+    monkeypatch.setattr(slicer_intake.library, "finalize_upload", _boom)
+
+    with pytest.raises(RuntimeError, match="simulated finalize failure"):
+        await slicer_intake.resolve_and_attach(
+            db_session,
+            backend,
+            settings,
+            filename="Orphan Guard_PLA_1h2m.gcode",
+            spool_token=uuid.uuid4(),
+            spool_path=Path("/does/not/matter"),  # never read before the simulated failure
+            blob_hash="a" * 64,
+            size=123,
+        )
+    await db_session.rollback()
+
+    count = await db_session.scalar(select(func.count()).select_from(Model))
+    assert count == 0  # the model creation rolled back with the failed finalize
+
+
 # ---------------------------------------------------------------------------
 # sync twin (T5 watcher path)
 # ---------------------------------------------------------------------------
@@ -318,3 +352,57 @@ def test_resolve_and_attach_sync_same_filename_twice_replaces() -> None:
         ).scalars().all()
         assert len(files) == 1
         assert files[0].blob_hash == blake3.blake3(content2).hexdigest()
+
+
+def test_resolve_and_attach_sync_replace_never_deletes_old_bytes_before_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M3 fix-review: mirrors the async twin's (`finalize_upload`) same-key
+    overwrite ordering -- the old File row (and its on-backend bytes) must
+    survive a failure in the NEW file's store step. No explicit pre-delete
+    of the old bytes; only a same-key overwrite by a SUCCESSFUL new
+    ``store_to_backend`` job is ever allowed to touch them."""
+    settings = get_settings()
+    filename = "Sync Fragile.3mf"
+    content1 = b"sync-first-fragile-bytes" * 10
+
+    with tasks_base.sync_session() as s:
+        backend = resolve_backend_sync(s, settings)
+        first = slicer_intake.resolve_and_attach_sync(
+            s, backend, settings, filename=filename, staged=_stage(settings, filename, content1)
+        )
+    assert first.action == "created"
+
+    with tasks_base.sync_session() as s:
+        old_file = s.execute(select(File).where(File.rel_path == filename)).scalar_one()
+        old_storage_path = old_file.storage_path
+        old_file_id = old_file.id
+        backend = resolve_backend_sync(s, settings)
+        assert b"".join(backend.read(old_storage_path)) == content1
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("simulated store failure")
+
+    monkeypatch.setattr(slicer_intake.library, "store_imported_file_sync", _boom)
+
+    with tasks_base.sync_session() as s:
+        backend = resolve_backend_sync(s, settings)
+        with pytest.raises(RuntimeError, match="simulated store failure"):
+            slicer_intake.resolve_and_attach_sync(
+                s,
+                backend,
+                settings,
+                filename=filename,
+                staged=_stage(settings, filename, b"sync-second-fragile-bytes" * 10),
+            )
+    # `sync_session()`'s `finally: session.close()` rolls back whatever the
+    # failed call above only flushed (never committed) -- the old row's
+    # `session.delete` included.
+
+    with tasks_base.sync_session() as s:
+        files = s.execute(select(File).where(File.rel_path == filename)).scalars().all()
+        assert len(files) == 1  # old row survives -- never pre-deleted before the replacement lands
+        assert files[0].id == old_file_id
+        assert files[0].blob_hash == blake3.blake3(content1).hexdigest()
+        backend = resolve_backend_sync(s, settings)
+        assert b"".join(backend.read(old_storage_path)) == content1  # bytes never touched either

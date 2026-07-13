@@ -120,6 +120,15 @@ def _mqtt_probe(conn: PrinterConnection, *, timeout: float) -> ProbeResult:
             payload = json.loads(msg.payload)
         except (ValueError, TypeError):
             return
+        if not isinstance(payload, dict):
+            # M4 fix-review: valid JSON that isn't an object (a bare
+            # array/number/string/null) -- `.get` below would raise
+            # `AttributeError`, which paho's network-loop thread otherwise
+            # silently swallows (the probe just misses this report and
+            # times out with "sent no status" instead of failing fast on a
+            # clear signal). A real Bambu broker always sends objects; this
+            # is just an explicit guard rather than an implicit crash.
+            return
         state = (payload.get("print") or {}).get("gcode_state")
         if state:
             outcome["gcode_state"] = state

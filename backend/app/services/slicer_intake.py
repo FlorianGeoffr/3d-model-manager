@@ -15,7 +15,6 @@ rather than duplicating them.
 
 from __future__ import annotations
 
-import contextlib
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -31,9 +30,7 @@ from app.models.library import File, Model, Revision
 from app.services import library
 from app.services.layout import infer_blob_kind_format
 from app.services.slicer_naming import _safe_basename, model_name_from_filename
-from app.services.storage_backends import resolve_backend_for_file_sync
 from app.storage.base import StorageBackend
-from app.storage.errors import StorageKeyNotFound
 
 if TYPE_CHECKING:
     # Avoids a runtime import cycle, same reasoning as
@@ -126,12 +123,17 @@ async def resolve_and_attach(
     model = await _find_model_by_name_ci(db, stripped_name)
     created = model is None
     if model is None:
+        # `commit=False` (M2 fix-review): defers the Model+Revision insert
+        # into the SAME transaction `finalize_upload` below commits -- a
+        # failure there rolls the just-created model back too, rather than
+        # leaving an empty, file-less model durably orphaned.
         model = await library.create_model(
             db,
             backend,
             name=stripped_name,
             description=None,
             initial_revision_name="slicer",
+            commit=False,
         )
 
     revision = await db.get(Revision, model.current_revision_id)
@@ -200,6 +202,10 @@ def resolve_and_attach_sync(
     model = _find_model_by_name_ci_sync(session, stripped_name)
     created = model is None
     if model is None:
+        # `commit=False` (M2 fix-review): defers the Model+Revision insert
+        # into the SAME transaction `store_imported_file_sync` below
+        # commits -- a failure there rolls the just-created model back too,
+        # rather than leaving an empty, file-less model durably orphaned.
         model = library.create_imported_model_sync(
             session,
             backend,
@@ -212,6 +218,7 @@ def resolve_and_attach_sync(
             imported_at=None,
             tags=[],
             initial_revision_name="slicer",
+            commit=False,
         )
 
     revision = session.get(Revision, model.current_revision_id)
@@ -231,11 +238,18 @@ def resolve_and_attach_sync(
             raise RuntimeError(
                 f"rel_path {rel_path!r} is still processing; retry once stored"
             )
-        existing_backend = resolve_backend_for_file_sync(session, settings, existing)
-        with contextlib.suppress(StorageKeyNotFound):
-            existing_backend.delete(existing.storage_path)
+        # M3 fix-review: mirror the async twin's (`finalize_upload`) same-key
+        # overwrite ordering -- delete only the ROW here (flushed, not
+        # committed, so it folds into `store_imported_file_sync`'s commit
+        # below), and NEVER pre-delete the old bytes. `staged.rel_path` is
+        # this same `rel_path`, so the new File's `storage_path` is
+        # identical to the old one; the store job dispatched below
+        # naturally overwrites it in place. Pre-deleting the bytes (as
+        # before) opened a data-loss window: if the store step below failed
+        # after that delete committed, the old file was gone with no
+        # replacement.
         session.delete(existing)
-        session.commit()
+        session.flush()
 
     file = library.store_imported_file_sync(session, model=model, revision=revision, staged=staged)
 

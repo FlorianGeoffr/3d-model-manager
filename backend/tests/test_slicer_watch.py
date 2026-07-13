@@ -85,6 +85,46 @@ async def test_fresh_file_is_left_in_place(watch_dir: Path, db_session) -> None:
     assert count == 0
 
 
+async def test_fresh_unsupported_extension_file_is_left_in_place(
+    watch_dir: Path, db_session
+) -> None:
+    """M1 fix-review: the stability gate must run BEFORE extension
+    classification -- a file that doesn't (yet) look like a supported blob
+    kind/format is still left alone while its mtime is inside the
+    stability window, exactly like a supported one would be, instead of
+    being yanked straight into `.failed/` regardless of age."""
+    f = watch_dir / "notes.txt"
+    f.write_text("just some notes")  # mtime == now, well inside the default 10s window
+
+    scan_slicer_watch()
+
+    assert f.exists()
+    assert not (watch_dir / FAILED_DIRNAME).exists()
+    count = await db_session.scalar(select(func.count()).select_from(Model))
+    assert count == 0
+
+
+async def test_temp_suffix_file_is_left_in_place_even_once_stable(
+    watch_dir: Path, db_session
+) -> None:
+    """M1 fix-review: a sync tool's in-flight temp name (e.g. Syncthing's
+    `~syncthing~Foo.gcode.3mf.tmp`) is skipped outright -- even once its
+    mtime has stabilized, it's still under the tool's OWN in-progress
+    naming convention and hasn't been atomically renamed to its final name
+    yet, so it must never be pulled into `.failed/`."""
+    f = watch_dir / "~syncthing~Benchy.gcode.3mf.tmp"
+    f.write_bytes(b"still-syncing-bytes" * 20)
+    _age(f, 3600)
+
+    scan_slicer_watch()
+
+    assert f.exists()
+    assert not (watch_dir / FAILED_DIRNAME).exists()
+    assert not (watch_dir / IMPORTED_DIRNAME).exists()
+    count = await db_session.scalar(select(func.count()).select_from(Model))
+    assert count == 0
+
+
 async def test_matches_existing_model_name_case_insensitively(
     watch_dir: Path, db_session, backend: LocalStorageBackend
 ) -> None:

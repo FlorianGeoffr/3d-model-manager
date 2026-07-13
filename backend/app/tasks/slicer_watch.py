@@ -25,7 +25,16 @@ entry.
 lands (a large ``.gcode.3mf`` export takes real time to flush to disk). A
 file whose mtime is younger than ``settings.slicer_watch_stable_s`` seconds
 is left exactly where it is and reconsidered on a later tick -- imported
-only once it's stopped changing.
+only once it's stopped changing. This gate (plus a ``_looks_like_temp_file``
+skip for common sync-tool in-flight names) runs BEFORE extension
+classification (M1 fix-review): the README recommends pointing a slicer's
+export/SYNC target at this directory, and a sync tool typically stages an
+in-flight file under a non-dot temp name that doesn't match any recognized
+extension -- classifying first would quarantine that file to ``.failed/``
+mid-write, out from under the tool, before it ever gets a chance to
+stabilize.
+
+
 
 **Terminal subdirectories**: ``.imported/`` and ``.failed/`` live INSIDE the
 watched directory itself, so both the "skip dotfiles" rule and the
@@ -90,6 +99,22 @@ def _move_to(entry: Path, dest_dir: Path) -> None:
     shutil.move(str(entry), str(target))
 
 
+# Common in-flight naming conventions used by sync tools writing INTO the
+# watched folder (the README recommends pointing a slicer's export/sync
+# target at this path) -- a partial/temp name is skipped outright,
+# regardless of its mtime, so a slow multi-GB transfer can never be
+# classified/quarantined mid-write before the tool's own atomic rename to
+# the final name lands. `.tmp`/`.part`/`.partial` cover rsync/generic sync
+# tools; a leading/trailing `~` covers Syncthing's `~syncthing~Foo.gcode.3mf
+# .tmp`-style naming (also caught by the `.tmp` suffix, but the `~` alone
+# still applies once Syncthing strips the well-known suffix).
+_TEMP_SUFFIXES = (".tmp", ".part", ".partial")
+
+
+def _looks_like_temp_file(name: str) -> bool:
+    return name.startswith("~") or name.endswith("~") or name.lower().endswith(_TEMP_SUFFIXES)
+
+
 def _import_one(settings: Settings, entry: Path) -> None:
     """Stage ``entry`` to spool and resolve/attach it to a model. The
     staged spool file is cleaned up on any failure here (mirroring
@@ -114,24 +139,31 @@ def _scan_once(settings: Settings, watch_dir: Path) -> None:
     failed_dir = watch_dir / FAILED_DIRNAME
 
     for entry in sorted(watch_dir.iterdir(), key=lambda p: p.name):
-        # Skips subdirectories (`.imported/`/`.failed/` included) and any
+        # Skips subdirectories (`.imported/`/`.failed/` included), any
         # dotfile -- a stray `.DS_Store`/editor swap file is quietly left
-        # alone rather than logged as a failure.
-        if entry.is_dir() or entry.name.startswith("."):
+        # alone rather than logged as a failure -- and any recognizable
+        # sync-tool in-flight temp name (see `_looks_like_temp_file`).
+        if entry.is_dir() or entry.name.startswith(".") or _looks_like_temp_file(entry.name):
             continue
 
-        kind, format_ = infer_blob_kind_format(entry.name)
-        if kind is BlobKind.OTHER and format_ is BlobFormat.OTHER:
-            logger.info("slicer watch: unsupported file %r, moving to %s", entry.name, FAILED_DIRNAME)
-            _move_to(entry, failed_dir)
-            continue
-
+        # Stability gate BEFORE classification (M1 fix-review): a file
+        # still being written has a fresh mtime regardless of what its
+        # CURRENT (possibly not-yet-final) extension happens to be, so
+        # checking this first keeps an in-flight write from ever being
+        # misclassified as unsupported and yanked into `.failed/` out from
+        # under the tool that's still writing it.
         try:
             mtime = entry.stat().st_mtime
         except FileNotFoundError:
             continue  # raced away between the iterdir() snapshot and here
         if time.time() - mtime < settings.slicer_watch_stable_s:
             continue  # still being written -- reconsidered on a later tick
+
+        kind, format_ = infer_blob_kind_format(entry.name)
+        if kind is BlobKind.OTHER and format_ is BlobFormat.OTHER:
+            logger.info("slicer watch: unsupported file %r, moving to %s", entry.name, FAILED_DIRNAME)
+            _move_to(entry, failed_dir)
+            continue
 
         try:
             _import_one(settings, entry)

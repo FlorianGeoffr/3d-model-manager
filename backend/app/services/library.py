@@ -186,7 +186,17 @@ async def create_model(
     source_license: str | None = None,
     imported_at: datetime | None = None,
     initial_revision_name: str = "initial",
+    commit: bool = True,
 ) -> Model:
+    """``commit=False`` (Round 8 fix-review M2, mirroring
+    ``create_imported_model_sync``'s existing ``commit`` param) lets a
+    caller that immediately attaches a file to the just-created model (e.g.
+    ``app.services.slicer_intake.resolve_and_attach``) fold the Model+
+    Revision insert into the SAME transaction as ``finalize_upload``'s file
+    insert/commit -- so a failure in that later step (a concurrent-blob
+    409, an unexpected storage error) rolls back the model too, instead of
+    leaving an orphan, file-less Model durably committed on its own.
+    """
     slug = await _unique_slug(db, name)
     # `tags=[]` marks the relationship collection as already-loaded on this
     # (about to become persistent) instance -- without it, a bare
@@ -220,7 +230,8 @@ async def create_model(
     await anyio.to_thread.run_sync(_write_storage)
 
     model.current_revision_id = revision.id
-    await db.commit()
+    if commit:
+        await db.commit()
     return model
 
 

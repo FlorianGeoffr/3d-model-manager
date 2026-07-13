@@ -111,7 +111,7 @@ class _FakeMqttClient:
     ``on_connect``/``on_message`` from ``loop_start()``/``publish()`` so
     tests run in microseconds -- no real socket/thread involved."""
 
-    def __init__(self, *, rc: int, report: dict | None) -> None:
+    def __init__(self, *, rc: int, report: object | None) -> None:
         self._rc = rc
         self._report = report
         self.on_connect = None
@@ -151,7 +151,7 @@ class _FakeMqttClient:
             self.on_message(self, None, _FakeMsg(json.dumps(self._report).encode()))
 
 
-def _install_fake_client(monkeypatch, *, rc: int, report: dict | None = None) -> None:
+def _install_fake_client(monkeypatch, *, rc: int, report: object | None = None) -> None:
     import paho.mqtt.client as mqtt
 
     monkeypatch.setattr(mqtt, "Client", lambda **_kw: _FakeMqttClient(rc=rc, report=report))
@@ -185,6 +185,21 @@ def test_mqtt_probe_success_subscribes_serial_scoped_topic_and_reports_state(mon
     assert result.ok is True
     assert result.gcode_state == "IDLE"
     assert "IDLE" in result.detail
+
+
+def test_on_message_non_object_json_payload_is_ignored_not_raised(monkeypatch):
+    """M4 fix-review: `_on_message` must not let `AttributeError` escape
+    when the broker sends valid JSON that isn't an object (e.g. a bare
+    array/number) -- `.get(...)` on a non-dict would otherwise blow up.
+    `_FakeMqttClient.publish()` invokes `on_message` SYNCHRONOUSLY on this
+    thread (unlike the real paho network-loop thread, which would just
+    silently swallow the exception), so an unguarded `_on_message` would
+    make THIS raise out of `_mqtt_probe` instead of timing out cleanly.
+    """
+    _install_fake_client(monkeypatch, rc=0, report=[1, 2, 3])
+    result = probe._mqtt_probe(CONN, timeout=0.05)
+    assert result.ok is False
+    assert "sent no status" in result.detail
 
 
 def test_mqtt_probe_never_subscribes_a_wildcard_topic(monkeypatch):

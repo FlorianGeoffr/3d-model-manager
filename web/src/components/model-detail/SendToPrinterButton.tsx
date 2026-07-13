@@ -4,6 +4,14 @@
  * only while the printer feature is on and at least one printer is
  * configured -- otherwise it self-hides rather than showing a disabled
  * control. Submits `POST /printers/{id}/print`.
+ *
+ * The dialog itself is `SendToPrinterDialog` (Round 8 Task 3), extracted
+ * out to a controlled (`open`/`onOpenChange`) component so the print
+ * queue's row-level "Print" action (`QueuePage.tsx`) can drive the SAME
+ * form/submit logic behind its own trigger, rather than duplicating it.
+ * `SendToPrinterButton` below keeps its exact prior behavior/appearance --
+ * it just now owns the `open` state itself and renders its trigger button
+ * as a plain sibling instead of a `DialogTrigger`.
  */
 import { useState } from "react";
 import { PrinterIcon } from "lucide-react";
@@ -13,20 +21,50 @@ import { useFeatures } from "@/api/features";
 import { usePrinters, useStartPrint } from "@/api/printers";
 import type { FileOut, PrinterOut } from "@/api/types";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 export function SendToPrinterButton({ file }: { file: FileOut }) {
   const features = useFeatures();
   const enabled = !!features.data?.printer_enabled;
   const printers = usePrinters({ enabled });
+  const [open, setOpen] = useState(false);
 
   if (!enabled || file.format !== "gcode_3mf" || !printers.data || printers.data.length === 0) return null;
-  return <SendDialog file={file} printers={printers.data} />;
+  return (
+    <>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-sm"
+        aria-label={`Print ${file.rel_path}`}
+        onClick={() => setOpen(true)}
+      >
+        <PrinterIcon className="size-4" />
+      </Button>
+      <SendToPrinterDialog file={file} printers={printers.data} open={open} onOpenChange={setOpen} />
+    </>
+  );
 }
 
-function SendDialog({ file, printers }: { file: FileOut; printers: PrinterOut[] }) {
-  const [open, setOpen] = useState(false);
+/** `{ file, printers, open, onOpenChange, onSuccess? }` -- the plate/AMS
+ * form + submit mutation are unchanged from before the extraction.
+ * `onSuccess` fires (in addition to closing the dialog) after a successful
+ * start-print mutation, letting a caller react to "this file is now on its
+ * way to a printer" (the print queue removes the row + toasts). */
+export function SendToPrinterDialog({
+  file,
+  printers,
+  open,
+  onOpenChange,
+  onSuccess,
+}: {
+  file: FileOut;
+  printers: PrinterOut[];
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSuccess?: () => void;
+}) {
   const [printerId, setPrinterId] = useState(printers[0].id);
   const [plate, setPlate] = useState(file.meta?.plates?.[0]?.index ?? 1);
   const [useAms, setUseAms] = useState(false);
@@ -47,17 +85,17 @@ function SendDialog({ file, printers }: { file: FileOut; printers: PrinterOut[] 
         flow_cali: flowCali,
         timelapse,
       },
-      { onSuccess: () => setOpen(false) },
+      {
+        onSuccess: () => {
+          onOpenChange(false);
+          onSuccess?.();
+        },
+      },
     );
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button type="button" variant="ghost" size="icon-sm" aria-label={`Print ${file.rel_path}`}>
-          <PrinterIcon className="size-4" />
-        </Button>
-      </DialogTrigger>
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Send {file.rel_path} to a printer</DialogTitle>

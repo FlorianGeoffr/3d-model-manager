@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.config import Settings
 from app.models.library import Model, PrintQueueEntry
 from app.schemas.queue import QueueEntryOut
 from app.services import library
@@ -22,10 +23,15 @@ async def _ordered_entries(db: AsyncSession) -> list[PrintQueueEntry]:
     return list((await db.execute(stmt)).scalars().all())
 
 
-async def _to_out(db: AsyncSession, entries: list[PrintQueueEntry]) -> list[QueueEntryOut]:
+async def _to_out(
+    db: AsyncSession, settings: Settings, entries: list[PrintQueueEntry]
+) -> list[QueueEntryOut]:
     """Attach each entry's ``ModelSummary``, reusing
     ``library.build_model_summaries`` rather than duplicating the
-    aggregate-then-assemble gallery logic.
+    aggregate-then-assemble gallery logic, plus (Round 8 Task 3) each
+    entry's ``printable_file`` -- resolved in ONE batch query via
+    ``library.newest_printable_files`` across every distinct current
+    revision in ``entries``, never one query per row.
     """
     if not entries:
         return []
@@ -34,6 +40,12 @@ async def _to_out(db: AsyncSession, entries: list[PrintQueueEntry]) -> list[Queu
     models_by_id = {m.id: m for m in (await db.execute(stmt)).scalars().unique().all()}
     summaries = await library.build_model_summaries(db, [models_by_id[e.model_id] for e in entries])
     summary_by_model_id = {s.id: s for s in summaries}
+
+    revision_ids = [
+        m.current_revision_id for m in models_by_id.values() if m.current_revision_id is not None
+    ]
+    printable_by_revision = await library.newest_printable_files(db, settings, revision_ids)
+
     return [
         QueueEntryOut(
             id=e.id,
@@ -41,16 +53,19 @@ async def _to_out(db: AsyncSession, entries: list[PrintQueueEntry]) -> list[Queu
             position=e.position,
             added_at=e.added_at,
             model=summary_by_model_id[e.model_id],
+            printable_file=printable_by_revision.get(models_by_id[e.model_id].current_revision_id),
         )
         for e in entries
     ]
 
 
-async def list_queue(db: AsyncSession) -> list[QueueEntryOut]:
-    return await _to_out(db, await _ordered_entries(db))
+async def list_queue(db: AsyncSession, settings: Settings) -> list[QueueEntryOut]:
+    return await _to_out(db, settings, await _ordered_entries(db))
 
 
-async def enqueue_model(db: AsyncSession, model_id: int) -> tuple[QueueEntryOut, bool]:
+async def enqueue_model(
+    db: AsyncSession, settings: Settings, model_id: int
+) -> tuple[QueueEntryOut, bool]:
     """Append ``model_id`` at the end of the queue. Idempotent: re-adding an
     already-queued model returns its EXISTING entry (``created=False``)
     rather than erroring or duplicating it. 404s if the model doesn't exist.
@@ -59,7 +74,7 @@ async def enqueue_model(db: AsyncSession, model_id: int) -> tuple[QueueEntryOut,
 
     existing = await db.scalar(select(PrintQueueEntry).where(PrintQueueEntry.model_id == model_id))
     if existing is not None:
-        out = await _to_out(db, [existing])
+        out = await _to_out(db, settings, [existing])
         return out[0], False
 
     max_position = await db.scalar(select(func.max(PrintQueueEntry.position)))
@@ -67,7 +82,7 @@ async def enqueue_model(db: AsyncSession, model_id: int) -> tuple[QueueEntryOut,
     db.add(entry)
     await db.commit()
     await db.refresh(entry)
-    out = await _to_out(db, [entry])
+    out = await _to_out(db, settings, [entry])
     return out[0], True
 
 
@@ -92,7 +107,9 @@ async def remove_entry(db: AsyncSession, entry_id: int) -> None:
     await db.commit()
 
 
-async def move_entry(db: AsyncSession, entry_id: int, position: int) -> list[QueueEntryOut]:
+async def move_entry(
+    db: AsyncSession, settings: Settings, entry_id: int, position: int
+) -> list[QueueEntryOut]:
     """Move ``entry_id`` to 1-based ``position``, clamped to ``[1, n]``,
     shifting every other entry to make room. Returns the whole reordered
     queue (the UI re-renders the whole list on any reorder).
@@ -108,4 +125,4 @@ async def move_entry(db: AsyncSession, entry_id: int, position: int) -> list[Que
         reordered_entry.position = new_position
     await db.commit()
 
-    return await list_queue(db)
+    return await list_queue(db, settings)

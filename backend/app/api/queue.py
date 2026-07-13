@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import Settings, get_settings
 from app.db import get_db
 from app.schemas.queue import QueueEnqueueIn, QueueEntryOut, QueueReorderIn
 from app.services import queue as queue_service
@@ -13,19 +14,24 @@ router = APIRouter(prefix="/queue", tags=["queue"])
 
 
 @router.get("", response_model=list[QueueEntryOut])
-async def list_queue(db: AsyncSession = Depends(get_db)) -> list[QueueEntryOut]:
-    return await queue_service.list_queue(db)
+async def list_queue(
+    db: AsyncSession = Depends(get_db), settings: Settings = Depends(get_settings)
+) -> list[QueueEntryOut]:
+    return await queue_service.list_queue(db, settings)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=QueueEntryOut)
 async def enqueue_model(
-    payload: QueueEnqueueIn, response: Response, db: AsyncSession = Depends(get_db)
+    payload: QueueEnqueueIn,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> QueueEntryOut:
     """Append a model to the end of the queue. Idempotent: re-adding an
     already-queued model answers 200 with the existing entry instead of
     erroring or duplicating it (mirrors ``POST /collections/pending/{id}/approve``).
     """
-    entry, created = await queue_service.enqueue_model(db, payload.model_id)
+    entry, created = await queue_service.enqueue_model(db, settings, payload.model_id)
     if not created:
         response.status_code = status.HTTP_200_OK
     return entry
@@ -38,9 +44,12 @@ async def remove_entry(entry_id: int, db: AsyncSession = Depends(get_db)) -> Non
 
 @router.patch("/{entry_id}", response_model=list[QueueEntryOut])
 async def move_entry(
-    entry_id: int, payload: QueueReorderIn, db: AsyncSession = Depends(get_db)
+    entry_id: int,
+    payload: QueueReorderIn,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> list[QueueEntryOut]:
     """Reorder the queue, returning the whole updated (ordered) list -- the
     UI re-renders the whole thing on any reorder.
     """
-    return await queue_service.move_entry(db, entry_id, payload.position)
+    return await queue_service.move_entry(db, settings, entry_id, payload.position)

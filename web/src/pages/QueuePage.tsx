@@ -4,13 +4,27 @@
  * PATCH the entry to `position ± 1`; the backend clamps and returns the
  * whole reordered list, which `useQueue()` picks up via its own
  * invalidation. Table/empty-state conventions mirror `JobsPage.tsx`.
+ *
+ * Round 8 Task 3: each row shows whether it's ready to print (`Sliced`/
+ * `Needs slicing`, off `entry.printable_file`) and, when it is (and the
+ * printer feature + at least one printer are available -- same gate
+ * `SendToPrinterButton` uses), a "Print" action that opens the SAME
+ * `SendToPrinterDialog` the Files tab uses. Sending successfully removes
+ * the row: the queue is a "to print" list, not a print-history log -- once
+ * a file is on its way to a printer, the Jobs page takes over tracking it.
  */
+import { useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { ArrowDownIcon, ArrowUpIcon, Trash2Icon } from "lucide-react";
+import { ArrowDownIcon, ArrowUpIcon, PrinterIcon, Trash2Icon } from "lucide-react";
+import { toast } from "sonner";
 
 import { ApiError } from "@/api/client";
+import { useFeatures } from "@/api/features";
+import { usePrinters } from "@/api/printers";
 import { useMoveQueueEntry, useQueue, useRemoveQueueEntry } from "@/api/queue";
 import type { QueueEntry } from "@/api/types";
+import { SendToPrinterDialog } from "@/components/model-detail/SendToPrinterButton";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageContainer } from "@/components/ui/page-container";
@@ -26,7 +40,9 @@ export function QueuePage() {
     <PageContainer width="default">
       <div>
         <h1 className="text-lg font-semibold text-foreground">Print queue</h1>
-        <p className="text-sm text-muted-foreground">Models lined up to print, in order.</p>
+        <p className="text-sm text-muted-foreground">
+          Models lined up to print — slice the ones that need it, then send.
+        </p>
       </div>
 
       <Card>
@@ -63,6 +79,11 @@ function QueueRow({ entry, count }: { entry: QueueEntry; count: number }) {
   const removeEntry = useRemoveQueueEntry();
   const model = entry.model;
 
+  const features = useFeatures();
+  const printerFeatureEnabled = !!features.data?.printer_enabled;
+  const printers = usePrinters({ enabled: printerFeatureEnabled });
+  const [printOpen, setPrintOpen] = useState(false);
+
   const isFirst = entry.position <= 1;
   const isLast = entry.position >= count;
 
@@ -84,10 +105,37 @@ function QueueRow({ entry, count }: { entry: QueueEntry; count: number }) {
         <Link to="/models/$slug" params={{ slug: model.slug }} className="truncate text-sm font-medium hover:underline">
           {model.name}
         </Link>
-        <p className="text-xs text-muted-foreground">Added {formatDate(entry.added_at)}</p>
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-xs text-muted-foreground">Added {formatDate(entry.added_at)}</p>
+          {entry.printable_file ? (
+            <Badge variant="outline" className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">
+              Sliced
+            </Badge>
+          ) : (
+            <Badge variant="secondary">Needs slicing</Badge>
+          )}
+        </div>
       </div>
 
       <div className="flex shrink-0 items-center gap-1">
+        {entry.printable_file && printerFeatureEnabled && printers.data && printers.data.length > 0 ? (
+          <>
+            <Button type="button" size="sm" onClick={() => setPrintOpen(true)}>
+              <PrinterIcon className="size-4" />
+              Print
+            </Button>
+            <SendToPrinterDialog
+              file={entry.printable_file}
+              printers={printers.data}
+              open={printOpen}
+              onOpenChange={setPrintOpen}
+              onSuccess={() => {
+                removeEntry.mutate(entry.id);
+                toast.success("Sent to printer");
+              }}
+            />
+          </>
+        ) : null}
         <Button
           type="button"
           variant="ghost"

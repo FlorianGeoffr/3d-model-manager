@@ -5,12 +5,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+
 import httpx
 import pytest
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.library import PrintQueueEntry
+from app.models.enums import BlobFormat, BlobKind
+from app.models.library import File, Model, PrintQueueEntry, Revision
 
 pytestmark = pytest.mark.usefixtures("library_root")
 
@@ -178,3 +181,91 @@ async def test_model_hard_delete_cascades_the_queue_entry(
         await db_session.execute(select(PrintQueueEntry).where(PrintQueueEntry.id == entry_id))
     ).scalar_one_or_none()
     assert remaining is None
+
+
+# ---------------------------------------------------------------------------
+# printable_file (Round 8 Task 3)
+# ---------------------------------------------------------------------------
+
+
+async def test_printable_file_is_null_for_stl_only_model(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    model_data = await _create_model(authenticated_client, "Queue STL Only")
+    model = await db_session.get(Model, model_data["id"])
+    revision = await db_session.get(Revision, model.current_revision_id)
+    await seed_file(model, revision, "part.stl", b"stl-bytes")
+
+    response = await authenticated_client.post("/api/queue", json={"model_id": model.id})
+    assert response.status_code == 201, response.text
+    assert response.json()["printable_file"] is None
+
+    listing = await authenticated_client.get("/api/queue")
+    assert listing.json()[0]["printable_file"] is None
+
+
+async def test_printable_file_is_populated_for_gcode_3mf_model(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    model_data = await _create_model(authenticated_client, "Queue Sliced")
+    model = await db_session.get(Model, model_data["id"])
+    revision = await db_session.get(Revision, model.current_revision_id)
+    sliced = await seed_file(
+        model,
+        revision,
+        "print.gcode.3mf",
+        b"sliced-bytes",
+        blob_format=BlobFormat.GCODE_3MF,
+        blob_kind=BlobKind.SLICED,
+    )
+
+    enqueue = await authenticated_client.post("/api/queue", json={"model_id": model.id})
+    assert enqueue.status_code == 201, enqueue.text
+    printable = enqueue.json()["printable_file"]
+    assert printable is not None
+    assert printable["id"] == sliced.id
+    assert printable["format"] == "gcode_3mf"
+
+    listing = await authenticated_client.get("/api/queue")
+    assert listing.json()[0]["printable_file"]["id"] == sliced.id
+
+    reorder = await authenticated_client.patch(
+        f"/api/queue/{enqueue.json()['id']}", json={"position": 1}
+    )
+    assert reorder.status_code == 200
+    assert reorder.json()[0]["printable_file"]["id"] == sliced.id
+
+
+async def test_printable_file_is_the_newest_gcode_3mf_when_more_than_one(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    model_data = await _create_model(authenticated_client, "Queue Two Sliced Files")
+    model = await db_session.get(Model, model_data["id"])
+    revision = await db_session.get(Revision, model.current_revision_id)
+    older = await seed_file(
+        model,
+        revision,
+        "a.gcode.3mf",
+        b"a-bytes",
+        blob_format=BlobFormat.GCODE_3MF,
+        blob_kind=BlobKind.SLICED,
+    )
+    newer = await seed_file(
+        model,
+        revision,
+        "b.gcode.3mf",
+        b"b-bytes",
+        blob_format=BlobFormat.GCODE_3MF,
+        blob_kind=BlobKind.SLICED,
+    )
+    assert newer.id > older.id  # sanity: insertion order is the "newest" signal
+
+    enqueue = await authenticated_client.post("/api/queue", json={"model_id": model.id})
+    assert enqueue.status_code == 201, enqueue.text
+    assert enqueue.json()["printable_file"]["id"] == newer.id

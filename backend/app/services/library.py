@@ -18,7 +18,7 @@ the scanner (SPEC M3 "Rescan/reconcile") -- not handled here.
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import PurePosixPath
@@ -1001,6 +1001,55 @@ async def build_revision_detail(
         files=files,
         notes=notes,
     )
+
+
+async def newest_printable_files(
+    db: AsyncSession, settings: Settings, revision_ids: Sequence[int]
+) -> dict[int, FileOut]:
+    """``{revision_id: FileOut}`` for the NEWEST (highest ``File.id``) file on
+    each of ``revision_ids`` whose blob is a sliced ``.gcode.3mf``
+    (``BlobFormat.GCODE_3MF``) -- the print queue's "ready to print" signal
+    (``app.services.queue``, Round 8 Task 3). Deliberately independent of
+    ``ModelSummary.has_sliced``/``_gallery_aggregates`` (those mean "slicer
+    metadata was extracted", a broader condition that a plain ``3mf`` can
+    also satisfy -- this is specifically "there's a sendable gcode_3mf").
+
+    One query for every revision in ``revision_ids``, never one per model/
+    file; enrichment reuses ``_build_file_enrichments`` -- the SAME loader
+    ``build_revision_detail`` uses for the model-detail path -- rather than a
+    parallel serializer. A revision with no such file is simply absent from
+    the returned dict.
+    """
+    if not revision_ids:
+        return {}
+    stmt = (
+        select(File)
+        .join(Blob, Blob.hash == File.blob_hash)
+        .where(File.revision_id.in_(revision_ids), Blob.format == BlobFormat.GCODE_3MF)
+        .options(
+            selectinload(File.blob).selectinload(Blob.meta),
+            selectinload(File.blob).selectinload(Blob.derivatives),
+        )
+        .order_by(File.id.desc())
+    )
+    files = (await db.execute(stmt)).scalars().all()
+
+    newest_by_revision: dict[int, File] = {}
+    for file in files:
+        # `ORDER BY File.id DESC` above means the first file seen per
+        # revision_id is already the newest -- `setdefault` keeps it and
+        # ignores any older one seen later for the same revision.
+        newest_by_revision.setdefault(file.revision_id, file)
+    if not newest_by_revision:
+        return {}
+
+    enrichments = await _build_file_enrichments(
+        settings, (file.blob for file in newest_by_revision.values())
+    )
+    return {
+        revision_id: FileOut.from_model(file, enrichments.get(file.blob_hash))
+        for revision_id, file in newest_by_revision.items()
+    }
 
 
 async def _model_backends_summary(

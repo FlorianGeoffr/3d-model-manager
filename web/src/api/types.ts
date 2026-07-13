@@ -796,6 +796,11 @@ export interface QueueEntry {
   position: number;
   added_at: string;
   model: ModelSummary;
+  // Round 8 Task 3: the newest sliced `.gcode.3mf` file on the model's
+  // current revision, if any -- lets the queue row offer a "Print" action
+  // directly. `null` when the model has no current revision, or none of its
+  // current-revision files are a sendable gcode_3mf yet.
+  printable_file: FileOut | null;
 }
 
 // -- duplicate-files report (backend/app/schemas/reports.py, Branch 4 Task 1)

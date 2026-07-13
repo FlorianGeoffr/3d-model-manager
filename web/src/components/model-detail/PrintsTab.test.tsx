@@ -109,6 +109,7 @@ const QUEUE_ENTRY: QueueEntry = {
   position: 1,
   added_at: "2026-07-01T00:00:00Z",
   model: SUMMARY,
+  printable_file: null,
 };
 
 function printEntry(overrides: Partial<PrintEntry> = {}): PrintEntry {

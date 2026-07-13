@@ -29,7 +29,7 @@ def static_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     assets = root / "assets"
     assets.mkdir()
     (assets / "app.js").write_text("console.log('hi');")
-    monkeypatch.setenv("TDMM_STATIC_DIR", str(root))
+    monkeypatch.setenv("STATIC_DIR", str(root))
     get_settings.cache_clear()
     return root
 
@@ -152,7 +152,7 @@ def test_traversal_guard_rejects_literal_dotdot(static_dir: Path, tmp_path: Path
 
 
 async def test_static_disabled_by_default() -> None:
-    """No TDMM_STATIC_DIR set -- api_router's normal JSON 404 applies to
+    """No STATIC_DIR set -- api_router's normal JSON 404 applies to
     everything outside /api, same as before Task 9.
     """
     app = create_app()

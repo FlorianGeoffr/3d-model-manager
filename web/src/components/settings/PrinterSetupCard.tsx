@@ -69,7 +69,7 @@ export function PrinterSetupCard() {
         <CardHeader>
           <CardTitle>Printer setup</CardTitle>
           <CardDescription>
-            Printer integration is disabled (set <code>TDMM_PRINTER_ENABLED</code>).
+            Printer integration is disabled (set <code>PRINTER_ENABLED</code>).
           </CardDescription>
         </CardHeader>
       </Card>

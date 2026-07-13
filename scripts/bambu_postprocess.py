@@ -11,8 +11,8 @@ Bambu Studio itself runs in -- Studio does not let you pass extra
 arguments of your own, only appends the sliced file's path as the last
 argument):
 
-    TDMM_SLICER_URL   e.g. http://your-host:8080/api/slicer/intake
-    TDMM_SLICER_TOKEN  an API token minted from Settings -> Accounts
+    INTAKE_URL   e.g. http://your-host:8080/api/slicer/intake
+    INTAKE_TOKEN  an API token minted from Settings -> Accounts
 
 IMPORTANT CAVEAT: Bambu Studio's post-processing hook hands this script a
 plain ``.gcode`` file -- fine for capturing slicing metadata/print history,
@@ -44,13 +44,13 @@ def main(argv: list[str]) -> int:
         return 1
     gcode_path = argv[-1]
 
-    url = os.environ.get("TDMM_SLICER_URL")
-    token = os.environ.get("TDMM_SLICER_TOKEN")
+    url = os.environ.get("INTAKE_URL")
+    token = os.environ.get("INTAKE_TOKEN")
     if not url:
-        print("bambu_postprocess: TDMM_SLICER_URL is not set", file=sys.stderr)
+        print("bambu_postprocess: INTAKE_URL is not set", file=sys.stderr)
         return 1
     if not token:
-        print("bambu_postprocess: TDMM_SLICER_TOKEN is not set", file=sys.stderr)
+        print("bambu_postprocess: INTAKE_TOKEN is not set", file=sys.stderr)
         return 1
 
     try:

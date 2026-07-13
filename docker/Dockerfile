@@ -66,7 +66,7 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     UV_PROJECT_ENVIRONMENT=/app/.venv \
     PATH="/app/.venv/bin:${PATH}" \
-    TDMM_STATIC_DIR=/app/static
+    STATIC_DIR=/app/static
 
 WORKDIR /app
 

@@ -12,7 +12,7 @@ read/update queries per task.
 
 **What we do instead:** a dedicated SYNC SQLAlchemy engine using the
 ``psycopg`` (3) driver, built by swapping only the URL *scheme* on the same
-``TDMM_DATABASE_URL`` (``postgresql+asyncpg://`` -> ``postgresql+psycopg://``).
+``DATABASE_URL`` (``postgresql+asyncpg://`` -> ``postgresql+psycopg://``).
 ``asyncpg``/``app.db``'s async engine stay strictly API-side; this module's
 sync engine stays strictly worker-side. The two never share a connection
 pool, a session, or an event loop -- API = async world, worker = sync world,

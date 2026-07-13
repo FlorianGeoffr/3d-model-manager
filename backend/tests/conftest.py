@@ -59,7 +59,7 @@ def _reset_settings_and_engine_caches() -> None:
     """``get_settings``/``get_engine``/``get_sessionmaker`` (API async world)
     and ``get_sync_engine``/``get_sync_sessionmaker`` (worker sync world, see
     ``app.tasks.base``) are all ``lru_cache``d process-wide singletons. Tests
-    that repoint ``TDMM_DATABASE_URL``/``TDMM_REDIS_URL`` must clear all of
+    that repoint ``DATABASE_URL``/``REDIS_URL`` must clear all of
     them so fresh engines are built against the new URLs.
     """
     get_settings.cache_clear()
@@ -74,10 +74,10 @@ def postgres_url() -> Iterator[str]:
     """Start one Postgres container for the whole test session."""
     with PostgresContainer("postgres:16-alpine") as container:
         url = container.get_connection_url(driver="asyncpg")
-        os.environ["TDMM_DATABASE_URL"] = url
+        os.environ["DATABASE_URL"] = url
         _reset_settings_and_engine_caches()
         yield url
-    del os.environ["TDMM_DATABASE_URL"]
+    del os.environ["DATABASE_URL"]
     _reset_settings_and_engine_caches()
 
 
@@ -89,10 +89,10 @@ def redis_url() -> Iterator[str]:
     """
     with RedisContainer("redis:7-alpine") as container:
         url = f"redis://{container.get_container_host_ip()}:{container.get_exposed_port(container.port)}/0"
-        os.environ["TDMM_REDIS_URL"] = url
+        os.environ["REDIS_URL"] = url
         _reset_settings_and_engine_caches()
         yield url
-    del os.environ["TDMM_REDIS_URL"]
+    del os.environ["REDIS_URL"]
     _reset_settings_and_engine_caches()
 
 
@@ -154,7 +154,7 @@ async def client(migrated_db: str, redis_url: str) -> AsyncGenerator[httpx.Async
 
 @pytest.fixture
 def library_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """Point ``TDMM_LIBRARY_ROOT`` at a fresh tmp_path for this test.
+    """Point ``LIBRARY_ROOT`` at a fresh tmp_path for this test.
 
     ``app.storage.registry.get_backend`` reads ``get_settings()`` fresh on
     every call (it's not baked into the app at ``create_app()`` time), so
@@ -165,7 +165,7 @@ def library_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Pa
     """
     root = tmp_path / "library"
     root.mkdir()
-    monkeypatch.setenv("TDMM_LIBRARY_ROOT", str(root))
+    monkeypatch.setenv("LIBRARY_ROOT", str(root))
     get_settings.cache_clear()
     yield root
     get_settings.cache_clear()
@@ -181,12 +181,12 @@ def backend(library_root: Path) -> LocalStorageBackend:
 
 @pytest.fixture
 def data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """Point ``TDMM_DATA_DIR`` (spool root, Task 6) at a fresh tmp_path for
+    """Point ``DATA_DIR`` (spool root, Task 6) at a fresh tmp_path for
     this test -- mirrors ``library_root`` above.
     """
     root = tmp_path / "data"
     root.mkdir()
-    monkeypatch.setenv("TDMM_DATA_DIR", str(root))
+    monkeypatch.setenv("DATA_DIR", str(root))
     get_settings.cache_clear()
     yield root
     get_settings.cache_clear()
@@ -195,13 +195,13 @@ def data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
 @pytest.fixture
 def printer_enabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Turn the printer feature flag on for this test, with a tmp
-    ``TDMM_DATA_DIR`` so the Fernet key (``app.crypto``) is isolated per
+    ``DATA_DIR`` so the Fernet key (``app.crypto``) is isolated per
     test rather than shared/persisted across the suite.
     """
     pdata = tmp_path / "pdata"
     pdata.mkdir()
-    monkeypatch.setenv("TDMM_PRINTER_ENABLED", "true")
-    monkeypatch.setenv("TDMM_DATA_DIR", str(pdata))
+    monkeypatch.setenv("PRINTER_ENABLED", "true")
+    monkeypatch.setenv("DATA_DIR", str(pdata))
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()

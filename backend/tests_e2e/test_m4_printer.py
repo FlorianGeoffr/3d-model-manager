@@ -21,9 +21,9 @@ import pytest
 pytestmark = pytest.mark.e2e
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-BASE_URL = os.environ.get("TDMM_E2E_BASE_URL", "http://localhost:8080")
+BASE_URL = os.environ.get("E2E_BASE_URL", "http://localhost:8080")
 HEALTH_URL = f"{BASE_URL}/api/health"
-ADMIN_USERNAME = os.environ.get("TDMM_ADMIN_USERNAME", "admin")
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
 
 CREATE = {
     "name": "E2E A1",
@@ -34,9 +34,9 @@ CREATE = {
 
 
 def _password() -> str:
-    pw = os.environ.get("TDMM_ADMIN_PASSWORD")
+    pw = os.environ.get("ADMIN_PASSWORD")
     if not pw:
-        pytest.fail("TDMM_ADMIN_PASSWORD must be set (scripts/e2e.sh pins one)")
+        pytest.fail("ADMIN_PASSWORD must be set (scripts/e2e.sh pins one)")
     return pw
 
 
@@ -64,9 +64,9 @@ def _wait_health(timeout: float = 120.0) -> None:
 def _set_printer_flag(value: bool) -> None:
     env = REPO_ROOT / ".env"
     lines = [
-        ln for ln in env.read_text().splitlines() if not ln.startswith("TDMM_PRINTER_ENABLED=")
+        ln for ln in env.read_text().splitlines() if not ln.startswith("PRINTER_ENABLED=")
     ]
-    lines.append(f"TDMM_PRINTER_ENABLED={'true' if value else 'false'}")
+    lines.append(f"PRINTER_ENABLED={'true' if value else 'false'}")
     env.write_text("\n".join(lines) + "\n")
     subprocess.run(
         ["docker", "compose", "up", "-d", "--force-recreate", "--no-deps", "api"],

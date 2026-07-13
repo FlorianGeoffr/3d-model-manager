@@ -428,13 +428,13 @@ export interface JobUpdatedEvent {
 export interface Features {
   printer_enabled: boolean;
   // Round 8 T6: watched-folder slicer auto-import (`app.tasks.slicer_watch`,
-  // Round 8 T5). `slicer_watch_dir` is the CONTAINER path (or null when
+  // Round 8 T5). `watch_dir` is the CONTAINER path (or null when
   // unset) -- Settings shows it alongside a note that it maps to
-  // `TDMM_SLICER_WATCH_HOST_DIR` on the host. `slicer_watch_enabled` mirrors
+  // `WATCH_HOST_DIR` on the host. `watch_enabled` mirrors
   // the backend's exact beat-entry condition (dir set AND a positive poll
   // interval), so the frontend never re-derives it.
-  slicer_watch_dir: string | null;
-  slicer_watch_enabled: boolean;
+  watch_dir: string | null;
+  watch_enabled: boolean;
 }
 
 export type PrinterKind = "bambu_lan";

@@ -16,18 +16,18 @@
 #
 # `beat` (Task 9, opt-in via `docker compose --profile beat up`): runs
 # Celery beat for the optional scheduled scan -- only fires ticks once
-# `TDMM_SCAN_INTERVAL_S` is also set to a positive number of seconds in
+# `SCAN_INTERVAL` is also set to a positive number of seconds in
 # `.env` (see `app.tasks.celery_app`'s conditional `beat_schedule`).
 #
 # `printerd` (M4, opt-in via `docker compose --profile printer up`): the
 # Bambu LAN MQTT supervisor -- a plain `docker compose up` never starts it,
-# and it idles harmlessly unless `TDMM_PRINTER_ENABLED=true` is also set in
+# and it idles harmlessly unless `PRINTER_ENABLED=true` is also set in
 # `.env` (see README "Printer integration").
 #
 # Watched-folder auto-import (Round 8 Task 5): `worker-io` always mounts
-# `./slicer-watch` (override with `TDMM_SLICER_WATCH_HOST_DIR`) at `/watch`,
+# `./slicer-watch` (override with `WATCH_HOST_DIR`) at `/watch`,
 # but nothing polls it unless BOTH the `beat` profile is running AND
-# `TDMM_SLICER_WATCH_INTERVAL_S` is set to a positive number of seconds in
+# `WATCH_INTERVAL` is set to a positive number of seconds in
 # `.env` -- see `app.tasks.celery_app`'s conditional `beat_schedule`.
 #
 # Quickstart: `cp .env.example .env` then `docker compose up -d --build`.
@@ -42,11 +42,11 @@ services:
     ports:
       - "8080:8080"
     environment:
-      TDMM_ROLE: api
+      ROLE: api
       # Round 8: the api only REPORTS the watched folder's container path via
       # GET /features (Settings "Slicer integration" card) -- it never reads
       # the folder, so no /watch volume here. Must match worker-io/beat.
-      TDMM_SLICER_WATCH_DIR: /watch
+      WATCH_DIR: /watch
       PUID: ${PUID:-}
       PGID: ${PGID:-}
     env_file:
@@ -73,14 +73,14 @@ services:
       dockerfile: docker/Dockerfile
     image: tdmm:local
     environment:
-      TDMM_ROLE: worker
-      TDMM_QUEUES: io
-      TDMM_CONCURRENCY: 2
+      ROLE: worker
+      QUEUES: io
+      CONCURRENCY: 2
       # Round 8 Task 5: the container-side path the watched-folder task
       # (`app.tasks.slicer_watch`, routed to the `io` queue this worker
-      # consumes) polls. Only fires ticks once `TDMM_SLICER_WATCH_INTERVAL_S`
+      # consumes) polls. Only fires ticks once `WATCH_INTERVAL`
       # is also set in `.env` AND the `beat` profile is running.
-      TDMM_SLICER_WATCH_DIR: /watch
+      WATCH_DIR: /watch
       PUID: ${PUID:-}
       PGID: ${PGID:-}
     env_file:
@@ -88,7 +88,7 @@ services:
     volumes:
       - tdmm_data:/data
       - ./library:/library
-      - ${TDMM_SLICER_WATCH_HOST_DIR:-./slicer-watch}:/watch
+      - ${WATCH_HOST_DIR:-./slicer-watch}:/watch
     depends_on:
       db:
         condition: service_healthy
@@ -107,14 +107,15 @@ services:
       dockerfile: docker/Dockerfile
     image: tdmm:local
     environment:
-      TDMM_ROLE: worker
-      TDMM_QUEUES: cpu
-      # No TDMM_CONCURRENCY override here -- Celery defaults to one process
+      ROLE: worker
+      QUEUES: cpu
+      # No CONCURRENCY override here -- Celery defaults to one process
       # per CPU core, which is what CPU-bound extraction/convert/render work
       # wants. Recycled per-child (task count AND RSS) to contain OCCT/f3d
       # memory growth (SPEC "Architecture").
-      TDMM_MAX_TASKS_PER_CHILD: 16
-      TDMM_MAX_MEMORY_PER_CHILD_KB: 1572864
+      MAX_TASKS_PER_CHILD: 16
+      # KiB (1.5 GiB), passed straight to Celery's --max-memory-per-child.
+      MAX_MEMORY_PER_CHILD: 1572864
       PUID: ${PUID:-}
       PGID: ${PGID:-}
     env_file:
@@ -136,11 +137,11 @@ services:
 
   # Optional scheduled scan (SPEC "optional scheduled scan"; Task 9): a
   # plain `docker compose up` never starts this (profile-gated). Opt in
-  # with `docker compose --profile beat up -d` AND set `TDMM_SCAN_INTERVAL_S`
+  # with `docker compose --profile beat up -d` AND set `SCAN_INTERVAL`
   # in `.env` -- otherwise beat runs with an empty schedule and just idles.
   # Reuses the api/worker image + entrypoint: the entrypoint's explicit-
   # command passthrough (see docker/entrypoint.sh) execs this directly
-  # instead of routing on TDMM_ROLE, so no migrations/uvicorn/worker startup
+  # instead of routing on ROLE, so no migrations/uvicorn/worker startup
   # happen here.
   beat:
     profiles: ["beat"]
@@ -154,7 +155,7 @@ services:
       # slicer-watch schedule entry in THIS container -- without the watch
       # dir set here the entry never registers and the watched folder is
       # silently dead, no matter what worker-io sees. Must match worker-io.
-      TDMM_SLICER_WATCH_DIR: /watch
+      WATCH_DIR: /watch
     env_file:
       - .env
     depends_on:
@@ -165,9 +166,9 @@ services:
   # printerd (M4, opt-in via `docker compose --profile printer up`): the
   # long-lived Bambu MQTT supervisor (SPEC "Architecture"). A plain
   # `docker compose up` never starts it (profile-gated), and it idles
-  # harmlessly unless TDMM_PRINTER_ENABLED=true is also set. Mirrors `beat`:
+  # harmlessly unless PRINTER_ENABLED=true is also set. Mirrors `beat`:
   # shares the app image + the entrypoint's explicit-command passthrough (no
-  # TDMM_ROLE routing, no migrations/uvicorn), inherits PUID/PGID. Mounts
+  # ROLE routing, no migrations/uvicorn), inherits PUID/PGID. Mounts
   # /data for the Fernet key ({data_dir}/secrets/printer.key) it needs to
   # decrypt access codes. No /library mount -- FTPS upload runs in worker-io.
   printerd:
@@ -194,7 +195,7 @@ services:
   db:
     image: postgres:16-alpine
     environment:
-      # Must match the credentials embedded in TDMM_DATABASE_URL in .env.
+      # Must match the credentials embedded in DATABASE_URL in .env.
       POSTGRES_USER: tdmm
       POSTGRES_PASSWORD: tdmm
       POSTGRES_DB: tdmm

@@ -51,7 +51,7 @@ async def ensure_admin_user(session: AsyncSession) -> None:
         logger.warning(
             "\n"
             + "=" * 72
-            + "\nNo TDMM_ADMIN_PASSWORD set - generated a random admin password.\n"
+            + "\nNo ADMIN_PASSWORD set - generated a random admin password.\n"
             + f"    username: {settings.admin_username}\n"
             + f"    password: {password}\n"
             + "This password is shown ONLY this once and is not recoverable; save it now.\n"

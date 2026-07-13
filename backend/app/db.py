@@ -2,7 +2,7 @@
 
 Engine and sessionmaker are built lazily behind ``lru_cache`` (mirroring
 ``app.config.get_settings``) rather than at import time, so tests that point
-``TDMM_DATABASE_URL`` at a testcontainer can force a rebuild via
+``DATABASE_URL`` at a testcontainer can force a rebuild via
 ``get_engine.cache_clear()`` / ``get_sessionmaker.cache_clear()`` after
 changing the env and clearing ``get_settings``'s cache.
 """

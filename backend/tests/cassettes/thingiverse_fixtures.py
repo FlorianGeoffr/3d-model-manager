@@ -34,7 +34,7 @@ THING_763622 = {
 SEARCH_TERM = "marvin"
 
 # Documented (developer.thingiverse.com "Search a term" -- GET /search/{term})
-# shape, NOT captured live: no TDMM_THINGIVERSE_TOKEN is configured in this
+# shape, NOT captured live: no THINGIVERSE_TOKEN is configured in this
 # environment to verify against the real token-gated endpoint. Hand-built to
 # the documented `{"total": int, "hits": [...]}` response, each hit a thing
 # summary carrying only the lightweight fields search needs.

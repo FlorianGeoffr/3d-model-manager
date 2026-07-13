@@ -261,7 +261,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
     settings = get_settings()
     if not settings.printer_enabled:
-        log.info("printerd: TDMM_PRINTER_ENABLED is off; idling.")
+        log.info("printerd: PRINTER_ENABLED is off; idling.")
         signal.pause()  # idle instead of crash-looping under restart:unless-stopped
         return
     daemon = PrinterDaemon(settings)

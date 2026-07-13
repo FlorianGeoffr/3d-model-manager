@@ -1,7 +1,7 @@
 """SPA static-file serving with client-side-routing fallback (Task 9:
 Docker/compose integration).
 
-Enabled only when ``TDMM_STATIC_DIR`` is set (default ``None``, i.e.
+Enabled only when ``STATIC_DIR`` is set (default ``None``, i.e.
 disabled for local development, where the Vite dev server serves the
 frontend and proxies ``/api`` to this backend instead -- see README
 "Development"). When enabled, ``app.main.create_app`` calls ``mount_spa``,

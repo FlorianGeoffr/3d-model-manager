@@ -29,8 +29,8 @@ def _clear_settings_cache():
 async def test_ensure_admin_user_creates_exactly_one_user(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("TDMM_ADMIN_USERNAME", "admin")
-    monkeypatch.setenv("TDMM_ADMIN_PASSWORD", "s3cret-startup-pw")
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "s3cret-startup-pw")
     get_settings.cache_clear()
 
     await ensure_admin_user(db_session)
@@ -45,8 +45,8 @@ async def test_ensure_admin_user_creates_exactly_one_user(
 async def test_ensure_admin_user_is_idempotent(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("TDMM_ADMIN_USERNAME", "admin")
-    monkeypatch.setenv("TDMM_ADMIN_PASSWORD", "s3cret-startup-pw")
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "s3cret-startup-pw")
     get_settings.cache_clear()
 
     await ensure_admin_user(db_session)
@@ -62,8 +62,8 @@ async def test_ensure_admin_user_generates_and_logs_password_once(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    monkeypatch.setenv("TDMM_ADMIN_USERNAME", "admin")
-    monkeypatch.delenv("TDMM_ADMIN_PASSWORD", raising=False)
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.delenv("ADMIN_PASSWORD", raising=False)
     get_settings.cache_clear()
 
     with caplog.at_level(logging.WARNING, logger="app.services.bootstrap"):
@@ -95,8 +95,8 @@ async def test_bootstrap_still_logs_the_real_generated_password(
     refactor accidentally routing it through ``str(secret_str)``, which
     would log the constant ``"**********"`` instead of a real, usable
     password)."""
-    monkeypatch.setenv("TDMM_ADMIN_USERNAME", "admin")
-    monkeypatch.delenv("TDMM_ADMIN_PASSWORD", raising=False)
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.delenv("ADMIN_PASSWORD", raising=False)
     get_settings.cache_clear()
 
     with caplog.at_level(logging.WARNING, logger="app.services.bootstrap"):
@@ -119,8 +119,8 @@ async def test_ensure_admin_user_does_not_relog_on_restart(
     """A second "startup" against an already-bootstrapped DB must not
     generate (or log) a new password.
     """
-    monkeypatch.setenv("TDMM_ADMIN_USERNAME", "admin")
-    monkeypatch.delenv("TDMM_ADMIN_PASSWORD", raising=False)
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.delenv("ADMIN_PASSWORD", raising=False)
     get_settings.cache_clear()
 
     with caplog.at_level(logging.WARNING, logger="app.services.bootstrap"):

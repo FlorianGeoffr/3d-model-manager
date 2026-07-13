@@ -10,7 +10,7 @@
 # probe that soft-fails with no hardware present, and the bare-`.gcode`/
 # not-ready-printer send-flow rejections -- no printer hardware or MQTT
 # broker involved) -- then tears the stack down. test_m4_printer.py toggles
-# `TDMM_PRINTER_ENABLED` in `.env` and force-recreates the `api` container
+# `PRINTER_ENABLED` in `.env` and force-recreates the `api` container
 # itself, so no extra compose bring-up/profile flag is needed here.
 #
 # Usage: scripts/e2e.sh [--keep-volumes]
@@ -18,7 +18,7 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-BASE_URL="${TDMM_E2E_BASE_URL:-http://localhost:8080}"
+BASE_URL="${E2E_BASE_URL:-http://localhost:8080}"
 HEALTH_URL="${BASE_URL}/api/health"
 HEALTH_TIMEOUT_S=120
 KEEP_VOLUMES=0
@@ -43,15 +43,15 @@ fi
 # generated first-run password is only ever printed once to the api
 # container's logs, which the test has no way to read back. Pin a fixed one
 # into .env for this run if none is already set there.
-if ! grep -qE '^TDMM_ADMIN_PASSWORD=.+' .env; then
-  echo "==> No TDMM_ADMIN_PASSWORD set in .env; pinning one for this e2e run."
-  grep -vE '^#?TDMM_ADMIN_PASSWORD=' .env > .env.tmp && mv .env.tmp .env
-  echo "TDMM_ADMIN_PASSWORD=e2e-test-admin-password" >> .env
+if ! grep -qE '^ADMIN_PASSWORD=.+' .env; then
+  echo "==> No ADMIN_PASSWORD set in .env; pinning one for this e2e run."
+  grep -vE '^#?ADMIN_PASSWORD=' .env > .env.tmp && mv .env.tmp .env
+  echo "ADMIN_PASSWORD=e2e-test-admin-password" >> .env
 fi
-TDMM_ADMIN_PASSWORD="$(grep -E '^TDMM_ADMIN_PASSWORD=' .env | tail -n1 | cut -d= -f2-)"
-TDMM_ADMIN_USERNAME="$(grep -E '^TDMM_ADMIN_USERNAME=' .env | tail -n1 | cut -d= -f2-)"
-export TDMM_ADMIN_PASSWORD
-export TDMM_ADMIN_USERNAME="${TDMM_ADMIN_USERNAME:-admin}"
+ADMIN_PASSWORD="$(grep -E '^ADMIN_PASSWORD=' .env | tail -n1 | cut -d= -f2-)"
+ADMIN_USERNAME="$(grep -E '^ADMIN_USERNAME=' .env | tail -n1 | cut -d= -f2-)"
+export ADMIN_PASSWORD
+export ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
 
 cleanup() {
   local status=$?
@@ -84,4 +84,4 @@ done
 echo "==> api is healthy."
 
 echo "==> Running the e2e flow (backend/tests_e2e/)..."
-TDMM_E2E_BASE_URL="${BASE_URL}" uv run --project backend pytest backend/tests_e2e -q -m e2e
+E2E_BASE_URL="${BASE_URL}" uv run --project backend pytest backend/tests_e2e -q -m e2e

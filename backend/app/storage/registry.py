@@ -3,7 +3,7 @@
 Backends self-register under a scheme name (``local``, and ``smb``/``s3`` in
 M3) so callers never import a concrete backend class directly.
 
-M1 wires only ``local``, rooted at ``TDMM_LIBRARY_ROOT`` (env-only config).
+M1 wires only ``local``, rooted at ``LIBRARY_ROOT`` (env-only config).
 M3 (see SPEC M3) adds ``smb``/``s3`` backends whose connection details come
 from DB-backed settings (``app.services.storage_config``) rather than env
 vars -- ``get_backend`` takes the validated per-backend ``StorageConfig`` the

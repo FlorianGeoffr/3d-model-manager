@@ -39,7 +39,7 @@ router = APIRouter(prefix="/collections", tags=["collections"])
 @router.post("/sync", response_model=JobOut)
 async def sync_collections_now(db: AsyncSession = Depends(get_db)) -> JobOut:
     """Run the periodic sync immediately (the beat schedule is opt-in via
-    ``TDMM_COLLECTION_SYNC_INTERVAL_S``; this button always works). Tracked as a
+    ``COLLECTION_SYNC_INTERVAL``; this button always works). Tracked as a
     Job so it shows up on the Jobs page like any other background work."""
     job = await jobs_service.create_job(
         db, id=uuid.uuid4(), type="sync_collections", subject_type=None, subject_id=None

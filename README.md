@@ -40,7 +40,7 @@ both the JSON API (`/api/...`) and the built frontend SPA at
 Models and files are written to `./library` on the host (bind-mounted); job
 spool state and other app data live in the `tdmm_data` named volume.
 
-**First-run admin password**: if `TDMM_ADMIN_PASSWORD` is left unset in
+**First-run admin password**: if `ADMIN_PASSWORD` is left unset in
 `.env`, the api container generates a random password on first boot and
 prints it exactly once, at `WARNING` level, to its logs:
 
@@ -50,7 +50,7 @@ docker compose logs api | grep -i password
 
 Copy it down immediately — it is not recoverable afterwards (short of
 resetting the `db` volume). To pin a known password instead (e.g. for
-scripting), set `TDMM_ADMIN_PASSWORD` in `.env` before the first `up`.
+scripting), set `ADMIN_PASSWORD` in `.env` before the first `up`.
 
 To tear the stack down (keeping data): `docker compose down`. To also drop
 the database/volumes: `docker compose down --volumes`.
@@ -75,7 +75,7 @@ stack:
 
 ```sh
 docker build -f docker/Dockerfile -t tdmm:local .
-docker run --rm -e PUID=1000 -e PGID=1000 -e TDMM_ROLE=api tdmm:local id -u
+docker run --rm -e PUID=1000 -e PGID=1000 -e ROLE=api tdmm:local id -u
 # -> 1000
 ```
 
@@ -107,12 +107,12 @@ that didn't move), adopts folders dropped straight onto the share as new
 draft models for review, and flags files present in the database but
 missing on disk for a human to resolve. It never deletes library content or
 database rows. To run scans automatically on a schedule instead of only
-on demand, set `TDMM_SCAN_INTERVAL_S` (seconds) in `.env` and start the
+on demand, set `SCAN_INTERVAL` (seconds) in `.env` and start the
 optional `beat` service: `docker compose --profile beat up -d`.
 
 ## Printer integration (Bambu LAN, feature-flagged)
 
-**Off by default.** Enable it by setting `TDMM_PRINTER_ENABLED=true` in
+**Off by default.** Enable it by setting `PRINTER_ENABLED=true` in
 `.env` **and** starting the printer daemon with `docker compose --profile
 printer up -d` (a plain `up` never starts `printerd`) — both are required.
 With the flag off (the default), the app is fully usable: the printers API
@@ -137,10 +137,10 @@ when you need one.
 responsibility. This app never uses the Bambu Connect signed cloud path.
 
 **Security**: the printer's access code is stored **Fernet-encrypted**
-(`printers.access_code_enc`) using a key at `${TDMM_DATA_DIR}/secrets/
+(`printers.access_code_enc`) using a key at `${DATA_DIR}/secrets/
 printer.key` (mode `0600`, auto-generated and shared across api/worker/
 printerd via the `tdmm_data` volume) or supplied explicitly via
-`TDMM_PRINTER_KEY`. It is decrypted only inside the worker/printerd
+`PRINTER_KEY`. It is decrypted only inside the worker/printerd
 processes, and is never returned by the API or written to logs. **TLS
 verification is off in v1**: the printer's MQTT/FTPS/camera ports present a
 self-signed certificate from Bambu's private CA that no system trust store
@@ -170,7 +170,7 @@ against a real A1 mini:
 
 1. On the printer: firmware ≥ 01.05, enable **LAN-only Mode** → power-cycle
    → enable **Developer Mode**; note the access code.
-2. Set `TDMM_PRINTER_ENABLED=true`, `docker compose --profile printer up
+2. Set `PRINTER_ENABLED=true`, `docker compose --profile printer up
    -d`; add the printer in **Settings → Printer** (host/serial/access
    code); **Test connection** should report `ok:true` with a real
    `gcode_state`.
@@ -204,8 +204,8 @@ itself runs (set them in your shell profile, or wrap the command in a
 small launcher — Studio doesn't let you pass any extra arguments of your
 own):
 
-- `TDMM_SLICER_URL` — e.g. `http://<this host>:8080/api/slicer/intake`
-- `TDMM_SLICER_TOKEN` — an API token minted from **Settings → Accounts →
+- `INTAKE_URL` — e.g. `http://<this host>:8080/api/slicer/intake`
+- `INTAKE_TOKEN` — an API token minted from **Settings → Accounts →
   Slicer integration**
 
 Every sliced plate is uploaded and matched to an existing model by name,
@@ -220,12 +220,12 @@ way (matched/created by name), and because it's a real sliced plate, the
 resulting file gets the **Send-to-printer** button (Files tab and Print
 Queue). This is opt-in and OFF by default; enable it with:
 
-- `TDMM_SLICER_WATCH_INTERVAL_S` — seconds between polls (`.env`, `0`
+- `WATCH_INTERVAL` — seconds between polls (`.env`, `0`
   means off)
-- `TDMM_SLICER_WATCH_STABLE_S` — how long a file's mtime must be quiet
+- `WATCH_STABLE` — how long a file's mtime must be quiet
   before it's imported (default `10`; guards against importing an export
   that's still being written)
-- `TDMM_SLICER_WATCH_HOST_DIR` — the host directory to point Studio's
+- `WATCH_HOST_DIR` — the host directory to point Studio's
   export at, bind-mounted to `/watch` inside `worker-io` by
   `compose.yaml`
 - the `beat` Celery profile running (`COMPOSE_PROFILES=printer,beat
@@ -289,8 +289,8 @@ port is published for `db`, so dump through the container:
 docker compose exec db pg_dump -U tdmm tdmm > backup.sql
 ```
 
-**2. `${TDMM_DATA_DIR}/secrets/printer.key`** (or the matching
-`TDMM_PRINTER_KEY` value). **This is the critical one.** As of M6 this single
+**2. `${DATA_DIR}/secrets/printer.key`** (or the matching
+`PRINTER_KEY` value). **This is the critical one.** As of M6 this single
 Fernet key decrypts the printer access codes **and** the SMB/S3 storage
 secret **and** the Thingiverse token. **Lose it — or restore a database
 against a *different* key — and every encrypted secret becomes permanently
@@ -306,11 +306,11 @@ this app does not manage — back it up with your NAS/S3 tooling. Derivatives
 are never stored here (see below).
 
 **Do _not_ bother backing up:**
-- `${TDMM_DATA_DIR}/derivatives/**` — thumbnails and GLBs, all **regenerable**
+- `${DATA_DIR}/derivatives/**` — thumbnails and GLBs, all **regenerable**
   by re-running the pipeline against the library originals (the migrate task
   documents "derivatives always stay local"). Skipping them keeps backups
   small.
-- `${TDMM_DATA_DIR}/spool/**` — transient in-flight upload bytes, meaningless
+- `${DATA_DIR}/spool/**` — transient in-flight upload bytes, meaningless
   after the fact.
 
 **Restore runbook:**
@@ -321,8 +321,8 @@ are never stored here (see below).
    docker compose exec -T db psql -U tdmm tdmm < backup.sql
    ```
 2. Put `printer.key` back into the `tdmm_data` volume at
-   `${TDMM_DATA_DIR}/secrets/printer.key` (mode `0600`), **or** set the same
-   `TDMM_PRINTER_KEY` in `.env` — **before** starting api/worker/printerd, so
+   `${DATA_DIR}/secrets/printer.key` (mode `0600`), **or** set the same
+   `PRINTER_KEY` in `.env` — **before** starting api/worker/printerd, so
    the encrypted secrets decrypt and the eager startup re-encryption pass
    (idempotent, safe on already-encrypted data) doesn't run against the wrong
    key.
@@ -330,8 +330,8 @@ are never stored here (see below).
    reachable.
 4. `docker compose up -d` — Alembic migrations run automatically on api boot.
 
-The env vars that must match the backed-up stack: `TDMM_DATABASE_URL`,
-`TDMM_DATA_DIR`, and the `db` service's `POSTGRES_USER` / `POSTGRES_PASSWORD`
+The env vars that must match the backed-up stack: `DATABASE_URL`,
+`DATA_DIR`, and the `db` service's `POSTGRES_USER` / `POSTGRES_PASSWORD`
 / `POSTGRES_DB`.
 
 > **Warning:** `docker compose down --volumes` destroys **both** the `pgdata`
@@ -359,8 +359,8 @@ uv sync
 uv run uvicorn app.main:app --reload --port 8080
 ```
 
-Requires a Postgres and Redis reachable at the `TDMM_DATABASE_URL` /
-`TDMM_REDIS_URL` defaults (`localhost:5432` / `localhost:6379`) — the
+Requires a Postgres and Redis reachable at the `DATABASE_URL` /
+`REDIS_URL` defaults (`localhost:5432` / `localhost:6379`) — the
 easiest way is `docker compose up -d db redis`. Run the Celery worker
 alongside the api for upload/ingest and pipeline processing:
 
@@ -390,7 +390,7 @@ thumbnail pipeline flow, the M3 scan drill — move a folder on the
 bind-mounted share, rescan, relink by hash, download-verify; drop an
 untracked folder, rescan, adopt it as a draft model — and the M4 printer
 flow — flag off (printers 503, app otherwise fine), flip
-`TDMM_PRINTER_ENABLED` on, register a printer, probe it (soft-fails, no
+`PRINTER_ENABLED` on, register a printer, probe it (soft-fails, no
 hardware), and confirm a bare `.gcode` and a not-ready printer are both
 rejected before any print starts — all over HTTP) lives in
 `backend/tests_e2e/` and runs via:

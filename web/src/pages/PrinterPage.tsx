@@ -28,7 +28,7 @@ export function PrinterPage() {
         <CardHeader className="text-center">
           <CardTitle>Printer integration is off</CardTitle>
           <CardDescription>
-            Set <code>TDMM_PRINTER_ENABLED=true</code> and start the <code>printerd</code> service (
+            Set <code>PRINTER_ENABLED=true</code> and start the <code>printerd</code> service (
             <code>docker compose --profile printer up</code>) to enable it.
           </CardDescription>
         </CardHeader>

@@ -25,7 +25,7 @@ vi.mock("@/api/client", async (importOriginal) => {
 const writeText = vi.fn().mockResolvedValue(undefined);
 
 function featuresOut(overrides: Partial<Features> = {}): Features {
-  return { printer_enabled: false, slicer_watch_dir: null, slicer_watch_enabled: false, ...overrides };
+  return { printer_enabled: false, watch_dir: null, watch_enabled: false, ...overrides };
 }
 
 function mockGet(features: Features, tokens: unknown[] = []) {
@@ -124,14 +124,14 @@ describe("SlicerIntegrationCard", () => {
   });
 
   it("shows the watched-folder path and 'active' when the feature is enabled", async () => {
-    mockGet(featuresOut({ slicer_watch_dir: "/watch", slicer_watch_enabled: true }));
+    mockGet(featuresOut({ watch_dir: "/watch", watch_enabled: true }));
 
     renderCard();
 
     expect(await screen.findByText(/Watched folder:/)).toBeInTheDocument();
     expect(screen.getByText("/watch")).toBeInTheDocument();
     expect(screen.getByText(/\(active\)/)).toBeInTheDocument();
-    expect(screen.getByText(/TDMM_SLICER_WATCH_HOST_DIR/)).toBeInTheDocument();
+    expect(screen.getByText(/WATCH_HOST_DIR/)).toBeInTheDocument();
   });
 
   it("shows a not-configured message when the watched folder is off", async () => {
@@ -141,7 +141,7 @@ describe("SlicerIntegrationCard", () => {
     await screen.findByText("No tokens yet.");
 
     expect(screen.getByText(/Watched folder not configured/)).toBeInTheDocument();
-    expect(screen.getByText("TDMM_SLICER_WATCH_INTERVAL_S")).toBeInTheDocument();
+    expect(screen.getByText("WATCH_INTERVAL")).toBeInTheDocument();
     expect(screen.queryByText(/Watched folder:/)).not.toBeInTheDocument();
   });
 });

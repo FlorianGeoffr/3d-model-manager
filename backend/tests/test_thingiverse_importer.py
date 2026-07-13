@@ -294,12 +294,12 @@ def test_saved_collections_without_a_token_return_empty_list(monkeypatch):
 def test_live_thingiverse_metadata():
     """Deferred/manual live smoke (SPEC "one live smoke"). Excluded from the
     default gate by the -m in pyproject; run with `-m live_importer` and a
-    TDMM_THINGIVERSE_TOKEN in the environment. Never runs in CI."""
+    THINGIVERSE_TOKEN in the environment. Never runs in CI."""
     import os
 
-    token = os.environ.get("TDMM_THINGIVERSE_TOKEN")
+    token = os.environ.get("THINGIVERSE_TOKEN")
     if not token:
-        pytest.skip("set TDMM_THINGIVERSE_TOKEN to run the live smoke")
+        pytest.skip("set THINGIVERSE_TOKEN to run the live smoke")
     import app.importers.thingiverse as tv
 
     monkey = pytest.MonkeyPatch()

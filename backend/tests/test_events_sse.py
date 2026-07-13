@@ -40,8 +40,8 @@ async def live_client(
     """A real HTTP client against a real uvicorn server bound to loopback,
     already logged in as a freshly lifespan-bootstrapped admin user.
     """
-    monkeypatch.setenv("TDMM_ADMIN_USERNAME", ADMIN_USERNAME)
-    monkeypatch.setenv("TDMM_ADMIN_PASSWORD", ADMIN_PASSWORD)
+    monkeypatch.setenv("ADMIN_USERNAME", ADMIN_USERNAME)
+    monkeypatch.setenv("ADMIN_PASSWORD", ADMIN_PASSWORD)
     get_settings.cache_clear()
 
     app = create_app()
@@ -74,7 +74,7 @@ async def test_sse_forwards_a_published_job_event(
     # Short heartbeat so the test can deterministically wait for "the
     # endpoint has subscribed" (its first heartbeat) before publishing,
     # instead of racing a fixed sleep against the subscribe call.
-    monkeypatch.setenv("TDMM_SSE_HEARTBEAT_INTERVAL_S", "0.05")
+    monkeypatch.setenv("SSE_HEARTBEAT_INTERVAL", "0.05")
     get_settings.cache_clear()
 
     async def _consume() -> tuple[dict, uuid.UUID]:
@@ -135,7 +135,7 @@ async def test_sse_client_disconnect_closes_pubsub(
     on ``PubSub.aclose`` and proving a real client disconnect still triggers
     it.
     """
-    monkeypatch.setenv("TDMM_SSE_HEARTBEAT_INTERVAL_S", "0.05")
+    monkeypatch.setenv("SSE_HEARTBEAT_INTERVAL", "0.05")
     get_settings.cache_clear()
 
     aclose_calls = 0
@@ -168,7 +168,7 @@ async def test_sse_sends_heartbeat_when_idle(
     live_client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("TDMM_SSE_HEARTBEAT_INTERVAL_S", "0.05")
+    monkeypatch.setenv("SSE_HEARTBEAT_INTERVAL", "0.05")
     get_settings.cache_clear()
 
     async def _first_nonblank_line() -> str:

@@ -38,7 +38,7 @@ def create_app() -> FastAPI:
     app = FastAPI(title="3D Model Manager", lifespan=lifespan)
     app.include_router(api_router, prefix="/api")
 
-    # SPA static serving (Task 9): only when TDMM_STATIC_DIR is set AND
+    # SPA static serving (Task 9): only when STATIC_DIR is set AND
     # actually has a built frontend in it. Registered last so its catch-all
     # route never shadows an api_router route.
     settings = get_settings()
@@ -47,7 +47,7 @@ def create_app() -> FastAPI:
         if (static_dir / "index.html").is_file():
             mount_spa(app, static_dir)
         else:
-            logger.warning("TDMM_STATIC_DIR=%s has no index.html; SPA serving disabled", static_dir)
+            logger.warning("STATIC_DIR=%s has no index.html; SPA serving disabled", static_dir)
 
     return app
 

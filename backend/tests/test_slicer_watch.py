@@ -16,7 +16,7 @@ import pytest
 from redis import Redis
 from sqlalchemy import func, select
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.models import File, Model
 from app.services import library
 from app.storage.local import LocalStorageBackend
@@ -32,11 +32,11 @@ pytestmark = pytest.mark.usefixtures("library_root", "data_dir", "redis_url")
 
 @pytest.fixture
 def watch_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """Points ``TDMM_SLICER_WATCH_DIR`` at a fresh tmp_path for this test,
+    """Points ``WATCH_DIR`` at a fresh tmp_path for this test,
     mirroring ``conftest.py``'s ``library_root``/``data_dir`` fixtures."""
     watch = tmp_path / "watch"
     watch.mkdir()
-    monkeypatch.setenv("TDMM_SLICER_WATCH_DIR", str(watch))
+    monkeypatch.setenv("WATCH_DIR", str(watch))
     get_settings.cache_clear()
     yield watch
     get_settings.cache_clear()
@@ -44,10 +44,30 @@ def watch_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]
 
 def _age(path: Path, seconds: float) -> None:
     """Backdates ``path``'s mtime by ``seconds`` so the stability check
-    (default ``slicer_watch_stable_s`` = 10s) treats it as no longer being
+    (default ``watch_stable_s`` = 10s) treats it as no longer being
     written -- avoids a real sleep in the test."""
     old = time.time() - seconds
     os.utime(path, (old, old))
+
+
+def test_settings_env_vars_map_to_short_watch_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Round 9 dropped the app prefix and the unit suffixes from the
+    env var names while the ``Settings`` fields kept their unit suffixes
+    (``watch_interval_s``), bridged via per-field ``validation_alias``. A
+    typo'd rename here would silently leave ``watch_dir``/``watch_interval_s``
+    at their defaults and the watcher would never turn on -- this pins the
+    env<->field mapping so a future rename can't do that unnoticed:
+    suffix-less env ``WATCH_INTERVAL`` -> aliased field ``watch_interval_s``,
+    and plain prefixless env ``PRINTER_ENABLED`` -> ``printer_enabled``."""
+    monkeypatch.setenv("WATCH_DIR", "/tmp/x")
+    monkeypatch.setenv("WATCH_INTERVAL", "30")
+    monkeypatch.setenv("PRINTER_ENABLED", "true")
+
+    settings = Settings()
+
+    assert settings.watch_dir == Path("/tmp/x")
+    assert settings.watch_interval_s == 30
+    assert settings.printer_enabled is True
 
 
 async def test_stable_supported_file_is_imported_and_moved(

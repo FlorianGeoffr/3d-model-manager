@@ -264,7 +264,7 @@ describe("FilesTab", () => {
       options: {},
       access_code_set: true,
     };
-    const features: Features = { printer_enabled: true, slicer_watch_dir: null, slicer_watch_enabled: false };
+    const features: Features = { printer_enabled: true, watch_dir: null, watch_enabled: false };
     getMock.mockImplementation((path: string) => {
       if (path === "/features") return Promise.resolve(features);
       if (path === "/printers") return Promise.resolve([printer]);

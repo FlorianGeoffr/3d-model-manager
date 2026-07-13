@@ -2,8 +2,8 @@
 auto-import). A companion entry point to ``POST /api/slicer/intake``
 (Round 8 Task 4) for slicers -- Bambu Studio included -- that can't run a
 post-processing script but CAN export finished sliced files straight into a
-directory: point ``TDMM_SLICER_WATCH_DIR`` (``settings.slicer_watch_dir``) at
-that folder and Celery beat polls it every ``TDMM_SLICER_WATCH_INTERVAL_S``
+directory: point ``WATCH_DIR`` (``settings.watch_dir``) at
+that folder and Celery beat polls it every ``WATCH_INTERVAL``
 seconds, resolving each new file to a model exactly like the intake endpoint
 does (``app.services.slicer_intake.resolve_and_attach_sync``).
 
@@ -23,7 +23,7 @@ entry.
 
 **Stability check**: a slicer can still be mid-write when a poll tick
 lands (a large ``.gcode.3mf`` export takes real time to flush to disk). A
-file whose mtime is younger than ``settings.slicer_watch_stable_s`` seconds
+file whose mtime is younger than ``settings.watch_stable_s`` seconds
 is left exactly where it is and reconsidered on a later tick -- imported
 only once it's stopped changing. This gate (plus a ``_looks_like_temp_file``
 skip for common sync-tool in-flight names) runs BEFORE extension
@@ -156,7 +156,7 @@ def _scan_once(settings: Settings, watch_dir: Path) -> None:
             mtime = entry.stat().st_mtime
         except FileNotFoundError:
             continue  # raced away between the iterdir() snapshot and here
-        if time.time() - mtime < settings.slicer_watch_stable_s:
+        if time.time() - mtime < settings.watch_stable_s:
             continue  # still being written -- reconsidered on a later tick
 
         kind, format_ = infer_blob_kind_format(entry.name)
@@ -178,7 +178,7 @@ def _scan_once(settings: Settings, watch_dir: Path) -> None:
 @celery_app.task(name="app.tasks.slicer_watch.scan_slicer_watch")
 def scan_slicer_watch() -> None:
     settings = get_settings()
-    watch_dir = settings.slicer_watch_dir
+    watch_dir = settings.watch_dir
     if watch_dir is None or not watch_dir.is_dir():
         return  # feature off, or the configured directory doesn't exist (yet)
 

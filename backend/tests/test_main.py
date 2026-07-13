@@ -26,8 +26,8 @@ def _clear_settings_cache():
 async def test_lifespan_bootstraps_admin_user(
     migrated_db: str, monkeypatch: pytest.MonkeyPatch, data_dir: Path
 ) -> None:
-    monkeypatch.setenv("TDMM_ADMIN_USERNAME", "admin")
-    monkeypatch.setenv("TDMM_ADMIN_PASSWORD", "lifespan-startup-pw")
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "lifespan-startup-pw")
     get_settings.cache_clear()
 
     app = create_app()
@@ -48,8 +48,8 @@ async def test_lifespan_bootstraps_admin_user(
 async def test_lifespan_bootstrap_is_idempotent_across_restarts(
     migrated_db: str, monkeypatch: pytest.MonkeyPatch, data_dir: Path
 ) -> None:
-    monkeypatch.setenv("TDMM_ADMIN_USERNAME", "admin")
-    monkeypatch.setenv("TDMM_ADMIN_PASSWORD", "lifespan-startup-pw")
+    monkeypatch.setenv("ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("ADMIN_PASSWORD", "lifespan-startup-pw")
     get_settings.cache_clear()
 
     app = create_app()

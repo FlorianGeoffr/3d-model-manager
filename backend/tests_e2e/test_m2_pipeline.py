@@ -30,8 +30,8 @@ from PIL import Image
 
 pytestmark = pytest.mark.e2e
 
-BASE_URL = os.environ.get("TDMM_E2E_BASE_URL", "http://localhost:8080")
-ADMIN_USERNAME = os.environ.get("TDMM_ADMIN_USERNAME", "admin")
+BASE_URL = os.environ.get("E2E_BASE_URL", "http://localhost:8080")
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
 
 PIPELINE_POLL_TIMEOUT_S = 120.0
 POLL_INTERVAL_S = 0.5
@@ -199,10 +199,10 @@ def generate_sliced_gcode_3mf() -> bytes:
 
 
 def _admin_password() -> str:
-    password = os.environ.get("TDMM_ADMIN_PASSWORD")
+    password = os.environ.get("ADMIN_PASSWORD")
     if not password:
         pytest.fail(
-            "TDMM_ADMIN_PASSWORD must be set for the e2e run (scripts/e2e.sh sets a "
+            "ADMIN_PASSWORD must be set for the e2e run (scripts/e2e.sh sets a "
             "fixed one in .env so this test can log in with a known password)"
         )
     return password

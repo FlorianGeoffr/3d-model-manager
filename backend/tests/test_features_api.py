@@ -3,8 +3,8 @@ the frontend reads this to decide whether to show the Printer nav even when
 the feature flag is off (SPEC "API surface").
 
 Round 8 T6 adds the watched-folder slicer fields (`app.tasks.slicer_watch`,
-Round 8 T5): `slicer_watch_dir` (the container path, or null) and
-`slicer_watch_enabled` (dir set AND a positive poll interval -- the same
+Round 8 T5): `watch_dir` (the container path, or null) and
+`watch_enabled` (dir set AND a positive poll interval -- the same
 condition `app.tasks.celery_app` uses to register the beat entry).
 """
 
@@ -21,8 +21,8 @@ async def test_features_disabled_by_default(authenticated_client):
     r = await authenticated_client.get("/api/features")
     assert r.status_code == 200 and r.json() == {
         "printer_enabled": False,
-        "slicer_watch_dir": None,
-        "slicer_watch_enabled": False,
+        "watch_dir": None,
+        "watch_enabled": False,
     }
 
 
@@ -30,20 +30,20 @@ async def test_features_enabled(authenticated_client, printer_enabled):
     r = await authenticated_client.get("/api/features")
     assert r.json() == {
         "printer_enabled": True,
-        "slicer_watch_dir": None,
-        "slicer_watch_enabled": False,
+        "watch_dir": None,
+        "watch_enabled": False,
     }
 
 
 @pytest.fixture
 def slicer_watch_configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """Sets both `TDMM_SLICER_WATCH_DIR` and a positive poll interval --
+    """Sets both `WATCH_DIR` and a positive poll interval --
     mirrors `test_slicer_watch.py`'s `watch_dir` fixture, plus the interval
     the beat-entry condition also requires."""
     watch = tmp_path / "watch"
     watch.mkdir()
-    monkeypatch.setenv("TDMM_SLICER_WATCH_DIR", str(watch))
-    monkeypatch.setenv("TDMM_SLICER_WATCH_INTERVAL_S", "30")
+    monkeypatch.setenv("WATCH_DIR", str(watch))
+    monkeypatch.setenv("WATCH_INTERVAL", "30")
     get_settings.cache_clear()
     yield watch
     get_settings.cache_clear()
@@ -52,8 +52,8 @@ def slicer_watch_configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 async def test_features_slicer_watch_enabled(authenticated_client, slicer_watch_configured):
     r = await authenticated_client.get("/api/features")
     body = r.json()
-    assert body["slicer_watch_enabled"] is True
-    assert body["slicer_watch_dir"] == str(slicer_watch_configured)
+    assert body["watch_enabled"] is True
+    assert body["watch_dir"] == str(slicer_watch_configured)
 
 
 async def test_features_slicer_watch_dir_without_interval_stays_disabled(
@@ -64,12 +64,12 @@ async def test_features_slicer_watch_dir_without_interval_stays_disabled(
     `app.tasks.celery_app`, which needs BOTH."""
     watch = tmp_path / "watch"
     watch.mkdir()
-    monkeypatch.setenv("TDMM_SLICER_WATCH_DIR", str(watch))
+    monkeypatch.setenv("WATCH_DIR", str(watch))
     get_settings.cache_clear()
 
     r = await authenticated_client.get("/api/features")
     body = r.json()
 
     get_settings.cache_clear()
-    assert body["slicer_watch_dir"] == str(watch)
-    assert body["slicer_watch_enabled"] is False
+    assert body["watch_dir"] == str(watch)
+    assert body["watch_enabled"] is False

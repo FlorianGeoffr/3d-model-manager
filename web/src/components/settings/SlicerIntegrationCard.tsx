@@ -72,11 +72,11 @@ export function SlicerIntegrationCard() {
             <p className="text-muted-foreground">
               Bambu Studio → <strong>Process → Others → Post-processing scripts</strong>:{" "}
               <code className="rounded bg-muted px-1 py-0.5 text-xs">python3 /path/to/bambu_postprocess.py</code>,
-              with <code className="rounded bg-muted px-1 py-0.5 text-xs">TDMM_SLICER_URL</code> (e.g.{" "}
+              with <code className="rounded bg-muted px-1 py-0.5 text-xs">INTAKE_URL</code> (e.g.{" "}
               <code className="rounded bg-muted px-1 py-0.5 text-xs">
                 http://&lt;this host&gt;:8080/api/slicer/intake
               </code>
-              ) and <code className="rounded bg-muted px-1 py-0.5 text-xs">TDMM_SLICER_TOKEN</code> set in the
+              ) and <code className="rounded bg-muted px-1 py-0.5 text-xs">INTAKE_TOKEN</code> set in the
               script&apos;s environment. Every sliced plate is uploaded and matched to a model by name (or a new
               model is created).
             </p>
@@ -120,10 +120,10 @@ function WatchedFolderStatus() {
 
   if (features.isLoading) return <Skeleton className="h-10 w-full rounded-lg" />;
 
-  if (!features.data?.slicer_watch_enabled) {
+  if (!features.data?.watch_enabled) {
     return (
       <p className="text-xs text-muted-foreground">
-        Watched folder not configured — set <code className="rounded bg-muted px-1 py-0.5">TDMM_SLICER_WATCH_INTERVAL_S</code> and
+        Watched folder not configured — set <code className="rounded bg-muted px-1 py-0.5">WATCH_INTERVAL</code> and
         the beat profile in <code className="rounded bg-muted px-1 py-0.5">.env</code>.
       </p>
     );
@@ -132,12 +132,12 @@ function WatchedFolderStatus() {
   return (
     <div className="space-y-0.5">
       <p className="text-sm text-foreground">
-        Watched folder: <code className="rounded bg-muted px-1 py-0.5 text-xs">{features.data.slicer_watch_dir}</code>{" "}
+        Watched folder: <code className="rounded bg-muted px-1 py-0.5 text-xs">{features.data.watch_dir}</code>{" "}
         (active)
       </p>
       <p className="text-xs text-muted-foreground">
         That&apos;s the path inside the container — it maps to{" "}
-        <code className="rounded bg-muted px-1 py-0.5">TDMM_SLICER_WATCH_HOST_DIR</code> on the host.
+        <code className="rounded bg-muted px-1 py-0.5">WATCH_HOST_DIR</code> on the host.
       </p>
     </div>
   );
@@ -213,7 +213,7 @@ function MintedTokenReveal({
     <div className="space-y-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3">
       <p className="text-sm font-medium text-foreground">Token created for &quot;{label}&quot;</p>
       <p className="text-xs text-amber-700 dark:text-amber-400">
-        Copy it now — it won&apos;t be shown again. Set it as <code>TDMM_SLICER_TOKEN</code> in the
+        Copy it now — it won&apos;t be shown again. Set it as <code>INTAKE_TOKEN</code> in the
         post-processing script&apos;s environment.
       </p>
       <div className="flex items-center gap-2">

@@ -358,7 +358,7 @@ def test_live_printables_metadata():
     """
     import os
 
-    if not os.environ.get("TDMM_LIVE_PRINTABLES"):
-        pytest.skip("set TDMM_LIVE_PRINTABLES=1 to run the live smoke")
+    if not os.environ.get("LIVE_PRINTABLES"):
+        pytest.skip("set LIVE_PRINTABLES=1 to run the live smoke")
     meta = PrintablesImporter().fetch_metadata(fx.MODEL_ID)
     assert meta.title and meta.external_id == fx.MODEL_ID

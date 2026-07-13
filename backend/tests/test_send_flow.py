@@ -75,7 +75,7 @@ async def test_disabled_printer_409(
     authenticated_client, printer_enabled, library_root, seed_file, db_session, redis_url
 ):
     """Fix 1: the per-printer ``enabled`` column (distinct from the global
-    TDMM_PRINTER_ENABLED flag) must gate sends -- printerd only reads
+    PRINTER_ENABLED flag) must gate sends -- printerd only reads
     ``enabled_printers()`` once at startup, so the API check is the real
     protection against a printer disabled mid-run."""
     pid = await _make_printer(authenticated_client)

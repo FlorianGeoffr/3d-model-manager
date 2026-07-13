@@ -1,7 +1,7 @@
 """The Celery application (SPEC "Processing pipeline"; Task 6 interface
 decisions).
 
-Broker + result backend are both ``TDMM_REDIS_URL``. ``task_acks_late=True``
+Broker + result backend are both ``REDIS_URL``. ``task_acks_late=True``
 so a worker that dies mid-task redelivers the message rather than losing it.
 Queue ``io`` carries M1's ``store_to_backend`` plus everything else under
 ``app.tasks``; ``cpu`` (memory-recycled worker pool, per SPEC "Architecture")
@@ -60,29 +60,29 @@ celery_app.conf.update(
 # needs a tracking row (ScanRun / Job) that some caller normally creates.
 _beat_schedule: dict[str, dict] = {}
 
-# SPEC "optional scheduled scan" (Task 5 brief) -- TDMM_SCAN_INTERVAL_S.
+# SPEC "optional scheduled scan" (Task 5 brief) -- SCAN_INTERVAL.
 if _settings.scan_interval_s > 0:
     _beat_schedule["scan-library"] = {
         "task": "app.tasks.scan.schedule_scan_library",
         "schedule": _settings.scan_interval_s,
     }
 
-# M8 H periodic collection sync -- TDMM_COLLECTION_SYNC_INTERVAL_S.
+# M8 H periodic collection sync -- COLLECTION_SYNC_INTERVAL.
 if _settings.collection_sync_interval_s > 0:
     _beat_schedule["sync-collections"] = {
         "task": "app.tasks.sync_collections.schedule_sync_all",
         "schedule": _settings.collection_sync_interval_s,
     }
 
-# Round 8 Task 5 (watched-folder auto-import) -- TDMM_SLICER_WATCH_INTERVAL_S,
-# gated on TDMM_SLICER_WATCH_DIR also being set (an interval alone with no
+# Round 8 Task 5 (watched-folder auto-import) -- WATCH_INTERVAL,
+# gated on WATCH_DIR also being set (an interval alone with no
 # watch dir configured would just no-op every tick). No `schedule_*` wrapper
 # needed here, unlike scan/collection-sync above -- this task doesn't need a
 # tracking row created ahead of time, it just walks the directory itself.
-if _settings.slicer_watch_interval_s > 0 and _settings.slicer_watch_dir is not None:
+if _settings.watch_interval_s > 0 and _settings.watch_dir is not None:
     _beat_schedule["slicer-watch"] = {
         "task": "app.tasks.slicer_watch.scan_slicer_watch",
-        "schedule": _settings.slicer_watch_interval_s,
+        "schedule": _settings.watch_interval_s,
     }
 
 if _beat_schedule:

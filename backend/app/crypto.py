@@ -2,7 +2,7 @@
 storage credentials, and the Thingiverse import token -- all under one key
 at ``{data_dir}/secrets/printer.key`` (SPEC ``printers.access_code_enc
 /*fernet*/``; M4; extended to storage/import secrets by M6 A1). The key
-lives there (0600) or comes from ``TDMM_PRINTER_KEY``; it is loaded ONLY
+lives there (0600) or comes from ``PRINTER_KEY``; it is loaded ONLY
 where a secret is actually encrypted/decrypted (the send task, printerd, the
 test-connection probe, the storage-config/import-token seams) -- never
 eagerly at import, and decrypted plaintext is never logged, returned, or

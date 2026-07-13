@@ -113,7 +113,7 @@ async def test_login_cookie_is_secure_when_configured(
     admin_user: User,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("TDMM_COOKIE_SECURE", "true")
+    monkeypatch.setenv("COOKIE_SECURE", "true")
     get_settings.cache_clear()
 
     response = await client.post(

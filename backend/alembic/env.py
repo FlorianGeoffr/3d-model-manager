@@ -27,7 +27,7 @@ if config.config_file_name is not None:
 # Full schema lives on app.models.Base.metadata (SPEC "Data model").
 target_metadata = Base.metadata
 
-# Always take the URL from app settings (env var TDMM_DATABASE_URL) rather
+# Always take the URL from app settings (env var DATABASE_URL) rather
 # than the placeholder in alembic.ini, so tests can point this at a
 # testcontainer by setting the env var + clearing get_settings' cache before
 # invoking alembic.

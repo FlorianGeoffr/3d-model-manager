@@ -310,7 +310,7 @@ async def test_optimize_glb_missing_binary_fails_job_with_clear_message(
     await db_session.commit()
     await db_session.refresh(job)
 
-    monkeypatch.setenv("TDMM_GLTFPACK_PATH", "/definitely/not/a/real/gltfpack/binary")
+    monkeypatch.setenv("GLTFPACK_PATH", "/definitely/not/a/real/gltfpack/binary")
     get_settings.cache_clear()
     try:
         with pytest.raises(RuntimeError, match="gltfpack not found"):

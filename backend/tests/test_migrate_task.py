@@ -4,7 +4,7 @@ blake3 per file as it streams, and only cuts the active ``storage`` setting
 over once every file has verified. Exercises the realistic cross-backend
 path -- local source -> MinIO/S3 target via the Task 2 testcontainer fixture
 -- since ``LocalConfig`` carries no path of its own (always
-``TDMM_LIBRARY_ROOT``), so there's no way to represent a second, distinct
+``LIBRARY_ROOT``), so there's no way to represent a second, distinct
 local root as a migration target.
 """
 

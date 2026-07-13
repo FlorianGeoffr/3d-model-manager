@@ -159,7 +159,7 @@ class ThingiverseImporter:
             r.raise_for_status()
             body = r.json()
         # Documented shape (developer.thingiverse.com "Search a term" --
-        # GET /search/{term}), NOT captured live: no TDMM_THINGIVERSE_TOKEN
+        # GET /search/{term}), NOT captured live: no THINGIVERSE_TOKEN
         # is configured in this environment to verify against the real
         # token-gated endpoint (grounding note: "Thingiverse search
         # live-verify may be deferred if no token is configured"). The

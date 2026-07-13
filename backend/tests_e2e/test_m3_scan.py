@@ -34,9 +34,9 @@ from blake3 import blake3
 pytestmark = pytest.mark.e2e
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-LIBRARY_ROOT = Path(os.environ.get("TDMM_E2E_LIBRARY_ROOT", str(REPO_ROOT / "library")))
-BASE_URL = os.environ.get("TDMM_E2E_BASE_URL", "http://localhost:8080")
-ADMIN_USERNAME = os.environ.get("TDMM_ADMIN_USERNAME", "admin")
+LIBRARY_ROOT = Path(os.environ.get("E2E_LIBRARY_ROOT", str(REPO_ROOT / "library")))
+BASE_URL = os.environ.get("E2E_BASE_URL", "http://localhost:8080")
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
 
 PIPELINE_POLL_TIMEOUT_S = 120.0
 SCAN_POLL_TIMEOUT_S = 90.0
@@ -108,10 +108,10 @@ def generate_binary_stl(min_size_bytes: int = 20_000, *, salt: int = 0) -> bytes
 
 
 def _admin_password() -> str:
-    password = os.environ.get("TDMM_ADMIN_PASSWORD")
+    password = os.environ.get("ADMIN_PASSWORD")
     if not password:
         pytest.fail(
-            "TDMM_ADMIN_PASSWORD must be set for the e2e run (scripts/e2e.sh sets a "
+            "ADMIN_PASSWORD must be set for the e2e run (scripts/e2e.sh sets a "
             "fixed one in .env so this test can log in with a known password)"
         )
     return password

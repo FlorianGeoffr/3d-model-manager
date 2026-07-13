@@ -16,6 +16,7 @@ backend/.tools/
 # App runtime
 data/
 library/
+slicer-watch/
 *.env
 .env.*
 !.env.example

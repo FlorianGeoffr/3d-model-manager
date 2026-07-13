@@ -8,7 +8,10 @@ call.
 
 ``stage_zip_member`` is the same spool+blake3 machinery's sibling for
 ``app.importers.archives``' zip extraction: tees an already-open zip
-member's bytes to a NEW spool file instead of an HTTP response body."""
+member's bytes to a NEW spool file instead of an HTTP response body.
+``stage_local_file`` is the same sibling again for
+``app.tasks.slicer_watch`` (Round 8 Task 5): tees an already-on-disk local
+file instead."""
 
 from __future__ import annotations
 
@@ -109,6 +112,49 @@ def stream_remote_to_spool(
     if size == 0:
         path.unlink(missing_ok=True)
         raise ValueError(f"remote file {rel_path!r} was empty")
+    kind, format_ = layout.infer_blob_kind_format(rel_path)
+    return StagedFile(
+        token=token,
+        spool_path=path,
+        blob_hash=hasher.hexdigest(),
+        size=size,
+        rel_path=rel_path,
+        kind=kind,
+        format_=format_,
+    )
+
+
+def stage_local_file(settings: Settings, source: Path, *, rel_path: str) -> StagedFile:
+    """Sibling of ``stream_remote_to_spool``/``stage_zip_member`` for
+    ``app.tasks.slicer_watch`` (Round 8 Task 5: watched-folder auto-import):
+    tees an already-on-disk local file's bytes to a NEW spool file, blake3-
+    hashing while it streams -- constant memory, chunked read, exactly like
+    ``stage_zip_member``'s member-copy loop, just reading a plain file handle
+    instead of an open zip member. The result is a first-class ``StagedFile``
+    indistinguishable from a directly-downloaded or zip-extracted one.
+
+    A zero-byte ``source`` raises, same posture as ``stream_remote_to_spool``
+    (a strong signal of an interrupted/corrupt write, not a legitimate empty
+    export) -- unlike ``stage_zip_member``, which allows empty archive
+    members.
+    """
+    spool.ensure_spool_dir(settings)
+    token = uuid.uuid4()
+    path = spool.spool_path(settings, token)
+    hasher = blake3()
+    size = 0
+    try:
+        with source.open("rb") as src, path.open("wb") as fh:
+            while chunk := src.read(_CHUNK_SIZE):
+                hasher.update(chunk)
+                size += len(chunk)
+                fh.write(chunk)
+    except BaseException:
+        path.unlink(missing_ok=True)  # never orphan a spool file on a failed copy
+        raise
+    if size == 0:
+        path.unlink(missing_ok=True)
+        raise ValueError(f"local file {rel_path!r} was empty")
     kind, format_ = layout.infer_blob_kind_format(rel_path)
     return StagedFile(
         token=token,

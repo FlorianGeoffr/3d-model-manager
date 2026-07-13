@@ -24,6 +24,12 @@
 # and it idles harmlessly unless `TDMM_PRINTER_ENABLED=true` is also set in
 # `.env` (see README "Printer integration").
 #
+# Watched-folder auto-import (Round 8 Task 5): `worker-io` always mounts
+# `./slicer-watch` (override with `TDMM_SLICER_WATCH_HOST_DIR`) at `/watch`,
+# but nothing polls it unless BOTH the `beat` profile is running AND
+# `TDMM_SLICER_WATCH_INTERVAL_S` is set to a positive number of seconds in
+# `.env` -- see `app.tasks.celery_app`'s conditional `beat_schedule`.
+#
 # Quickstart: `cp .env.example .env` then `docker compose up -d --build`.
 # See README "Quickstart" for the first-run admin password note.
 
@@ -66,6 +72,11 @@ services:
       TDMM_ROLE: worker
       TDMM_QUEUES: io
       TDMM_CONCURRENCY: 2
+      # Round 8 Task 5: the container-side path the watched-folder task
+      # (`app.tasks.slicer_watch`, routed to the `io` queue this worker
+      # consumes) polls. Only fires ticks once `TDMM_SLICER_WATCH_INTERVAL_S`
+      # is also set in `.env` AND the `beat` profile is running.
+      TDMM_SLICER_WATCH_DIR: /watch
       PUID: ${PUID:-}
       PGID: ${PGID:-}
     env_file:
@@ -73,6 +84,7 @@ services:
     volumes:
       - tdmm_data:/data
       - ./library:/library
+      - ${TDMM_SLICER_WATCH_HOST_DIR:-./slicer-watch}:/watch
     depends_on:
       db:
         condition: service_healthy

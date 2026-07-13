@@ -46,6 +46,22 @@ class Settings(BaseSettings):
     # seconds between automatic `sync_collections.sync_all` runs via Celery
     # beat. `0` (the default) means OFF -- the "Sync now" button still works.
     collection_sync_interval_s: int = 0
+    # Watched-folder auto-import (Round 8 Task 5): a directory a slicer can
+    # export finished sliced files straight into, polled periodically by
+    # Celery beat and resolved to a model the same way
+    # `POST /api/slicer/intake` does (`app.services.slicer_intake
+    # .resolve_and_attach_sync`, via `app.tasks.slicer_watch`). `None` (the
+    # default) leaves the feature entirely off.
+    slicer_watch_dir: Path | None = None
+    # Seconds between watch-dir polls via Celery beat. `0` (the default)
+    # means OFF, mirroring `scan_interval_s`/`collection_sync_interval_s` --
+    # BOTH this and `slicer_watch_dir` must be set for the beat entry to
+    # fire (see `app.tasks.celery_app`'s conditional `beat_schedule`).
+    slicer_watch_interval_s: int = 0
+    # A watched file's mtime must be at least this many seconds in the past
+    # before `app.tasks.slicer_watch` will import it -- guards against
+    # importing a slicer export that's still being written mid-poll.
+    slicer_watch_stable_s: float = 10.0
     # Printer integration (SPEC "Printer integration"; M4). OFF by default:
     # the whole app is fully functional without it -- the printers API 503s,
     # printerd idles, and the frontend greys the Printer nav.

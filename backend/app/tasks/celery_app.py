@@ -49,6 +49,7 @@ celery_app.conf.update(
         "app.tasks.printing",
         "app.tasks.importing",
         "app.tasks.sync_collections",
+        "app.tasks.slicer_watch",
     ),
 )
 
@@ -71,6 +72,17 @@ if _settings.collection_sync_interval_s > 0:
     _beat_schedule["sync-collections"] = {
         "task": "app.tasks.sync_collections.schedule_sync_all",
         "schedule": _settings.collection_sync_interval_s,
+    }
+
+# Round 8 Task 5 (watched-folder auto-import) -- TDMM_SLICER_WATCH_INTERVAL_S,
+# gated on TDMM_SLICER_WATCH_DIR also being set (an interval alone with no
+# watch dir configured would just no-op every tick). No `schedule_*` wrapper
+# needed here, unlike scan/collection-sync above -- this task doesn't need a
+# tracking row created ahead of time, it just walks the directory itself.
+if _settings.slicer_watch_interval_s > 0 and _settings.slicer_watch_dir is not None:
+    _beat_schedule["slicer-watch"] = {
+        "task": "app.tasks.slicer_watch.scan_slicer_watch",
+        "schedule": _settings.slicer_watch_interval_s,
     }
 
 if _beat_schedule:

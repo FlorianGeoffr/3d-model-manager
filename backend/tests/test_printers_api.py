@@ -80,3 +80,103 @@ async def test_delete_printer(authenticated_client, printer_enabled):
     pid = (await authenticated_client.post("/api/printers", json=CREATE)).json()["id"]
     assert (await authenticated_client.delete(f"/api/printers/{pid}")).status_code == 204
     assert (await authenticated_client.get(f"/api/printers/{pid}")).status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Round 8 T1: serial is required + a lenient alnum/6-24-char shape (the
+# probe's TLS cert cross-match is the authoritative check, not this schema).
+# ---------------------------------------------------------------------------
+
+
+async def test_create_rejects_blank_serial(authenticated_client, printer_enabled):
+    r = await authenticated_client.post("/api/printers", json={**CREATE, "serial": "   "})
+    assert r.status_code == 422
+
+
+async def test_create_rejects_serial_with_dash(authenticated_client, printer_enabled):
+    r = await authenticated_client.post("/api/printers", json={**CREATE, "serial": "030-9ABC"})
+    assert r.status_code == 422
+
+
+async def test_create_rejects_serial_too_short(authenticated_client, printer_enabled):
+    r = await authenticated_client.post("/api/printers", json={**CREATE, "serial": "ABCDE"})
+    assert r.status_code == 422
+
+
+async def test_create_accepts_24_char_serial(authenticated_client, printer_enabled):
+    serial = "A" * 24
+    r = await authenticated_client.post("/api/printers", json={**CREATE, "serial": serial})
+    assert r.status_code == 201 and r.json()["serial"] == serial
+
+
+async def test_patch_rejects_explicit_null_serial(authenticated_client, printer_enabled):
+    pid = (await authenticated_client.post("/api/printers", json=CREATE)).json()["id"]
+    r = await authenticated_client.patch(f"/api/printers/{pid}", json={"serial": None})
+    assert r.status_code == 422
+
+
+async def test_patch_rejects_blank_serial(authenticated_client, printer_enabled):
+    pid = (await authenticated_client.post("/api/printers", json=CREATE)).json()["id"]
+    r = await authenticated_client.patch(f"/api/printers/{pid}", json={"serial": "  "})
+    assert r.status_code == 422
+
+
+async def test_patch_omitted_serial_keeps_stored_value(authenticated_client, printer_enabled):
+    pid = (await authenticated_client.post("/api/printers", json=CREATE)).json()["id"]
+    r = await authenticated_client.patch(f"/api/printers/{pid}", json={"name": "renamed"})
+    assert r.status_code == 200 and r.json()["serial"] == CREATE["serial"]
+
+
+async def test_patch_valid_serial_updates(authenticated_client, printer_enabled):
+    pid = (await authenticated_client.post("/api/printers", json=CREATE)).json()["id"]
+    r = await authenticated_client.patch(f"/api/printers/{pid}", json={"serial": "NEWSERIAL01"})
+    assert r.status_code == 200 and r.json()["serial"] == "NEWSERIAL01"
+
+
+# ---------------------------------------------------------------------------
+# Round 8 T1: POST /printers/detect-serial -- reads the serial off the
+# printer's TLS cert (app.printers.discovery.read_cert_cn), no DB row or
+# access code involved.
+# ---------------------------------------------------------------------------
+
+
+async def test_detect_serial_503_when_disabled(authenticated_client):
+    r = await authenticated_client.post("/api/printers/detect-serial", json={"host": "10.0.0.5"})
+    assert r.status_code == 503
+
+
+async def test_detect_serial_happy(authenticated_client, printer_enabled, monkeypatch):
+    from app.api import printers as printers_api
+
+    monkeypatch.setattr(
+        printers_api.discovery, "read_cert_cn", lambda host, port: "0309CA410600958"
+    )
+    r = await authenticated_client.post("/api/printers/detect-serial", json={"host": "10.0.0.5"})
+    assert r.status_code == 200
+    assert r.json() == {
+        "serial": "0309CA410600958",
+        "detail": "Detected serial from the printer's certificate.",
+    }
+
+
+async def test_detect_serial_empty_cn(authenticated_client, printer_enabled, monkeypatch):
+    from app.api import printers as printers_api
+
+    monkeypatch.setattr(printers_api.discovery, "read_cert_cn", lambda host, port: "")
+    r = await authenticated_client.post("/api/printers/detect-serial", json={"host": "10.0.0.5"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["serial"] is None and "no serial" in body["detail"]
+
+
+async def test_detect_serial_error(authenticated_client, printer_enabled, monkeypatch):
+    from app.api import printers as printers_api
+
+    def _boom(host, port):
+        raise OSError("nope")
+
+    monkeypatch.setattr(printers_api.discovery, "read_cert_cn", _boom)
+    r = await authenticated_client.post("/api/printers/detect-serial", json={"host": "10.0.0.5"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["serial"] is None and "Couldn't read a serial" in body["detail"]

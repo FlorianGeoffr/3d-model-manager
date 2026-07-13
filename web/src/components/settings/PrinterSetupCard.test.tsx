@@ -69,22 +69,59 @@ describe("PrinterSetupCard", () => {
     expect(screen.queryByLabelText(/Name/)).not.toBeInTheDocument();
   });
 
-  it("omits a blank access_code from the create request body", async () => {
+  it("blocks Add printer and shows inline errors when required fields are blank", async () => {
     mockApi({ printer_enabled: true }, []);
-    postMock.mockResolvedValue({ ...PRINTER, id: 2 });
+
+    renderCard();
+
+    await screen.findByText("Add a printer");
+    fireEvent.click(screen.getByRole("button", { name: "Add printer" }));
+
+    expect(await screen.findByText("Name is required.")).toBeInTheDocument();
+    expect(screen.getByText("Host is required.")).toBeInTheDocument();
+    expect(screen.getByText("Serial is required.")).toBeInTheDocument();
+    expect(screen.getByText("Access code is required.")).toBeInTheDocument();
+    expect(postMock).not.toHaveBeenCalled();
+  });
+
+  it("submits all fields once the required create fields are filled", async () => {
+    mockApi({ printer_enabled: true }, []);
+    postMock.mockImplementation((path: string) => {
+      if (path === "/printers") return Promise.resolve({ ...PRINTER, id: 2 });
+      return Promise.resolve({});
+    });
 
     renderCard();
 
     await screen.findByText("Add a printer");
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "New Printer" } });
     fireEvent.change(screen.getByLabelText("Host"), { target: { value: "192.168.1.99" } });
-    fireEvent.change(screen.getByLabelText("Serial"), { target: { value: "SN999" } });
+    fireEvent.change(screen.getByLabelText("Serial"), { target: { value: "SN999999" } });
+    fireEvent.change(screen.getByLabelText("Access code"), { target: { value: "topsecret" } });
 
     fireEvent.click(screen.getByRole("button", { name: "Add printer" }));
 
-    await waitFor(() => expect(postMock).toHaveBeenCalled());
-    const [, body] = postMock.mock.calls[0] as [string, Record<string, unknown>];
-    expect(body).toMatchObject({ name: "New Printer", host: "192.168.1.99", serial: "SN999", access_code: "" });
+    await waitFor(() => expect(postMock).toHaveBeenCalledWith("/printers", expect.any(Object)));
+    const call = postMock.mock.calls.find(([path]) => path === "/printers") as [string, Record<string, unknown>];
+    expect(call[1]).toMatchObject({
+      name: "New Printer",
+      host: "192.168.1.99",
+      serial: "SN999999",
+      access_code: "topsecret",
+    });
+  });
+
+  it("blocks Save changes on an existing printer when serial is cleared", async () => {
+    mockApi({ printer_enabled: true }, [PRINTER]);
+
+    renderCard();
+
+    await screen.findByDisplayValue("Bambu A1");
+    fireEvent.change(screen.getByDisplayValue("AC12345"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    expect(await screen.findByText("Serial is required.")).toBeInTheDocument();
+    expect(patchMock).not.toHaveBeenCalled();
   });
 
   it("omits access_code from the PATCH body when the field is left blank", async () => {
@@ -131,5 +168,62 @@ describe("PrinterSetupCard", () => {
 
     expect(await screen.findByText(/connected via LAN/)).toBeInTheDocument();
     expect(postMock).toHaveBeenCalledWith("/printers/1/test");
+  });
+
+  it("Detect fills the serial field on success", async () => {
+    mockApi({ printer_enabled: true }, [PRINTER]);
+    postMock.mockImplementation((path: string) => {
+      if (path === "/printers/detect-serial") {
+        return Promise.resolve({
+          serial: "0309CA410600958",
+          detail: "Detected serial from the printer's certificate.",
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    renderCard();
+
+    await screen.findByDisplayValue("Bambu A1");
+    // The existing printer's editor and the "Add a printer" form below it
+    // both have a Detect button -- the existing printer's is first.
+    fireEvent.click(screen.getAllByRole("button", { name: "Detect" })[0]);
+
+    expect(await screen.findByDisplayValue("0309CA410600958")).toBeInTheDocument();
+    expect(await screen.findByText(/Detected serial from the printer's certificate/)).toBeInTheDocument();
+    expect(postMock).toHaveBeenCalledWith("/printers/detect-serial", { host: "192.168.1.50" });
+  });
+
+  it("Detect shows the detail as an error note when no serial is found", async () => {
+    mockApi({ printer_enabled: true }, [PRINTER]);
+    postMock.mockImplementation((path: string) => {
+      if (path === "/printers/detect-serial") {
+        return Promise.resolve({
+          serial: null,
+          detail: "Reached the printer but its certificate had no serial.",
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    renderCard();
+
+    await screen.findByDisplayValue("Bambu A1");
+    fireEvent.click(screen.getAllByRole("button", { name: "Detect" })[0]);
+
+    const note = await screen.findByText(/Reached the printer but its certificate had no serial/);
+    expect(note).toBeInTheDocument();
+    expect(note).toHaveAttribute("role", "alert");
+    // The serial field must NOT have been touched.
+    expect(screen.getByDisplayValue("AC12345")).toBeInTheDocument();
+  });
+
+  it("disables Detect while the host is blank", async () => {
+    mockApi({ printer_enabled: true }, []);
+
+    renderCard();
+
+    await screen.findByText("Add a printer");
+    expect(screen.getByRole("button", { name: "Detect" })).toBeDisabled();
   });
 });

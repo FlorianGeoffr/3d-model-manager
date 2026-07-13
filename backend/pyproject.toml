@@ -27,6 +27,11 @@ dependencies = [
     "smbprotocol>=1.16.1",
     "boto3",
     "bambulabs-api",
+    # Already pinned 2.1.0 transitively via bambulabs-api -- promoted to a
+    # direct dependency (Round 8 T1) because app.printers.probe now drives
+    # it directly (a raw MQTT session for the staged Developer-Mode probe),
+    # independent of the bambulabs_api client.
+    "paho-mqtt",
     "cryptography",
     "httpx",
 ]

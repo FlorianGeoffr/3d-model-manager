@@ -12,12 +12,28 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.models.enums import PrinterKind
 
 if TYPE_CHECKING:
     from app.models import Printer, PrintJob
+
+
+def _clean_serial(value: str) -> str:
+    """Shared body for both schemas' validators (Round 8 T1): strip, reject
+    blank, and enforce a LENIENT alnum/6-24-char shape. Deliberately not the
+    A1's specific 15-char format -- the ``/printers/{id}/test`` probe's TLS
+    cert cross-match (``app.printers.probe``) is the authoritative check;
+    this only keeps obviously-wrong input (blank, punctuation, a pasted URL)
+    out of the DB.
+    """
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError("serial is required")
+    if not stripped.isalnum() or not (6 <= len(stripped) <= 24):
+        raise ValueError("serial must be 6-24 alphanumeric characters")
+    return stripped
 
 
 class PrinterCreate(BaseModel):
@@ -30,6 +46,11 @@ class PrinterCreate(BaseModel):
     enabled: bool = True
     options: dict = Field(default_factory=dict)
 
+    @field_validator("serial")
+    @classmethod
+    def _validate_serial(cls, value: str) -> str:
+        return _clean_serial(value)
+
 
 class PrinterUpdate(BaseModel):
     name: str | None = None
@@ -39,6 +60,19 @@ class PrinterUpdate(BaseModel):
     model: str | None = None
     enabled: bool | None = None
     options: dict | None = None
+
+    @field_validator("serial")
+    @classmethod
+    def _validate_serial(cls, value: str | None) -> str:
+        """An *absent* ``serial`` is fine (``exclude_unset`` drops it before
+        it reaches the service layer, same PATCH pattern as
+        ``PrintPatchIn._reject_explicit_null``) -- but an explicit ``null``
+        or blank string is a real user mistake (clearing a NOT-NULL column),
+        so both raise here rather than sailing through as a 500.
+        """
+        if value is None:
+            raise ValueError("serial cannot be null")
+        return _clean_serial(value)
 
 
 class PrinterOut(BaseModel):
@@ -71,6 +105,21 @@ class ProbeOut(BaseModel):
     ok: bool
     detail: str
     gcode_state: str | None = None
+
+
+class DetectSerialIn(BaseModel):
+    """``POST /printers/detect-serial`` payload (Round 8 T1): reads the
+    serial straight off the printer's TLS cert (``app.printers.discovery``)
+    so the user doesn't have to hunt for it on the printer's screen. No
+    access code -- this is a plain TLS handshake, not an MQTT login."""
+
+    host: str
+    port: int = 8883
+
+
+class DetectSerialOut(BaseModel):
+    serial: str | None = None
+    detail: str
 
 
 class AmsTrayOut(BaseModel):

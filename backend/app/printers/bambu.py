@@ -4,14 +4,18 @@ owns the MQTT session, FTPS upload, pushall, and the incremental status
 merge; this adapter only NORMALIZES the lib's typed accessors into our
 PrinterPublicState and forwards upload/start/commands. bambulabs_api is
 lazy-imported inside _build_printer, so importing this module (and thus the
-registry + the printers API router) is safe with the printer flag OFF."""
+registry + the printers API router) is safe with the printer flag OFF.
+
+``test_connection`` is the one exception (Round 8 T1/T2): it delegates to
+``app.printers.probe.staged_probe``, a RAW paho MQTT probe independent of
+the bambulabs_api client above -- see that module's docstring."""
 
 from __future__ import annotations
 
-import time
 from typing import ClassVar
 
 from app.models.enums import PrinterKind, PrintJobState
+from app.printers import probe
 from app.printers.base import (
     PrinterAdapter,
     PrinterConnection,
@@ -243,38 +247,29 @@ class BambuLanAdapter(PrinterAdapter):
 
     # -- probe ---------------------------------------------------------
     def test_connection(self, *, timeout: float = 10.0) -> ProbeResult:
-        state = None
+        """Delegates to the staged Developer-Mode probe (Round 8 T1/T2:
+        ``app.printers.probe.staged_probe``) -- TCP reachability -> TLS cert
+        serial cross-match -> raw MQTT auth + status report -- instead of
+        driving the bambulabs_api lib client, whose only failure signal was
+        a black-box "connected but no state" covering every distinct
+        failure (wrong code, wrong serial, LAN mode off, not a Bambu
+        printer) under one unhelpful message.
+
+        Keeps the pre-existing access-code redaction wrapper: a raw-socket/
+        paho exception could still echo the plaintext code back in its
+        message, and ``detail`` flows verbatim into
+        ``POST /api/printers/{id}/test``'s response. ``staged_probe`` opens
+        and closes its own sockets and never touches ``self._client()`` (the
+        lib client), so ``self._printer`` stays ``None`` here and
+        ``self.close()`` remains the safe no-op it always was when nothing
+        was opened on ``self``.
+        """
         try:
-            p = self._client()
-            p.mqtt_start()  # see connect() -- never starts the camera thread
-            deadline = time.monotonic() + timeout
-            while time.monotonic() < deadline:
-                candidate = _state_token(p.get_state())
-                # bambulabs_api's GcodeState._missing_ falls back to the
-                # (truthy) UNKNOWN member for any not-yet-populated read --
-                # i.e. before the printer's first MQTT report arrives, which
-                # for an unreachable host is forever. Treating that as
-                # "found" would report ok=True for a black-hole host on the
-                # very first poll; only a REAL reported state ends the wait
-                # early, so we keep polling until the timeout otherwise.
-                if candidate and candidate != "UNKNOWN":
-                    state = candidate
-                    break
-                time.sleep(0.5)
+            return probe.staged_probe(self.conn, timeout=timeout)
         except Exception as exc:  # noqa: BLE001 -- a probe never raises to the caller
-            # This flows verbatim into the POST /api/printers/{id}/test response
-            # -- a bambulabs_api/paho exception could echo the plaintext access
-            # code back in its message, so redact it before it ever leaves here.
             detail = f"{type(exc).__name__}: {exc}"
             if self.conn.access_code and self.conn.access_code in detail:
                 detail = detail.replace(self.conn.access_code, "***")
             return ProbeResult(ok=False, detail=detail)
         finally:
             self.close()
-        if state:
-            return ProbeResult(
-                ok=True, detail="connected; Developer Mode responding", gcode_state=state
-            )
-        return ProbeResult(
-            ok=False, detail="connected but no state (is LAN-only + Developer Mode on?)"
-        )

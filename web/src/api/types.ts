@@ -470,6 +470,19 @@ export interface ProbeOut {
   gcode_state: string | null;
 }
 
+// `POST /printers/detect-serial` (Round 8 T1): reads the serial straight off
+// the printer's TLS certificate -- no DB row or access code involved, so the
+// "Detect" button works before a printer is even saved.
+export interface DetectSerialIn {
+  host: string;
+  port?: number;
+}
+
+export interface DetectSerialOut {
+  serial: string | null;
+  detail: string;
+}
+
 // One loaded AMS filament slot (M8 G3): `color` is `#RRGGBB` (alpha stripped)
 // or null for an empty/unknown slot.
 export interface AmsTray {

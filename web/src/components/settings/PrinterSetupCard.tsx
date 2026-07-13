@@ -7,15 +7,28 @@
  * error conventions, and its masked-secret UX for `access_code`:
  * `PrinterOut` never carries the code (only `access_code_set`), so the
  * input always starts blank -- typing a value sends it, leaving it blank
- * means "keep the stored one" (PATCH only; a new printer has none to keep,
- * so the backend 422s a blank create and that surfaces as an alert here).
+ * means "keep the stored one" (PATCH only).
+ *
+ * Round 8 T1 hardening: the serial is now REQUIRED (server-side too --
+ * `PrinterCreate`/`PrinterUpdate` reject a blank/null serial), and every
+ * other create field is checked client-side before the request ever goes
+ * out -- a "Detect" button beside the Serial input reads the serial
+ * straight off the printer's TLS cert (`POST /printers/detect-serial`) so
+ * the user doesn't have to hunt for it on the printer's screen.
  */
 import { useState } from "react";
 import { Trash2Icon } from "lucide-react";
 
 import { ApiError } from "@/api/client";
 import { useFeatures } from "@/api/features";
-import { useCreatePrinter, useDeletePrinter, usePrinters, useTestPrinter, useUpdatePrinter } from "@/api/printers";
+import {
+  useCreatePrinter,
+  useDeletePrinter,
+  useDetectSerial,
+  usePrinters,
+  useTestPrinter,
+  useUpdatePrinter,
+} from "@/api/printers";
 import type { PrinterOut, PrinterUpdate } from "@/api/types";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
@@ -31,6 +44,8 @@ interface PrinterDraft {
   model: string;
   access_code: string;
 }
+
+type DraftErrors = Partial<Record<keyof PrinterDraft, string>>;
 
 function emptyDraft(): PrinterDraft {
   return { name: "", host: "", serial: "", model: "", access_code: "" };
@@ -94,11 +109,13 @@ function EnabledPrinterSetupCard() {
 
 function PrinterEditor({ printer }: { printer?: PrinterOut }) {
   const [draft, setDraft] = useState<PrinterDraft>(() => (printer ? seedDraft(printer) : emptyDraft()));
+  const [errors, setErrors] = useState<DraftErrors>({});
 
   const createPrinter = useCreatePrinter();
   const updatePrinter = useUpdatePrinter(printer?.id ?? -1);
   const deletePrinter = useDeletePrinter();
   const testPrinter = useTestPrinter(printer?.id ?? -1);
+  const detectSerial = useDetectSerial();
 
   const saveMutation = printer ? updatePrinter : createPrinter;
   const busy = createPrinter.isPending || updatePrinter.isPending || deletePrinter.isPending;
@@ -106,9 +123,38 @@ function PrinterEditor({ printer }: { printer?: PrinterOut }) {
 
   function setField<K extends keyof PrinterDraft>(key: K, value: PrinterDraft[K]) {
     setDraft((prev) => ({ ...prev, [key]: value }));
+    setErrors((prev) => (prev[key] ? { ...prev, [key]: undefined } : prev));
+  }
+
+  /** Serial is required on both create and update (mirrors the backend's
+   * `PrinterCreate`/`PrinterUpdate` serial validator); name/host/access_code
+   * are only required on create -- an existing printer's row already has
+   * them, and a blank `access_code` on update means "keep the stored one". */
+  function validate(): boolean {
+    const next: DraftErrors = {};
+    if (draft.serial.trim() === "") next.serial = "Serial is required.";
+    if (!printer) {
+      if (draft.name.trim() === "") next.name = "Name is required.";
+      if (draft.host.trim() === "") next.host = "Host is required.";
+      if (draft.access_code.trim() === "") next.access_code = "Access code is required.";
+    }
+    setErrors(next);
+    return Object.keys(next).length === 0;
+  }
+
+  function detect() {
+    detectSerial.mutate(
+      { host: draft.host },
+      {
+        onSuccess: (result) => {
+          if (result.serial) setField("serial", result.serial);
+        },
+      },
+    );
   }
 
   function save() {
+    if (!validate()) return;
     const code = draft.access_code.trim();
     if (printer) {
       // PATCH: a blank access_code means "keep the stored one" -- the key
@@ -124,9 +170,9 @@ function PrinterEditor({ printer }: { printer?: PrinterOut }) {
       updatePrinter.mutate(body, { onSuccess: () => setField("access_code", "") });
     } else {
       // POST: `access_code` is a required field on `PrinterCreate` (a new
-      // printer has no stored code to fall back to) -- send whatever is
-      // typed, including blank; the backend's own 422 ("access_code is
-      // required") surfaces through the alert below if it's left empty.
+      // printer has no stored code to fall back to) -- `validate()` above
+      // already blocked a blank one client-side, so this always sends a
+      // real value.
       createPrinter.mutate(
         {
           name: draft.name,
@@ -150,7 +196,13 @@ function PrinterEditor({ printer }: { printer?: PrinterOut }) {
             value={draft.name}
             onChange={(e) => setField("name", e.target.value)}
             disabled={busy}
+            aria-invalid={Boolean(errors.name)}
           />
+          {errors.name ? (
+            <p role="alert" className="text-xs text-destructive">
+              {errors.name}
+            </p>
+          ) : null}
         </div>
         <div className="flex flex-col gap-1.5">
           <Label htmlFor={`${idPrefix}-host`}>Host</Label>
@@ -160,16 +212,54 @@ function PrinterEditor({ printer }: { printer?: PrinterOut }) {
             placeholder="192.168.1.50"
             onChange={(e) => setField("host", e.target.value)}
             disabled={busy}
+            aria-invalid={Boolean(errors.host)}
           />
+          {errors.host ? (
+            <p role="alert" className="text-xs text-destructive">
+              {errors.host}
+            </p>
+          ) : null}
         </div>
         <div className="flex flex-col gap-1.5">
           <Label htmlFor={`${idPrefix}-serial`}>Serial</Label>
-          <Input
-            id={`${idPrefix}-serial`}
-            value={draft.serial}
-            onChange={(e) => setField("serial", e.target.value)}
-            disabled={busy}
-          />
+          <div className="flex gap-1.5">
+            <Input
+              id={`${idPrefix}-serial`}
+              value={draft.serial}
+              onChange={(e) => setField("serial", e.target.value)}
+              disabled={busy}
+              aria-invalid={Boolean(errors.serial)}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={busy || detectSerial.isPending || draft.host.trim() === ""}
+              onClick={detect}
+            >
+              {detectSerial.isPending ? "Detecting..." : "Detect"}
+            </Button>
+          </div>
+          {errors.serial ? (
+            <p role="alert" className="text-xs text-destructive">
+              {errors.serial}
+            </p>
+          ) : null}
+          {detectSerial.isError ? (
+            <p role="alert" className="text-xs text-destructive">
+              {detectSerial.error instanceof ApiError ? detectSerial.error.detail : "Could not detect the serial"}
+            </p>
+          ) : null}
+          {detectSerial.data ? (
+            <p
+              role={detectSerial.data.serial ? undefined : "alert"}
+              className={
+                detectSerial.data.serial ? "text-xs text-emerald-600 dark:text-emerald-400" : "text-xs text-destructive"
+              }
+            >
+              {detectSerial.data.detail}
+            </p>
+          ) : null}
         </div>
         <div className="flex flex-col gap-1.5">
           <Label htmlFor={`${idPrefix}-model`}>Model</Label>
@@ -191,7 +281,13 @@ function PrinterEditor({ printer }: { printer?: PrinterOut }) {
             onChange={(e) => setField("access_code", e.target.value)}
             disabled={busy}
             autoComplete="new-password"
+            aria-invalid={Boolean(errors.access_code)}
           />
+          {errors.access_code ? (
+            <p role="alert" className="text-xs text-destructive">
+              {errors.access_code}
+            </p>
+          ) : null}
         </div>
       </div>
 

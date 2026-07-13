@@ -9,6 +9,8 @@ import { queryOptions, useMutation, useQuery, useQueryClient } from "@tanstack/r
 
 import { api } from "@/api/client";
 import type {
+  DetectSerialIn,
+  DetectSerialOut,
   PrinterCreate,
   PrinterOut,
   PrinterStatusOut,
@@ -77,6 +79,14 @@ export function useDeletePrinter() {
 
 export function useTestPrinter(id: number) {
   return useMutation({ mutationFn: () => api.post<ProbeOut>(`/printers/${id}/test`) });
+}
+
+/** Backs the printer form's "Detect" button (Round 8 T1): reads the serial
+ * straight off the printer's TLS cert, no saved printer required. */
+export function useDetectSerial() {
+  return useMutation({
+    mutationFn: (b: DetectSerialIn) => api.post<DetectSerialOut>("/printers/detect-serial", b),
+  });
 }
 
 /** Polls `GET /printers/{id}/status`, speeding up while the printer is

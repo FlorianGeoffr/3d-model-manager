@@ -4,10 +4,12 @@ PrinterOut never carries the code/ciphertext, only ``access_code_set``. The
 test probe is the ONLY place the API builds an adapter (decrypts, in a
 worker thread) -- and it returns only ok/detail/gcode_state.
 
-Import-safety: only ``app.printers.registry``/``app.printers.connection``
-(both lib-free) are imported here -- ``bambulabs_api``/``paho`` are only
-ever touched lazily, inside the real adapter's own build function, when a
-probe actually runs with the flag on (see ``tests/test_flag_off_imports.py``).
+Import-safety: only ``app.printers.registry``/``app.printers.connection``/
+``app.printers.discovery`` (all lib-free -- ``discovery`` is stdlib +
+``cryptography``, Round 8 T1) are imported here -- ``bambulabs_api``/
+``paho`` are only ever touched lazily, inside the real adapter's own build
+function, when a probe actually runs with the flag on (see
+``tests/test_flag_off_imports.py``).
 """
 
 from __future__ import annotations
@@ -27,10 +29,13 @@ from app.crypto import encrypt_secret
 from app.db import get_db
 from app.models import Blob, File, Printer, PrintJob
 from app.models.enums import BlobFormat, PrintJobState
+from app.printers import discovery
 from app.printers.base import command_channel
 from app.printers.connection import connection_from_printer
 from app.printers.registry import build_adapter
 from app.schemas.printers import (
+    DetectSerialIn,
+    DetectSerialOut,
     PrinterCreate,
     PrinterOut,
     PrinterStatusOut,
@@ -83,6 +88,32 @@ async def create_printer(
     await db.commit()
     await db.refresh(printer)
     return PrinterOut.from_model(printer)
+
+
+@router.post("/detect-serial", response_model=DetectSerialOut)
+async def detect_serial(payload: DetectSerialIn) -> DetectSerialOut:
+    """Reads the printer's serial straight off its TLS certificate (Round 8
+    T1, ``app.printers.discovery.read_cert_cn``) -- no DB row and no access
+    code involved (this endpoint doesn't even take one), so it can back the
+    printer form's "Detect" button before a printer is even saved. Runs the
+    blocking TLS handshake in a worker thread, same pattern as the test
+    probe below.
+    """
+    try:
+        cn = await anyio.to_thread.run_sync(discovery.read_cert_cn, payload.host, payload.port)
+    except Exception:  # noqa: BLE001 -- any read/handshake/parse failure is "couldn't detect"
+        return DetectSerialOut(
+            serial=None,
+            detail=(
+                f"Couldn't read a serial from {payload.host}:{payload.port} — "
+                "is LAN Mode + Developer Mode on?"
+            ),
+        )
+    if not cn:
+        return DetectSerialOut(
+            serial=None, detail="Reached the printer but its certificate had no serial."
+        )
+    return DetectSerialOut(serial=cn, detail="Detected serial from the printer's certificate.")
 
 
 @router.get("", response_model=list[PrinterOut])

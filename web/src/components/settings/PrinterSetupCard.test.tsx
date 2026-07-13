@@ -35,7 +35,9 @@ const PRINTER: PrinterOut = {
   access_code_set: true,
 };
 
-function mockApi(features: Features, printers: PrinterOut[] = []) {
+// Only `printer_enabled` matters to this card -- `Pick` keeps every call
+// site above from having to also stub the Round 8 T6 slicer-watch fields.
+function mockApi(features: Pick<Features, "printer_enabled">, printers: PrinterOut[] = []) {
   getMock.mockImplementation((path: string) => {
     if (path === "/features") return Promise.resolve(features);
     if (path === "/printers") return Promise.resolve(printers);

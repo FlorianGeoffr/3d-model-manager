@@ -1,0 +1,147 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import type { Features } from "@/api/types";
+import { SlicerIntegrationCard } from "@/components/settings/SlicerIntegrationCard";
+
+// `vi.mock` factories are hoisted above the module's own top-level bindings
+// (same pattern as BrowserExtensionCard.test.tsx), so the fakes have to be
+// created through `vi.hoisted`.
+const { getMock, postMock, deleteMock } = vi.hoisted(() => ({
+  getMock: vi.fn(),
+  postMock: vi.fn(),
+  deleteMock: vi.fn(),
+}));
+
+vi.mock("@/api/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/client")>();
+  return {
+    ...actual,
+    api: { ...actual.api, get: getMock, post: postMock, delete: deleteMock },
+  };
+});
+
+const writeText = vi.fn().mockResolvedValue(undefined);
+
+function featuresOut(overrides: Partial<Features> = {}): Features {
+  return { printer_enabled: false, slicer_watch_dir: null, slicer_watch_enabled: false, ...overrides };
+}
+
+function mockGet(features: Features, tokens: unknown[] = []) {
+  getMock.mockImplementation((path: string) => {
+    if (path === "/features") return Promise.resolve(features);
+    if (path === "/settings/api-tokens") return Promise.resolve(tokens);
+    return Promise.resolve([]);
+  });
+}
+
+function renderCard() {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <SlicerIntegrationCard />
+    </QueryClientProvider>,
+  );
+}
+
+describe("SlicerIntegrationCard", () => {
+  beforeEach(() => {
+    getMock.mockReset();
+    postMock.mockReset();
+    deleteMock.mockReset();
+    writeText.mockClear();
+    Object.assign(navigator, { clipboard: { writeText } });
+  });
+
+  it("shows the empty token state and a mint form pre-filled with the suggested label", async () => {
+    mockGet(featuresOut());
+
+    renderCard();
+
+    expect(await screen.findByText("No tokens yet.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Token label")).toHaveValue("Bambu Studio");
+    expect(
+      screen.getByText("Uses the same API tokens as the browser extension — a token from either works for both."),
+    ).toBeInTheDocument();
+  });
+
+  it("lists existing tokens", async () => {
+    mockGet(featuresOut(), [
+      { id: 1, label: "Bambu Studio", created_at: "2026-07-01T00:00:00Z", last_used_at: null },
+    ]);
+
+    renderCard();
+
+    expect(await screen.findByText("Bambu Studio")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Revoke" })).toBeInTheDocument();
+  });
+
+  it("mints a token from the pre-filled label and reveals the plaintext once", async () => {
+    mockGet(featuresOut());
+    postMock.mockResolvedValue({
+      id: 9,
+      label: "Bambu Studio",
+      token: "tdmm_secret_plaintext",
+      created_at: "2026-07-10T00:00:00Z",
+    });
+
+    renderCard();
+    await screen.findByText("No tokens yet.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Create token" }));
+
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledWith("/settings/api-tokens", { label: "Bambu Studio" }),
+    );
+    expect(await screen.findByText("tdmm_secret_plaintext")).toBeInTheDocument();
+  });
+
+  it("shows the setup copy for both the post-processing script and the watched-folder loops", async () => {
+    mockGet(featuresOut());
+
+    renderCard();
+    await screen.findByText("No tokens yet.");
+
+    expect(screen.getByText("1. Auto-upload every slice (metadata)")).toBeInTheDocument();
+    expect(screen.getByText(/Process → Others → Post-processing scripts/)).toBeInTheDocument();
+    expect(screen.getByText("python3 /path/to/bambu_postprocess.py")).toBeInTheDocument();
+    expect(screen.getByText(/This path uploads plain \.gcode/)).toBeInTheDocument();
+    expect(screen.getByText("2. Printable file (watched folder)")).toBeInTheDocument();
+    expect(screen.getByText(/Export plate sliced file/)).toBeInTheDocument();
+    expect(screen.getByText(/Send-to-printer button/)).toBeInTheDocument();
+  });
+
+  it("renders a cache-busting download link for the post-processing script", async () => {
+    mockGet(featuresOut());
+
+    renderCard();
+    await screen.findByText("No tokens yet.");
+
+    const link = screen.getByRole("link", { name: /Download bambu_postprocess\.py/ });
+    expect(link).toHaveAttribute("href", expect.stringMatching(/^\/bambu_postprocess\.py\?v=\d+$/));
+    expect(link).toHaveAttribute("download", "bambu_postprocess.py");
+  });
+
+  it("shows the watched-folder path and 'active' when the feature is enabled", async () => {
+    mockGet(featuresOut({ slicer_watch_dir: "/watch", slicer_watch_enabled: true }));
+
+    renderCard();
+
+    expect(await screen.findByText(/Watched folder:/)).toBeInTheDocument();
+    expect(screen.getByText("/watch")).toBeInTheDocument();
+    expect(screen.getByText(/\(active\)/)).toBeInTheDocument();
+    expect(screen.getByText(/TDMM_SLICER_WATCH_HOST_DIR/)).toBeInTheDocument();
+  });
+
+  it("shows a not-configured message when the watched folder is off", async () => {
+    mockGet(featuresOut());
+
+    renderCard();
+    await screen.findByText("No tokens yet.");
+
+    expect(screen.getByText(/Watched folder not configured/)).toBeInTheDocument();
+    expect(screen.getByText("TDMM_SLICER_WATCH_INTERVAL_S")).toBeInTheDocument();
+    expect(screen.queryByText(/Watched folder:/)).not.toBeInTheDocument();
+  });
+});

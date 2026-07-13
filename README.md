@@ -186,6 +186,61 @@ against a real A1 mini:
 Record the outcome in the milestone ledger; file any firmware-drift
 findings against the pinned-firmware note above.
 
+## Bambu Studio integration
+
+**No plugin hook exists.** Bambu Studio has no plugin SDK, and its
+`bambustudio://` deep links are domain-allowlisted to `makerworld.com`
+inside the binary — a self-hosted app has no way to register itself as a
+target for Studio's own "send"/"open in" actions. The two loops below,
+built on features Studio already exposes, are the supported path instead.
+
+**1. Auto-upload every slice (metadata).** In Studio: **Process → Others →
+Post-processing scripts**, add `python3 /path/to/bambu_postprocess.py`.
+Studio runs it after every slice and appends the sliced file's path as the
+last argument; the script itself (`scripts/bambu_postprocess.py` in this
+repo, also downloadable from **Settings → Accounts → Slicer
+integration**) reads two environment variables from wherever Studio
+itself runs (set them in your shell profile, or wrap the command in a
+small launcher — Studio doesn't let you pass any extra arguments of your
+own):
+
+- `TDMM_SLICER_URL` — e.g. `http://<this host>:8080/api/slicer/intake`
+- `TDMM_SLICER_TOKEN` — an API token minted from **Settings → Accounts →
+  Slicer integration**
+
+Every sliced plate is uploaded and matched to an existing model by name,
+or a new model is created if none matches. **This path only produces a
+plain `.gcode`** — useful for print history/metadata, but not something
+the app can send to a printer.
+
+**2. Printable file (watched folder).** For a file you can actually print
+from the app, use Studio's **File → Export → Export plate sliced file**
+(`.gcode.3mf`) into a folder this instance watches. It's imported the same
+way (matched/created by name), and because it's a real sliced plate, the
+resulting file gets the **Send-to-printer** button (Files tab and Print
+Queue). This is opt-in and OFF by default; enable it with:
+
+- `TDMM_SLICER_WATCH_INTERVAL_S` — seconds between polls (`.env`, `0`
+  means off)
+- `TDMM_SLICER_WATCH_STABLE_S` — how long a file's mtime must be quiet
+  before it's imported (default `10`; guards against importing an export
+  that's still being written)
+- `TDMM_SLICER_WATCH_HOST_DIR` — the host directory to point Studio's
+  export at, bind-mounted to `/watch` inside `worker-io` by
+  `compose.yaml`
+- the `beat` Celery profile running (`COMPOSE_PROFILES=printer,beat
+  docker compose up -d`, or `docker compose --profile beat up -d`) — a
+  positive interval alone does nothing without it
+
+A dropped file with an unrecognized extension is moved into `.failed/`
+inside the watched folder; successfully imported files move into
+`.imported/`.
+
+Both loops authenticate with the **same bearer-token plane the browser
+extension uses** — mint or revoke tokens from **Settings → Accounts →
+Slicer integration** (or **Browser extension**; either card manages the
+same token list, so a token from one works for the other).
+
 ## Gallery importers
 
 **What it does.** Paste a **Thingiverse** or **Printables** model URL on

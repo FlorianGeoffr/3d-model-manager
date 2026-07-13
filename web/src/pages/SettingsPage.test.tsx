@@ -169,6 +169,22 @@ describe("SettingsPage tabs", () => {
     expect(await screen.findByLabelText("Email")).toBeInTheDocument();
   });
 
+  // Round 8 T6: SlicerIntegrationCard joins BrowserExtensionCard as a
+  // single-column card in the Accounts grid (see the packing comment in
+  // SettingsPage.tsx).
+  it("renders the slicer integration card in the Accounts tab", async () => {
+    mockGet();
+
+    renderSettingsPage();
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Accounts" }));
+
+    expect(await screen.findByText("Slicer integration")).toBeInTheDocument();
+    expect(
+      screen.getByText("Send sliced files straight from Bambu Studio to your library."),
+    ).toBeInTheDocument();
+  });
+
   // You connect an account here, then go looking for its collections. They live
   // on their own page now, so the Accounts tab has to say where.
   it("points from the Accounts tab to the Collections page", async () => {

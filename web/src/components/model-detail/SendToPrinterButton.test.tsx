@@ -49,7 +49,10 @@ const SLICED_FILE: FileOut = {
 
 const MESH_FILE: FileOut = { ...SLICED_FILE, id: 8, format: "stl", kind: "mesh", rel_path: "model.stl" };
 
-function mockApi(features: Features, printers: PrinterOut[]) {
+// Only `printer_enabled` matters to this component -- `Pick` keeps every
+// call site above from having to also stub the Round 8 T6 slicer-watch
+// fields.
+function mockApi(features: Pick<Features, "printer_enabled">, printers: PrinterOut[]) {
   getMock.mockImplementation((path: string) => {
     if (path === "/features") return Promise.resolve(features);
     if (path === "/printers") return Promise.resolve(printers);

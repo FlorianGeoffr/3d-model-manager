@@ -8,6 +8,7 @@ import { PrinterSetupCard } from "@/components/settings/PrinterSetupCard";
 import { PrintablesAccountCard } from "@/components/settings/PrintablesAccountCard";
 import { ScanReport } from "@/components/settings/ScanReport";
 import { SiteTokensCard } from "@/components/settings/SiteTokensCard";
+import { SlicerIntegrationCard } from "@/components/settings/SlicerIntegrationCard";
 import { StorageBackendsCard } from "@/components/settings/StorageBackendsCard";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -75,18 +76,22 @@ export function SettingsPage() {
             <div className="grid gap-6 xl:grid-cols-2">
               {/* Sparse grid auto-placement never backfills: a col-span-2 card
                   only avoids stranding a cell if it starts an EVEN number of
-                  single-column cards in. With three single-column cards, a
-                  double placed after all three (the naive "keep it last")
-                  strands BrowserExtensionCard's row -- confirmed by rendering
-                  both orders. Placing the Bambu login form (two columns wide:
-                  email/region + password) right after the first pair keeps
-                  every row packed; BrowserExtensionCard trails alone in its
-                  own final row, which is a normal odd-item tail, not a strand
-                  (nothing sits below it to sandwich a gap). */}
+                  single-column cards in. Placing the Bambu login form (two
+                  columns wide: email/region + password) right after the
+                  first pair keeps every row packed. Round 8 T6 added
+                  SlicerIntegrationCard as a FOURTH single-column card
+                  (BrowserExtensionCard was the third and used to trail alone
+                  in an odd tail row) -- four singles + one double now pack
+                  into exactly three full rows with no orphan cell:
+                  [SiteTokens, Printables] / [Bambu (span 2)] /
+                  [BrowserExtension, SlicerIntegration]. Any future
+                  single-column card added here would go back to an odd tail
+                  unless paired with another single or the double is moved. */}
               <SiteTokensCard />
               <PrintablesAccountCard />
               <BambuAccountCard className="xl:col-span-2" />
               <BrowserExtensionCard />
+              <SlicerIntegrationCard />
             </div>
           </TabsContent>
         </Tabs>

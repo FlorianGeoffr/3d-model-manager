@@ -14,6 +14,11 @@ other exception -- it's mounted directly on ``api_router`` like
 it carries its own router-level ``require_api_token`` dependency (a separate,
 narrowly-scoped bearer-token auth plane, deliberately kept independent of
 ``require_session`` -- see ``app.api.ext``'s module docstring).
+
+``slicer.router`` (Round 8 Task 4: Bambu Studio post-processing intake) is
+mounted the same way, for the same reason -- a Bambu Studio post-processing
+script can't present the httponly session cookie either, so it authenticates
+with the SAME bearer-token plane ``ext.router`` uses.
 """
 
 from fastapi import APIRouter, Depends
@@ -38,6 +43,7 @@ from app.api import (
     revisions,
     scan,
     settings,
+    slicer,
     tags,
     uploads,
 )
@@ -48,6 +54,7 @@ api_router = APIRouter()
 api_router.include_router(health_router)
 api_router.include_router(auth.public_router)
 api_router.include_router(ext.router)
+api_router.include_router(slicer.router)
 
 protected_router = APIRouter(dependencies=[Depends(require_session)])
 protected_router.include_router(auth.protected_router)

@@ -12,11 +12,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import Settings
 from app.models.library import Blob, File, Model, Revision
-from app.schemas.reports import DuplicateFileOut, DuplicateGroupOut, DuplicatesReport
+from app.schemas.reports import (
+    DuplicateFileOut,
+    DuplicateGroupOut,
+    DuplicatesReport,
+    DuplicatesResolveOut,
+    KeepChoiceIn,
+    SkippedCopyOut,
+)
+from app.services.library import try_delete_duplicate_copy
 
 
 @dataclass(slots=True)
@@ -37,6 +47,8 @@ async def duplicate_files_report(db: AsyncSession) -> DuplicatesReport:
             Model.slug,
             Model.name,
             Model.is_archived,
+            Revision.id,
+            Model.current_revision_id,
         )
         .join(Blob, Blob.hash == File.blob_hash)
         .join(Revision, Revision.id == File.revision_id)
@@ -46,7 +58,18 @@ async def duplicate_files_report(db: AsyncSession) -> DuplicatesReport:
     rows = (await db.execute(stmt)).all()
 
     buckets: dict[str, _Bucket] = {}
-    for file_id, rel_path, blob_hash, size, model_id, model_slug, model_name, is_archived in rows:
+    for (
+        file_id,
+        rel_path,
+        blob_hash,
+        size,
+        model_id,
+        model_slug,
+        model_name,
+        is_archived,
+        revision_id,
+        current_revision_id,
+    ) in rows:
         bucket = buckets.setdefault(blob_hash, _Bucket(size=size))
         bucket.model_ids.add(model_id)
         bucket.files.append(
@@ -57,6 +80,7 @@ async def duplicate_files_report(db: AsyncSession) -> DuplicatesReport:
                 model_archived=is_archived,
                 file_id=file_id,
                 file_name=rel_path,
+                is_current_revision=revision_id == current_revision_id,
             )
         )
 
@@ -73,3 +97,62 @@ async def duplicate_files_report(db: AsyncSession) -> DuplicatesReport:
     groups.sort(key=lambda g: (-g.wasted_bytes, g.blob_hash))
 
     return DuplicatesReport(groups=groups, total_wasted_bytes=sum(g.wasted_bytes for g in groups))
+
+
+async def resolve_duplicates(
+    db: AsyncSession, settings: Settings, *, keep: list[KeepChoiceIn]
+) -> DuplicatesResolveOut:
+    """``POST /reports/duplicates/resolve`` (Round 11 Task 2): delete every
+    copy in each named group EXCEPT the client's chosen keeper.
+
+    Recomputes ``duplicate_files_report`` server-side rather than trusting
+    the client's rows -- the report can have moved since the client fetched
+    it (another delete, another upload). Every choice is validated against
+    that fresh report BEFORE anything is deleted, so an invalid request
+    (unknown group, or a keeper that isn't actually in its group) 404s with
+    nothing touched -- same validate-then-mutate posture as
+    ``bulk_hard_delete_models``. Groups NOT named in ``keep`` are left
+    alone; the request is explicitly scoped to what it lists.
+
+    Per-copy deletes go through ``try_delete_duplicate_copy``, which commits
+    per file -- so a mid-loop storage failure on one copy leaves every
+    already-deleted copy deleted (intended: the caller sees a partial
+    ``deleted``/``skipped`` split rather than losing progress to a rollback).
+    """
+    report = await duplicate_files_report(db)
+    groups_by_hash = {group.blob_hash: group for group in report.groups}
+
+    unknown_hashes = sorted(
+        {choice.blob_hash for choice in keep if choice.blob_hash not in groups_by_hash}
+    )
+    if unknown_hashes:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            f"duplicate group(s) not found: {', '.join(unknown_hashes)}",
+        )
+
+    for choice in keep:
+        group = groups_by_hash[choice.blob_hash]
+        member_ids = {f.file_id for f in group.files}
+        if choice.file_id not in member_ids:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                f"file {choice.file_id} is not part of duplicate group {choice.blob_hash}",
+            )
+
+    deleted = 0
+    reclaimed_bytes = 0
+    skipped: list[SkippedCopyOut] = []
+    for choice in keep:
+        group = groups_by_hash[choice.blob_hash]
+        for entry in group.files:
+            if entry.file_id == choice.file_id:
+                continue  # the keeper -- never a delete candidate
+            reason = await try_delete_duplicate_copy(db, settings, entry.file_id)
+            if reason is None:
+                deleted += 1
+                reclaimed_bytes += group.size
+            else:
+                skipped.append(SkippedCopyOut(file_id=entry.file_id, reason=reason))
+
+    return DuplicatesResolveOut(deleted=deleted, reclaimed_bytes=reclaimed_bytes, skipped=skipped)

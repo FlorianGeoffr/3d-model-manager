@@ -1593,14 +1593,49 @@ async def finalize_upload(
     return file
 
 
-async def delete_file(db: AsyncSession, settings: Settings, file_id: int) -> None:
-    """File ops apply only to the model's CURRENT revision (Task 5 brief);
-    409 otherwise.
+async def _hard_delete_file_row(
+    db: AsyncSession, settings: Settings, *, file: File, model: Model
+) -> None:
+    """Post-guard body shared by ``delete_file`` and
+    ``try_delete_duplicate_copy`` (Round 11 Task 2): resolve ``file``'s own
+    primary backend, delete its bytes (tolerating an already-missing
+    object), delete the ``File`` row, bump the owning model's
+    ``updated_at``, commit, then re-check the revision for an assembly
+    render. Callers own the raising/skip-reason guard checks -- this is
+    exactly the part that must not diverge between them.
 
     Workstream C task C2: deletes off ``file``'s OWN primary backend
     (``resolve_backend_for_file``), not the caller's default -- a file
     relocated (or adopted) onto a non-default backend must be deleted from
     where its bytes actually are.
+    """
+    backend = await resolve_backend_for_file(db, settings, file)
+    # Already absent from the backend (e.g. the write never landed, or a
+    # previous delete attempt crashed after removing the object but before
+    # this commit) is tolerated, not an error: treating it as one would
+    # permanently block deleting a `files` row whose object doesn't exist.
+    # The DB row is what "should this file exist" actually means here, so a
+    # missing backend object is just as good as a successful delete.
+    with contextlib.suppress(StorageKeyNotFound):
+        await anyio.to_thread.run_sync(backend.delete, file.storage_path)
+    revision_id = file.revision_id
+    await db.delete(file)
+    # Backlog fold: see `finalize_upload`'s matching comment -- deleting a
+    # file never otherwise issues an UPDATE against `models`.
+    model.updated_at = func.now()
+    await db.commit()
+
+    # Local import: breaks the same import cycle as `create_revision`'s call
+    # above (see that comment). The revision's composition just changed --
+    # re-check whether it's now ready for an assembly render.
+    from app.tasks.pipeline import maybe_enqueue_assembly_async
+
+    await maybe_enqueue_assembly_async(db, revision_id=revision_id)
+
+
+async def delete_file(db: AsyncSession, settings: Settings, file_id: int) -> None:
+    """File ops apply only to the model's CURRENT revision (Task 5 brief);
+    409 otherwise.
     """
     file = await db.get(File, file_id)
     if file is None:
@@ -1620,28 +1655,34 @@ async def delete_file(db: AsyncSession, settings: Settings, file_id: int) -> Non
         # the ingest task might still be about to touch.
         raise HTTPException(status.HTTP_409_CONFLICT, "file is still processing; retry once stored")
 
-    backend = await resolve_backend_for_file(db, settings, file)
-    # Already absent from the backend (e.g. the write never landed, or a
-    # previous delete attempt crashed after removing the object but before
-    # this commit) is tolerated, not an error: treating it as one would
-    # permanently block deleting a `files` row whose object doesn't exist.
-    # The DB row is what "should this file exist" actually means here, so a
-    # missing backend object is just as good as a successful delete.
-    with contextlib.suppress(StorageKeyNotFound):
-        await anyio.to_thread.run_sync(backend.delete, file.storage_path)
-    revision_id = revision.id
-    await db.delete(file)
-    # Backlog fold: see `finalize_upload`'s matching comment -- deleting a
-    # file never otherwise issues an UPDATE against `models`.
-    model.updated_at = func.now()
-    await db.commit()
+    await _hard_delete_file_row(db, settings, file=file, model=model)
 
-    # Local import: breaks the same import cycle as `create_revision`'s call
-    # above (see that comment). The revision's composition just changed --
-    # re-check whether it's now ready for an assembly render.
-    from app.tasks.pipeline import maybe_enqueue_assembly_async
 
-    await maybe_enqueue_assembly_async(db, revision_id=revision_id)
+async def try_delete_duplicate_copy(
+    db: AsyncSession, settings: Settings, file_id: int
+) -> str | None:
+    """``resolve_duplicates`` (Round 11 Task 2): same three guard checks as
+    ``delete_file``, but return a skip reason instead of raising -- one
+    unresolvable copy in a batch (already gone, on a superseded revision, or
+    mid-upload) must not abort the copies that ARE safe to delete.
+
+    Returns ``None`` on success (the row is gone); otherwise one of
+    ``"not_found"`` / ``"not_current_revision"`` / ``"store_pending"``.
+    """
+    file = await db.get(File, file_id)
+    if file is None:
+        return "not_found"
+    revision = await db.get(Revision, file.revision_id)
+    assert revision is not None  # FK guarantees this
+    model = await db.get(Model, revision.model_id)
+    assert model is not None  # FK guarantees this
+    if model.current_revision_id != file.revision_id:
+        return "not_current_revision"
+    if await _file_store_pending(db, file):
+        return "store_pending"
+
+    await _hard_delete_file_row(db, settings, file=file, model=model)
+    return None
 
 
 # -- tags -------------------------------------------------------------

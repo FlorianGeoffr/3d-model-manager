@@ -5,13 +5,19 @@ more than one distinct model.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Awaitable, Callable
 
+import blake3
 import httpx
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.library import File, Model, Revision
+from app.models.enums import BlobFormat, BlobKind
+from app.models.library import Blob, File, Model, Revision
+from app.services import jobs as jobs_service
+from app.storage.local import LocalStorageBackend
 
 pytestmark = pytest.mark.usefixtures("library_root")
 
@@ -26,6 +32,65 @@ async def _model_and_revision(db_session: AsyncSession, payload: dict) -> tuple[
     model = await db_session.get(Model, payload["id"])
     revision = await db_session.get(Revision, model.current_revision_id)
     return model, revision
+
+
+async def _file_on_revision(db_session: AsyncSession, revision_id: int, rel_path: str) -> File:
+    return (
+        await db_session.execute(
+            select(File).where(File.revision_id == revision_id, File.rel_path == rel_path)
+        )
+    ).scalar_one()
+
+
+async def _file_row_exists(db_session: AsyncSession, file_id: int) -> bool:
+    """Whether a ``File`` row survives, queried via a fresh ``select()``
+    rather than ``AsyncSession.get()`` -- ``get()``'s identity-map-first path
+    doesn't play well with this suite's ASGI-in-process test client when
+    checked right after an HTTP response carrying a JSON body (a
+    ``response_model=`` round trip through ``httpx.ASGITransport`` on the
+    SAME event loop as this session), so every post-request row check in
+    this module goes through a plain query instead.
+    """
+    rows = (await db_session.execute(select(File.id).where(File.id == file_id))).scalars().all()
+    return len(rows) == 1
+
+
+async def _seed_pending_copy(
+    db_session: AsyncSession, model: Model, revision: Revision, rel_path: str, content: bytes
+) -> File:
+    """Like ``seed_file``, but plants a ``File`` row whose store job hasn't
+    settled yet (``verified_at`` NULL, a live ``queued`` job) -- the
+    ``try_delete_duplicate_copy`` "store_pending" skip reason's setup
+    (mirrors ``test_revisions_api._seed_pending_file``). Checks for an
+    existing ``Blob`` row first, unlike that helper, since these tests seed
+    it ALONGSIDE a real ``seed_file()`` copy sharing the same content/hash
+    (a duplicate group needs >1 file sharing a hash by construction).
+    """
+    digest = blake3.blake3(content).hexdigest()
+    blob = await db_session.get(Blob, digest)
+    if blob is None:
+        blob = Blob(hash=digest, size=len(content), kind=BlobKind.MESH, format=BlobFormat.STL)
+        db_session.add(blob)
+        await db_session.flush()
+    file = File(
+        revision_id=revision.id,
+        blob_hash=digest,
+        rel_path=rel_path,
+        storage_path=f"{model.slug}/{revision.dir_name}/{rel_path}",
+        verified_at=None,
+    )
+    db_session.add(file)
+    await db_session.flush()
+    await jobs_service.create_job(
+        db_session,
+        id=uuid.uuid4(),
+        type="store_to_backend",
+        subject_type="file",
+        subject_id=file.id,
+    )
+    await db_session.commit()
+    await db_session.refresh(file)
+    return file
 
 
 async def test_duplicate_group_across_two_models(
@@ -169,3 +234,304 @@ async def test_groups_sorted_by_wasted_bytes_descending(
     assert body["groups"][1]["wasted_bytes"] == 100 * 1
     assert body["groups"][0]["wasted_bytes"] > body["groups"][1]["wasted_bytes"]
     assert body["total_wasted_bytes"] == 10000 * 2 + 100 * 1
+
+
+# ---------------------------------------------------------------------------
+# resolve (Round 11 Task 2): POST /reports/duplicates/resolve -- the client
+# names a keeper per duplicate group; the server deletes every OTHER copy in
+# that group. The keeper is never a delete candidate, so "a copy always
+# survives" is structural, not a guard this endpoint has to enforce.
+# ---------------------------------------------------------------------------
+
+
+async def test_resolve_honors_chosen_keeper(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    backend: LocalStorageBackend,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    model_a = await _create_model(authenticated_client, "Keeper Choice A")
+    model_b = await _create_model(authenticated_client, "Keeper Choice B")
+    model_c = await _create_model(authenticated_client, "Keeper Choice C")
+
+    a, a_rev = await _model_and_revision(db_session, model_a)
+    file_a = await seed_file(a, a_rev, "part.stl", b"triplicate-bytes")
+    b, b_rev = await _model_and_revision(db_session, model_b)
+    file_b = await seed_file(b, b_rev, "part.stl", b"triplicate-bytes")
+    c, c_rev = await _model_and_revision(db_session, model_c)
+    file_c = await seed_file(c, c_rev, "part.stl", b"triplicate-bytes")
+
+    size = len(b"triplicate-bytes")
+    blob_hash = file_a.blob_hash
+
+    # Keep the LAST-created (highest model_id) copy -- not the lowest -- to
+    # rule out an implementation that silently always keeps the first row.
+    response = await authenticated_client.post(
+        "/api/reports/duplicates/resolve",
+        json={"keep": [{"blob_hash": blob_hash, "file_id": file_c.id}]},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body == {"deleted": 2, "reclaimed_bytes": 2 * size, "skipped": []}
+
+    assert not await _file_row_exists(db_session, file_a.id)
+    assert not await _file_row_exists(db_session, file_b.id)
+    assert await _file_row_exists(db_session, file_c.id)
+
+    assert not backend.exists(file_a.storage_path)
+    assert not backend.exists(file_b.storage_path)
+    assert backend.exists(file_c.storage_path)
+
+
+async def test_resolve_scoped_group_leaves_others_untouched(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    backend: LocalStorageBackend,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    model_a1 = await _create_model(authenticated_client, "Scoped Group One A")
+    model_a2 = await _create_model(authenticated_client, "Scoped Group One B")
+    model_b1 = await _create_model(authenticated_client, "Scoped Group Two A")
+    model_b2 = await _create_model(authenticated_client, "Scoped Group Two B")
+
+    a1, a1_rev = await _model_and_revision(db_session, model_a1)
+    keep_file = await seed_file(a1, a1_rev, "one.stl", b"group-one-bytes")
+    a2, a2_rev = await _model_and_revision(db_session, model_a2)
+    drop_file = await seed_file(a2, a2_rev, "one.stl", b"group-one-bytes")
+
+    b1, b1_rev = await _model_and_revision(db_session, model_b1)
+    other_file_1 = await seed_file(b1, b1_rev, "two.stl", b"group-two-bytes")
+    b2, b2_rev = await _model_and_revision(db_session, model_b2)
+    other_file_2 = await seed_file(b2, b2_rev, "two.stl", b"group-two-bytes")
+
+    response = await authenticated_client.post(
+        "/api/reports/duplicates/resolve",
+        json={"keep": [{"blob_hash": keep_file.blob_hash, "file_id": keep_file.id}]},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["deleted"] == 1
+    assert body["skipped"] == []
+
+    assert await _file_row_exists(db_session, keep_file.id)
+    assert not await _file_row_exists(db_session, drop_file.id)
+    # The other group was never named -- fully untouched.
+    assert await _file_row_exists(db_session, other_file_1.id)
+    assert await _file_row_exists(db_session, other_file_2.id)
+    assert backend.exists(other_file_1.storage_path)
+    assert backend.exists(other_file_2.storage_path)
+
+
+async def test_resolve_unknown_blob_hash_404_nothing_deleted(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    model_p = await _create_model(authenticated_client, "Unknown Hash P")
+    model_q = await _create_model(authenticated_client, "Unknown Hash Q")
+
+    p, p_rev = await _model_and_revision(db_session, model_p)
+    keep_file = await seed_file(p, p_rev, "real.stl", b"real-duplicate-bytes")
+    q, q_rev = await _model_and_revision(db_session, model_q)
+    drop_file = await seed_file(q, q_rev, "real.stl", b"real-duplicate-bytes")
+
+    response = await authenticated_client.post(
+        "/api/reports/duplicates/resolve",
+        json={
+            "keep": [
+                # A perfectly valid choice ...
+                {"blob_hash": keep_file.blob_hash, "file_id": keep_file.id},
+                # ... alongside a hash that names no current duplicate group.
+                {"blob_hash": "0" * 64, "file_id": 999999},
+            ]
+        },
+    )
+
+    assert response.status_code == 404
+    assert "0" * 64 in response.text
+
+    # Validation runs BEFORE any deletion -- the otherwise-valid choice in
+    # the same request must not have gone through either.
+    assert await _file_row_exists(db_session, keep_file.id)
+    assert await _file_row_exists(db_session, drop_file.id)
+
+
+async def test_resolve_keeper_not_in_group_404_nothing_deleted(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    model_a1 = await _create_model(authenticated_client, "Mismatched Keeper A1")
+    model_a2 = await _create_model(authenticated_client, "Mismatched Keeper A2")
+    model_b1 = await _create_model(authenticated_client, "Mismatched Keeper B1")
+    model_b2 = await _create_model(authenticated_client, "Mismatched Keeper B2")
+
+    a1, a1_rev = await _model_and_revision(db_session, model_a1)
+    file_a1 = await seed_file(a1, a1_rev, "one.stl", b"mismatch-group-one")
+    a2, a2_rev = await _model_and_revision(db_session, model_a2)
+    file_a2 = await seed_file(a2, a2_rev, "one.stl", b"mismatch-group-one")
+
+    b1, b1_rev = await _model_and_revision(db_session, model_b1)
+    file_b1 = await seed_file(b1, b1_rev, "two.stl", b"mismatch-group-two")
+    b2, b2_rev = await _model_and_revision(db_session, model_b2)
+    file_b2 = await seed_file(b2, b2_rev, "two.stl", b"mismatch-group-two")
+
+    # Valid hash (group one), but a file_id that belongs to group two.
+    response = await authenticated_client.post(
+        "/api/reports/duplicates/resolve",
+        json={"keep": [{"blob_hash": file_a1.blob_hash, "file_id": file_b1.id}]},
+    )
+
+    assert response.status_code == 404
+    assert str(file_b1.id) in response.text
+    assert file_a1.blob_hash in response.text
+
+    for f in (file_a1, file_a2, file_b1, file_b2):
+        assert await _file_row_exists(db_session, f.id)
+
+
+async def test_resolve_skips_non_current_revision_copy(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    """A dupe copy sitting on a SUPERSEDED revision can't be hard-deleted
+    (file ops are current-revision-only, same guard as ``DELETE
+    /files/{id}``) -- ``resolve_duplicates`` skips it with a reason instead
+    of failing the whole request.
+    """
+    model_a = await _create_model(authenticated_client, "Superseded Copy A")
+    model_b = await _create_model(authenticated_client, "Superseded Copy B")
+
+    a, a_rev1 = await _model_and_revision(db_session, model_a)
+    stale_file = await seed_file(a, a_rev1, "part.stl", b"superseded-bytes")
+
+    # New revision snapshot-copies the current revision's files forward, so
+    # model_a now has TWO rows sharing this hash: the original on rev1
+    # (no longer current) and a fresh copy on the new current revision.
+    new_revision = await authenticated_client.post(
+        f"/api/models/{model_a['id']}/revisions", json={}
+    )
+    assert new_revision.status_code == 201, new_revision.text
+    current_file = await _file_on_revision(db_session, new_revision.json()["id"], "part.stl")
+
+    b, b_rev = await _model_and_revision(db_session, model_b)
+    other_file = await seed_file(b, b_rev, "part.stl", b"superseded-bytes")
+
+    response = await authenticated_client.post(
+        "/api/reports/duplicates/resolve",
+        json={"keep": [{"blob_hash": stale_file.blob_hash, "file_id": current_file.id}]},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["skipped"] == [{"file_id": stale_file.id, "reason": "not_current_revision"}]
+    assert body["deleted"] == 1
+    assert body["reclaimed_bytes"] == len(b"superseded-bytes")
+
+    assert await _file_row_exists(db_session, stale_file.id)
+    assert not await _file_row_exists(db_session, other_file.id)
+    assert await _file_row_exists(db_session, current_file.id)
+
+
+async def test_resolve_skips_pending_store_copy(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    model_a = await _create_model(authenticated_client, "Pending Copy A")
+    model_b = await _create_model(authenticated_client, "Pending Copy B")
+
+    a, a_rev = await _model_and_revision(db_session, model_a)
+    keep_file = await seed_file(a, a_rev, "part.stl", b"pending-store-bytes")
+    b, b_rev = await _model_and_revision(db_session, model_b)
+    pending_file = await _seed_pending_copy(
+        db_session, b, b_rev, "part.stl", b"pending-store-bytes"
+    )
+
+    response = await authenticated_client.post(
+        "/api/reports/duplicates/resolve",
+        json={"keep": [{"blob_hash": keep_file.blob_hash, "file_id": keep_file.id}]},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["skipped"] == [{"file_id": pending_file.id, "reason": "store_pending"}]
+    assert body["deleted"] == 0
+    assert body["reclaimed_bytes"] == 0
+
+    assert await _file_row_exists(db_session, pending_file.id)
+
+
+async def test_resolve_empty_keep_returns_zeroes(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    response = await authenticated_client.post("/api/reports/duplicates/resolve", json={"keep": []})
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"deleted": 0, "reclaimed_bytes": 0, "skipped": []}
+
+
+async def test_resolve_bumps_updated_at_on_affected_models(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    """``_hard_delete_file_row``'s ``model.updated_at`` bump (shared with
+    ``delete_file``) fires for a resolve-triggered delete too -- checked the
+    same way ``test_upload_to_old_model_bumps_it_above_an_untouched_newer_model``
+    checks it, via the gallery's default sort, to sidestep raw timestamp
+    resolution.
+    """
+    model_keeper = await _create_model(authenticated_client, "Bump Keeper")
+    model_dropped = await _create_model(authenticated_client, "Bump Dropped")
+    await _create_model(authenticated_client, "Bump Untouched Newer")
+
+    keeper, keeper_rev = await _model_and_revision(db_session, model_keeper)
+    keep_file = await seed_file(keeper, keeper_rev, "part.stl", b"bump-bytes")
+    dropped, dropped_rev = await _model_and_revision(db_session, model_dropped)
+    await seed_file(dropped, dropped_rev, "part.stl", b"bump-bytes")
+
+    response = await authenticated_client.post(
+        "/api/reports/duplicates/resolve",
+        json={"keep": [{"blob_hash": keep_file.blob_hash, "file_id": keep_file.id}]},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["deleted"] == 1
+
+    gallery = await authenticated_client.get("/api/models")
+    names = [item["name"] for item in gallery.json()["items"]]
+    assert names[0] == "Bump Dropped"
+
+
+async def test_report_exposes_is_current_revision(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    model_a = await _create_model(authenticated_client, "Revision Flag A")
+    model_b = await _create_model(authenticated_client, "Revision Flag B")
+
+    a, a_rev1 = await _model_and_revision(db_session, model_a)
+    stale_file = await seed_file(a, a_rev1, "part.stl", b"revision-flag-bytes")
+
+    new_revision = await authenticated_client.post(
+        f"/api/models/{model_a['id']}/revisions", json={}
+    )
+    assert new_revision.status_code == 201, new_revision.text
+    current_file = await _file_on_revision(db_session, new_revision.json()["id"], "part.stl")
+
+    b, b_rev = await _model_and_revision(db_session, model_b)
+    other_file = await seed_file(b, b_rev, "part.stl", b"revision-flag-bytes")
+
+    response = await authenticated_client.get("/api/reports/duplicates")
+    assert response.status_code == 200
+    body = response.json()
+
+    assert len(body["groups"]) == 1
+    entries = {f["file_id"]: f for f in body["groups"][0]["files"]}
+    assert entries[stale_file.id]["is_current_revision"] is False
+    assert entries[current_file.id]["is_current_revision"] is True
+    assert entries[other_file.id]["is_current_revision"] is True

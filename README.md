@@ -30,12 +30,16 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-This starts five services: `api` (port `8080`), `worker-io` (uploads/store),
-`worker-cpu` (the metadata/GLB-conversion/thumbnail pipeline, one process per
-core, memory-recycled -- see "Worker split" below), `db` (Postgres 16), and
-`redis`. The api container runs Alembic migrations on startup, then serves
-both the JSON API (`/api/...`) and the built frontend SPA at
-<http://localhost:8080>.
+This starts every service, always — there are no compose profiles to opt
+into: `api` (port `8080`), `worker-io` (uploads/store), `worker-cpu` (the
+metadata/GLB-conversion/thumbnail pipeline, one process per core,
+memory-recycled -- see "Worker split" below), `beat` (ticks the scan/
+collection-sync/watched-folder dispatcher), `printerd` (the Bambu LAN MQTT
+supervisor), `db` (Postgres 16), and `redis`. `beat` and `printerd` idle
+harmlessly when their corresponding features are off in Settings — see
+"Scheduled scan" and "Printer integration" below. The api container runs
+Alembic migrations on startup, then serves both the JSON API (`/api/...`)
+and the built frontend SPA at <http://localhost:8080>.
 
 Models and files are written to `./library` on the host (bind-mounted); job
 spool state and other app data live in the `tdmm_data` named volume.
@@ -51,6 +55,8 @@ docker compose logs api | grep -i password
 Copy it down immediately — it is not recoverable afterwards (short of
 resetting the `db` volume). To pin a known password instead (e.g. for
 scripting), set `ADMIN_PASSWORD` in `.env` before the first `up`.
+`ADMIN_PASSWORD` only ever seeds the account on that first boot; change the
+password afterwards from **Settings → General**, not by editing `.env`.
 
 To tear the stack down (keeping data): `docker compose down`. To also drop
 the database/volumes: `docker compose down --volumes`.
@@ -79,6 +85,20 @@ docker run --rm -e PUID=1000 -e PGID=1000 -e ROLE=api tdmm:local id -u
 # -> 1000
 ```
 
+## Upgrading
+
+If you're upgrading a deployment from before the Settings-UI move (Round
+10): the five old env vars (`PRINTER_ENABLED`, `SCAN_INTERVAL`,
+`COLLECTION_SYNC_INTERVAL`, `WATCH_INTERVAL`, `WATCH_STABLE`) and
+`COMPOSE_PROFILES`/`--profile` are all obsolete. On the first boot after
+upgrading, whichever of the five env vars are still set in `.env` seed the
+new database-backed settings exactly once (a startup warning in the api
+logs names any it saw); every boot after that ignores them completely, and
+all further changes happen live from the Settings UI. Once you've
+confirmed the values under **Settings → General → Automation & scheduling**
+and **Settings → Printer** look right, delete those lines from `.env` —
+they no longer do anything.
+
 ## Storage backends & the scanner
 
 The active storage backend (local directory, SMB, or S3 — exactly one at a
@@ -106,22 +126,24 @@ the app. A scan relinks moved folders by hash (without re-hashing files
 that didn't move), adopts folders dropped straight onto the share as new
 draft models for review, and flags files present in the database but
 missing on disk for a human to resolve. It never deletes library content or
-database rows. To run scans automatically on a schedule instead of only
-on demand, set `SCAN_INTERVAL` (seconds) in `.env` and start the
-optional `beat` service: `docker compose --profile beat up -d`.
+database rows. **Manual `Scan now` runs immediately.** To also run scans on
+a schedule, set a positive interval under **Settings → General →
+Automation & scheduling** — `beat` (always running) picks the change up
+within ~15 s, and (arm-and-skip) the first automatic run lands one full
+interval after you enable it, not immediately.
 
-Followed remote collections/favourites can sync on the same schedule
-instead of only via the Settings **"Sync now"** button — set
-`COLLECTION_SYNC_INTERVAL` (seconds) in `.env` and start the same
-optional `beat` service.
+Followed remote collections/favourites can sync on the same kind of
+schedule instead of only via the Settings **"Sync now"** button (also
+immediate) — set the collection-sync interval in the same **Settings →
+General → Automation & scheduling** panel; the same ~15 s apply latency and
+one-interval arm delay apply.
 
 ## Printer integration (Bambu LAN, feature-flagged)
 
-**Off by default.** Enable it by setting `PRINTER_ENABLED=true` in
-`.env` **and** starting the printer daemon with `docker compose --profile
-printer up -d` (a plain `up` never starts `printerd`) — both are required.
-With the flag off (the default), the app is fully usable: the printers API
-503s and the Printer nav hides.
+**Off by default.** Enable it live, no restart, with the toggle at
+**Settings → Printer** — `printerd` (always running) picks the change up
+on its next reconcile tick. With the toggle off (the default), the app is
+fully usable: the printers API 503s and the Printer nav hides.
 
 **Printer prerequisites**: an A1/A1 mini on firmware **≥ 01.05.00.00**. On
 the printer's screen, enable **LAN-only Mode**, power-cycle it, then enable
@@ -175,10 +197,9 @@ against a real A1 mini:
 
 1. On the printer: firmware ≥ 01.05, enable **LAN-only Mode** → power-cycle
    → enable **Developer Mode**; note the access code.
-2. Set `PRINTER_ENABLED=true`, `docker compose --profile printer up
-   -d`; add the printer in **Settings → Printer** (host/serial/access
-   code); **Test connection** should report `ok:true` with a real
-   `gcode_state`.
+2. Flip the toggle on at **Settings → Printer**, then add the printer
+   there (host/serial/access code); **Test connection** should report
+   `ok:true` with a real `gcode_state`.
 3. Export a plate as `.gcode.3mf` from Bambu Studio, upload it to a model,
    open **Files → Print**, pick the plate/AMS/calibration options, and
    **Send** — **the A1 mini starts the print** (the load-bearing
@@ -225,17 +246,16 @@ way (matched/created by name), and because it's a real sliced plate, the
 resulting file gets the **Send-to-printer** button (Files tab and Print
 Queue). This is opt-in and OFF by default; enable it with:
 
-- `WATCH_INTERVAL` — seconds between polls (`.env`, `0`
-  means off)
-- `WATCH_STABLE` — how long a file's mtime must be quiet
-  before it's imported (default `10`; guards against importing an export
-  that's still being written)
+- The poll interval and mtime-stability window, both under **Settings →
+  General → Automation & scheduling** — a positive poll interval turns
+  watching on (`0` means off); the stability window (default `10` s) is
+  how long a file's mtime must be quiet before it's imported, guarding
+  against importing an export that's still being written. `beat` (always
+  running) picks up an edit within ~15 s.
 - `WATCH_HOST_DIR` — the host directory to point Studio's
   export at, bind-mounted to `/watch` inside `worker-io` by
-  `compose.yaml`
-- the `beat` Celery profile running (`COMPOSE_PROFILES=printer,beat
-  docker compose up -d`, or `docker compose --profile beat up -d`) — a
-  positive interval alone does nothing without it
+  `compose.yaml` (env-configured; there's no UI for this one since it's
+  container topology, not a runtime feature)
 
 A dropped file with an unrecognized extension is moved into `.failed/`
 inside the watched folder; successfully imported files move into
@@ -394,10 +414,10 @@ the M1 upload/revision/diff/download/restart flow, the M2 metadata/GLB/
 thumbnail pipeline flow, the M3 scan drill — move a folder on the
 bind-mounted share, rescan, relink by hash, download-verify; drop an
 untracked folder, rescan, adopt it as a draft model — and the M4 printer
-flow — flag off (printers 503, app otherwise fine), flip
-`PRINTER_ENABLED` on, register a printer, probe it (soft-fails, no
-hardware), and confirm a bare `.gcode` and a not-ready printer are both
-rejected before any print starts — all over HTTP) lives in
+flow — flag off (printers 503, app otherwise fine), flip the printer
+toggle on, register a printer, probe it (soft-fails, no hardware), and
+confirm a bare `.gcode` and a not-ready printer are both rejected before
+any print starts — all over HTTP) lives in
 `backend/tests_e2e/` and runs via:
 
 ```sh

@@ -41,3 +41,18 @@ export function useLogout() {
     onSuccess: () => queryClient.setQueryData(authQueryOptions.queryKey, undefined),
   });
 }
+
+export interface ChangePasswordPayload {
+  current_password: string;
+  new_password: string;
+}
+
+/** `POST /auth/password` (Round 10 T4): rotates the admin's password hash
+ * and deletes every OTHER session for this user server-side. The current
+ * session (and its cookie) stays valid on success, so no client-side
+ * session/redirect handling is needed here beyond the request itself. */
+export function useChangePassword() {
+  return useMutation({
+    mutationFn: (payload: ChangePasswordPayload) => api.post<void>("/auth/password", payload),
+  });
+}

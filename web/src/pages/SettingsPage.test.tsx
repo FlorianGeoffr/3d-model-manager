@@ -103,11 +103,27 @@ function fakeBackend(overrides: Partial<StorageBackendOut> = {}): StorageBackend
   };
 }
 
+// General is now the default tab (Round 10 T5), so every render mounts
+// AutomationCard (`GET /settings/app` + `GET /features`) even in tests that
+// only care about another tab -- these two need a well-shaped default so
+// that mount doesn't error or hang on an unresolved fetch.
+function fakeAppSettings() {
+  return {
+    printer_enabled: false,
+    scan_interval_s: 3600,
+    collection_sync_interval_s: 3600,
+    watch_interval_s: 0,
+    watch_stable_s: 5,
+  };
+}
+
 function mockGet(backends: StorageBackendOut[] = []) {
   getMock.mockImplementation((path: string) => {
     if (path === "/settings/storage/backends") return Promise.resolve(backends);
     // BambuAccountCard's status query -- a well-shaped not-connected response.
     if (path === "/settings/bambu") return Promise.resolve({ connected: false, account: null, region: "global" });
+    if (path === "/settings/app") return Promise.resolve(fakeAppSettings());
+    if (path === "/features") return Promise.resolve({ printer_enabled: false, watch_dir: null, watch_enabled: false });
     return Promise.resolve([]);
   });
 }
@@ -147,15 +163,39 @@ beforeEach(() => {
 });
 
 describe("SettingsPage tabs", () => {
-  it("shows exactly Storage, Printer, and Accounts tabs -- no Scan tab", async () => {
+  it("shows exactly General, Storage, Printer, and Accounts tabs -- no Scan tab", async () => {
     mockGet();
 
     renderSettingsPage();
 
     const tabs = await screen.findAllByRole("tab");
-    expect(tabs.map((tab) => tab.textContent)).toEqual(["Storage", "Printer", "Accounts"]);
+    expect(tabs.map((tab) => tab.textContent)).toEqual(["General", "Storage", "Printer", "Accounts"]);
     expect(screen.queryByRole("tab", { name: "Scan" })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Imports" })).not.toBeInTheDocument();
+  });
+
+  // Round 10 T5: General is the new leftmost tab and the default -- the
+  // automation/scheduling and password cards should be visible with no click.
+  it("renders General as the default tab, with the automation and password cards", async () => {
+    mockGet();
+
+    renderSettingsPage();
+
+    expect(await screen.findByText("Automation & scheduling")).toBeInTheDocument();
+    expect(screen.getByText("Password")).toBeInTheDocument();
+  });
+
+  // Round 10 T5: the printer on/off toggle lives ABOVE the printer setup
+  // form and is always visible, regardless of the flag's current value.
+  it("renders the printer-enabled toggle above printer setup in the Printer tab", async () => {
+    mockGet();
+
+    renderSettingsPage();
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Printer" }));
+
+    expect(await screen.findByRole("switch", { name: "Enable printer integration" })).toBeInTheDocument();
+    expect(screen.getByText("Printer setup")).toBeInTheDocument();
   });
 
   it("renders the Bambu account card in the Accounts tab", async () => {
@@ -205,6 +245,8 @@ describe("SettingsPage tabs", () => {
 
     renderSettingsPage();
 
+    fireEvent.click(await screen.findByRole("tab", { name: "Storage" }));
+
     expect(await screen.findByText("Storage scan")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Run scan" })).toBeInTheDocument();
   });
@@ -218,6 +260,7 @@ describe("SettingsPage -- storage backends list", () => {
     ]);
 
     renderSettingsPage();
+    fireEvent.click(await screen.findByRole("tab", { name: "Storage" }));
 
     expect(await screen.findByText("Primary NAS")).toBeInTheDocument();
     expect(screen.getByText("Cold storage")).toBeInTheDocument();
@@ -237,6 +280,7 @@ describe("SettingsPage -- storage backends list", () => {
     });
 
     renderSettingsPage();
+    fireEvent.click(await screen.findByRole("tab", { name: "Storage" }));
     await screen.findByText("Primary");
 
     fireEvent.click(screen.getByRole("button", { name: "Add backend" }));
@@ -260,6 +304,7 @@ describe("SettingsPage -- storage backends list", () => {
     postMock.mockResolvedValue(fakeBackend({ id: 2, name: "Backup", is_default: true }));
 
     renderSettingsPage();
+    fireEvent.click(await screen.findByRole("tab", { name: "Storage" }));
     await screen.findByText("Backup");
 
     const backupRow = screen.getByText("Backup").closest("tr");
@@ -277,6 +322,7 @@ describe("SettingsPage -- storage backends list", () => {
     postMock.mockResolvedValue({ id: "job-1", type: "relocate_all", state: "queued" });
 
     renderSettingsPage();
+    fireEvent.click(await screen.findByRole("tab", { name: "Storage" }));
     await screen.findByText("Backup");
 
     const backupRow = screen.getByText("Backup").closest("tr");
@@ -303,6 +349,7 @@ describe("SettingsPage -- storage backends list", () => {
     );
 
     renderSettingsPage();
+    fireEvent.click(await screen.findByRole("tab", { name: "Storage" }));
     await screen.findByText("Backup");
 
     const backupRow = screen.getByText("Backup").closest("tr");

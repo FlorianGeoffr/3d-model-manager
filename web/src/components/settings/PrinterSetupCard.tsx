@@ -68,9 +68,7 @@ export function PrinterSetupCard() {
       <Card>
         <CardHeader>
           <CardTitle>Printer setup</CardTitle>
-          <CardDescription>
-            Printer integration is disabled (set <code>PRINTER_ENABLED</code>).
-          </CardDescription>
+          <CardDescription>Printer integration is off. Enable it above to add and manage printers.</CardDescription>
         </CardHeader>
       </Card>
     );

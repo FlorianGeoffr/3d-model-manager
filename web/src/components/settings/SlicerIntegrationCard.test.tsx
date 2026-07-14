@@ -143,8 +143,7 @@ describe("SlicerIntegrationCard", () => {
     renderCard();
     await screen.findByText("No tokens yet.");
 
-    expect(screen.getByText(/Watched folder not configured/)).toBeInTheDocument();
-    expect(screen.getByText("WATCH_INTERVAL")).toBeInTheDocument();
+    expect(screen.getByText(/Watched-folder polling is off/)).toBeInTheDocument();
     expect(screen.queryByText(/Watched folder:/)).not.toBeInTheDocument();
   });
 });

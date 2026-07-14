@@ -67,7 +67,7 @@ describe("PrinterSetupCard", () => {
 
     renderCard();
 
-    expect(await screen.findByText(/Printer integration is disabled/)).toBeInTheDocument();
+    expect(await screen.findByText(/Printer integration is off/)).toBeInTheDocument();
     expect(screen.queryByLabelText(/Name/)).not.toBeInTheDocument();
   });
 

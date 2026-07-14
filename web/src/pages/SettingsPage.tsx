@@ -2,8 +2,11 @@ import { Link } from "@tanstack/react-router";
 
 import { ApiError } from "@/api/client";
 import { useStorageBackends } from "@/api/settings";
+import { AutomationCard } from "@/components/settings/AutomationCard";
 import { BambuAccountCard } from "@/components/settings/BambuAccountCard";
 import { BrowserExtensionCard } from "@/components/settings/BrowserExtensionCard";
+import { ChangePasswordCard } from "@/components/settings/ChangePasswordCard";
+import { PrinterEnabledCard } from "@/components/settings/PrinterEnabledCard";
 import { PrinterSetupCard } from "@/components/settings/PrinterSetupCard";
 import { PrintablesAccountCard } from "@/components/settings/PrintablesAccountCard";
 import { ScanReport } from "@/components/settings/ScanReport";
@@ -27,7 +30,7 @@ export function SettingsPage() {
       <div>
         <h1 className="text-lg font-semibold text-foreground">Settings</h1>
         <p className="text-sm text-muted-foreground">
-          Storage backends, printer, and connected accounts.
+          Automation, storage backends, printer, and connected accounts.
         </p>
       </div>
 
@@ -48,17 +51,23 @@ export function SettingsPage() {
           </div>
         </Card>
       ) : (
-        <Tabs defaultValue="storage">
+        <Tabs defaultValue="general">
           <TabsList>
+            <TabsTrigger value="general">General</TabsTrigger>
             <TabsTrigger value="storage">Storage</TabsTrigger>
             <TabsTrigger value="printer">Printer</TabsTrigger>
             <TabsTrigger value="accounts">Accounts</TabsTrigger>
           </TabsList>
+          <TabsContent value="general" className="space-y-6">
+            <AutomationCard />
+            <ChangePasswordCard />
+          </TabsContent>
           <TabsContent value="storage" className="space-y-6">
             <StorageBackendsCard />
             <ScanReport />
           </TabsContent>
           <TabsContent value="printer" className="space-y-6">
+            <PrinterEnabledCard />
             <PrinterSetupCard />
           </TabsContent>
           <TabsContent value="accounts" className="space-y-6">

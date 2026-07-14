@@ -123,8 +123,7 @@ function WatchedFolderStatus() {
   if (!features.data?.watch_enabled) {
     return (
       <p className="text-xs text-muted-foreground">
-        Watched folder not configured — set <code className="rounded bg-muted px-1 py-0.5">WATCH_INTERVAL</code> and
-        the beat profile in <code className="rounded bg-muted px-1 py-0.5">.env</code>.
+        Watched-folder polling is off — set a poll interval under Settings → General → Automation.
       </p>
     );
   }

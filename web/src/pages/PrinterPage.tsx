@@ -28,8 +28,8 @@ export function PrinterPage() {
         <CardHeader className="text-center">
           <CardTitle>Printer integration is off</CardTitle>
           <CardDescription>
-            Set <code>PRINTER_ENABLED=true</code> and start the <code>printerd</code> service (
-            <code>docker compose --profile printer up</code>) to enable it.
+            Turn it on under Settings → Printer to connect your Bambu printer over the LAN. It
+            takes effect immediately — no restart.
           </CardDescription>
         </CardHeader>
       </Card>

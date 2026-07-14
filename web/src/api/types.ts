@@ -437,6 +437,20 @@ export interface Features {
   watch_enabled: boolean;
 }
 
+// `GET`/`PUT /settings/app` (backend/app/schemas/settings.py's
+// AppSettingsIn/Out, backend/app/services/app_config.py; Round 10 T1) -- the
+// DB-backed runtime config behind `Features` above: the printer toggle and
+// the four background-schedule intervals, editable from Settings without an
+// env var or restart. All five fields are REQUIRED on `PUT` (full replace,
+// nothing secret) -- 0 turns a schedule off.
+export interface AppSettings {
+  printer_enabled: boolean;
+  scan_interval_s: number;
+  collection_sync_interval_s: number;
+  watch_interval_s: number;
+  watch_stable_s: number;
+}
+
 export type PrinterKind = "bambu_lan";
 
 export interface PrinterOut {

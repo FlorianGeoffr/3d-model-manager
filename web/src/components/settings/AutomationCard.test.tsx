@@ -110,4 +110,51 @@ describe("AutomationCard", () => {
     );
     expect(await screen.findByText("Saved.")).toBeInTheDocument();
   });
+
+  it("M2: blocks save and shows an inline error when a field is cleared, instead of silently saving 0", async () => {
+    mockGet(fakeSettings());
+
+    renderCard();
+    await screen.findByLabelText("Library scan interval (seconds)");
+
+    fireEvent.change(screen.getByLabelText("Library scan interval (seconds)"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Required -- enter 0 to turn this off.");
+    expect(putMock).not.toHaveBeenCalled();
+  });
+
+  it("M2: blocks save with an inline error when a non-integer is typed into an int field", async () => {
+    mockGet(fakeSettings());
+
+    renderCard();
+    await screen.findByLabelText("Collection sync interval (seconds)");
+
+    fireEvent.change(screen.getByLabelText("Collection sync interval (seconds)"), {
+      target: { value: "12.5" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Must be a whole number of seconds.");
+    expect(putMock).not.toHaveBeenCalled();
+  });
+
+  it("M2: clearing the error re-enables save once the field is fixed", async () => {
+    mockGet(fakeSettings());
+    putMock.mockResolvedValue(fakeSettings());
+
+    renderCard();
+    await screen.findByLabelText("Library scan interval (seconds)");
+
+    const input = screen.getByLabelText("Library scan interval (seconds)");
+    fireEvent.change(input, { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Required -- enter 0 to turn this off.");
+
+    fireEvent.change(input, { target: { value: "0" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(putMock).toHaveBeenCalled());
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
 });

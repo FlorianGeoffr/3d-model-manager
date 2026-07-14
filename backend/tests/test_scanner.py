@@ -315,6 +315,37 @@ async def test_unknown_folder_adopts_as_draft_model_review_me(
 
 
 # ---------------------------------------------------------------------------
+# 4b. C1 regression: TWO distinct new (unknown-fit) top-level folders with
+#     unknown-hash files land in the SAME pass-2 chunk. The second folder's
+#     draft-model creation autoflushes (`_unique_slug_sync`'s select, plus
+#     `_resolve_adopt_target`'s explicit flushes) mid-loop -- that used to
+#     insert the FIRST folder's already-``session.add``-ed File row while its
+#     Blob still sat only in a deferred `new_blobs` list, never having been
+#     added to the session, tripping `fk_files_blob_hash_blobs`.
+# ---------------------------------------------------------------------------
+
+
+async def test_two_new_draft_folders_in_one_chunk_does_not_violate_blob_fk(
+    db_session: AsyncSession, backend: LocalStorageBackend
+) -> None:
+    backend.write("alpha-drop/thing.stl", [b"alpha-bytes"])
+    backend.write("beta-drop/thing.stl", [b"beta-bytes"])
+
+    scan_run = _run_scan(backend)
+
+    assert scan_run.state == "done"
+    assert scan_run.adopted == 2
+
+    for slug in ("alpha-drop", "beta-drop"):
+        model = (
+            await db_session.execute(select(Model).where(Model.slug == slug))
+        ).scalar_one_or_none()
+        assert model is not None
+        assert model.review_state == "adopted"
+        assert model.current_revision_id is not None
+
+
+# ---------------------------------------------------------------------------
 # 5. Unknown path, unknown hash, fits an existing model+revision -> attach
 # ---------------------------------------------------------------------------
 

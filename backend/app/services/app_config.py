@@ -33,6 +33,7 @@ import logging
 import os
 
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
@@ -124,12 +125,25 @@ async def seed_app_config(db: AsyncSession, settings: Settings) -> bool:
     """One-time env -> DB seed, called from the app lifespan. Row absent ->
     insert the five current env values and return `True`; row present ->
     return `False` WITHOUT ever touching it (an operator's saved edit, or a
-    previous seed, always wins over whatever `.env` says now)."""
+    previous seed, always wins over whatever `.env` says now).
+
+    M4: two api replicas booting concurrently could both miss the `db.get`
+    above (neither has committed yet) and both attempt the `"app"` PK
+    INSERT -- the loser's `IntegrityError` is caught, rolled back, and
+    treated as "already seeded" (same race-loser convention as
+    `app.services.library.store_imported_file_sync`'s Blob-insert guard and
+    `app.services.derivatives.upsert_derivative`'s), rather than failing
+    that replica's lifespan.
+    """
     row = await db.get(Setting, SETTINGS_KEY)
     if row is not None:
         return False
     db.add(Setting(key=SETTINGS_KEY, value=_env_config(settings).model_dump()))
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        return False
     return True
 
 

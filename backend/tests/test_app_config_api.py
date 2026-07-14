@@ -145,6 +145,41 @@ async def test_seed_app_config_inserts_from_env_once(db_session, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_seed_app_config_survives_concurrent_duplicate_key_race(db_session):
+    """M4: two api replicas booting concurrently could both miss the
+    ``db.get`` above (neither has committed yet) and both attempt the
+    ``"app"`` PK INSERT -- the loser's ``IntegrityError`` must be caught,
+    rolled back, and treated as "already seeded" (return ``False``), not
+    surfaced as a raw exception failing that replica's lifespan.
+
+    Simulated exactly like
+    ``test_derivatives_service.test_upsert_derivative_survives_lost_insert_
+    race``: monkeypatch this session's own ``add`` so a SEPARATE (sync)
+    session wins the race first, right when ``seed_app_config`` adds its own
+    row -- this session's own ``commit()`` then genuinely raises
+    ``IntegrityError`` against real Postgres.
+    """
+    settings = get_settings()
+    original_add = db_session.add
+
+    def _add_then_let_other_session_win_the_race(instance, *args, **kwargs):
+        with base.sync_session() as other:
+            other.add(Setting(key="app", value={"printer_enabled": True}))
+            other.commit()
+        original_add(instance, *args, **kwargs)
+
+    db_session.add = _add_then_let_other_session_win_the_race
+
+    seeded = await app_config.seed_app_config(db_session, settings)
+    assert seeded is False
+
+    row = await db_session.get(Setting, "app")
+    # the OTHER session's winning insert -- this session's own row lost the
+    # race, was rolled back, and was never committed.
+    assert row.value == {"printer_enabled": True}
+
+
+@pytest.mark.asyncio
 async def test_seed_app_config_never_overwrites_a_user_edit(db_session):
     settings = get_settings()
     await app_config.seed_app_config(db_session, settings)

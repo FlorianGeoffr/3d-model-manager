@@ -2,27 +2,31 @@
 flag and drives the wizard/settings API + the send-flow preflight
 rejections -- ALL without any printer hardware (the physical print start is
 the deferred Manual/Live Acceptance below). Mirrors test_m3_scan.py's e2e
-conventions; uses `docker compose up -d --force-recreate api` to toggle the
-flag, the same class of container-side idiom test_m1_flow.py uses."""
+conventions.
+
+I2 (Round 10 fix wave): the flag toggle used to rewrite `.env` +
+`docker compose up -d --force-recreate api`, the same container-side idiom
+test_m1_flow.py uses for a real restart. Round 10 made `printer_enabled`
+DB-backed and live (`PUT /api/settings/app`, no restart) -- `PRINTER_ENABLED`
+in `.env` now only *seeds* the row on first boot, so once the row exists a
+later `.env` edit + recreate is silently ignored and the flag never flips.
+`_set_printer_flag` now drives the live settings API instead, exercising the
+no-restart flip that is R10's headline feature.
+"""
 
 from __future__ import annotations
 
 import io
 import os
-import subprocess
-import time
 import uuid
 import zipfile
-from pathlib import Path
 
 import httpx
 import pytest
 
 pytestmark = pytest.mark.e2e
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
 BASE_URL = os.environ.get("E2E_BASE_URL", "http://localhost:8080")
-HEALTH_URL = f"{BASE_URL}/api/health"
 ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
 
 CREATE = {
@@ -49,32 +53,21 @@ def _login(client: httpx.Client) -> None:
     )
 
 
-def _wait_health(timeout: float = 120.0) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            if httpx.get(HEALTH_URL, timeout=3).status_code == 200:
-                return
-        except httpx.HTTPError:
-            pass
-        time.sleep(2)
-    pytest.fail("api did not become healthy after recreate")
-
-
 def _set_printer_flag(value: bool) -> None:
-    env = REPO_ROOT / ".env"
-    lines = [
-        ln for ln in env.read_text().splitlines() if not ln.startswith("PRINTER_ENABLED=")
-    ]
-    lines.append(f"PRINTER_ENABLED={'true' if value else 'false'}")
-    env.write_text("\n".join(lines) + "\n")
-    subprocess.run(
-        ["docker", "compose", "up", "-d", "--force-recreate", "--no-deps", "api"],
-        check=True,
-        cwd=REPO_ROOT,
-        timeout=180,
-    )
-    _wait_health()
+    """Live-flip `printer_enabled` via an authenticated `PUT /api/settings/
+    app` -- no container recreate, no wait-for-health (the whole point of
+    the R10 DB-backed flag). `PUT` is a full five-field replace, so the
+    current settings are read back first and only `printer_enabled` is
+    changed; the interval fields are left exactly as they are."""
+    with httpx.Client(base_url=BASE_URL, timeout=30) as c:
+        _login(c)
+        current = c.get("/api/settings/app")
+        assert current.status_code == 200, current.text
+        body = current.json()
+        body["printer_enabled"] = value
+        updated = c.put("/api/settings/app", json=body)
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["printer_enabled"] is value
 
 
 def _minimal_gcode_3mf() -> bytes:
@@ -91,7 +84,10 @@ def test_m4_flag_off_then_wizard_and_preflight() -> None:
     _set_printer_flag(False)
     with httpx.Client(base_url=BASE_URL, timeout=30) as c:
         _login(c)
-        assert c.get("/api/features").json() == {"printer_enabled": False}
+        # I2: assert only printer_enabled -- /features also carries
+        # watch_dir/watch_enabled (Round 8 T6), which this test doesn't
+        # control and shouldn't couple to.
+        assert c.get("/api/features").json()["printer_enabled"] is False
         assert c.post("/api/printers", json=CREATE).status_code == 503
         assert c.get("/api/printers").status_code == 503
         assert c.get("/api/print-jobs").status_code == 503
@@ -102,7 +98,7 @@ def test_m4_flag_off_then_wizard_and_preflight() -> None:
     _set_printer_flag(True)
     with httpx.Client(base_url=BASE_URL, timeout=60) as c:
         _login(c)
-        assert c.get("/api/features").json() == {"printer_enabled": True}
+        assert c.get("/api/features").json()["printer_enabled"] is True
 
         created = c.post("/api/printers", json=CREATE)
         assert created.status_code == 201, created.text

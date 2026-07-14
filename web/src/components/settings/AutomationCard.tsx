@@ -28,6 +28,18 @@ interface Draft {
   watch_stable_s: string;
 }
 
+type DraftErrors = Partial<Record<keyof Draft, string>>;
+
+// `scan_interval_s`/`collection_sync_interval_s`/`watch_interval_s` are all
+// server-side `int` fields (`ge=0`); `watch_stable_s` is the one `float`
+// field (also `ge=0`) -- a fractional value is fine there but would 422 on
+// the other three.
+const INT_FIELDS: readonly (keyof Draft)[] = [
+  "scan_interval_s",
+  "collection_sync_interval_s",
+  "watch_interval_s",
+];
+
 function seedDraft(settings: AppSettings): Draft {
   return {
     scan_interval_s: String(settings.scan_interval_s),
@@ -37,11 +49,26 @@ function seedDraft(settings: AppSettings): Draft {
   };
 }
 
+/** M2: `Number("")` is `0`, so a cleared field used to silently turn a
+ * schedule OFF on save with no confirmation; a non-integer typed into an
+ * int field became a float that 422s server-side. Both are caught here,
+ * client-side, before the request ever goes out. */
+function validateField(key: keyof Draft, raw: string): string | undefined {
+  const trimmed = raw.trim();
+  if (trimmed === "") return "Required -- enter 0 to turn this off.";
+  const n = Number(trimmed);
+  if (Number.isNaN(n)) return "Must be a number.";
+  if (n < 0) return "Must be 0 or greater.";
+  if (INT_FIELDS.includes(key) && !Number.isInteger(n)) return "Must be a whole number of seconds.";
+  return undefined;
+}
+
 export function AutomationCard() {
   const settings = useAppSettings();
   const features = useFeatures();
   const update = useUpdateAppSettings();
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [errors, setErrors] = useState<DraftErrors>({});
 
   useEffect(() => {
     if (settings.data && draft === null) setDraft(seedDraft(settings.data));
@@ -64,10 +91,22 @@ export function AutomationCard() {
 
   function setField(key: keyof Draft, value: string) {
     setDraft((prev) => (prev ? { ...prev, [key]: value } : prev));
+    setErrors((prev) => (prev[key] ? { ...prev, [key]: undefined } : prev));
+  }
+
+  function validate(current: Draft): boolean {
+    const next: DraftErrors = {};
+    (Object.keys(current) as (keyof Draft)[]).forEach((key) => {
+      const message = validateField(key, current[key]);
+      if (message) next[key] = message;
+    });
+    setErrors(next);
+    return Object.keys(next).length === 0;
   }
 
   function save() {
     if (!settings.data || !draft) return;
+    if (!validate(draft)) return;
     update.mutate({
       printer_enabled: settings.data.printer_enabled,
       scan_interval_s: Number(draft.scan_interval_s),
@@ -96,10 +135,17 @@ export function AutomationCard() {
               min={0}
               value={draft.scan_interval_s}
               onChange={(e) => setField("scan_interval_s", e.target.value)}
+              aria-invalid={Boolean(errors.scan_interval_s)}
             />
-            <p className="text-xs text-muted-foreground">
-              Automatically rescan and reconcile the library. 0 = off; you can still scan on demand.
-            </p>
+            {errors.scan_interval_s ? (
+              <p role="alert" className="text-xs text-destructive">
+                {errors.scan_interval_s}
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Automatically rescan and reconcile the library. 0 = off; you can still scan on demand.
+              </p>
+            )}
           </div>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="collection-sync-interval">Collection sync interval (seconds)</Label>
@@ -109,10 +155,17 @@ export function AutomationCard() {
               min={0}
               value={draft.collection_sync_interval_s}
               onChange={(e) => setField("collection_sync_interval_s", e.target.value)}
+              aria-invalid={Boolean(errors.collection_sync_interval_s)}
             />
-            <p className="text-xs text-muted-foreground">
-              Refresh followed remote collections. 0 = off; Sync now still works.
-            </p>
+            {errors.collection_sync_interval_s ? (
+              <p role="alert" className="text-xs text-destructive">
+                {errors.collection_sync_interval_s}
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Refresh followed remote collections. 0 = off; Sync now still works.
+              </p>
+            )}
           </div>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="watch-interval">Watched folder poll (seconds)</Label>
@@ -122,10 +175,17 @@ export function AutomationCard() {
               min={0}
               value={draft.watch_interval_s}
               onChange={(e) => setField("watch_interval_s", e.target.value)}
+              aria-invalid={Boolean(errors.watch_interval_s)}
             />
-            <p className="text-xs text-muted-foreground">
-              How often to import files dropped into the watched folder. 0 = off.
-            </p>
+            {errors.watch_interval_s ? (
+              <p role="alert" className="text-xs text-destructive">
+                {errors.watch_interval_s}
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                How often to import files dropped into the watched folder. 0 = off.
+              </p>
+            )}
           </div>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="watch-stable">Watched folder stability delay (seconds)</Label>
@@ -136,11 +196,18 @@ export function AutomationCard() {
               step="any"
               value={draft.watch_stable_s}
               onChange={(e) => setField("watch_stable_s", e.target.value)}
+              aria-invalid={Boolean(errors.watch_stable_s)}
             />
-            <p className="text-xs text-muted-foreground">
-              A dropped file must sit unchanged this long before import — guards against
-              half-written exports.
-            </p>
+            {errors.watch_stable_s ? (
+              <p role="alert" className="text-xs text-destructive">
+                {errors.watch_stable_s}
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                A dropped file must sit unchanged this long before import — guards against
+                half-written exports.
+              </p>
+            )}
           </div>
         </div>
 

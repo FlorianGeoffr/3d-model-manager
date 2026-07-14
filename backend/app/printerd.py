@@ -260,7 +260,18 @@ class PrinterDaemon:
     def run(self) -> None:
         self.reconcile()  # initial start (replaces the old one-shot start loop)
         while not self._stop.wait(_POLL_INTERVAL_S):
-            self.reconcile()
+            try:
+                self.reconcile()
+            except Exception as exc:
+                # I1: reconcile() now also does a Setting read (enabled_printers())
+                # on top of its existing Printer select -- a transient DB blip
+                # must not propagate out of run() (that would exit main() and
+                # let `restart: unless-stopped` tear down every live printer's
+                # MQTT session over a momentary hiccup). Same access-code leak
+                # concern as the poll-failure log below -- type only, never the
+                # full exception body. Existing workers are left running as-is;
+                # the next tick re-reconciles.
+                log.error("printerd: reconcile failed: %s", type(exc).__name__)
             for worker in list(self._workers.values()):
                 try:
                     # emit a fresh lib snapshot -> Redis + transitions

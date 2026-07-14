@@ -199,6 +199,38 @@ def test_run_logs_poll_failure_type_only(caplog, monkeypatch, redis_url):
     assert "RuntimeError" in caplog.text
 
 
+def test_run_survives_transient_reconcile_failure(caplog, monkeypatch, redis_url):
+    """I1 regression: `reconcile()` (which now also does a `Setting` read in
+    `enabled_printers()`, on top of its existing `Printer` select) used to be
+    unguarded in `run()`'s loop body -- a transient DB error there would
+    propagate out of `run()`, exit `main()`, and let `restart: unless-stopped`
+    tear every live printer's MQTT session down over a momentary hiccup.
+    A single failing tick must be logged (type only, mirroring the
+    access-code-safety poll-failure guard) and the loop must keep ticking."""
+    settings = get_settings()
+    daemon = PrinterDaemon(settings)
+    monkeypatch.setattr(printerd_module, "_POLL_INTERVAL_S", 0.0)
+
+    calls = {"n": 0}
+
+    def _flaky_reconcile():
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("db blip for access code 13572468")
+        if calls["n"] == 3:
+            daemon._stop.set()  # stop the loop after the next (successful) tick
+
+    monkeypatch.setattr(daemon, "reconcile", _flaky_reconcile)
+
+    with caplog.at_level(logging.ERROR, logger="printerd"):
+        daemon.run()
+
+    assert calls["n"] == 3  # initial start (1) + failing tick (2) + recovered tick (3)
+    assert "reconcile failed" in caplog.text
+    assert "13572468" not in caplog.text
+    assert "RuntimeError" in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # Task 5 (M6 hardening B2): reconciliation loop + clean per-printer thread
 # teardown. printerd used to query enabled_printers() exactly once at
@@ -350,30 +382,41 @@ def test_reconcile_restarts_worker_when_host_changes(redis_url, printer_enabled,
     settings = get_settings()
     pid = _seed_printer(settings, name="p", enabled=True)
     daemon = PrinterDaemon(settings)
-    daemon.reconcile()
-    worker_before = daemon._workers[pid]
+    try:
+        daemon.reconcile()
+        worker_before = daemon._workers[pid]
 
-    with base.sync_session() as s:
-        s.get(Printer, pid).host = "new-host"
-        s.commit()
-    daemon.reconcile()
+        with base.sync_session() as s:
+            s.get(Printer, pid).host = "new-host"
+            s.commit()
+        daemon.reconcile()
 
-    assert daemon._workers[pid] is not worker_before
+        assert daemon._workers[pid] is not worker_before
+    finally:
+        # M5: reconcile() (unlike run()) spawns real `cmd-{id}` threads but
+        # is driven directly here with no background run() loop/stop() of
+        # its own -- stop the daemon so its cmd thread doesn't leak into
+        # later tests (it previously did, and one later test had to work
+        # around it -- see test_run_tears_down_and_restarts_all_workers_on_db_flag_flip).
+        daemon.stop()
 
 
 def test_reconcile_restarts_worker_when_serial_changes(redis_url, printer_enabled, migrated_db, fake_adapter):
     settings = get_settings()
     pid = _seed_printer(settings, name="p", enabled=True)
     daemon = PrinterDaemon(settings)
-    daemon.reconcile()
-    worker_before = daemon._workers[pid]
+    try:
+        daemon.reconcile()
+        worker_before = daemon._workers[pid]
 
-    with base.sync_session() as s:
-        s.get(Printer, pid).serial = "NEWSERIAL01"
-        s.commit()
-    daemon.reconcile()
+        with base.sync_session() as s:
+            s.get(Printer, pid).serial = "NEWSERIAL01"
+            s.commit()
+        daemon.reconcile()
 
-    assert daemon._workers[pid] is not worker_before
+        assert daemon._workers[pid] is not worker_before
+    finally:
+        daemon.stop()
 
 
 def test_reconcile_restarts_worker_when_access_code_changes(
@@ -382,30 +425,36 @@ def test_reconcile_restarts_worker_when_access_code_changes(
     settings = get_settings()
     pid = _seed_printer(settings, name="p", enabled=True)
     daemon = PrinterDaemon(settings)
-    daemon.reconcile()
-    worker_before = daemon._workers[pid]
+    try:
+        daemon.reconcile()
+        worker_before = daemon._workers[pid]
 
-    with base.sync_session() as s:
-        s.get(Printer, pid).access_code_enc = encrypt_secret(settings, "87654321")
-        s.commit()
-    daemon.reconcile()
+        with base.sync_session() as s:
+            s.get(Printer, pid).access_code_enc = encrypt_secret(settings, "87654321")
+            s.commit()
+        daemon.reconcile()
 
-    assert daemon._workers[pid] is not worker_before
+        assert daemon._workers[pid] is not worker_before
+    finally:
+        daemon.stop()
 
 
 def test_reconcile_does_not_restart_on_name_only_change(redis_url, printer_enabled, migrated_db, fake_adapter):
     settings = get_settings()
     pid = _seed_printer(settings, name="p", enabled=True)
     daemon = PrinterDaemon(settings)
-    daemon.reconcile()
-    worker_before = daemon._workers[pid]
+    try:
+        daemon.reconcile()
+        worker_before = daemon._workers[pid]
 
-    with base.sync_session() as s:
-        s.get(Printer, pid).name = "renamed"
-        s.commit()
-    daemon.reconcile()
+        with base.sync_session() as s:
+            s.get(Printer, pid).name = "renamed"
+            s.commit()
+        daemon.reconcile()
 
-    assert daemon._workers[pid] is worker_before
+        assert daemon._workers[pid] is worker_before
+    finally:
+        daemon.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -462,12 +511,13 @@ def test_run_tears_down_and_restarts_all_workers_on_db_flag_flip(
     restart.
 
     The cmd thread is taken from `daemon._threads[pid]` (this daemon's OWN
-    registry), NOT looked up process-wide by name via `_find_thread`:
-    earlier tests in this module leave still-alive `cmd-1` daemon threads
-    behind (the Round 8 T2 reconcile tests never stop() their daemons, and
-    truncation restarts printer ids at 1 for every test), so a name lookup
-    can return one of those stale threads -- which never exits -- and fail
-    the liveness assertions below spuriously."""
+    registry), NOT looked up process-wide by name via `_find_thread`: this is
+    belt-and-suspenders against a stale still-alive `cmd-1` thread from
+    another test in this module -- the Round 8 T2 reconcile tests now
+    `daemon.stop()` in a `finally` (M5 fix wave), but truncation restarts
+    printer ids at 1 for every test, so a process-wide name lookup would
+    still be one accidental missing `stop()` away from returning the wrong
+    thread and failing the liveness assertions below spuriously."""
     settings = get_settings()
     monkeypatch.setattr(printerd_module, "_POLL_INTERVAL_S", 0.05)
     pid = _seed_printer(settings, name="p", enabled=True)

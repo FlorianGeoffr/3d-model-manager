@@ -107,20 +107,30 @@ def dispatch_scheduled() -> None:
 
     settings = get_settings()
     client = Redis.from_url(settings.redis_url)
-    lock = client.lock(DISPATCH_LOCK_KEY, timeout=_LOCK_TIMEOUT_S, blocking=False)
-    if not lock.acquire(blocking=False):
-        return  # another tick is still in flight; picked back up next tick
     try:
-        with base.sync_session() as s:
-            cfg = get_app_config_sync(s, settings)
-        now = time.time()
+        lock = client.lock(DISPATCH_LOCK_KEY, timeout=_LOCK_TIMEOUT_S, blocking=False)
+        if not lock.acquire(blocking=False):
+            return  # another tick is still in flight; picked back up next tick
+        try:
+            with base.sync_session() as s:
+                cfg = get_app_config_sync(s, settings)
+            now = time.time()
 
-        if _due(client, "scan", cfg.scan_interval_s, now):
-            schedule_scan_library.apply_async()
-        if _due(client, "sync", cfg.collection_sync_interval_s, now):
-            schedule_sync_all.apply_async()
-        if settings.watch_dir is not None and _due(client, "watch", cfg.watch_interval_s, now):
-            scan_slicer_watch.apply_async()
+            if _due(client, "scan", cfg.scan_interval_s, now):
+                schedule_scan_library.apply_async()
+            if _due(client, "sync", cfg.collection_sync_interval_s, now):
+                schedule_sync_all.apply_async()
+            if settings.watch_dir is not None and _due(client, "watch", cfg.watch_interval_s, now):
+                scan_slicer_watch.apply_async()
+        finally:
+            with contextlib.suppress(Exception):
+                lock.release()
     finally:
+        # M1: this task ticks every `_CADENCE_S` (15s) forever -- unlike
+        # `scan_library`/`scan_slicer_watch` (which share this same
+        # no-close pattern but only run per-scan/per-poll, not on a fixed
+        # short cadence), never closing this client accumulates a new
+        # connection every tick in a long-lived beat process. Mirrors
+        # `is_scan_lock_held_sync`'s close-in-finally (`app.tasks.scan`).
         with contextlib.suppress(Exception):
-            lock.release()
+            client.close()

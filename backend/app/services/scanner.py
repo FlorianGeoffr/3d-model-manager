@@ -741,7 +741,6 @@ def _reconcile_unknown_chunk(
         session.execute(select(Blob.hash).where(Blob.hash.in_(digests))).scalars()
     )
 
-    new_blobs: list[Blob] = []
     pending_dispatch: list[tuple[File, str]] = []
     pending_locations: list[File] = []
 
@@ -782,7 +781,15 @@ def _reconcile_unknown_chunk(
             continue
 
         kind, format_ = layout.infer_blob_kind_format(entry.key)
-        new_blobs.append(Blob(hash=digest, size=entry.size, kind=kind, format=format_))
+        # Added immediately (not deferred to a post-loop add_all) so a
+        # mid-loop autoflush -- e.g. `_resolve_adopt_target`'s
+        # `_unique_slug_sync` select or its explicit flushes when a later
+        # entry in this same chunk adopts into a NEW draft model -- sees
+        # this Blob already in the session before it inserts a later File
+        # that references it. Deferring the add let Postgres see a File
+        # insert whose `blob_hash` pointed at a Blob that existed only in a
+        # local list, tripping `fk_files_blob_hash_blobs` (C1).
+        session.add(Blob(hash=digest, size=entry.size, kind=kind, format=format_))
         known_hashes.add(digest)
         file = _attach_adopted_file(
             session,
@@ -802,8 +809,6 @@ def _reconcile_unknown_chunk(
         pending_dispatch.append((file, digest))
         pending_locations.append(file)
 
-    if new_blobs:
-        session.add_all(new_blobs)
     session.flush()
 
     if backend_id is not None:

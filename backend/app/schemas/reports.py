@@ -8,6 +8,8 @@ duplicate group and the server deletes every other copy in that group.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, model_validator
 
 
@@ -82,9 +84,17 @@ class DuplicatesResolveIn(BaseModel):
         return self
 
 
+#: Why a named copy wasn't deleted. A closed set, mirrored by `SkipReason`
+#: in web/src/api/types.ts -- the page treats the reasons differently (an
+#: old-revision copy was never promised, so its skip isn't worth warning
+#: about), which only stays honest if neither side can quietly grow a reason
+#: the other doesn't know.
+SkipReason = Literal["not_found", "not_current_revision", "store_pending", "keeper_missing"]
+
+
 class SkippedCopyOut(BaseModel):
     file_id: int
-    reason: str
+    reason: SkipReason
 
 
 class DuplicatesResolveOut(BaseModel):

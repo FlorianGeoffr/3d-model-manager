@@ -123,7 +123,10 @@ async def resolve_duplicates(
     non-keepers are deleted: a concurrent ``DELETE /files/{id}`` landing on
     the keeper between the snapshot and this group's turn would otherwise
     let the loop delete every remaining copy of the blob's content. A
-    vanished keeper skips the whole group with reason ``keeper_missing``.
+    vanished keeper skips the whole group -- its deletable copies with
+    reason ``keeper_missing``, its old-revision ones keeping their own
+    ``not_current_revision`` (they were never deletable to begin with, and
+    the UI counts the two differently).
     """
     report = await duplicate_files_report(db)
     groups_by_hash = {group.blob_hash: group for group in report.groups}

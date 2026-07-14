@@ -312,6 +312,28 @@ describe("LibraryPage", () => {
     expect(await screen.findByText("1 selected")).toBeInTheDocument();
   });
 
+  it("a second Enter while the tag mutation is in flight doesn't fire a second bulk update", async () => {
+    mockGalleryOkWithModels([GALLERY_MODEL]);
+    // Never settles: keeps the mutation pending so the in-flight guard is
+    // what's under test, not mutation timing.
+    postMock.mockImplementation(() => new Promise(() => {}));
+    renderLibraryPage();
+    await screen.findByText("Test Model");
+
+    fireEvent.click(screen.getByRole("button", { name: "Select" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Select Test Model" }));
+    await screen.findByText("1 selected");
+
+    const input = screen.getByRole("textbox", { name: "Tag to add" });
+    fireEvent.change(input, { target: { value: "fantasy" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() =>
+      expect(postMock.mock.calls.filter((call: unknown[]) => call[0] === "/models/bulk")).toHaveLength(1),
+    );
+  });
+
   it("bulk-favoriting the selection POSTs /models/bulk with the selected ids and favorite:true", async () => {
     mockGalleryOkWithModels([GALLERY_MODEL]);
     renderLibraryPage();

@@ -360,15 +360,32 @@ function SelectionActionBar({ selectedItems, onDone }: { selectedItems: ModelSum
 
   // The actions are mutually exclusive while any of them is in flight --
   // most importantly Delete vs the enqueue loop: models can otherwise be
-  // hard-deleted out from under their own still-landing queue POSTs.
+  // hard-deleted out from under their own still-landing queue POSTs. The
+  // `isPending` flags drive the `disabled` props (they re-render); `claim()`
+  // is what actually holds the line, since two Enter presses in the SAME
+  // tick both read the pre-render `isPending: false` and would otherwise
+  // both fire.
   const busy = bulkUpdate.isPending || bulkDelete.isPending || queueing;
+  const inFlight = useRef(false);
+
+  /** Takes the single action slot, or returns false if something holds it. */
+  function claim(): boolean {
+    if (busy || inFlight.current) return false;
+    inFlight.current = true;
+    return true;
+  }
+
+  function release() {
+    inFlight.current = false;
+  }
 
   function addTag() {
     const trimmed = tagToAdd.trim();
-    if (!trimmed || busy) return; // guards the Enter key, which no `disabled` covers
+    if (!trimmed || !claim()) return;
     bulkUpdate.mutate(
       { ids, add_tags: [trimmed] },
       {
+        onSettled: release,
         onSuccess: (result) => {
           toast.success(`Tagged ${result.updated} model${result.updated === 1 ? "" : "s"}`);
           setTagToAdd("");
@@ -380,9 +397,11 @@ function SelectionActionBar({ selectedItems, onDone }: { selectedItems: ModelSum
   }
 
   function removeTag(name: string) {
+    if (!claim()) return;
     bulkUpdate.mutate(
       { ids, remove_tags: [name] },
       {
+        onSettled: release,
         onSuccess: (result) => {
           toast.success(`Untagged ${result.updated} model${result.updated === 1 ? "" : "s"}`);
           setRemoveTagOpen(false);
@@ -393,9 +412,11 @@ function SelectionActionBar({ selectedItems, onDone }: { selectedItems: ModelSum
   }
 
   function favoriteSelection() {
+    if (!claim()) return;
     bulkUpdate.mutate(
       { ids, favorite: true },
       {
+        onSettled: release,
         onSuccess: (result) => {
           toast.success(`Favorited ${result.updated} model${result.updated === 1 ? "" : "s"}`);
           // Non-destructive -- keep the selection live instead of exiting.
@@ -405,6 +426,7 @@ function SelectionActionBar({ selectedItems, onDone }: { selectedItems: ModelSum
   }
 
   async function addToQueue() {
+    if (!claim()) return;
     setQueueing(true);
     try {
       const results = await Promise.allSettled(ids.map((id) => enqueueModel.mutateAsync(id)));
@@ -417,10 +439,12 @@ function SelectionActionBar({ selectedItems, onDone }: { selectedItems: ModelSum
       if (failed > 0) toast.error(`Failed to add ${failed} model${failed === 1 ? "" : "s"} to queue`);
     } finally {
       setQueueing(false);
+      release();
     }
   }
 
   function deleteSelection() {
+    if (!claim()) return;
     // No local onError: queryClient.ts's global MutationCache.onError
     // already toasts the ApiError detail. The selection survives a failure
     // either way -- there's nothing to exit out of if the delete didn't
@@ -429,6 +453,7 @@ function SelectionActionBar({ selectedItems, onDone }: { selectedItems: ModelSum
     bulkDelete.mutate(
       { ids, slugs },
       {
+        onSettled: release,
         onSuccess: (result) => {
           toast.success(`Deleted ${result.deleted} model${result.deleted === 1 ? "" : "s"}`);
           onDone();

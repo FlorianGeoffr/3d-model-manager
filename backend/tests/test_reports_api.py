@@ -556,9 +556,11 @@ async def test_resolve_skips_group_when_keeper_vanishes_mid_request(
 ) -> None:
     """A concurrent ``DELETE /files/{id}`` can remove the KEEPER between
     resolve's report snapshot and the delete loop. The per-group keeper
-    re-check must then skip the whole group (reason ``keeper_missing``)
-    instead of deleting its remaining copies -- which would silently destroy
-    the blob's last content despite the user's stated intent to keep it.
+    re-check must then skip the whole group instead of deleting its
+    remaining copies -- which would silently destroy the blob's last content
+    despite the user's stated intent to keep it. Deletable copies are
+    skipped as ``keeper_missing``; old-revision ones keep their own
+    ``not_current_revision`` (never deletable, never promised).
     """
     model_a = await _create_model(authenticated_client, "Vanishing Keeper A")
     model_b = await _create_model(authenticated_client, "Vanishing Keeper B")

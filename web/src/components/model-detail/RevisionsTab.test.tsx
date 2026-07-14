@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { RevisionsTab } from "@/components/model-detail/RevisionsTab";
-import type { ModelDetail, RevisionDetail, RevisionSummary } from "@/api/types";
+import type { ModelDetail, NoteOut, RevisionDetail, RevisionSummary } from "@/api/types";
 
 const { getMock } = vi.hoisted(() => ({ getMock: vi.fn() }));
 
@@ -92,6 +92,19 @@ const REVISIONS: RevisionSummary[] = [
   },
 ];
 
+// At least two revisions carry notes (Round 11 T7: exercises the lifted
+// drawer state) -- different counts per revision (1 vs. 2) so each drawer's
+// "Notes (N)" toggle has a distinct accessible name.
+const NOTES_BY_REVISION: Record<number, NoteOut[]> = {
+  10: [
+    { id: 900, model_id: 1, revision_id: 10, body: "First revision note", created_at: "2026-06-01T12:00:00Z", updated_at: "2026-06-01T12:00:00Z" },
+  ],
+  11: [
+    { id: 901, model_id: 1, revision_id: 11, body: "Second revision note A", created_at: "2026-06-05T12:00:00Z", updated_at: "2026-06-05T12:00:00Z" },
+    { id: 902, model_id: 1, revision_id: 11, body: "Second revision note B", created_at: "2026-06-05T12:05:00Z", updated_at: "2026-06-05T12:05:00Z" },
+  ],
+};
+
 function revisionDetailFor(id: number): RevisionDetail {
   const summary = REVISIONS.find((revision) => revision.id === id);
   return {
@@ -103,7 +116,7 @@ function revisionDetailFor(id: number): RevisionDetail {
     dir_name: summary?.dir_name ?? "",
     created_at: summary?.created_at ?? "2026-06-01T12:00:00Z",
     files: [],
-    notes: [],
+    notes: NOTES_BY_REVISION[id] ?? [],
   };
 }
 
@@ -176,5 +189,61 @@ describe("RevisionsTab -- compare-revisions thumb preview (feat/import-fidelity 
     await waitFor(() =>
       expect(screen.getByTestId("revision-thumb")).toHaveAttribute("src", "/api/revisions/11/assembly-thumb"),
     );
+  });
+});
+
+describe("RevisionsTab -- notes drawer expand/collapse-all (Round 11 T7)", () => {
+  it("keeps every revision's notes drawer collapsed by default", async () => {
+    renderTab();
+
+    const rev1Toggle = await screen.findByRole("button", { name: "Notes (1)" });
+    const rev2Toggle = await screen.findByRole("button", { name: "Notes (2)" });
+    expect(rev1Toggle).toHaveAttribute("aria-expanded", "false");
+    expect(rev2Toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("First revision note")).not.toBeInTheDocument();
+    expect(screen.queryByText("Second revision note A")).not.toBeInTheDocument();
+  });
+
+  it("expand-all opens every revision's drawer and reveals its notes", async () => {
+    renderTab();
+
+    await screen.findByRole("button", { name: "Notes (1)" });
+    fireEvent.click(screen.getByRole("button", { name: "Expand all revision notes" }));
+
+    expect(screen.getByRole("button", { name: "Notes (1)" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "Notes (2)" })).toHaveAttribute("aria-expanded", "true");
+    expect(await screen.findByText("First revision note")).toBeInTheDocument();
+    expect(screen.getByText("Second revision note A")).toBeInTheDocument();
+    expect(screen.getByText("Second revision note B")).toBeInTheDocument();
+  });
+
+  it("collapse-all closes every drawer again", async () => {
+    renderTab();
+
+    await screen.findByRole("button", { name: "Notes (1)" });
+    fireEvent.click(screen.getByRole("button", { name: "Expand all revision notes" }));
+    await screen.findByText("First revision note");
+
+    fireEvent.click(screen.getByRole("button", { name: "Collapse all revision notes" }));
+
+    expect(screen.getByRole("button", { name: "Notes (1)" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: "Notes (2)" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("First revision note")).not.toBeInTheDocument();
+    expect(screen.queryByText("Second revision note A")).not.toBeInTheDocument();
+    expect(screen.queryByText("Second revision note B")).not.toBeInTheDocument();
+  });
+
+  it("toggling one revision's drawer leaves the other untouched", async () => {
+    renderTab();
+
+    const rev1Toggle = await screen.findByRole("button", { name: "Notes (1)" });
+    fireEvent.click(rev1Toggle);
+
+    expect(rev1Toggle).toHaveAttribute("aria-expanded", "true");
+    expect(await screen.findByText("First revision note")).toBeInTheDocument();
+
+    const rev2Toggle = screen.getByRole("button", { name: "Notes (2)" });
+    expect(rev2Toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Second revision note A")).not.toBeInTheDocument();
   });
 });

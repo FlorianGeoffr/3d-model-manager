@@ -404,3 +404,51 @@ describe("DuplicatesPage -- resolve duplicates (keeper picker + delete extras)",
     expect(within(dialog).getByText("Delete 1 duplicate copy?")).toBeInTheDocument();
   });
 });
+
+describe("DuplicatesPage -- collapsible groups (Round 11 T7)", () => {
+  it("shows every group's file rows open by default", async () => {
+    reportBox.current = REPORT_TWO_GROUPS;
+
+    renderDuplicatesPage();
+
+    expect(await screen.findByText("Dragon — dragon.stl")).toBeInTheDocument();
+    expect(screen.getByText("Dragon Copy — dragon.stl")).toBeInTheDocument();
+    expect(screen.getByText("Goblin — goblin.stl")).toBeInTheDocument();
+    expect(screen.getByText("Goblin Copy — goblin.stl")).toBeInTheDocument();
+  });
+
+  it("collapse-all hides every group's file rows, and expand-all restores them", async () => {
+    reportBox.current = REPORT_TWO_GROUPS;
+
+    renderDuplicatesPage();
+    await screen.findByText("Dragon — dragon.stl");
+
+    fireEvent.click(screen.getByRole("button", { name: "Collapse all duplicate groups" }));
+
+    expect(screen.queryByText("Dragon — dragon.stl")).not.toBeInTheDocument();
+    expect(screen.queryByText("Goblin — goblin.stl")).not.toBeInTheDocument();
+    // The toggle buttons stay put -- just collapsed.
+    expect(screen.getByRole("button", { name: /abcdef012345/ })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: /ffff00001111/ })).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand all duplicate groups" }));
+
+    expect(await screen.findByText("Dragon — dragon.stl")).toBeInTheDocument();
+    expect(screen.getByText("Goblin — goblin.stl")).toBeInTheDocument();
+  });
+
+  it("'Delete extras' stays clickable and still opens its confirm dialog while its group is collapsed", async () => {
+    reportBox.current = REPORT;
+
+    renderDuplicatesPage();
+    const groupToggle = await screen.findByRole("button", { name: /abcdef012345/ });
+
+    fireEvent.click(groupToggle);
+    expect(groupToggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Dragon — dragon.stl")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete extras" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Delete 1 duplicate copy?")).toBeInTheDocument();
+  });
+});

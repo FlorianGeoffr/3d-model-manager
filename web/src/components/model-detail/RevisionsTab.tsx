@@ -13,6 +13,7 @@ import {
 import { ApiError } from "@/api/client";
 import { DiffView } from "@/components/model-detail/DiffView";
 import { NoteItem } from "@/components/model-detail/NoteItem";
+import { ExpandCollapseAll } from "@/components/ExpandCollapseAll";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -29,6 +30,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { formatDateTime } from "@/lib/format";
+import { useOpenMap } from "@/lib/useOpenMap";
 import type { ModelDetail, RevisionSummary } from "@/api/types";
 
 /** The selected revision's own assembly-thumbnail render (T2's per-revision
@@ -162,8 +164,17 @@ function NewRevisionDialog({ model }: { model: ModelDetail }) {
  * models *and* revisions). `RevisionSummary` (the history list) doesn't
  * carry notes, so this fetches `RevisionDetail` itself — eagerly, so the
  * "Notes (N)" count is accurate before the user expands anything. */
-function RevisionNotes({ revision, modelId }: { revision: RevisionSummary; modelId: number }) {
-  const [expanded, setExpanded] = useState(false);
+function RevisionNotes({
+  revision,
+  modelId,
+  expanded,
+  onToggle,
+}: {
+  revision: RevisionSummary;
+  modelId: number;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
   const [draft, setDraft] = useState("");
   const revisionDetail = useRevisionDetail(revision.id);
   const createNote = useCreateRevisionNote(revision.id);
@@ -189,7 +200,7 @@ function RevisionNotes({ revision, modelId }: { revision: RevisionSummary; model
         type="button"
         className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground hover:underline"
         aria-expanded={expanded}
-        onClick={() => setExpanded((prev) => !prev)}
+        onClick={onToggle}
       >
         {expanded ? <ChevronDownIcon className="size-3.5" /> : <ChevronRightIcon className="size-3.5" />}
         {label}
@@ -239,6 +250,10 @@ export function RevisionsTab({ model }: { model: ModelDetail }) {
   const [diffA, setDiffA] = useState<number>();
   const [diffB, setDiffB] = useState<number>();
   const diffQuery = useRevisionDiff(diffA, diffB);
+  const { isOpen, toggle, openAll, closeAll, allOpen, allClosed } = useOpenMap(
+    revisions.map((revision) => revision.id),
+    false,
+  );
 
   const historyList = (
     <ol className="space-y-4 border-l border-border pl-4">
@@ -254,7 +269,12 @@ export function RevisionsTab({ model }: { model: ModelDetail }) {
           <p className="text-xs text-muted-foreground">
             {formatDateTime(revision.created_at)} · {revision.file_count} files
           </p>
-          <RevisionNotes revision={revision} modelId={model.id} />
+          <RevisionNotes
+            revision={revision}
+            modelId={model.id}
+            expanded={isOpen(revision.id)}
+            onToggle={() => toggle(revision.id)}
+          />
         </li>
       ))}
     </ol>
@@ -264,7 +284,18 @@ export function RevisionsTab({ model }: { model: ModelDetail }) {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold">History</h3>
-        <NewRevisionDialog model={model} />
+        <div className="flex items-center gap-2">
+          {revisions.length > 0 ? (
+            <ExpandCollapseAll
+              label="revision notes"
+              allOpen={allOpen}
+              allClosed={allClosed}
+              onExpandAll={openAll}
+              onCollapseAll={closeAll}
+            />
+          ) : null}
+          <NewRevisionDialog model={model} />
+        </div>
       </div>
 
       {revisions.length >= 2 ? (

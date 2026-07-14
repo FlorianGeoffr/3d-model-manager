@@ -19,7 +19,7 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { Trash2Icon } from "lucide-react";
+import { ChevronDownIcon, ChevronRightIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 
 import { ApiError } from "@/api/client";
@@ -27,14 +27,16 @@ import { useDeleteFile } from "@/api/library";
 import { duplicatesReportQueryOptions, useDuplicatesReport, useResolveDuplicates } from "@/api/reports";
 import type { DuplicateFile, DuplicateGroup, KeepChoice } from "@/api/types";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { ExpandCollapseAll } from "@/components/ExpandCollapseAll";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { PageContainer } from "@/components/ui/page-container";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Skeleton } from "@/components/ui/skeleton";
 import { humanizeBytes } from "@/lib/format";
+import { useOpenMap } from "@/lib/useOpenMap";
 
 /** `1 copy` / `2 copies`. */
 function copyCount(n: number): string {
@@ -69,6 +71,10 @@ export function DuplicatesPage() {
   const groups = reportQuery.data?.groups ?? [];
   const [keepers, setKeepers] = useState<Record<string, number>>({});
   const resolve = useResolveDuplicates();
+  const { isOpen, toggle, openAll, closeAll, allOpen, allClosed } = useOpenMap(
+    groups.map((group) => group.blob_hash),
+    true,
+  );
 
   const totalDeletable = groups.reduce((sum, group) => sum + deletableCount(group, keeperFor(group, keepers)), 0);
 
@@ -96,21 +102,32 @@ export function DuplicatesPage() {
           </p>
         </div>
         {groups.length > 0 && (
-          <ConfirmDialog
-            trigger={
-              <Button type="button" variant="destructive" disabled={resolve.isPending}>
-                <Trash2Icon />
-                Delete all duplicates
-              </Button>
-            }
-            title={resolveDialogTitle(totalDeletable)}
-            description={RESOLVE_DIALOG_DESCRIPTION}
-            confirmLabel="Delete"
-            destructive
-            onConfirm={() =>
-              handleResolve(groups.map((group) => ({ blob_hash: group.blob_hash, file_id: keeperFor(group, keepers) })))
-            }
-          />
+          <div className="flex items-center gap-2">
+            <ExpandCollapseAll
+              label="duplicate groups"
+              allOpen={allOpen}
+              allClosed={allClosed}
+              onExpandAll={openAll}
+              onCollapseAll={closeAll}
+            />
+            <ConfirmDialog
+              trigger={
+                <Button type="button" variant="destructive" disabled={resolve.isPending}>
+                  <Trash2Icon />
+                  Delete all duplicates
+                </Button>
+              }
+              title={resolveDialogTitle(totalDeletable)}
+              description={RESOLVE_DIALOG_DESCRIPTION}
+              confirmLabel="Delete"
+              destructive
+              onConfirm={() =>
+                handleResolve(
+                  groups.map((group) => ({ blob_hash: group.blob_hash, file_id: keeperFor(group, keepers) })),
+                )
+              }
+            />
+          </div>
         )}
       </div>
 
@@ -136,6 +153,8 @@ export function DuplicatesPage() {
               onKeeperChange={(fileId) => setKeepers((prev) => ({ ...prev, [group.blob_hash]: fileId }))}
               resolvePending={resolve.isPending}
               onResolve={handleResolve}
+              open={isOpen(group.blob_hash)}
+              onToggle={() => toggle(group.blob_hash)}
             />
           ))}
         </div>
@@ -150,52 +169,70 @@ function DuplicateGroupCard({
   onKeeperChange,
   resolvePending,
   onResolve,
+  open,
+  onToggle,
 }: {
   group: DuplicateGroup;
   keeper: number;
   onKeeperChange: (fileId: number) => void;
   resolvePending: boolean;
   onResolve: (choices: KeepChoice[]) => void;
+  open: boolean;
+  onToggle: () => void;
 }) {
   const deletable = deletableCount(group, keeper);
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle className="font-mono text-sm">{group.blob_hash.slice(0, 12)}</CardTitle>
-        <CardDescription>
-          {humanizeBytes(group.size)} each · {humanizeBytes(group.wasted_bytes)} wasted across{" "}
-          {group.files.length} files
-        </CardDescription>
-        <CardAction>
-          <ConfirmDialog
-            trigger={
-              <Button type="button" variant="outline" size="sm" disabled={deletable === 0 || resolvePending}>
-                Delete extras
-              </Button>
-            }
-            title={resolveDialogTitle(deletable)}
-            description={RESOLVE_DIALOG_DESCRIPTION}
-            confirmLabel="Delete"
-            destructive
-            onConfirm={() => onResolve([{ blob_hash: group.blob_hash, file_id: keeper }])}
-          />
-        </CardAction>
-      </CardHeader>
-      <CardContent>
-        <RadioGroup
-          asChild
-          className="gap-1.5"
-          value={String(keeper)}
-          onValueChange={(value) => onKeeperChange(Number(value))}
+      <CardHeader className="flex flex-row items-start gap-2">
+        <button
+          type="button"
+          className="flex min-w-0 flex-1 items-start gap-2 text-left"
+          aria-expanded={open}
+          onClick={onToggle}
         >
-          <ul>
-            {group.files.map((file) => (
-              <DuplicateFileRow key={file.file_id} file={file} />
-            ))}
-          </ul>
-        </RadioGroup>
-      </CardContent>
+          {open ? (
+            <ChevronDownIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+          ) : (
+            <ChevronRightIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+          )}
+          <div className="min-w-0">
+            <CardTitle className="truncate font-mono text-sm">{group.blob_hash.slice(0, 12)}</CardTitle>
+            <CardDescription>
+              {humanizeBytes(group.size)} each · {humanizeBytes(group.wasted_bytes)} wasted across{" "}
+              {group.files.length} files
+            </CardDescription>
+          </div>
+        </button>
+        <ConfirmDialog
+          trigger={
+            <Button type="button" variant="outline" size="sm" disabled={deletable === 0 || resolvePending}>
+              Delete extras
+            </Button>
+          }
+          title={resolveDialogTitle(deletable)}
+          description={RESOLVE_DIALOG_DESCRIPTION}
+          confirmLabel="Delete"
+          destructive
+          onConfirm={() => onResolve([{ blob_hash: group.blob_hash, file_id: keeper }])}
+        />
+      </CardHeader>
+      {open ? (
+        <CardContent>
+          <RadioGroup
+            asChild
+            className="gap-1.5"
+            value={String(keeper)}
+            onValueChange={(value) => onKeeperChange(Number(value))}
+          >
+            <ul>
+              {group.files.map((file) => (
+                <DuplicateFileRow key={file.file_id} file={file} />
+              ))}
+            </ul>
+          </RadioGroup>
+        </CardContent>
+      ) : null}
     </Card>
   );
 }

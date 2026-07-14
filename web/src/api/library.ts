@@ -9,6 +9,7 @@ import type {
   DiffResponse,
   GalleryPage,
   JobOut,
+  ModelBulkDeleteOut,
   ModelBulkIn,
   ModelBulkOut,
   ModelCreate,
@@ -134,6 +135,27 @@ export function useBulkUpdateModels() {
   return useMutation({
     mutationFn: (payload: ModelBulkIn) => api.post<ModelBulkOut>("/models/bulk", payload),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["models"] }),
+  });
+}
+
+/** `POST /models/bulk-delete` (Round 11 T1/T3) -- hard-deletes every model in
+ * `ids` in one call, used by the library's bulk select mode. Takes `slugs`
+ * alongside `ids` (unused by the request body itself) so `onSuccess` can
+ * drop each deleted model's own detail query the same way `useDeleteModel`
+ * does -- nothing left to keep cached for a hard-deleted model -- while also
+ * invalidating the whole `["models"]` prefix like `useBulkUpdateModels`
+ * above, which covers the gallery list. */
+export function useBulkDeleteModels() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ids }: { ids: number[]; slugs: string[] }) =>
+      api.post<ModelBulkDeleteOut>("/models/bulk-delete", { ids }),
+    onSuccess: (_data, { slugs }) => {
+      for (const slug of slugs) {
+        queryClient.removeQueries({ queryKey: modelQueryOptions(slug).queryKey });
+      }
+      void queryClient.invalidateQueries({ queryKey: ["models"] });
+    },
   });
 }
 

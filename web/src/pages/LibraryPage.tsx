@@ -9,14 +9,16 @@ import {
   SquareCheckIcon,
   StarIcon,
   TagIcon,
+  Trash2Icon,
   XIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 
 import { useFollowedCollections } from "@/api/collections";
-import { useBulkUpdateModels, useModelsQuery, useTags } from "@/api/library";
+import { useBulkDeleteModels, useBulkUpdateModels, useModelsQuery, useTags } from "@/api/library";
 import { useEnqueueModel } from "@/api/queue";
 import { ApiError } from "@/api/client";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ModelCard } from "@/components/gallery/ModelCard";
 import { NewModelDialog } from "@/components/gallery/NewModelDialog";
 import { Badge } from "@/components/ui/badge";
@@ -337,7 +339,8 @@ export function LibraryPage() {
 /** Floating bulk-action bar (fixed bottom-center) shown once at least one
  * model is checked in select mode. Tag add/remove and favorite go through
  * `useBulkUpdateModels` (`POST /models/bulk`); queueing has no bulk endpoint,
- * so it loops `useEnqueueModel` over the selection instead. */
+ * so it loops `useEnqueueModel` over the selection instead. Delete goes
+ * through `useBulkDeleteModels` (`POST /models/bulk-delete`, Round 11 T1). */
 function SelectionActionBar({ selectedItems, onDone }: { selectedItems: ModelSummary[]; onDone: () => void }) {
   const [tagToAdd, setTagToAdd] = useState("");
   const [addTagOpen, setAddTagOpen] = useState(false);
@@ -345,9 +348,11 @@ function SelectionActionBar({ selectedItems, onDone }: { selectedItems: ModelSum
   const [queueing, setQueueing] = useState(false);
 
   const bulkUpdate = useBulkUpdateModels();
+  const bulkDelete = useBulkDeleteModels();
   const enqueueModel = useEnqueueModel();
 
   const ids = selectedItems.map((model) => model.id);
+  const slugs = selectedItems.map((model) => model.slug);
   const tagsOnSelection = Array.from(new Set(selectedItems.flatMap((model) => model.tags))).sort();
 
   function addTag() {
@@ -405,6 +410,22 @@ function SelectionActionBar({ selectedItems, onDone }: { selectedItems: ModelSum
     } finally {
       setQueueing(false);
     }
+  }
+
+  function deleteSelection() {
+    bulkDelete.mutate(
+      { ids, slugs },
+      {
+        onSuccess: (result) => {
+          toast.success(`Deleted ${result.deleted} model${result.deleted === 1 ? "" : "s"}`);
+          onDone();
+        },
+        // Selection survives on error -- unlike the destructive success path
+        // above, there's nothing to exit out of if the delete didn't happen.
+        onError: (error) =>
+          toast.error(error instanceof ApiError ? error.detail : "Could not delete models"),
+      },
+    );
   }
 
   return (
@@ -469,6 +490,19 @@ function SelectionActionBar({ selectedItems, onDone }: { selectedItems: ModelSum
       <Button type="button" variant="outline" size="sm" disabled={queueing} onClick={() => void addToQueue()}>
         <ListPlusIcon /> Add to queue
       </Button>
+
+      <ConfirmDialog
+        trigger={
+          <Button type="button" variant="destructive" size="sm" disabled={bulkDelete.isPending}>
+            <Trash2Icon /> Delete
+          </Button>
+        }
+        title={`Delete ${ids.length} model${ids.length === 1 ? "" : "s"}?`}
+        description="Permanently deletes the selected models and every file they store. This cannot be undone."
+        confirmLabel="Delete"
+        destructive
+        onConfirm={deleteSelection}
+      />
 
       <Button type="button" variant="ghost" size="sm" onClick={onDone}>
         Cancel

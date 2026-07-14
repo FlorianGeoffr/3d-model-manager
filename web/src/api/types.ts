@@ -64,6 +64,12 @@ export interface ModelBulkOut {
   updated: number;
 }
 
+// `POST /models/bulk-delete` (Round 11 T1/T3): hard-deletes every model in
+// `ids` in one call -- same route-ordering rationale as `/bulk` above.
+export interface ModelBulkDeleteOut {
+  deleted: number;
+}
+
 // Multi-backend storage (backend/app/schemas/library.py, Workstream C task
 // C3/C4) -- `POST /models/{slug}/relocate` moves or replicates every file of
 // a model onto another configured backend.

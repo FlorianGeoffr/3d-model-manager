@@ -6,7 +6,7 @@ import {
   createRoute,
   createRouter,
 } from "@tanstack/react-router";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -129,6 +129,13 @@ const GALLERY_MODEL: ModelSummary = {
   favorite: false,
 };
 
+const GALLERY_MODEL_2: ModelSummary = {
+  ...GALLERY_MODEL,
+  id: 2,
+  slug: "test-model-2",
+  name: "Test Model 2",
+};
+
 function mockGalleryOkWithModels(models: ModelSummary[]) {
   getMock.mockImplementation((path: string) => {
     if (path.startsWith("/models")) return Promise.resolve({ items: models, next_cursor: null });
@@ -147,6 +154,13 @@ function lastBulkCall(): { path: string; body: unknown } {
   const calls = postMock.mock.calls.filter((call: unknown[]) => (call[0] as string) === "/models/bulk");
   const last = calls.at(-1);
   if (!last) throw new Error("no /models/bulk call recorded");
+  return { path: last[0] as string, body: last[1] };
+}
+
+function lastBulkDeleteCall(): { path: string; body: unknown } {
+  const calls = postMock.mock.calls.filter((call: unknown[]) => (call[0] as string) === "/models/bulk-delete");
+  const last = calls.at(-1);
+  if (!last) throw new Error("no /models/bulk-delete call recorded");
   return { path: last[0] as string, body: last[1] };
 }
 
@@ -320,5 +334,75 @@ describe("LibraryPage", () => {
 
     await waitFor(() => expect(toastErrorMock).toHaveBeenCalledExactlyOnceWith("Failed to add 1 model to queue"));
     expect(toastSuccessMock).not.toHaveBeenCalled();
+  });
+
+  it("bulk-deleting the selection POSTs /models/bulk-delete, toasts, and exits select mode", async () => {
+    mockGalleryOkWithModels([GALLERY_MODEL, GALLERY_MODEL_2]);
+    postMock.mockResolvedValueOnce({ deleted: 2 });
+    renderLibraryPage();
+    await screen.findByText("Test Model");
+
+    fireEvent.click(screen.getByRole("button", { name: "Select" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Select Test Model" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Select Test Model 2" }));
+    await screen.findByText("2 selected");
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("Delete 2 models?")).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() =>
+      expect(lastBulkDeleteCall()).toEqual({ path: "/models/bulk-delete", body: { ids: [1, 2] } }),
+    );
+    await waitFor(() => expect(toastSuccessMock).toHaveBeenCalledExactlyOnceWith("Deleted 2 models"));
+    await waitFor(() => expect(screen.queryByText(/selected/)).not.toBeInTheDocument());
+  });
+
+  it("canceling the delete confirm dialog doesn't POST to /models/bulk-delete", async () => {
+    mockGalleryOkWithModels([GALLERY_MODEL]);
+    renderLibraryPage();
+    await screen.findByText("Test Model");
+
+    fireEvent.click(screen.getByRole("button", { name: "Select" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Select Test Model" }));
+    await screen.findByText("1 selected");
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    const dialog = screen.getByRole("dialog");
+    // Two "Close" buttons live in a `ConfirmDialog` -- the footer's labeled
+    // one (index 0) and the corner icon button (sr-only "Close" text) --
+    // same disambiguation as DuplicatesPage.test.tsx.
+    fireEvent.click(within(dialog).getAllByRole("button", { name: "Close" })[0]);
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(postMock.mock.calls.some((call: unknown[]) => call[0] === "/models/bulk-delete")).toBe(false);
+    // Selection survives closing the dialog without confirming.
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+  });
+
+  it("toasts the ApiError detail and keeps the selection when the delete POST rejects", async () => {
+    mockGalleryOkWithModels([GALLERY_MODEL]);
+    postMock.mockImplementationOnce(() =>
+      Promise.reject(new ApiError(409, "model(s) have files still processing: [1]")),
+    );
+    renderLibraryPage();
+    await screen.findByText("Test Model");
+
+    fireEvent.click(screen.getByRole("button", { name: "Select" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Select Test Model" }));
+    await screen.findByText("1 selected");
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() =>
+      expect(toastErrorMock).toHaveBeenCalledExactlyOnceWith("model(s) have files still processing: [1]"),
+    );
+    expect(toastSuccessMock).not.toHaveBeenCalled();
+    // Action bar still present with the selection intact.
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
   });
 });

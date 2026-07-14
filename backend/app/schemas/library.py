@@ -88,6 +88,19 @@ class ModelBulkOut(BaseModel):
     updated: int
 
 
+class ModelBulkDeleteIn(BaseModel):
+    """``POST /models/bulk-delete`` payload (Round 11 Task 1): hard-delete
+    every model in ``ids`` in one call -- see
+    ``app.services.library.bulk_hard_delete_models``.
+    """
+
+    ids: list[int]
+
+
+class ModelBulkDeleteOut(BaseModel):
+    deleted: int
+
+
 class ModelSummary(BaseModel):
     """Gallery list item (Task 5 interface decision; Task 7 adds
     ``print_time_s``/``has_sliced`` and makes ``cover`` a real URL).

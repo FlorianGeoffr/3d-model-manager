@@ -13,6 +13,8 @@ from app.db import get_db
 from app.schemas.jobs import JobOut
 from app.schemas.library import (
     GalleryPage,
+    ModelBulkDeleteIn,
+    ModelBulkDeleteOut,
     ModelBulkIn,
     ModelBulkOut,
     ModelCreate,
@@ -90,6 +92,24 @@ async def bulk_update_models(
         favorite=payload.favorite,
     )
     return ModelBulkOut(updated=updated)
+
+
+@router.post("/bulk-delete", response_model=ModelBulkDeleteOut)
+async def bulk_delete_models(
+    payload: ModelBulkDeleteIn,
+    db: AsyncSession = Depends(get_db),
+    backend: StorageBackend = Depends(get_storage_backend),
+    settings: Settings = Depends(get_settings),
+) -> ModelBulkDeleteOut:
+    """Declared BEFORE ``/{slug}`` (same reasoning as ``/bulk`` above) --
+    FastAPI matches routes in declaration order, so a literal ``/bulk-delete``
+    segment must come before the ``{slug}`` path-param routes or it would be
+    parsed as a slug.
+    """
+    deleted = await library.bulk_hard_delete_models(
+        db, backend, settings, ids=payload.ids
+    )
+    return ModelBulkDeleteOut(deleted=deleted)
 
 
 @router.get("/{slug}", response_model=ModelDetail)

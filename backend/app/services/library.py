@@ -533,6 +533,72 @@ async def hard_delete_model(
     await db.commit()
 
 
+async def bulk_hard_delete_models(
+    db: AsyncSession,
+    backend: StorageBackend,
+    settings: Settings,
+    *,
+    ids: list[int],
+) -> int:
+    """``POST /models/bulk-delete`` (Round 11 Task 1): hard-delete every
+    model in ``ids`` in one call, reusing ``hard_delete_model`` per model.
+
+    Every id is validated to exist BEFORE any deletion runs, so an unknown id
+    404s with NOTHING deleted -- same validate-before-mutate posture as
+    ``bulk_update_models`` above. Pending ``store_to_backend`` jobs are
+    likewise pre-checked across the WHOLE batch, via one query joining
+    ``File`` -> ``Revision`` for every id in the batch, BEFORE any model is
+    touched: if ANY model in the selection has a file still processing, the
+    whole batch 409s with nothing deleted, rather than leaving it
+    half-deleted at whichever model happens to hit ``hard_delete_model``'s
+    own (per-model) guard first. ``hard_delete_model`` re-checks per model
+    too -- that's fine, redundant but harmless; this batch pre-check is what
+    makes the common failure atomic across the whole selection.
+
+    ``hard_delete_model`` commits per model, which expires every ORM object
+    still tracked by the session -- including the OTHER not-yet-processed
+    models in this batch. That's harmless (SQLAlchemy just re-SELECTs them
+    lazily on next attribute access), but a model already deleted in an
+    earlier loop iteration must never be touched again afterward -- its row
+    is gone, so a refresh attempt would raise ``ObjectDeletedError``. The
+    loop below satisfies that by construction: each id is looked up and
+    handed to ``hard_delete_model`` exactly once, moving strictly forward.
+    """
+    unique_ids = list(dict.fromkeys(ids))  # de-dupe, preserve order
+    if not unique_ids:
+        return 0
+
+    models_by_id = {
+        m.id: m
+        for m in (await db.execute(select(Model).where(Model.id.in_(unique_ids)))).scalars()
+    }
+    missing = [i for i in unique_ids if i not in models_by_id]
+    if missing:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"model(s) not found: {sorted(missing)}")
+
+    files_with_model_id = (
+        await db.execute(
+            select(File, Revision.model_id)
+            .join(Revision, File.revision_id == Revision.id)
+            .where(Revision.model_id.in_(unique_ids))
+        )
+    ).all()
+    blocked: set[int] = set()
+    for file, model_id in files_with_model_id:
+        if await _file_store_pending(db, file):
+            blocked.add(model_id)
+    if blocked:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"model(s) have files still processing: {sorted(blocked)}",
+        )
+
+    for model_id in unique_ids:
+        await hard_delete_model(db, backend, settings, models_by_id[model_id])
+
+    return len(unique_ids)
+
+
 def check_redownload_source(model: Model) -> SiteImporter:
     """409 unless ``model`` still has a resolvable import source: both
     ``source_site``/``source_url`` set, AND that site's registered importer

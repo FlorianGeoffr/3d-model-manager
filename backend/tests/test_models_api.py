@@ -1119,6 +1119,172 @@ async def test_bulk_remove_tag_that_exists_on_no_model_in_the_batch_is_a_noop(
 
 
 # ---------------------------------------------------------------------------
+# bulk delete (Round 11 Task 1): POST /models/bulk-delete -- hard-delete
+# every model in `ids` in one call, reusing `hard_delete_model` per model.
+# ---------------------------------------------------------------------------
+
+
+async def test_bulk_delete_two_models_deletes_files_sidecars_and_rows(
+    authenticated_client: httpx.AsyncClient, backend: LocalStorageBackend
+) -> None:
+    model_a = await _create_model(authenticated_client, "Bulk Delete A")
+    model_b = await _create_model(authenticated_client, "Bulk Delete B")
+
+    paths = []
+    for model in (model_a, model_b):
+        revision_id = model["current_revision"]["id"]
+        dir_name = model["current_revision"]["dir_name"]
+        upload = await authenticated_client.put(
+            "/api/uploads",
+            params={"model_id": model["id"], "revision_id": revision_id, "rel_path": "part.stl"},
+            content=b"hello-world",
+        )
+        assert upload.status_code == 201, upload.text
+        storage_path = f"{model['slug']}/{dir_name}/part.stl"
+        sidecar_path = f"{model['slug']}/.3dmm.json"
+        assert backend.exists(storage_path)
+        assert backend.exists(sidecar_path)
+        paths.append((storage_path, sidecar_path))
+
+    response = await authenticated_client.post(
+        "/api/models/bulk-delete", json={"ids": [model_a["id"], model_b["id"]]}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"deleted": 2}
+
+    for storage_path, sidecar_path in paths:
+        assert not backend.exists(storage_path)
+        assert not backend.exists(sidecar_path)
+    for model in (model_a, model_b):
+        detail = await authenticated_client.get(f"/api/models/{model['slug']}")
+        assert detail.status_code == 404
+
+
+async def test_bulk_delete_unknown_id_is_404_with_nothing_deleted(
+    authenticated_client: httpx.AsyncClient, backend: LocalStorageBackend
+) -> None:
+    model = await _create_model(authenticated_client, "Bulk Delete Untouched")
+    revision_id = model["current_revision"]["id"]
+    dir_name = model["current_revision"]["dir_name"]
+    upload = await authenticated_client.put(
+        "/api/uploads",
+        params={"model_id": model["id"], "revision_id": revision_id, "rel_path": "part.stl"},
+        content=b"hello-world",
+    )
+    assert upload.status_code == 201, upload.text
+    storage_path = f"{model['slug']}/{dir_name}/part.stl"
+    sidecar_path = f"{model['slug']}/.3dmm.json"
+
+    response = await authenticated_client.post(
+        "/api/models/bulk-delete", json={"ids": [model["id"], 999999]}
+    )
+
+    assert response.status_code == 404
+    assert "999999" in response.text
+
+    detail = await authenticated_client.get(f"/api/models/{model['slug']}")
+    assert detail.status_code == 200
+    assert backend.exists(storage_path)
+    assert backend.exists(sidecar_path)
+
+
+async def test_bulk_delete_409_when_any_model_has_pending_store_job_nothing_deleted(
+    authenticated_client: httpx.AsyncClient, backend: LocalStorageBackend, db_session: AsyncSession
+) -> None:
+    """Seeds a pending ``store_to_backend`` job the same way as
+    ``test_delete_model_409_with_pending_store_job`` above -- a ``File`` row
+    inserted directly, with ``verified_at=None`` and a single ``queued``
+    job. Paired with a fully "clean" second model (uploaded through the real
+    pipeline) to prove the whole batch 409s and rolls back nothing, not just
+    the pending one.
+    """
+    pending = await _create_model(authenticated_client, "Bulk Delete Pending")
+    revision = await db_session.get(Revision, pending["current_revision"]["id"])
+    pending_model = await db_session.get(Model, pending["id"])
+
+    digest = blake3.blake3(b"hello-world").hexdigest()
+    blob = Blob(hash=digest, size=11, kind=BlobKind.MESH, format=BlobFormat.STL)
+    db_session.add(blob)
+    await db_session.flush()
+    file = File(
+        revision_id=revision.id,
+        blob_hash=digest,
+        rel_path="part.stl",
+        storage_path=f"{pending_model.slug}/{revision.dir_name}/part.stl",
+        verified_at=None,
+    )
+    db_session.add(file)
+    await db_session.flush()
+    db_session.add(
+        Job(
+            id=uuid.uuid4(),
+            type="store_to_backend",
+            subject_type="file",
+            subject_id=file.id,
+            state=jobs_service.STATE_QUEUED,
+        )
+    )
+    await db_session.commit()
+
+    clean = await _create_model(authenticated_client, "Bulk Delete Clean")
+    clean_revision_id = clean["current_revision"]["id"]
+    clean_dir_name = clean["current_revision"]["dir_name"]
+    upload = await authenticated_client.put(
+        "/api/uploads",
+        params={
+            "model_id": clean["id"],
+            "revision_id": clean_revision_id,
+            "rel_path": "part.stl",
+        },
+        content=b"hello-world",
+    )
+    assert upload.status_code == 201, upload.text
+    clean_storage_path = f"{clean['slug']}/{clean_dir_name}/part.stl"
+    clean_sidecar_path = f"{clean['slug']}/.3dmm.json"
+    assert backend.exists(clean_storage_path)
+    assert backend.exists(clean_sidecar_path)
+
+    response = await authenticated_client.post(
+        "/api/models/bulk-delete", json={"ids": [pending["id"], clean["id"]]}
+    )
+
+    assert response.status_code == 409
+
+    detail_pending = await authenticated_client.get(f"/api/models/{pending['slug']}")
+    assert detail_pending.status_code == 200
+    detail_clean = await authenticated_client.get(f"/api/models/{clean['slug']}")
+    assert detail_clean.status_code == 200
+    assert backend.exists(clean_storage_path)
+    assert backend.exists(clean_sidecar_path)
+
+
+async def test_bulk_delete_dedupes_ids_and_counts_unique(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    model = await _create_model(authenticated_client, "Bulk Delete Dedupe")
+
+    response = await authenticated_client.post(
+        "/api/models/bulk-delete", json={"ids": [model["id"], model["id"]]}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"deleted": 1}
+
+    detail = await authenticated_client.get(f"/api/models/{model['slug']}")
+    assert detail.status_code == 404
+
+
+async def test_bulk_delete_empty_ids_returns_zero(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    response = await authenticated_client.post("/api/models/bulk-delete", json={"ids": []})
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"deleted": 0}
+
+
+# ---------------------------------------------------------------------------
 # relocate (Workstream C task C3): POST /models/{slug}/relocate enqueues
 # app.tasks.relocate.relocate_model_storage. The relocate MECHANICS
 # (move/replicate copy+verify, hash-mismatch handling) are covered end to

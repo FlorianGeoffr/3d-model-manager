@@ -79,13 +79,21 @@ async def _follow(client, mode: str):
     return r.json()
 
 
-def test_periodic_sync_is_opt_in_so_no_beat_entry_by_default() -> None:
-    """The beat schedule is built additively and each entry is gated on its own
-    positive interval setting -- with the defaults (0) neither is registered,
-    and "Sync now" still works."""
+def test_beat_schedule_is_the_single_dispatcher_entry() -> None:
+    """Round 10 Task 2: the three feature-specific conditional beat entries
+    (`scan-library`/`sync-collections`/`slicer-watch`) are gone -- a single
+    unconditional `dispatch-scheduled` entry (`app.tasks.scheduler
+    .dispatch_scheduled`) replaces all of them, deciding per-tick (against
+    the DB-backed `AppConfig`) which feature is actually due. "Sync now"
+    still works regardless (it dispatches `sync_all` directly, not through
+    beat at all)."""
     from app.tasks.celery_app import celery_app
 
-    assert "sync-collections" not in (celery_app.conf.beat_schedule or {})
+    schedule = celery_app.conf.beat_schedule or {}
+    assert "dispatch-scheduled" in schedule
+    assert "scan-library" not in schedule
+    assert "sync-collections" not in schedule
+    assert "slicer-watch" not in schedule
 
 
 @pytest.mark.asyncio

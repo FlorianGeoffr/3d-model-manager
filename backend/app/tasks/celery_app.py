@@ -50,40 +50,29 @@ celery_app.conf.update(
         "app.tasks.importing",
         "app.tasks.sync_collections",
         "app.tasks.slicer_watch",
+        "app.tasks.scheduler",
     ),
 )
 
-# Scheduled work is entirely OPT-IN: each entry appears only when its interval
-# setting is a positive number of seconds. Built additively (rather than
-# assigning `beat_schedule` per feature) so enabling one never clobbers another.
-# Both point at a `schedule_*` wrapper rather than the real task, since each
-# needs a tracking row (ScanRun / Job) that some caller normally creates.
-_beat_schedule: dict[str, dict] = {}
+# Round 10 Task 2: scheduled work used to be three independent, OPT-IN beat
+# entries -- one per feature -- each gated on its own interval setting being
+# read from `Settings` (env) exactly once, here, at process import time.
+# Flipping an interval via the new `PUT /settings/app` (DB-backed
+# `app.services.app_config`) had no effect until every celery process --
+# api, worker, AND beat -- was restarted, since beat's schedule was baked in
+# at import.
+#
+# A single UNCONDITIONAL entry replaces all three: `dispatch_scheduled`
+# ticks every `scheduler._CADENCE_S` seconds and, on each tick, re-reads the
+# DB-backed `AppConfig` fresh and decides itself which of scan/sync/watch is
+# actually due (see `app.tasks.scheduler` for the full arm-and-skip
+# rationale). This import must follow `celery_app`'s own creation above --
+# `scheduler`'s `@celery_app.task` decorator needs it to already exist.
+from app.tasks import scheduler  # noqa: E402
 
-# SPEC "optional scheduled scan" (Task 5 brief) -- SCAN_INTERVAL.
-if _settings.scan_interval_s > 0:
-    _beat_schedule["scan-library"] = {
-        "task": "app.tasks.scan.schedule_scan_library",
-        "schedule": _settings.scan_interval_s,
+celery_app.conf.beat_schedule = {
+    "dispatch-scheduled": {
+        "task": "app.tasks.scheduler.dispatch_scheduled",
+        "schedule": scheduler._CADENCE_S,
     }
-
-# M8 H periodic collection sync -- COLLECTION_SYNC_INTERVAL.
-if _settings.collection_sync_interval_s > 0:
-    _beat_schedule["sync-collections"] = {
-        "task": "app.tasks.sync_collections.schedule_sync_all",
-        "schedule": _settings.collection_sync_interval_s,
-    }
-
-# Round 8 Task 5 (watched-folder auto-import) -- WATCH_INTERVAL,
-# gated on WATCH_DIR also being set (an interval alone with no
-# watch dir configured would just no-op every tick). No `schedule_*` wrapper
-# needed here, unlike scan/collection-sync above -- this task doesn't need a
-# tracking row created ahead of time, it just walks the directory itself.
-if _settings.watch_interval_s > 0 and _settings.watch_dir is not None:
-    _beat_schedule["slicer-watch"] = {
-        "task": "app.tasks.slicer_watch.scan_slicer_watch",
-        "schedule": _settings.watch_interval_s,
-    }
-
-if _beat_schedule:
-    celery_app.conf.beat_schedule = _beat_schedule
+}

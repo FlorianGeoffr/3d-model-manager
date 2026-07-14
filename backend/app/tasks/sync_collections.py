@@ -24,12 +24,14 @@ from __future__ import annotations
 import logging
 import uuid
 
+from sqlalchemy import select
+
 from app.importers.base import SEARCH_PAGE_SIZE
 from app.importers.registry import get_importer
 from app.models.collections import FollowedCollection
 from app.models.enums import CollectionSyncMode, ImportState
 from app.models.library import Model
-from app.models.system import Import
+from app.models.system import Import, Job
 from app.services import collections as collections_svc
 from app.services import jobs
 from app.services.import_dedup import find_active_import_sync, find_live_import_sync
@@ -173,11 +175,31 @@ def sync_all(job_id: str) -> None:
 
 @celery_app.task(name="app.tasks.sync_collections.schedule_sync_all")
 def schedule_sync_all() -> None:
-    """Beat-only entrypoint (opt-in, gated on ``settings.collection_sync_interval_s``
-    -- see ``app.tasks.celery_app``). ``sync_all`` always operates against a Job
-    row some caller created, so a scheduled tick creates its own first (mirrors
-    ``app.tasks.scan.schedule_scan_library``)."""
+    """Beat-only entrypoint (``app.tasks.scheduler.dispatch_scheduled`` calls
+    this when ``collection_sync_interval_s`` is due -- see
+    ``app.tasks.celery_app``). ``sync_all`` always operates against a Job row
+    some caller created, so a scheduled tick creates its own first (mirrors
+    ``app.tasks.scan.schedule_scan_library``).
+
+    **In-flight guard** (Round 10 Task 2): skips creating a new Job -- no
+    dispatch at all -- while a ``sync_collections`` Job is still genuinely
+    ``queued``/``running``, mirroring ``schedule_scan_library``'s own guard
+    shape/states. Unlike that guard there is no dedicated lock here to check
+    for staleness (``sync_all`` has no ``SCAN_LOCK_KEY``-style singleton
+    lock covering its duration), so a stuck row simply blocks scheduled ticks
+    until it resolves -- "Sync now" (``POST`` the sync endpoint) still works
+    regardless, exactly as it did before this guard existed.
+    """
     with base.sync_session() as s:
+        in_flight = s.execute(
+            select(Job.id).where(
+                Job.type == "sync_collections",
+                Job.state.in_((jobs.STATE_QUEUED, jobs.STATE_RUNNING)),
+            )
+        ).first()
+        if in_flight is not None:
+            return
+
         job = jobs.create_job_sync(
             s, id=uuid.uuid4(), type="sync_collections", subject_type=None, subject_id=None
         )

@@ -1245,11 +1245,16 @@ async def test_bulk_delete_409_when_any_model_has_pending_store_job_nothing_dele
     assert backend.exists(clean_storage_path)
     assert backend.exists(clean_sidecar_path)
 
+    # The CLEAN model is listed first on purpose: a naive implementation
+    # with no batch-level pre-check would delete it before tripping over the
+    # pending model's own per-model guard inside hard_delete_model -- with
+    # the pending model first, that broken shape would pass this test too.
     response = await authenticated_client.post(
-        "/api/models/bulk-delete", json={"ids": [pending["id"], clean["id"]]}
+        "/api/models/bulk-delete", json={"ids": [clean["id"], pending["id"]]}
     )
 
     assert response.status_code == 409
+    assert str(pending["id"]) in response.json()["detail"]
 
     detail_pending = await authenticated_client.get(f"/api/models/{pending['slug']}")
     assert detail_pending.status_code == 200

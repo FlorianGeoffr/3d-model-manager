@@ -355,6 +355,11 @@ function SelectionActionBar({ selectedItems, onDone }: { selectedItems: ModelSum
   const slugs = selectedItems.map((model) => model.slug);
   const tagsOnSelection = Array.from(new Set(selectedItems.flatMap((model) => model.tags))).sort();
 
+  // The actions are mutually exclusive while any of them is in flight --
+  // most importantly Delete vs the enqueue loop: models can otherwise be
+  // hard-deleted out from under their own still-landing queue POSTs.
+  const busy = bulkUpdate.isPending || bulkDelete.isPending || queueing;
+
   function addTag() {
     const trimmed = tagToAdd.trim();
     if (!trimmed) return;
@@ -413,6 +418,11 @@ function SelectionActionBar({ selectedItems, onDone }: { selectedItems: ModelSum
   }
 
   function deleteSelection() {
+    // No local onError: queryClient.ts's global MutationCache.onError
+    // already toasts the ApiError detail. The selection survives a failure
+    // either way -- there's nothing to exit out of if the delete didn't
+    // happen (or only partially happened; the hook's onSettled refetch
+    // reconciles the gallery in that case).
     bulkDelete.mutate(
       { ids, slugs },
       {
@@ -420,10 +430,6 @@ function SelectionActionBar({ selectedItems, onDone }: { selectedItems: ModelSum
           toast.success(`Deleted ${result.deleted} model${result.deleted === 1 ? "" : "s"}`);
           onDone();
         },
-        // Selection survives on error -- unlike the destructive success path
-        // above, there's nothing to exit out of if the delete didn't happen.
-        onError: (error) =>
-          toast.error(error instanceof ApiError ? error.detail : "Could not delete models"),
       },
     );
   }
@@ -436,7 +442,7 @@ function SelectionActionBar({ selectedItems, onDone }: { selectedItems: ModelSum
 
       <Popover open={addTagOpen} onOpenChange={setAddTagOpen}>
         <PopoverTrigger asChild>
-          <Button type="button" variant="outline" size="sm">
+          <Button type="button" variant="outline" size="sm" disabled={busy}>
             <TagIcon /> Add tag
           </Button>
         </PopoverTrigger>
@@ -462,7 +468,7 @@ function SelectionActionBar({ selectedItems, onDone }: { selectedItems: ModelSum
 
       <Popover open={removeTagOpen} onOpenChange={setRemoveTagOpen}>
         <PopoverTrigger asChild>
-          <Button type="button" variant="outline" size="sm">
+          <Button type="button" variant="outline" size="sm" disabled={busy}>
             <XIcon /> Remove tag
           </Button>
         </PopoverTrigger>
@@ -483,17 +489,17 @@ function SelectionActionBar({ selectedItems, onDone }: { selectedItems: ModelSum
         </PopoverContent>
       </Popover>
 
-      <Button type="button" variant="outline" size="sm" onClick={favoriteSelection}>
+      <Button type="button" variant="outline" size="sm" disabled={busy} onClick={favoriteSelection}>
         <StarIcon /> Favorite
       </Button>
 
-      <Button type="button" variant="outline" size="sm" disabled={queueing} onClick={() => void addToQueue()}>
+      <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => void addToQueue()}>
         <ListPlusIcon /> Add to queue
       </Button>
 
       <ConfirmDialog
         trigger={
-          <Button type="button" variant="destructive" size="sm" disabled={bulkDelete.isPending}>
+          <Button type="button" variant="destructive" size="sm" disabled={busy}>
             <Trash2Icon /> Delete
           </Button>
         }

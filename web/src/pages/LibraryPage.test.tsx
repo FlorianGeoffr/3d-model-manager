@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MutationCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   RouterProvider,
   createMemoryHistory,
@@ -74,7 +74,19 @@ function renderLibraryPage(initialEntries: string[] = ["/"]) {
     routeTree: rootRoute.addChildren([libraryRoute, uploadRoute]),
     history: createMemoryHistory({ initialEntries }),
   });
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // Mirrors the app's real global MutationCache error toast
+  // (web/src/queryClient.ts) -- the bulk mutations deliberately have NO
+  // local onError (Round 11 fix wave: a local toast would stack a second,
+  // identical toast on top of this one in production), so error-path tests
+  // must exercise the global handler to assert what users actually see.
+  const queryClient = new QueryClient({
+    mutationCache: new MutationCache({
+      onError: (error) => {
+        toastErrorMock(error instanceof ApiError ? error.detail : "Something went wrong");
+      },
+    }),
+    defaultOptions: { queries: { retry: false } },
+  });
   return render(
     <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />
@@ -332,7 +344,10 @@ describe("LibraryPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Add to queue" }));
 
-    await waitFor(() => expect(toastErrorMock).toHaveBeenCalledExactlyOnceWith("Failed to add 1 model to queue"));
+    // The global MutationCache also toasts each rejected enqueue mutation
+    // ("already queued"), so assert the summary toast's presence rather
+    // than an exact call count.
+    await waitFor(() => expect(toastErrorMock).toHaveBeenCalledWith("Failed to add 1 model to queue"));
     expect(toastSuccessMock).not.toHaveBeenCalled();
   });
 

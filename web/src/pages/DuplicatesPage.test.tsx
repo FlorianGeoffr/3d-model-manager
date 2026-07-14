@@ -143,6 +143,19 @@ const REPORT_WITH_OLD_REVISION: DuplicatesReport = {
   total_wasted_bytes: 4096,
 };
 
+// A group whose ONLY extra copy sits on an old revision: nothing is
+// deletable anywhere on the page (fix wave: the page-wide button must be
+// disabled, not offer a "Delete 0 duplicate copies?" confirm).
+const REPORT_ONLY_OLD_EXTRA: DuplicatesReport = {
+  groups: [
+    {
+      ...REPORT.groups[0],
+      files: [REPORT.groups[0].files[0], REPORT_WITH_OLD_REVISION.groups[0].files[2]],
+    },
+  ],
+  total_wasted_bytes: 2048,
+};
+
 const RESOLVE_RESULT: DuplicatesResolveOut = { deleted: 1, reclaimed_bytes: 2048, skipped: [] };
 
 function renderDuplicatesPage(queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
@@ -366,7 +379,28 @@ describe("DuplicatesPage -- resolve duplicates (keeper picker + delete extras)",
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
 
     await waitFor(() => expect(toastSuccessMock).toHaveBeenCalledWith("Deleted 1 copy · reclaimed 2.0 KB"));
-    expect(toastWarningMock).toHaveBeenCalledWith("Skipped 1 copy (old revisions or files still processing)");
+    expect(toastWarningMock).toHaveBeenCalledWith("Skipped 1 copy (files still processing or changed since the report)");
+  });
+
+  it("suppresses the skip toast for old-revision skips the UI never promised to delete", async () => {
+    // Fix wave: old-revision copies are excluded from the dialog's count and
+    // badged in the list -- warning about their (expected) server-side skip
+    // would contradict the UI's own promise.
+    reportBox.current = REPORT;
+    postMock.mockResolvedValue({
+      deleted: 1,
+      reclaimed_bytes: 2048,
+      skipped: [{ file_id: 5, reason: "not_current_revision" }],
+    });
+
+    renderDuplicatesPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Delete extras" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(toastSuccessMock).toHaveBeenCalledWith("Deleted 1 copy · reclaimed 2.0 KB"));
+    expect(toastWarningMock).not.toHaveBeenCalled();
   });
 
   it("cancelling either the per-group or the page-wide dialog makes no resolve request", async () => {
@@ -385,6 +419,70 @@ describe("DuplicatesPage -- resolve duplicates (keeper picker + delete extras)",
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
 
     expect(postMock).not.toHaveBeenCalled();
+  });
+
+  it("disables 'Delete all duplicates' when nothing on the page is deletable", async () => {
+    reportBox.current = REPORT_ONLY_OLD_EXTRA;
+
+    renderDuplicatesPage();
+
+    const deleteAll = await screen.findByRole("button", { name: /Delete all duplicates/ });
+    expect(deleteAll).toBeDisabled();
+    // The per-group button agrees.
+    expect(screen.getByRole("button", { name: "Delete extras" })).toBeDisabled();
+  });
+
+  it("falls back to the default keeper when the stored choice is no longer in the group", async () => {
+    // Fix wave: pick a keeper, then simulate the report refetching WITHOUT
+    // that file (its row was deleted some other way). Honoring the stored
+    // choice would inflate the count and 404 the resolve request
+    // server-side -- the group must re-default to files[0] instead.
+    reportBox.current = REPORT;
+
+    renderDuplicatesPage();
+
+    fireEvent.click(await screen.findByRole("radio", { name: "Keep Dragon Copy — dragon.stl" }));
+
+    // The refetched group no longer contains file_id 2 (the stored keeper);
+    // a new third copy keeps the group alive. Toggling the group's collapse
+    // re-renders the page against the swapped report box.
+    reportBox.current = {
+      groups: [
+        {
+          ...REPORT.groups[0],
+          files: [
+            REPORT.groups[0].files[0],
+            {
+              model_id: 6,
+              model_slug: "dragon-nine",
+              model_name: "Dragon Nine",
+              model_archived: false,
+              file_id: 9,
+              file_name: "dragon.stl",
+              is_current_revision: true,
+            },
+          ],
+        },
+      ],
+      total_wasted_bytes: 2048,
+    };
+    const groupToggle = screen.getByRole("button", { name: /abcdef012345/ });
+    fireEvent.click(groupToggle);
+    fireEvent.click(groupToggle);
+
+    // Default keeper (file 1) is checked again -- not "no radio checked".
+    expect(await screen.findByRole("radio", { name: "Keep Dragon — dragon.stl" })).toBeChecked();
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete extras" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Delete 1 duplicate copy?")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledExactlyOnceWith("/reports/duplicates/resolve", {
+        keep: [{ blob_hash: "abcdef0123456789", file_id: 1 }],
+      }),
+    );
   });
 
   it("an old-revision row shows a badge and is excluded from the deletable count", async () => {

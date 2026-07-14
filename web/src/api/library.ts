@@ -144,7 +144,11 @@ export function useBulkUpdateModels() {
  * drop each deleted model's own detail query the same way `useDeleteModel`
  * does -- nothing left to keep cached for a hard-deleted model -- while also
  * invalidating the whole `["models"]` prefix like `useBulkUpdateModels`
- * above, which covers the gallery list. */
+ * above, which covers the gallery list. The prefix invalidation runs in
+ * `onSettled`, not `onSuccess`: the server commits per model, so a failed
+ * request can still have deleted some of the batch -- only a refetch
+ * reconciles the gallery either way (window-focus refetch is off globally,
+ * so nothing else would). */
 export function useBulkDeleteModels() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -154,8 +158,8 @@ export function useBulkDeleteModels() {
       for (const slug of slugs) {
         queryClient.removeQueries({ queryKey: modelQueryOptions(slug).queryKey });
       }
-      void queryClient.invalidateQueries({ queryKey: ["models"] });
     },
+    onSettled: () => void queryClient.invalidateQueries({ queryKey: ["models"] }),
   });
 }
 

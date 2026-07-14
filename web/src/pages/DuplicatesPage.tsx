@@ -53,9 +53,16 @@ const RESOLVE_DIALOG_DESCRIPTION =
 /** Default keeper for a group is its lowest-model-id file (the report
  * already sorts `group.files` by `(model_id, file_id)`) unless the user
  * picked a different one -- purely derived from `keepers` + `group` so a
- * refetch with changed groups re-defaults sanely without an effect. */
+ * refetch with changed groups re-defaults sanely without an effect. A
+ * stored choice that is no longer IN the group (its row was deleted, e.g.
+ * via the per-row trash, and the report refetched) falls back to the
+ * default -- honoring it would leave no radio checked, promise an inflated
+ * delete count, and 404 the resolve request. */
 function keeperFor(group: DuplicateGroup, keepers: Record<string, number>): number {
-  return keepers[group.blob_hash] ?? group.files[0].file_id;
+  const stored = keepers[group.blob_hash];
+  return stored !== undefined && group.files.some((file) => file.file_id === stored)
+    ? stored
+    : group.files[0].file_id;
 }
 
 /** Deletable copies in a group: current-revision files other than the
@@ -79,14 +86,22 @@ export function DuplicatesPage() {
   const totalDeletable = groups.reduce((sum, group) => sum + deletableCount(group, keeperFor(group, keepers)), 0);
 
   function handleResolve(choices: KeepChoice[]) {
+    // No local onError: queryClient.ts's global MutationCache.onError
+    // already toasts the ApiError detail for every failed mutation.
     resolve.mutate(choices, {
       onSuccess: (result) => {
         toast.success(`Deleted ${copyCount(result.deleted)} · reclaimed ${humanizeBytes(result.reclaimed_bytes)}`);
-        if (result.skipped.length > 0) {
-          toast.warning(`Skipped ${copyCount(result.skipped.length)} (old revisions or files still processing)`);
+        // Old-revision copies were never promised (excluded from the
+        // dialog's count and badged in the list) -- warning about them
+        // would just contradict the UI. Only surface skips the user
+        // couldn't see coming.
+        const unexpected = result.skipped.filter((entry) => entry.reason !== "not_current_revision");
+        if (unexpected.length > 0) {
+          toast.warning(
+            `Skipped ${copyCount(unexpected.length)} (files still processing or changed since the report)`,
+          );
         }
       },
-      onError: (error) => toast.error(error instanceof ApiError ? error.detail : "Could not resolve duplicates"),
     });
   }
 
@@ -112,7 +127,11 @@ export function DuplicatesPage() {
             />
             <ConfirmDialog
               trigger={
-                <Button type="button" variant="destructive" disabled={resolve.isPending}>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  disabled={resolve.isPending || totalDeletable === 0}
+                >
                   <Trash2Icon />
                   Delete all duplicates
                 </Button>

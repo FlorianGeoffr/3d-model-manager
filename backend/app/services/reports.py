@@ -118,6 +118,12 @@ async def resolve_duplicates(
     per file -- so a mid-loop storage failure on one copy leaves every
     already-deleted copy deleted (intended: the caller sees a partial
     ``deleted``/``skipped`` split rather than losing progress to a rollback).
+
+    The keeper is re-verified to still exist right before its group's
+    non-keepers are deleted: a concurrent ``DELETE /files/{id}`` landing on
+    the keeper between the snapshot and this group's turn would otherwise
+    let the loop delete every remaining copy of the blob's content. A
+    vanished keeper skips the whole group with reason ``keeper_missing``.
     """
     report = await duplicate_files_report(db)
     groups_by_hash = {group.blob_hash: group for group in report.groups}
@@ -145,6 +151,16 @@ async def resolve_duplicates(
     skipped: list[SkippedCopyOut] = []
     for choice in keep:
         group = groups_by_hash[choice.blob_hash]
+        keeper_row = (
+            await db.execute(select(File.id).where(File.id == choice.file_id))
+        ).scalar_one_or_none()
+        if keeper_row is None:
+            skipped.extend(
+                SkippedCopyOut(file_id=entry.file_id, reason="keeper_missing")
+                for entry in group.files
+                if entry.file_id != choice.file_id
+            )
+            continue
         for entry in group.files:
             if entry.file_id == choice.file_id:
                 continue  # the keeper -- never a delete candidate

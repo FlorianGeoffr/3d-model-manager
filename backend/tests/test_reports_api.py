@@ -11,7 +11,7 @@ from collections.abc import Awaitable, Callable
 import blake3
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete as sa_delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.enums import BlobFormat, BlobKind
@@ -378,16 +378,26 @@ async def test_resolve_keeper_not_in_group_404_nothing_deleted(
     b2, b2_rev = await _model_and_revision(db_session, model_b2)
     file_b2 = await seed_file(b2, b2_rev, "two.stl", b"mismatch-group-two")
 
-    # Valid hash (group one), but a file_id that belongs to group two.
     response = await authenticated_client.post(
         "/api/reports/duplicates/resolve",
-        json={"keep": [{"blob_hash": file_a1.blob_hash, "file_id": file_b1.id}]},
+        json={
+            "keep": [
+                # A perfectly valid group-two choice listed FIRST -- an
+                # implementation that interleaved validation with deletion
+                # would delete group two's extra copy before ever noticing
+                # the mismatch below. All-or-nothing means it must not.
+                {"blob_hash": file_b1.blob_hash, "file_id": file_b1.id},
+                # Valid hash (group one), but a file_id that belongs to group two.
+                {"blob_hash": file_a1.blob_hash, "file_id": file_b1.id},
+            ]
+        },
     )
 
     assert response.status_code == 404
     assert str(file_b1.id) in response.text
     assert file_a1.blob_hash in response.text
 
+    # Includes file_b2 -- the valid earlier choice's would-be delete target.
     for f in (file_a1, file_a2, file_b1, file_b2):
         assert await _file_row_exists(db_session, f.id)
 
@@ -535,3 +545,86 @@ async def test_report_exposes_is_current_revision(
     assert entries[stale_file.id]["is_current_revision"] is False
     assert entries[current_file.id]["is_current_revision"] is True
     assert entries[other_file.id]["is_current_revision"] is True
+
+
+async def test_resolve_skips_group_when_keeper_vanishes_mid_request(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    backend: LocalStorageBackend,
+    seed_file: Callable[..., Awaitable[File]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A concurrent ``DELETE /files/{id}`` can remove the KEEPER between
+    resolve's report snapshot and the delete loop. The per-group keeper
+    re-check must then skip the whole group (reason ``keeper_missing``)
+    instead of deleting its remaining copies -- which would silently destroy
+    the blob's last content despite the user's stated intent to keep it.
+    """
+    model_a = await _create_model(authenticated_client, "Vanishing Keeper A")
+    model_b = await _create_model(authenticated_client, "Vanishing Keeper B")
+
+    a, a_rev = await _model_and_revision(db_session, model_a)
+    keeper = await seed_file(a, a_rev, "keep.stl", b"vanishing-keeper-bytes")
+    b, b_rev = await _model_and_revision(db_session, model_b)
+    extra = await seed_file(b, b_rev, "extra.stl", b"vanishing-keeper-bytes")
+
+    from app.services import reports as reports_service
+
+    real_report = reports_service.duplicate_files_report
+
+    async def snapshot_then_lose_keeper(db: AsyncSession):
+        """Return the genuine report, then yank the keeper row -- simulating
+        the concurrent delete landing right after the snapshot."""
+        report = await real_report(db)
+        await db.execute(sa_delete(File).where(File.id == keeper.id))
+        await db.commit()
+        return report
+
+    monkeypatch.setattr(reports_service, "duplicate_files_report", snapshot_then_lose_keeper)
+
+    response = await authenticated_client.post(
+        "/api/reports/duplicates/resolve",
+        json={"keep": [{"blob_hash": keeper.blob_hash, "file_id": keeper.id}]},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["deleted"] == 0
+    assert body["reclaimed_bytes"] == 0
+    assert body["skipped"] == [{"file_id": extra.id, "reason": "keeper_missing"}]
+
+    # The surviving copy -- now the blob's LAST -- was not touched.
+    assert await _file_row_exists(db_session, extra.id)
+    assert backend.exists(extra.storage_path)
+
+
+async def test_resolve_duplicate_group_choices_422_nothing_deleted(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    """Two keep choices naming the SAME group must be rejected at the schema
+    layer (422) -- processed sequentially they would contradict each other,
+    with the first pass deleting the second pass's keeper.
+    """
+    model_a = await _create_model(authenticated_client, "Twice Named A")
+    model_b = await _create_model(authenticated_client, "Twice Named B")
+
+    a, a_rev = await _model_and_revision(db_session, model_a)
+    file_a = await seed_file(a, a_rev, "part.stl", b"twice-named-bytes")
+    b, b_rev = await _model_and_revision(db_session, model_b)
+    file_b = await seed_file(b, b_rev, "part.stl", b"twice-named-bytes")
+
+    response = await authenticated_client.post(
+        "/api/reports/duplicates/resolve",
+        json={
+            "keep": [
+                {"blob_hash": file_a.blob_hash, "file_id": file_a.id},
+                {"blob_hash": file_b.blob_hash, "file_id": file_b.id},
+            ]
+        },
+    )
+
+    assert response.status_code == 422
+    assert await _file_row_exists(db_session, file_a.id)
+    assert await _file_row_exists(db_session, file_b.id)

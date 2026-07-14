@@ -25,12 +25,14 @@ export function useDuplicatesReport() {
 // duplicate groups down to their chosen keeper, deleting every other copy.
 // Invalidates both this report AND `["models"]` -- the deletions change
 // affected models' detail/file lists, same posture as `useBulkDeleteModels`
-// in `api/library.ts`.
+// in `api/library.ts`. Invalidation runs in `onSettled`: the server commits
+// per copy, so a failed request can still have deleted earlier copies --
+// only a refetch gets ghosts (and a now-stale keeper choice) off the page.
 export function useResolveDuplicates() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (keep: KeepChoice[]) => api.post<DuplicatesResolveOut>("/reports/duplicates/resolve", { keep }),
-    onSuccess: () => {
+    onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: duplicatesReportQueryOptions.queryKey });
       void queryClient.invalidateQueries({ queryKey: ["models"] });
     },

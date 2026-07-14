@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from app.config import get_settings
+from app.models import Setting
 
 
 async def test_features_disabled_by_default(authenticated_client):
@@ -73,3 +74,34 @@ async def test_features_slicer_watch_dir_without_interval_stays_disabled(
     get_settings.cache_clear()
     assert body["watch_dir"] == str(watch)
     assert body["watch_enabled"] is False
+
+
+# ---------------------------------------------------------------------------
+# Round 10 T3: printer_enabled and watch_enabled's interval half now come
+# from the DB-backed AppConfig (app.services.app_config), not the env-only
+# Settings snapshot the two tests above still exercise.
+# ---------------------------------------------------------------------------
+
+
+async def test_features_db_row_overrides_env(
+    authenticated_client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, db_session
+):
+    """A DB row's printer_enabled/watch_interval_s win even when the
+    corresponding env var is unset (left at its default/False) -- proving
+    /features reads live off the DB, not a process-start env snapshot.
+    watch_dir itself stays env-only (a filesystem path, not a
+    runtime-editable setting), so it's seeded via WATCH_DIR as usual."""
+    watch = tmp_path / "watch"
+    watch.mkdir()
+    monkeypatch.setenv("WATCH_DIR", str(watch))  # WATCH_INTERVAL left unset
+    get_settings.cache_clear()
+    db_session.add(Setting(key="app", value={"printer_enabled": True, "watch_interval_s": 30}))
+    await db_session.commit()
+
+    r = await authenticated_client.get("/api/features")
+    body = r.json()
+
+    get_settings.cache_clear()
+    assert body["printer_enabled"] is True
+    assert body["watch_dir"] == str(watch)
+    assert body["watch_enabled"] is True

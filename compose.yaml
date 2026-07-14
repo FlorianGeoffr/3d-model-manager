@@ -14,21 +14,32 @@
 # to that host uid/gid instead, so files written under the bind-mounted
 # `./library` aren't root-owned -- see docker/entrypoint.sh.
 #
-# `beat` (Task 9, opt-in via `docker compose --profile beat up`): runs
-# Celery beat for the optional scheduled scan -- only fires ticks once
-# `SCAN_INTERVAL` is also set to a positive number of seconds in
-# `.env` (see `app.tasks.celery_app`'s conditional `beat_schedule`).
+# `beat` and `printerd` are always-on services (Round 10 Task 3 retired
+# their compose profiles): every feature they might run -- the scheduled
+# scan/collection-sync/watched-folder dispatch, and the printer MQTT
+# supervisor -- is now governed live by the DB-backed Settings (`PUT
+# /settings/app`, "Settings" UI), not by which containers happen to be up.
+# Flipping a setting off there is what makes each feature idle; `docker
+# compose up` alone starts every service, on or off.
 #
-# `printerd` (M4, opt-in via `docker compose --profile printer up`): the
-# Bambu LAN MQTT supervisor -- a plain `docker compose up` never starts it,
-# and it idles harmlessly unless `PRINTER_ENABLED=true` is also set in
-# `.env` (see README "Printer integration").
+# `beat`: runs Celery beat, which ticks a single unconditional dispatcher
+# (`app.tasks.scheduler.dispatch_scheduled`, Round 10 Task 2) every 15s;
+# each tick re-reads Settings fresh and fires scan/sync/watch only for
+# whichever of those has its own interval set to a positive number of
+# seconds -- an edit via the Settings UI takes effect on the very next tick,
+# no restart of `beat` (or anything else) required.
+#
+# `printerd` (M4): the Bambu LAN MQTT supervisor -- reads the printer flag
+# live every reconcile tick (`app.printerd.PrinterDaemon.enabled_printers`,
+# Round 10 Task 3) and tears down/starts every printer's worker accordingly;
+# harmless with the flag off (zero workers) and needs no restart when it's
+# flipped on via the Settings UI (see README "Printer integration").
 #
 # Watched-folder auto-import (Round 8 Task 5): `worker-io` always mounts
-# `./slicer-watch` (override with `WATCH_HOST_DIR`) at `/watch`,
-# but nothing polls it unless BOTH the `beat` profile is running AND
-# `WATCH_INTERVAL` is set to a positive number of seconds in
-# `.env` -- see `app.tasks.celery_app`'s conditional `beat_schedule`.
+# `./slicer-watch` (override with `WATCH_HOST_DIR`) at `/watch`, but nothing
+# polls it unless the watch dir is configured AND the watch interval
+# (Settings UI) is a positive number of seconds -- see
+# `app.tasks.scheduler.dispatch_scheduled`'s dispatch condition.
 #
 # Quickstart: `cp .env.example .env` then `docker compose up -d --build`.
 # See README "Quickstart" for the first-run admin password note.
@@ -135,26 +146,29 @@ services:
       retries: 3
     restart: unless-stopped
 
-  # Optional scheduled scan (SPEC "optional scheduled scan"; Task 9): a
-  # plain `docker compose up` never starts this (profile-gated). Opt in
-  # with `docker compose --profile beat up -d` AND set `SCAN_INTERVAL`
-  # in `.env` -- otherwise beat runs with an empty schedule and just idles.
+  # Celery beat (SPEC "optional scheduled scan"; Task 9; Round 10 Task 3:
+  # always-on now, no compose profile). Ticks the single unconditional
+  # dispatcher `app.tasks.scheduler.dispatch_scheduled` (Round 10 Task 2)
+  # every 15s; each tick re-reads the DB-backed Settings fresh and fires
+  # scan/collection-sync/watched-folder work only for whichever feature has
+  # its own interval set to a positive number of seconds in the Settings UI
+  # -- with everything off, beat just ticks an empty dispatch and idles.
   # Reuses the api/worker image + entrypoint: the entrypoint's explicit-
   # command passthrough (see docker/entrypoint.sh) execs this directly
   # instead of routing on ROLE, so no migrations/uvicorn/worker startup
   # happen here.
   beat:
-    profiles: ["beat"]
     build:
       context: .
       dockerfile: docker/Dockerfile
     image: tdmm:local
     command: ["celery", "-A", "app.tasks.celery_app", "beat", "-l", "info", "-s", "/tmp/celerybeat-schedule"]
     environment:
-      # Round 8: beat evaluates `app.tasks.celery_app`'s CONDITIONAL
-      # slicer-watch schedule entry in THIS container -- without the watch
-      # dir set here the entry never registers and the watched folder is
-      # silently dead, no matter what worker-io sees. Must match worker-io.
+      # Round 8: `dispatch_scheduled` (ticking in THIS container) checks
+      # `settings.watch_dir` before ever dispatching the watched-folder scan
+      # -- without it set here the watch feature is silently dead, no matter
+      # what worker-io sees or what the Settings UI's watch interval says.
+      # Must match worker-io.
       WATCH_DIR: /watch
     env_file:
       - .env
@@ -163,16 +177,18 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # printerd (M4, opt-in via `docker compose --profile printer up`): the
-  # long-lived Bambu MQTT supervisor (SPEC "Architecture"). A plain
-  # `docker compose up` never starts it (profile-gated), and it idles
-  # harmlessly unless PRINTER_ENABLED=true is also set. Mirrors `beat`:
-  # shares the app image + the entrypoint's explicit-command passthrough (no
-  # ROLE routing, no migrations/uvicorn), inherits PUID/PGID. Mounts
-  # /data for the Fernet key ({data_dir}/secrets/printer.key) it needs to
-  # decrypt access codes. No /library mount -- FTPS upload runs in worker-io.
+  # printerd (M4; Round 10 Task 3: always-on now, no compose profile). The
+  # long-lived Bambu MQTT supervisor (SPEC "Architecture") always starts and
+  # runs its reconcile loop; it reads the printer flag live off the DB-backed
+  # Settings every tick (`app.printerd.PrinterDaemon.enabled_printers`) and
+  # idles harmlessly (zero workers) with it off, picking every enabled
+  # printer up the moment the Settings UI flips it on -- no restart. Mirrors
+  # `beat`: shares the app image + the entrypoint's explicit-command
+  # passthrough (no ROLE routing, no migrations/uvicorn), inherits PUID/PGID.
+  # Mounts /data for the Fernet key ({data_dir}/secrets/printer.key) it needs
+  # to decrypt access codes. No /library mount -- FTPS upload runs in
+  # worker-io.
   printerd:
-    profiles: ["printer"]
     build:
       context: .
       dockerfile: docker/Dockerfile

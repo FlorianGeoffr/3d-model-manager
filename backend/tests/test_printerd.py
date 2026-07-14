@@ -9,7 +9,7 @@ import redis as redis_lib
 from app import printerd as printerd_module
 from app.config import get_settings
 from app.crypto import encrypt_secret
-from app.models import Blob, File, Model, Printer, PrintJob, Revision
+from app.models import Blob, File, Model, Printer, PrintJob, Revision, Setting
 from app.models.enums import BlobFormat, BlobKind, PrinterKind, PrintJobState
 from app.printerd import PrinterDaemon, PrinterWorker
 from app.printers.base import PrinterConnection, state_key
@@ -406,3 +406,98 @@ def test_reconcile_does_not_restart_on_name_only_change(redis_url, printer_enabl
     daemon.reconcile()
 
     assert daemon._workers[pid] is worker_before
+
+
+# ---------------------------------------------------------------------------
+# Round 10 T3: the `printer_enabled` flag is now read LIVE off the DB-backed
+# `AppConfig` (`app.services.app_config`), once per `enabled_printers()`
+# call, instead of gating `main()` at process start. The `printer_enabled`
+# fixture above sets the ENV var true (so these prove the DB row, once
+# present, overrides that env fallback); with no row at all the existing
+# tests above (which all use that fixture) still pass, proving the env
+# fallback path is untouched.
+# ---------------------------------------------------------------------------
+
+
+def _set_flag_in_db(printer_enabled: bool) -> None:
+    """Insert/update the `"app"` Setting row's `printer_enabled` key --
+    mirrors what `PUT /settings/app` persists, without going through the API
+    (these tests drive `PrinterDaemon` directly)."""
+    with base.sync_session() as s:
+        row = s.get(Setting, "app")
+        if row is None:
+            s.add(Setting(key="app", value={"printer_enabled": printer_enabled}))
+        else:
+            row.value = {**row.value, "printer_enabled": printer_enabled}
+        s.commit()
+
+
+def test_enabled_printers_empty_when_db_row_flag_off(
+    redis_url, printer_enabled, migrated_db, fake_adapter
+):
+    """No row yet -> env fallback (the `printer_enabled` fixture) still
+    reports the printer; a row explicitly turning the flag off overrides
+    that env value with `[]`, no matter what `Printer.enabled` says."""
+    settings = get_settings()
+    _seed_printer(settings, name="p", enabled=True)
+    daemon = PrinterDaemon(settings)
+    assert len(daemon.enabled_printers()) == 1
+
+    _set_flag_in_db(False)
+    assert daemon.enabled_printers() == []
+
+    _set_flag_in_db(True)
+    assert len(daemon.enabled_printers()) == 1
+
+
+def test_run_tears_down_and_restarts_all_workers_on_db_flag_flip(
+    redis_url, printer_enabled, migrated_db, fake_adapter, monkeypatch
+):
+    """End-to-end via the real background `run()` loop (mirrors Task 5's
+    `test_run_reconciles_newly_enabled_printer`/
+    `test_reconcile_tears_down_disabled_printer_thread`): flipping the DB
+    row off must tear the running worker (and its `cmd-{id}` thread) down
+    within a few `_POLL_INTERVAL_S` ticks -- with NO printerd restart -- and
+    flipping it back on must pick the printer back up, again with no
+    restart.
+
+    The cmd thread is taken from `daemon._threads[pid]` (this daemon's OWN
+    registry), NOT looked up process-wide by name via `_find_thread`:
+    earlier tests in this module leave still-alive `cmd-1` daemon threads
+    behind (the Round 8 T2 reconcile tests never stop() their daemons, and
+    truncation restarts printer ids at 1 for every test), so a name lookup
+    can return one of those stale threads -- which never exits -- and fail
+    the liveness assertions below spuriously."""
+    settings = get_settings()
+    monkeypatch.setattr(printerd_module, "_POLL_INTERVAL_S", 0.05)
+    pid = _seed_printer(settings, name="p", enabled=True)
+
+    daemon = PrinterDaemon(settings)
+    thread = threading.Thread(target=daemon.run, daemon=True)
+    thread.start()
+    try:
+        # `_threads[pid]` is registered a couple of statements after
+        # `_workers[pid]` (see `_subscribe_commands`), so wait on it
+        # directly rather than on `_workers`.
+        assert _wait_until(lambda: pid in daemon._threads), (
+            f"printer {pid} was never started; workers={daemon._workers!r}"
+        )
+        cmd_thread = daemon._threads[pid]
+        assert cmd_thread.is_alive()
+
+        _set_flag_in_db(False)
+
+        assert _wait_until(lambda: daemon._workers == {}), (
+            f"workers not torn down after the DB flag flipped off: {daemon._workers!r}"
+        )
+        cmd_thread.join(timeout=2.0)
+        assert not cmd_thread.is_alive()
+
+        _set_flag_in_db(True)
+
+        assert _wait_until(lambda: pid in daemon._workers), (
+            "printer was never picked back up after the DB flag flipped back on"
+        )
+    finally:
+        daemon.stop()
+        thread.join(timeout=2.0)

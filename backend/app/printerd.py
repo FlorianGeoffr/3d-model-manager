@@ -4,8 +4,17 @@ stream + incremental merge); POLLS the adapter's normalized snapshot on a
 short interval into Redis printer:{id}:state; transitions the active
 print_jobs row + publishes a coarse print_job.updated SSE event; subscribes
 a Redis command channel for pause/resume/stop. NOT a Celery task -- a plain
-long-lived process (compose service mirroring `beat`) reusing
-app.tasks.base.sync_session()."""
+long-lived process (compose service, always-on -- Round 10 T3 retired the
+`printer` compose profile) reusing app.tasks.base.sync_session().
+
+Round 10 T3: the daemon itself is no longer gated on the `printer_enabled`
+flag at process start -- it always runs. The flag (DB-backed `AppConfig`,
+`PUT /settings/app`) is instead read LIVE, once per `reconcile()` tick, in
+`enabled_printers()` below: off means every running worker tears down within
+one `_POLL_INTERVAL_S` cycle (the same presence-diff teardown a disabled
+`Printer` row already drives); back on means every enabled printer is picked
+back up on the very next tick. No process restart, no compose profile,
+required either way."""
 
 from __future__ import annotations
 
@@ -26,6 +35,7 @@ from app.models.enums import PrintJobState
 from app.printers.base import PrinterAdapter, PrinterPublicState, command_channel, state_key
 from app.printers.connection import connection_from_printer
 from app.printers.registry import build_adapter
+from app.services.app_config import get_app_config_sync
 from app.services.events import publish_print_job_event_sync
 from app.tasks import base
 
@@ -140,7 +150,16 @@ class PrinterDaemon:
         self._stop = threading.Event()
 
     def enabled_printers(self) -> list[Printer]:
+        """Every `enabled` Printer row -- but only when the `printer_enabled`
+        flag is on (Round 10 T3: read live off the DB-backed `AppConfig`,
+        same session, on every call); flag off returns `[]` unconditionally,
+        so `reconcile()`'s ordinary presence diff tears every running worker
+        down exactly as it would for a disabled `Printer` row, and no
+        adapter is ever built -- `bambulabs_api`/`paho` stay unimported."""
         with base.sync_session() as session:
+            config = get_app_config_sync(session, self.settings)
+            if not config.printer_enabled:
+                return []
             return list(session.execute(select(Printer).where(Printer.enabled.is_(True))).scalars())
 
     def start_printer(self, printer: Printer) -> PrinterWorker:
@@ -258,12 +277,14 @@ class PrinterDaemon:
 
 
 def main() -> None:
+    """Always constructs and runs the daemon (Round 10 T3) -- `printer_enabled`
+    is no longer checked here at process start; it's read live, every
+    `reconcile()` tick, in `enabled_printers()` above. With the flag off the
+    daemon simply runs with zero workers instead of idling via
+    `signal.pause()`, and picks printers up the moment the flag flips on
+    without a restart."""
     logging.basicConfig(level=logging.INFO)
     settings = get_settings()
-    if not settings.printer_enabled:
-        log.info("printerd: PRINTER_ENABLED is off; idling.")
-        signal.pause()  # idle instead of crash-looping under restart:unless-stopped
-        return
     daemon = PrinterDaemon(settings)
     signal.signal(signal.SIGTERM, lambda *_: daemon.stop())
     signal.signal(signal.SIGINT, lambda *_: daemon.stop())

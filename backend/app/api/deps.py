@@ -16,6 +16,7 @@ from app.config import Settings, get_settings
 from app.db import get_db
 from app.models import ApiToken, Session, User
 from app.services import api_tokens
+from app.services.app_config import get_app_config
 from app.storage.base import StorageBackend
 
 SESSION_COOKIE_NAME = "tdmm_session"
@@ -121,11 +122,21 @@ async def require_api_token(
     return row
 
 
-def require_printer_enabled(settings: Settings = Depends(get_settings)) -> None:
+async def require_printer_enabled(
+    db: AsyncSession = Depends(get_db), settings: Settings = Depends(get_settings)
+) -> None:
     """503 when the printer flag is off (Global Constraints). Routes stay
     mounted so the frontend can tell 'disabled' from a genuine 404; the app
-    is fully functional with the flag off."""
-    if not settings.printer_enabled:
+    is fully functional with the flag off.
+
+    Round 10 T3: reads the DB-backed ``AppConfig`` live, on every request,
+    instead of the env-only ``Settings.printer_enabled`` snapshot -- flipping
+    the flag via ``PUT /settings/app`` takes effect on the very next request,
+    no restart. Existing router-level ``Depends(require_printer_enabled)``
+    call sites are unchanged; FastAPI awaits async dependencies the same way.
+    """
+    config = await get_app_config(db, settings)
+    if not config.printer_enabled:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "printer integration is disabled")
 
 

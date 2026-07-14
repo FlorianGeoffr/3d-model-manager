@@ -19,6 +19,26 @@ async def test_503_when_disabled(authenticated_client):
     assert (await authenticated_client.post("/api/printers", json=CREATE)).status_code == 503
 
 
+async def test_flag_flip_via_settings_app_takes_effect_without_restart(authenticated_client):
+    """Round 10 T3: require_printer_enabled reads the DB-backed AppConfig
+    live, per request -- flipping printer_enabled via PUT /settings/app
+    takes effect on the very next request against the SAME client (no
+    process restart, which isn't even a thing a test client could do)."""
+    assert (await authenticated_client.get("/api/printers")).status_code == 503
+
+    payload = {
+        "printer_enabled": True,
+        "scan_interval_s": 0,
+        "collection_sync_interval_s": 0,
+        "watch_interval_s": 0,
+        "watch_stable_s": 10.0,
+    }
+    put = await authenticated_client.put("/api/settings/app", json=payload)
+    assert put.status_code == 200 and put.json()["printer_enabled"] is True
+
+    assert (await authenticated_client.get("/api/printers")).status_code == 200
+
+
 async def test_create_masks_code(authenticated_client, printer_enabled):
     r = await authenticated_client.post("/api/printers", json=CREATE)
     assert r.status_code == 201

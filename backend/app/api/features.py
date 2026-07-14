@@ -6,24 +6,37 @@ Round 8 T6 adds the watched-folder slicer fields
 (``app.tasks.slicer_watch``, Round 8 T5): ``watch_dir`` surfaces the
 container path so Settings can show it (and note it maps to
 ``WATCH_HOST_DIR`` on the host); ``watch_enabled`` mirrors
-the exact condition ``app.tasks.celery_app`` uses to register the beat entry
-(dir set AND a positive poll interval) rather than re-deriving it in the
-frontend.
+the exact condition ``app.tasks.scheduler.dispatch_scheduled`` uses to
+actually dispatch the watched-folder scan (dir set AND a positive poll
+interval) rather than re-deriving it in the frontend.
+
+Round 10 T3: ``printer_enabled`` and the interval half of ``watch_enabled``
+now come from the DB-backed ``AppConfig`` (``app.services.app_config
+.get_app_config``) -- the same live read ``require_printer_enabled`` uses --
+so flipping either via ``PUT /settings/app`` shows up here immediately.
+``watch_dir`` stays env-only (a filesystem path fixed at deploy time, not a
+runtime-editable setting), so it's still read straight off ``Settings``.
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
+from app.db import get_db
+from app.services.app_config import get_app_config
 
 router = APIRouter(tags=["features"])
 
 
 @router.get("/features")
-def get_features(settings: Settings = Depends(get_settings)) -> dict:
+async def get_features(
+    db: AsyncSession = Depends(get_db), settings: Settings = Depends(get_settings)
+) -> dict:
+    config = await get_app_config(db, settings)
     return {
-        "printer_enabled": settings.printer_enabled,
+        "printer_enabled": config.printer_enabled,
         "watch_dir": str(settings.watch_dir) if settings.watch_dir else None,
-        "watch_enabled": settings.watch_dir is not None and settings.watch_interval_s > 0,
+        "watch_enabled": settings.watch_dir is not None and config.watch_interval_s > 0,
     }

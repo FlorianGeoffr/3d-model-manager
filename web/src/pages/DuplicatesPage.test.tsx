@@ -1,8 +1,9 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MutationCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider, createMemoryHistory, createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ApiError } from "@/api/client";
 import { modelQueryOptions } from "@/api/library";
 import { duplicatesReportQueryOptions } from "@/api/reports";
 import { DuplicatesPage } from "@/pages/DuplicatesPage";
@@ -158,7 +159,23 @@ const REPORT_ONLY_OLD_EXTRA: DuplicatesReport = {
 
 const RESOLVE_RESULT: DuplicatesResolveOut = { deleted: 1, reclaimed_bytes: 2048, skipped: [] };
 
-function renderDuplicatesPage(queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
+// Mirrors the app's real global MutationCache error toast
+// (web/src/queryClient.ts). The resolve mutation deliberately has NO local
+// onError (a local toast would stack a second, identical one in
+// production), so the error path is only observable through this.
+function makeQueryClient() {
+  return new QueryClient({
+    mutationCache: new MutationCache({
+      onError: (error, _variables, _context, mutation) => {
+        if (mutation.meta?.silentError) return;
+        toastErrorMock(error instanceof ApiError ? error.detail : "Something went wrong");
+      },
+    }),
+    defaultOptions: { queries: { retry: false } },
+  });
+}
+
+function renderDuplicatesPage(queryClient = makeQueryClient()) {
   const rootRoute = createRootRoute();
   const duplicatesRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", component: DuplicatesPage });
   const detailRoute = createRoute({ getParentRoute: () => rootRoute, path: "/models/$slug", component: () => null });
@@ -401,6 +418,26 @@ describe("DuplicatesPage -- resolve duplicates (keeper picker + delete extras)",
 
     await waitFor(() => expect(toastSuccessMock).toHaveBeenCalledWith("Deleted 1 copy · reclaimed 2.0 KB"));
     expect(toastWarningMock).not.toHaveBeenCalled();
+  });
+
+  it("surfaces the ApiError detail when the resolve request fails", async () => {
+    // The mutation has no local onError by design -- the app's global
+    // MutationCache handler (mirrored in this file's QueryClient) is what
+    // the user actually sees, so this is the only thing standing between a
+    // failed resolve and silence.
+    reportBox.current = REPORT;
+    postMock.mockRejectedValue(new ApiError(404, "duplicate group(s) not found: abcdef0123456789"));
+
+    renderDuplicatesPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Delete extras" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() =>
+      expect(toastErrorMock).toHaveBeenCalledWith("duplicate group(s) not found: abcdef0123456789"),
+    );
+    expect(toastSuccessMock).not.toHaveBeenCalled();
   });
 
   it("cancelling either the per-group or the page-wide dialog makes no resolve request", async () => {

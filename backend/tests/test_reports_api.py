@@ -562,11 +562,23 @@ async def test_resolve_skips_group_when_keeper_vanishes_mid_request(
     """
     model_a = await _create_model(authenticated_client, "Vanishing Keeper A")
     model_b = await _create_model(authenticated_client, "Vanishing Keeper B")
+    model_c = await _create_model(authenticated_client, "Vanishing Keeper C")
 
     a, a_rev = await _model_and_revision(db_session, model_a)
     keeper = await seed_file(a, a_rev, "keep.stl", b"vanishing-keeper-bytes")
     b, b_rev = await _model_and_revision(db_session, model_b)
     extra = await seed_file(b, b_rev, "extra.stl", b"vanishing-keeper-bytes")
+
+    # A third copy on a SUPERSEDED revision: it was never deletable, so a
+    # vanished keeper must not relabel it `keeper_missing` -- the UI counts
+    # (and warns about) those two reasons differently.
+    c, c_rev1 = await _model_and_revision(db_session, model_c)
+    stale = await seed_file(c, c_rev1, "extra.stl", b"vanishing-keeper-bytes")
+    superseded = await authenticated_client.post(f"/api/models/{model_c['id']}/revisions", json={})
+    assert superseded.status_code == 201, superseded.text
+    # The new revision carries the file forward, so model C also contributes
+    # a CURRENT copy -- which does get the keeper_missing treatment.
+    carried = await _file_on_revision(db_session, superseded.json()["id"], "extra.stl")
 
     from app.services import reports as reports_service
 
@@ -591,10 +603,16 @@ async def test_resolve_skips_group_when_keeper_vanishes_mid_request(
     body = response.json()
     assert body["deleted"] == 0
     assert body["reclaimed_bytes"] == 0
-    assert body["skipped"] == [{"file_id": extra.id, "reason": "keeper_missing"}]
+    assert {(entry["file_id"], entry["reason"]) for entry in body["skipped"]} == {
+        (extra.id, "keeper_missing"),
+        (carried.id, "keeper_missing"),
+        # NOT keeper_missing: it was already undeletable on its own.
+        (stale.id, "not_current_revision"),
+    }
 
-    # The surviving copy -- now the blob's LAST -- was not touched.
-    assert await _file_row_exists(db_session, extra.id)
+    # Every surviving copy -- the blob's last content -- was left alone.
+    for survivor in (extra, carried, stale):
+        assert await _file_row_exists(db_session, survivor.id)
     assert backend.exists(extra.storage_path)
 
 

@@ -349,7 +349,10 @@ function SelectionActionBar({ selectedItems, onDone }: { selectedItems: ModelSum
 
   const bulkUpdate = useBulkUpdateModels();
   const bulkDelete = useBulkDeleteModels();
-  const enqueueModel = useEnqueueModel();
+  // `silentError`: this loops one enqueue mutation per selected model and
+  // toasts a single summary below -- the global per-mutation error toast
+  // would otherwise fire once per failed model on top of it.
+  const enqueueModel = useEnqueueModel({ silentError: true });
 
   const ids = selectedItems.map((model) => model.id);
   const slugs = selectedItems.map((model) => model.slug);
@@ -362,7 +365,7 @@ function SelectionActionBar({ selectedItems, onDone }: { selectedItems: ModelSum
 
   function addTag() {
     const trimmed = tagToAdd.trim();
-    if (!trimmed) return;
+    if (!trimmed || busy) return; // guards the Enter key, which no `disabled` covers
     bulkUpdate.mutate(
       { ids, add_tags: [trimmed] },
       {
@@ -460,7 +463,13 @@ function SelectionActionBar({ selectedItems, onDone }: { selectedItems: ModelSum
               }
             }}
           />
-          <Button type="button" size="sm" className="mt-2 w-full" disabled={!tagToAdd.trim()} onClick={addTag}>
+          <Button
+            type="button"
+            size="sm"
+            className="mt-2 w-full"
+            disabled={!tagToAdd.trim() || busy}
+            onClick={addTag}
+          >
             Add
           </Button>
         </PopoverContent>
@@ -476,7 +485,7 @@ function SelectionActionBar({ selectedItems, onDone }: { selectedItems: ModelSum
           {tagsOnSelection.length > 0 ? (
             <div className="flex flex-wrap gap-1.5">
               {tagsOnSelection.map((name) => (
-                <button key={name} type="button" onClick={() => removeTag(name)}>
+                <button key={name} type="button" disabled={busy} onClick={() => removeTag(name)}>
                   <Badge variant="outline" className="cursor-pointer">
                     {name}
                   </Badge>

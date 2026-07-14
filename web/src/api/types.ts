@@ -870,9 +870,16 @@ export interface KeepChoice {
   file_id: number;
 }
 
+/** Why a copy the request named wasn't deleted (backend
+ * `try_delete_duplicate_copy` + `resolve_duplicates`). A union, not a bare
+ * string, so the page's reason-specific handling (old-revision skips are
+ * expected and stay out of the warning toast) is a compile error away from
+ * silently missing a renamed/added reason. */
+export type SkipReason = "not_found" | "not_current_revision" | "store_pending" | "keeper_missing";
+
 export interface SkippedCopy {
   file_id: number;
-  reason: string;
+  reason: SkipReason;
 }
 
 export interface DuplicatesResolveOut {

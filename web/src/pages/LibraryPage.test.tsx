@@ -81,7 +81,8 @@ function renderLibraryPage(initialEntries: string[] = ["/"]) {
   // must exercise the global handler to assert what users actually see.
   const queryClient = new QueryClient({
     mutationCache: new MutationCache({
-      onError: (error) => {
+      onError: (error, _variables, _context, mutation) => {
+        if (mutation.meta?.silentError) return;
         toastErrorMock(error instanceof ApiError ? error.detail : "Something went wrong");
       },
     }),
@@ -344,10 +345,10 @@ describe("LibraryPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Add to queue" }));
 
-    // The global MutationCache also toasts each rejected enqueue mutation
-    // ("already queued"), so assert the summary toast's presence rather
-    // than an exact call count.
-    await waitFor(() => expect(toastErrorMock).toHaveBeenCalledWith("Failed to add 1 model to queue"));
+    // Exactly ONE toast: the bulk loop marks its enqueue mutation
+    // `silentError`, so the global MutationCache handler stays quiet and
+    // doesn't stack a per-model toast on top of this summary.
+    await waitFor(() => expect(toastErrorMock).toHaveBeenCalledExactlyOnceWith("Failed to add 1 model to queue"));
     expect(toastSuccessMock).not.toHaveBeenCalled();
   });
 

@@ -21,12 +21,19 @@ export function useQueue() {
 /** `POST /queue` -- appends a model to the end of the queue. Idempotent:
  * the backend answers 200 (not 201) if the model is already queued instead
  * of erroring or duplicating it -- either way this resolves, so callers
- * don't need to special-case "already queued" as a failure. */
-export function useEnqueueModel() {
+ * don't need to special-case "already queued" as a failure.
+ *
+ * `silentError` suppresses the global `MutationCache` error toast
+ * (`queryClient.ts`) for callers that fan this mutation out over a
+ * selection and report one summary toast of their own -- without it, the
+ * library's bulk "Add to queue" would toast once per failed model AND once
+ * for the batch. */
+export function useEnqueueModel({ silentError = false }: { silentError?: boolean } = {}) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (modelId: number) => api.post<QueueEntry>("/queue", { model_id: modelId }),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: queueQueryKey }),
+    meta: { silentError },
   });
 }
 

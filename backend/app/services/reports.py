@@ -155,8 +155,16 @@ async def resolve_duplicates(
             await db.execute(select(File.id).where(File.id == choice.file_id))
         ).scalar_one_or_none()
         if keeper_row is None:
+            # Old-revision copies keep their OWN reason even here: they were
+            # never deletable in the first place (and the UI, which excludes
+            # them from the count it promises, filters that reason out of its
+            # "skipped" warning -- calling them keeper_missing would inflate
+            # the warning past the number of copies the user was promised).
             skipped.extend(
-                SkippedCopyOut(file_id=entry.file_id, reason="keeper_missing")
+                SkippedCopyOut(
+                    file_id=entry.file_id,
+                    reason="keeper_missing" if entry.is_current_revision else "not_current_revision",
+                )
                 for entry in group.files
                 if entry.file_id != choice.file_id
             )

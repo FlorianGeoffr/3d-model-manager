@@ -842,6 +842,11 @@ export interface DuplicateFile {
   model_archived: boolean;
   file_id: number;
   file_name: string;
+  // Round 11 T4: whether this copy lives on its model's CURRENT revision --
+  // a copy on a superseded revision can't be deleted (file ops are
+  // current-revision-only, same guard as `DELETE /files/{id}`), so the
+  // duplicates page excludes it from keeper/deletable choices.
+  is_current_revision: boolean;
 }
 
 export interface DuplicateGroup {
@@ -854,4 +859,24 @@ export interface DuplicateGroup {
 export interface DuplicatesReport {
   groups: DuplicateGroup[];
   total_wasted_bytes: number;
+}
+
+// `POST /reports/duplicates/resolve` (Round 11 T2): the client picks a
+// "keeper" file per duplicate group and the server deletes every other copy
+// in that group.
+
+export interface KeepChoice {
+  blob_hash: string;
+  file_id: number;
+}
+
+export interface SkippedCopy {
+  file_id: number;
+  reason: string;
+}
+
+export interface DuplicatesResolveOut {
+  deleted: number;
+  reclaimed_bytes: number;
+  skipped: SkippedCopy[];
 }

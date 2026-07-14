@@ -5,35 +5,113 @@
  * delete that reuses the model Files tab's own `DELETE /files/{id}`
  * mutation (`useDeleteFile`), then invalidates both this report and the
  * affected model's detail/files query.
+ *
+ * Round 11 T4 adds group resolution: each group picks a "keeper" copy (a
+ * radio per row, defaulting to the report's own lowest-model-id ordering --
+ * `group.files[0]`) and "Delete extras" (per group) / "Delete all
+ * duplicates" (page-wide) delete every OTHER current-revision copy in one
+ * call via `POST /reports/duplicates/resolve` (`useResolveDuplicates`).
+ * Old-revision copies stay keeper-eligible (keeping one = doing nothing)
+ * but are excluded from deletable counts -- the server would skip them
+ * anyway (file ops are current-revision-only, same guard as `DELETE
+ * /files/{id}`), so the UI shouldn't promise their deletion.
  */
+import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { Trash2Icon } from "lucide-react";
+import { toast } from "sonner";
 
 import { ApiError } from "@/api/client";
 import { useDeleteFile } from "@/api/library";
-import { duplicatesReportQueryOptions, useDuplicatesReport } from "@/api/reports";
-import type { DuplicateFile, DuplicateGroup } from "@/api/types";
+import { duplicatesReportQueryOptions, useDuplicatesReport, useResolveDuplicates } from "@/api/reports";
+import type { DuplicateFile, DuplicateGroup, KeepChoice } from "@/api/types";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
 import { PageContainer } from "@/components/ui/page-container";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Skeleton } from "@/components/ui/skeleton";
 import { humanizeBytes } from "@/lib/format";
+
+/** `1 copy` / `2 copies`. */
+function copyCount(n: number): string {
+  return `${n} cop${n === 1 ? "y" : "ies"}`;
+}
+
+function resolveDialogTitle(n: number): string {
+  return `Delete ${n} duplicate cop${n === 1 ? "y" : "ies"}?`;
+}
+
+const RESOLVE_DIALOG_DESCRIPTION =
+  "Keeps the copy you marked and permanently deletes the rest from storage. This cannot be undone.";
+
+/** Default keeper for a group is its lowest-model-id file (the report
+ * already sorts `group.files` by `(model_id, file_id)`) unless the user
+ * picked a different one -- purely derived from `keepers` + `group` so a
+ * refetch with changed groups re-defaults sanely without an effect. */
+function keeperFor(group: DuplicateGroup, keepers: Record<string, number>): number {
+  return keepers[group.blob_hash] ?? group.files[0].file_id;
+}
+
+/** Deletable copies in a group: current-revision files other than the
+ * keeper. Old-revision copies are never counted -- the server would skip
+ * them (file ops are current-revision-only), so the UI shouldn't promise
+ * their deletion. */
+function deletableCount(group: DuplicateGroup, keeper: number): number {
+  return group.files.filter((file) => file.is_current_revision && file.file_id !== keeper).length;
+}
 
 export function DuplicatesPage() {
   const reportQuery = useDuplicatesReport();
   const groups = reportQuery.data?.groups ?? [];
+  const [keepers, setKeepers] = useState<Record<string, number>>({});
+  const resolve = useResolveDuplicates();
+
+  const totalDeletable = groups.reduce((sum, group) => sum + deletableCount(group, keeperFor(group, keepers)), 0);
+
+  function handleResolve(choices: KeepChoice[]) {
+    resolve.mutate(choices, {
+      onSuccess: (result) => {
+        toast.success(`Deleted ${copyCount(result.deleted)} · reclaimed ${humanizeBytes(result.reclaimed_bytes)}`);
+        if (result.skipped.length > 0) {
+          toast.warning(`Skipped ${copyCount(result.skipped.length)} (old revisions or files still processing)`);
+        }
+      },
+      onError: (error) => toast.error(error instanceof ApiError ? error.detail : "Could not resolve duplicates"),
+    });
+  }
 
   return (
     <PageContainer width="default">
-      <div>
-        <h1 className="text-lg font-semibold text-foreground">Duplicate files</h1>
-        <p className="text-sm text-muted-foreground">
-          {reportQuery.data
-            ? `Reclaimable: ${humanizeBytes(reportQuery.data.total_wasted_bytes)}`
-            : "Files with identical content stored more than once."}
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-lg font-semibold text-foreground">Duplicate files</h1>
+          <p className="text-sm text-muted-foreground">
+            {reportQuery.data
+              ? `Reclaimable: ${humanizeBytes(reportQuery.data.total_wasted_bytes)}`
+              : "Files with identical content stored more than once."}
+          </p>
+        </div>
+        {groups.length > 0 && (
+          <ConfirmDialog
+            trigger={
+              <Button type="button" variant="destructive" disabled={resolve.isPending}>
+                <Trash2Icon />
+                Delete all duplicates
+              </Button>
+            }
+            title={resolveDialogTitle(totalDeletable)}
+            description={RESOLVE_DIALOG_DESCRIPTION}
+            confirmLabel="Delete"
+            destructive
+            onConfirm={() =>
+              handleResolve(groups.map((group) => ({ blob_hash: group.blob_hash, file_id: keeperFor(group, keepers) })))
+            }
+          />
+        )}
       </div>
 
       {reportQuery.isLoading ? (
@@ -51,7 +129,14 @@ export function DuplicatesPage() {
       ) : (
         <div className="space-y-4">
           {groups.map((group) => (
-            <DuplicateGroupCard key={group.blob_hash} group={group} />
+            <DuplicateGroupCard
+              key={group.blob_hash}
+              group={group}
+              keeper={keeperFor(group, keepers)}
+              onKeeperChange={(fileId) => setKeepers((prev) => ({ ...prev, [group.blob_hash]: fileId }))}
+              resolvePending={resolve.isPending}
+              onResolve={handleResolve}
+            />
           ))}
         </div>
       )}
@@ -59,7 +144,21 @@ export function DuplicatesPage() {
   );
 }
 
-function DuplicateGroupCard({ group }: { group: DuplicateGroup }) {
+function DuplicateGroupCard({
+  group,
+  keeper,
+  onKeeperChange,
+  resolvePending,
+  onResolve,
+}: {
+  group: DuplicateGroup;
+  keeper: number;
+  onKeeperChange: (fileId: number) => void;
+  resolvePending: boolean;
+  onResolve: (choices: KeepChoice[]) => void;
+}) {
+  const deletable = deletableCount(group, keeper);
+
   return (
     <Card>
       <CardHeader>
@@ -68,13 +167,34 @@ function DuplicateGroupCard({ group }: { group: DuplicateGroup }) {
           {humanizeBytes(group.size)} each · {humanizeBytes(group.wasted_bytes)} wasted across{" "}
           {group.files.length} files
         </CardDescription>
+        <CardAction>
+          <ConfirmDialog
+            trigger={
+              <Button type="button" variant="outline" size="sm" disabled={deletable === 0 || resolvePending}>
+                Delete extras
+              </Button>
+            }
+            title={resolveDialogTitle(deletable)}
+            description={RESOLVE_DIALOG_DESCRIPTION}
+            confirmLabel="Delete"
+            destructive
+            onConfirm={() => onResolve([{ blob_hash: group.blob_hash, file_id: keeper }])}
+          />
+        </CardAction>
       </CardHeader>
       <CardContent>
-        <ul className="space-y-1.5">
-          {group.files.map((file) => (
-            <DuplicateFileRow key={file.file_id} file={file} />
-          ))}
-        </ul>
+        <RadioGroup
+          asChild
+          className="gap-1.5"
+          value={String(keeper)}
+          onValueChange={(value) => onKeeperChange(Number(value))}
+        >
+          <ul>
+            {group.files.map((file) => (
+              <DuplicateFileRow key={file.file_id} file={file} />
+            ))}
+          </ul>
+        </RadioGroup>
       </CardContent>
     </Card>
   );
@@ -86,6 +206,7 @@ function DuplicateFileRow({ file }: { file: DuplicateFile }) {
   // THIS file's own model -- duplicates by definition span different
   // models, so each row needs its own hook instance/slug).
   const deleteFile = useDeleteFile(file.model_slug);
+  const radioId = `keeper-${file.file_id}`;
 
   function handleConfirm() {
     deleteFile.mutate(file.file_id, {
@@ -95,16 +216,33 @@ function DuplicateFileRow({ file }: { file: DuplicateFile }) {
 
   return (
     <li className="flex items-center justify-between gap-2 text-sm">
-      <div className="min-w-0">
-        <Link to="/models/$slug" params={{ slug: file.model_slug }} className="hover:underline">
-          {file.model_name} — {file.file_name}
-        </Link>
-        {file.model_archived && <span className="text-muted-foreground"> (archived)</span>}
-        {deleteFile.isError ? (
-          <p role="alert" className="text-xs text-destructive">
-            {deleteFile.error instanceof ApiError ? deleteFile.error.detail : "Could not delete the file"}
-          </p>
-        ) : null}
+      <div className="flex min-w-0 items-center gap-2">
+        <div className="flex shrink-0 items-center gap-1.5">
+          <RadioGroupItem
+            value={String(file.file_id)}
+            id={radioId}
+            aria-label={`Keep ${file.model_name} — ${file.file_name}`}
+          />
+          <Label htmlFor={radioId} className="text-xs font-normal text-muted-foreground">
+            Keep
+          </Label>
+        </div>
+        <div className="min-w-0">
+          <Link to="/models/$slug" params={{ slug: file.model_slug }} className="hover:underline">
+            {file.model_name} — {file.file_name}
+          </Link>
+          {file.model_archived && <span className="text-muted-foreground"> (archived)</span>}
+          {!file.is_current_revision && (
+            <Badge variant="outline" className="ml-2 align-middle">
+              old revision
+            </Badge>
+          )}
+          {deleteFile.isError ? (
+            <p role="alert" className="text-xs text-destructive">
+              {deleteFile.error instanceof ApiError ? deleteFile.error.detail : "Could not delete the file"}
+            </p>
+          ) : null}
+        </div>
       </div>
       <ConfirmDialog
         trigger={

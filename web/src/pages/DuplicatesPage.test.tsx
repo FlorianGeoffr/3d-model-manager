@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { modelQueryOptions } from "@/api/library";
 import { duplicatesReportQueryOptions } from "@/api/reports";
 import { DuplicatesPage } from "@/pages/DuplicatesPage";
-import type { DuplicatesReport } from "@/api/types";
+import type { DuplicatesReport, DuplicatesResolveOut } from "@/api/types";
 
 // Mock the report hook directly (same pattern as QueuePage.test.tsx mocking
 // `@/api/queue`) -- DuplicatesPage's own rendering (groups, reclaimable
@@ -28,15 +28,28 @@ vi.mock("@/api/reports", async (importOriginal) => {
 // The row delete button reuses the real `useDeleteFile` (from `@/api/library`,
 // unmocked) so only the underlying `api.delete` transport is faked -- same
 // `vi.hoisted` + `vi.mock("@/api/client", ...)` pattern as SettingsPage.test.tsx.
-const { deleteMock } = vi.hoisted(() => ({ deleteMock: vi.fn() }));
+// Round 11 T4's `useResolveDuplicates` reuses the real hook too, so its POST
+// goes through this same mocked `api.post`; `sonner`'s `toast` is mocked
+// separately to assert the success/skip/error toasts it fires.
+const { deleteMock, postMock, toastSuccessMock, toastWarningMock, toastErrorMock } = vi.hoisted(() => ({
+  deleteMock: vi.fn(),
+  postMock: vi.fn(),
+  toastSuccessMock: vi.fn(),
+  toastWarningMock: vi.fn(),
+  toastErrorMock: vi.fn(),
+}));
 
 vi.mock("@/api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/client")>();
   return {
     ...actual,
-    api: { ...actual.api, delete: deleteMock },
+    api: { ...actual.api, delete: deleteMock, post: postMock },
   };
 });
+
+vi.mock("sonner", () => ({
+  toast: { success: toastSuccessMock, warning: toastWarningMock, error: toastErrorMock },
+}));
 
 const REPORT: DuplicatesReport = {
   groups: [
@@ -52,6 +65,7 @@ const REPORT: DuplicatesReport = {
           model_archived: false,
           file_id: 1,
           file_name: "dragon.stl",
+          is_current_revision: true,
         },
         {
           model_id: 2,
@@ -60,12 +74,76 @@ const REPORT: DuplicatesReport = {
           model_archived: false,
           file_id: 2,
           file_name: "dragon.stl",
+          is_current_revision: true,
         },
       ],
     },
   ],
   total_wasted_bytes: 2048,
 };
+
+// A second group so "Delete all duplicates" has more than one group's
+// default keeper to POST, and so a per-group action can be asserted as
+// scoped to ONE group rather than trivially "the only group".
+const REPORT_TWO_GROUPS: DuplicatesReport = {
+  groups: [
+    REPORT.groups[0],
+    {
+      blob_hash: "ffff000011112222",
+      size: 4096,
+      wasted_bytes: 4096,
+      files: [
+        {
+          model_id: 3,
+          model_slug: "goblin",
+          model_name: "Goblin",
+          model_archived: false,
+          file_id: 10,
+          file_name: "goblin.stl",
+          is_current_revision: true,
+        },
+        {
+          model_id: 4,
+          model_slug: "goblin-copy",
+          model_name: "Goblin Copy",
+          model_archived: false,
+          file_id: 11,
+          file_name: "goblin.stl",
+          is_current_revision: true,
+        },
+      ],
+    },
+  ],
+  total_wasted_bytes: REPORT.total_wasted_bytes + 4096,
+};
+
+// A third, superseded-revision copy in the same group: keeper-eligible but
+// never counted as deletable, since the server would skip it anyway (file
+// ops are current-revision-only).
+const REPORT_WITH_OLD_REVISION: DuplicatesReport = {
+  groups: [
+    {
+      ...REPORT.groups[0],
+      wasted_bytes: 4096,
+      files: [
+        REPORT.groups[0].files[0],
+        REPORT.groups[0].files[1],
+        {
+          model_id: 5,
+          model_slug: "dragon-old",
+          model_name: "Dragon Old",
+          model_archived: false,
+          file_id: 3,
+          file_name: "dragon.stl",
+          is_current_revision: false,
+        },
+      ],
+    },
+  ],
+  total_wasted_bytes: 4096,
+};
+
+const RESOLVE_RESULT: DuplicatesResolveOut = { deleted: 1, reclaimed_bytes: 2048, skipped: [] };
 
 function renderDuplicatesPage(queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   const rootRoute = createRootRoute();
@@ -92,9 +170,24 @@ async function findRow(linkText: string) {
   return row;
 }
 
+// Scopes into one group's card by its (12-char, truncated) blob-hash title,
+// so a per-group action (e.g. "Delete extras") can be targeted without
+// tripping over the same-named button in another group's card.
+async function findGroupCard(blobHashPrefix: string) {
+  const title = await screen.findByText(blobHashPrefix);
+  const card = title.closest('[data-slot="card"]');
+  if (!card) throw new Error(`card for "${blobHashPrefix}" not found`);
+  return card as HTMLElement;
+}
+
 beforeEach(() => {
   reportBox.current = undefined;
   deleteMock.mockReset();
+  postMock.mockReset();
+  postMock.mockResolvedValue(RESOLVE_RESULT);
+  toastSuccessMock.mockReset();
+  toastWarningMock.mockReset();
+  toastErrorMock.mockReset();
 });
 
 describe("DuplicatesPage", () => {
@@ -213,5 +306,101 @@ describe("DuplicatesPage -- gated quick delete", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(deleteMock).not.toHaveBeenCalled();
     expect(screen.getByText("Dragon — dragon.stl")).toBeInTheDocument();
+  });
+});
+
+describe("DuplicatesPage -- resolve duplicates (keeper picker + delete extras)", () => {
+  it("'Delete all duplicates' shows the total deletable count and POSTs each group's default keeper", async () => {
+    reportBox.current = REPORT_TWO_GROUPS;
+
+    renderDuplicatesPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Delete all duplicates" }));
+    const dialog = await screen.findByRole("dialog");
+    // One deletable copy per group (2 files each, default keeper = files[0]).
+    expect(within(dialog).getByText("Delete 2 duplicate copies?")).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledExactlyOnceWith("/reports/duplicates/resolve", {
+        keep: [
+          { blob_hash: "abcdef0123456789", file_id: 1 },
+          { blob_hash: "ffff000011112222", file_id: 10 },
+        ],
+      }),
+    );
+  });
+
+  it("changing a group's keeper radio then that group's 'Delete extras' POSTs only that group's new keeper", async () => {
+    reportBox.current = REPORT_TWO_GROUPS;
+
+    renderDuplicatesPage();
+
+    fireEvent.click(await screen.findByRole("radio", { name: "Keep Dragon Copy — dragon.stl" }));
+
+    const card = await findGroupCard("abcdef012345");
+    fireEvent.click(within(card).getByRole("button", { name: "Delete extras" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledExactlyOnceWith("/reports/duplicates/resolve", {
+        keep: [{ blob_hash: "abcdef0123456789", file_id: 2 }],
+      }),
+    );
+  });
+
+  it("a response with skipped entries fires a skip toast alongside the success toast", async () => {
+    reportBox.current = REPORT;
+    postMock.mockResolvedValue({
+      deleted: 1,
+      reclaimed_bytes: 2048,
+      skipped: [{ file_id: 5, reason: "store_pending" }],
+    });
+
+    renderDuplicatesPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Delete extras" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => expect(toastSuccessMock).toHaveBeenCalledWith("Deleted 1 copy · reclaimed 2.0 KB"));
+    expect(toastWarningMock).toHaveBeenCalledWith("Skipped 1 copy (old revisions or files still processing)");
+  });
+
+  it("cancelling either the per-group or the page-wide dialog makes no resolve request", async () => {
+    reportBox.current = REPORT;
+
+    renderDuplicatesPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Delete extras" }));
+    let dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getAllByRole("button", { name: "Close" })[0]);
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete all duplicates" }));
+    dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getAllByRole("button", { name: "Close" })[0]);
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    expect(postMock).not.toHaveBeenCalled();
+  });
+
+  it("an old-revision row shows a badge and is excluded from the deletable count", async () => {
+    reportBox.current = REPORT_WITH_OLD_REVISION;
+
+    renderDuplicatesPage();
+
+    const oldRow = (await screen.findByText("Dragon Old — dragon.stl")).closest("li");
+    if (!oldRow) throw new Error("row for the old-revision copy not found");
+    expect(within(oldRow as HTMLElement).getByText("old revision")).toBeInTheDocument();
+
+    // Keeper defaults to file_id 1 (files[0]); only file_id 2 is a
+    // deletable current-revision copy -- the old-revision file_id 3 is
+    // excluded even though it's not the keeper.
+    fireEvent.click(screen.getByRole("button", { name: "Delete extras" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Delete 1 duplicate copy?")).toBeInTheDocument();
   });
 });

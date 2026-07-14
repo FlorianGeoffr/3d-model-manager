@@ -16,6 +16,7 @@ import {
   useUnfollowCollection,
 } from "@/api/collections";
 import type { CollectionSyncMode, FollowedCollection, PendingImport, RemoteList } from "@/api/types";
+import { ExpandCollapseAll } from "@/components/ExpandCollapseAll";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -24,6 +25,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDate } from "@/lib/format";
+import { useOpenMap } from "@/lib/useOpenMap";
 
 /** "Saved" surface (M8 H): the remote collections/likes you follow, what a sync
  * should do with each (auto-import vs review), the review queue, and a manual
@@ -169,17 +171,23 @@ function groupPendingItems(items: PendingImport[]): PendingGroup[] {
 }
 
 /** The queue's own tab (R7 T2) already gives the whole card room to breathe,
- * so the card itself keeps a static header (title + count) -- only each
- * GROUP inside it collapses now, independently, via a plain `useState` map
- * (no localStorage; per-tab session state is enough). Every group defaults
+ * so the card itself keeps a static header (title + count, plus an R11
+ * expand/collapse-all control once groups exist) -- only each GROUP inside
+ * it collapses now, independently, via the shared `useOpenMap` hook (no
+ * localStorage; per-tab session state is enough). Every group defaults
  * OPEN, so an id absent from the map (never toggled) reads as open. */
 export function ReviewQueueCard() {
   const pending = usePendingImports();
-  const [openGroups, setOpenGroups] = useState<Record<number, boolean>>({});
-
-  function toggleGroup(groupCollectionId: number) {
-    setOpenGroups((prev) => ({ ...prev, [groupCollectionId]: !(prev[groupCollectionId] ?? true) }));
-  }
+  // `items`/`groups` are computed up front, before the loading/empty early
+  // returns below, so the `useOpenMap` call itself stays unconditional --
+  // `groups` is simply `[]` while loading or empty, which the hook handles
+  // fine.
+  const items = pending.data ?? [];
+  const groups = groupPendingItems(items);
+  const { isOpen, toggle, openAll, closeAll, allOpen, allClosed } = useOpenMap(
+    groups.map((group) => group.groupCollectionId),
+    true,
+  );
 
   if (pending.isLoading) {
     return (
@@ -198,8 +206,6 @@ export function ReviewQueueCard() {
     );
   }
 
-  const items = pending.data ?? [];
-
   if (items.length === 0) {
     return (
       <Card>
@@ -217,8 +223,6 @@ export function ReviewQueueCard() {
     );
   }
 
-  const groups = groupPendingItems(items);
-
   return (
     <Card>
       <CardHeader>
@@ -227,6 +231,13 @@ export function ReviewQueueCard() {
           <Badge variant="secondary" className="font-mono">
             {items.length}
           </Badge>
+          <ExpandCollapseAll
+            label="review groups"
+            allOpen={allOpen}
+            allClosed={allClosed}
+            onExpandAll={openAll}
+            onCollapseAll={closeAll}
+          />
         </div>
         <CardDescription>
           New models found in your <em>review</em> lists. Nothing enters the library until you
@@ -239,8 +250,8 @@ export function ReviewQueueCard() {
             <ReviewGroup
               key={group.groupCollectionId}
               group={group}
-              open={openGroups[group.groupCollectionId] ?? true}
-              onToggle={() => toggleGroup(group.groupCollectionId)}
+              open={isOpen(group.groupCollectionId)}
+              onToggle={() => toggle(group.groupCollectionId)}
             />
           ))}
         </div>

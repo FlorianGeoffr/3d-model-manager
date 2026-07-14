@@ -151,17 +151,92 @@ describe("ScanReport", () => {
     expect(screen.getByText("permission denied")).toBeInTheDocument();
   });
 
-  it("shows empty-list copy for a report section with no entries", async () => {
+  it("opens non-empty sections and closes empty sections by default, revealing an empty section's copy once expanded", async () => {
     mockGet([
       fakeScanRun({
-        report: { adopted: [], relinked: [], changed: [], missing: [], errors: [], verified: 0 },
+        report: {
+          adopted: [{ model_id: 5, slug: "adopted-model", revision_id: 50, files: ["a.stl"] }],
+          relinked: [],
+          changed: [],
+          missing: [],
+          errors: [],
+          verified: 1,
+        },
       }),
     ]);
 
     renderScanReport();
 
-    expect(await screen.findByText("Adopted (0)")).toBeInTheDocument();
+    const adoptedToggle = await screen.findByRole("button", { name: "Adopted (1)" });
+    const errorsToggle = screen.getByRole("button", { name: "Errors (0)" });
+    expect(adoptedToggle).toHaveAttribute("aria-expanded", "true");
+    expect(errorsToggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("link", { name: "adopted-model" })).toBeInTheDocument();
+    expect(screen.queryByText("No errors during the last scan.")).not.toBeInTheDocument();
+
+    fireEvent.click(errorsToggle);
+    expect(errorsToggle).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("No errors during the last scan.")).toBeInTheDocument();
+  });
+
+  it("toggles an individual section open and closed independently on click", async () => {
+    mockGet([fakeScanRun()]);
+
+    renderScanReport();
+
+    const adoptedToggle = await screen.findByRole("button", { name: "Adopted (1)" });
+    expect(adoptedToggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("link", { name: "adopted-model" })).toBeInTheDocument();
+
+    fireEvent.click(adoptedToggle);
+    expect(adoptedToggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("link", { name: "adopted-model" })).not.toBeInTheDocument();
+    // Untouched: the other sections stay open.
+    expect(screen.getByRole("button", { name: "Relinked (1)" })).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.click(adoptedToggle);
+    expect(adoptedToggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("link", { name: "adopted-model" })).toBeInTheDocument();
+  });
+
+  it("collapses every section via collapse-all and reopens them via expand-all, including a zero-count section's empty-state copy", async () => {
+    mockGet([
+      fakeScanRun({
+        report: {
+          adopted: [{ model_id: 5, slug: "adopted-model", revision_id: 50, files: ["a.stl"] }],
+          relinked: [],
+          changed: [],
+          missing: [],
+          errors: [],
+          verified: 1,
+        },
+      }),
+    ]);
+
+    renderScanReport();
+    await screen.findByRole("button", { name: "Adopted (1)" });
+
+    const collapseAll = screen.getByRole("button", { name: "Collapse all scan sections" });
+    const expandAll = screen.getByRole("button", { name: "Expand all scan sections" });
+    // Mixed state to start (Adopted open, the four empty sections closed),
+    // so neither control is at its boundary yet.
+    expect(expandAll).not.toBeDisabled();
+    expect(collapseAll).not.toBeDisabled();
+
+    fireEvent.click(collapseAll);
+    for (const name of ["Adopted (1)", "Relinked (0)", "Changed (0)", "Missing (0)", "Errors (0)"]) {
+      expect(screen.getByRole("button", { name })).toHaveAttribute("aria-expanded", "false");
+    }
+    expect(screen.queryByRole("link", { name: "adopted-model" })).not.toBeInTheDocument();
+    expect(collapseAll).toBeDisabled();
+
+    fireEvent.click(expandAll);
+    for (const name of ["Adopted (1)", "Relinked (0)", "Changed (0)", "Missing (0)", "Errors (0)"]) {
+      expect(screen.getByRole("button", { name })).toHaveAttribute("aria-expanded", "true");
+    }
+    expect(screen.getByRole("link", { name: "adopted-model" })).toBeInTheDocument();
+    expect(screen.getByText("No files were relinked.")).toBeInTheDocument();
+    expect(expandAll).toBeDisabled();
   });
 
   it("resolves a missing row by deleting the file record after confirming", async () => {

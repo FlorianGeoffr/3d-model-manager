@@ -6,7 +6,7 @@
  * resolution state machine -- the Task 8 brief's explicit call.
  */
 import type { ReactNode } from "react";
-import { Trash2Icon } from "lucide-react";
+import { ChevronDownIcon, ChevronRightIcon, Trash2Icon } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 
 import { ApiError } from "@/api/client";
@@ -14,12 +14,14 @@ import { useDeleteFile } from "@/api/library";
 import { useScanRuns, useTriggerScan } from "@/api/scan";
 import type { ScanChanged, ScanError, ScanMissing, ScanRelinked, ScanRunOut, ScanState, ScanAdopted } from "@/api/types";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { ExpandCollapseAll } from "@/components/ExpandCollapseAll";
 import { CopyableHash } from "@/components/model-detail/CopyableHash";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDateTime } from "@/lib/format";
+import { useOpenMap } from "@/lib/useOpenMap";
 
 const STATE_VARIANT: Record<ScanState, "default" | "secondary" | "outline" | "destructive"> = {
   queued: "outline",
@@ -53,23 +55,55 @@ function CountersRow({ run }: { run: ScanRunOut }) {
   );
 }
 
-/** A collapsible `<details>` section rather than a new shadcn Accordion
- * dependency (none of the existing `components/ui/*` cover it, and the
- * Global Constraints ledger already flags this app's bundle weight). */
-function Section({ label, count, empty, children }: { label: string; count: number; empty: string; children?: ReactNode }) {
+/** A collapsible section (Round 11: controlled via `useOpenMap`/`open`+
+ * `onToggle` rather than an uncontrolled `<details>`, so the parent can
+ * offer an expand-all/collapse-all control -- kept as a bordered div with a
+ * `<button aria-expanded>` header rather than pulling in a new shadcn
+ * Accordion dependency; none of the existing `components/ui/*` cover it,
+ * and the Global Constraints ledger already flags this app's bundle
+ * weight). */
+function Section({
+  label,
+  count,
+  empty,
+  open,
+  onToggle,
+  children,
+}: {
+  label: string;
+  count: number;
+  empty: string;
+  open: boolean;
+  onToggle: () => void;
+  children?: ReactNode;
+}) {
   return (
-    <details className="rounded-lg border border-border" open={count > 0}>
-      <summary className="cursor-pointer list-none px-3 py-2 text-sm font-semibold text-foreground select-none">
-        {label} ({count})
-      </summary>
-      <div className="border-t border-border px-3 py-2">
-        {count === 0 ? (
-          <p className="text-xs text-muted-foreground">{empty}</p>
+    <div className="rounded-lg border border-border">
+      <button
+        type="button"
+        className="flex w-full items-center justify-between gap-2 px-3 py-2 text-sm font-semibold text-foreground select-none"
+        aria-expanded={open}
+        onClick={onToggle}
+      >
+        <span>
+          {label} ({count})
+        </span>
+        {open ? (
+          <ChevronDownIcon className="size-4 shrink-0 text-muted-foreground" />
         ) : (
-          <ul className="space-y-1.5">{children}</ul>
+          <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground" />
         )}
-      </div>
-    </details>
+      </button>
+      {open && (
+        <div className="border-t border-border px-3 py-2">
+          {count === 0 ? (
+            <p className="text-xs text-muted-foreground">{empty}</p>
+          ) : (
+            <ul className="space-y-1.5">{children}</ul>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -161,6 +195,9 @@ function MissingRow({ missing }: { missing: ScanMissing }) {
   );
 }
 
+const SECTION_IDS = ["adopted", "relinked", "changed", "missing", "errors"] as const;
+type SectionId = (typeof SECTION_IDS)[number];
+
 function LatestRun({ run }: { run: ScanRunOut }) {
   const adopted = run.report?.adopted ?? [];
   const relinked = run.report?.relinked ?? [];
@@ -168,31 +205,86 @@ function LatestRun({ run }: { run: ScanRunOut }) {
   const missing = run.report?.missing ?? [];
   const errors = run.report?.errors ?? [];
 
+  const counts: Record<SectionId, number> = {
+    adopted: adopted.length,
+    relinked: relinked.length,
+    changed: changed.length,
+    missing: missing.length,
+    errors: errors.length,
+  };
+  // Preserves the old uncontrolled `<details open={count > 0}>` default:
+  // a section with entries starts open, an empty one starts closed -- but
+  // as an explicit per-id default rather than a fixed initial attribute, so
+  // openAll/closeAll can override it.
+  const { isOpen, toggle, openAll, closeAll, allOpen, allClosed } = useOpenMap<SectionId>(
+    SECTION_IDS,
+    (id) => counts[id] > 0,
+  );
+
   return (
     <div className="space-y-3">
       <CountersRow run={run} />
+      <div className="flex justify-end">
+        <ExpandCollapseAll
+          label="scan sections"
+          allOpen={allOpen}
+          allClosed={allClosed}
+          onExpandAll={openAll}
+          onCollapseAll={closeAll}
+        />
+      </div>
       <div className="space-y-2">
-        <Section label="Adopted" count={adopted.length} empty="No new models were adopted.">
+        <Section
+          label="Adopted"
+          count={adopted.length}
+          empty="No new models were adopted."
+          open={isOpen("adopted")}
+          onToggle={() => toggle("adopted")}
+        >
           {adopted.map((entry) => (
             <AdoptedRow key={`${entry.model_id}-${entry.revision_id}`} entry={entry} />
           ))}
         </Section>
-        <Section label="Relinked" count={relinked.length} empty="No files were relinked.">
+        <Section
+          label="Relinked"
+          count={relinked.length}
+          empty="No files were relinked."
+          open={isOpen("relinked")}
+          onToggle={() => toggle("relinked")}
+        >
           {relinked.map((entry) => (
             <RelinkedRow key={entry.file_id} entry={entry} />
           ))}
         </Section>
-        <Section label="Changed" count={changed.length} empty="No files changed on disk.">
+        <Section
+          label="Changed"
+          count={changed.length}
+          empty="No files changed on disk."
+          open={isOpen("changed")}
+          onToggle={() => toggle("changed")}
+        >
           {changed.map((entry) => (
             <ChangedRow key={entry.file_id} entry={entry} />
           ))}
         </Section>
-        <Section label="Missing" count={missing.length} empty="No files are missing.">
+        <Section
+          label="Missing"
+          count={missing.length}
+          empty="No files are missing."
+          open={isOpen("missing")}
+          onToggle={() => toggle("missing")}
+        >
           {missing.map((entry) => (
             <MissingRow key={entry.file_id} missing={entry} />
           ))}
         </Section>
-        <Section label="Errors" count={errors.length} empty="No errors during the last scan.">
+        <Section
+          label="Errors"
+          count={errors.length}
+          empty="No errors during the last scan."
+          open={isOpen("errors")}
+          onToggle={() => toggle("errors")}
+        >
           {errors.map((entry, index) => (
             <ErrorRow key={`${entry.storage_path}-${index}`} entry={entry} />
           ))}

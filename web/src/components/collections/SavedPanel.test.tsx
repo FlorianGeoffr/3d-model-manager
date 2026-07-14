@@ -258,6 +258,41 @@ describe("ReviewQueueCard", () => {
     expect(screen.getByText("Cable clip")).toBeInTheDocument();
   });
 
+  it("collapses and re-expands every review group via the expand/collapse-all controls, disabling at the all-open/all-closed boundaries", async () => {
+    pendingBox.current = {
+      data: [
+        fakePending({ id: 11, group_collection_id: 1, group_title: "Desk stuff", title: "Cable clip" }),
+        fakePending({ id: 12, group_collection_id: 2, group_title: "Patio parts", title: "Planter" }),
+      ],
+      isLoading: false,
+    };
+    renderCard(ReviewQueueCard);
+
+    await screen.findByTestId("review-queue");
+    const expandAll = screen.getByRole("button", { name: "Expand all review groups" });
+    const collapseAll = screen.getByRole("button", { name: "Collapse all review groups" });
+    // Every group defaults open, so expand-all starts disabled and
+    // collapse-all starts enabled.
+    expect(expandAll).toBeDisabled();
+    expect(collapseAll).not.toBeDisabled();
+
+    fireEvent.click(collapseAll);
+    expect(screen.getByRole("button", { name: /Desk stuff/ })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: /Patio parts/ })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Cable clip")).not.toBeInTheDocument();
+    expect(screen.queryByText("Planter")).not.toBeInTheDocument();
+    expect(collapseAll).toBeDisabled();
+    expect(expandAll).not.toBeDisabled();
+
+    fireEvent.click(expandAll);
+    expect(screen.getByRole("button", { name: /Desk stuff/ })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: /Patio parts/ })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("Cable clip")).toBeInTheDocument();
+    expect(screen.getByText("Planter")).toBeInTheDocument();
+    expect(expandAll).toBeDisabled();
+    expect(collapseAll).not.toBeDisabled();
+  });
+
   it("renders an aligned Import/Dismiss actions row for every review card", async () => {
     pendingBox.current = {
       data: [

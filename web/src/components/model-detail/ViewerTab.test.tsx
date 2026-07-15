@@ -212,6 +212,17 @@ describe("ViewerTab", () => {
   const bgGroup = () => screen.getByRole("radiogroup", { name: "Background" });
   const lightGroup = () => screen.getByRole("radiogroup", { name: "Lighting" });
 
+  // The Explode/Separate-parts slider is now gated on the mode `ModelViewer`
+  // reports up (not `files.length`) -- drive the mocked `ModelViewer`'s
+  // captured `onExplodeModeChange` the same way `partLoaded()` (below) drives
+  // `onPartLoaded`.
+  const pushExplodeMode = (mode: "explode" | "separate" | "none") => {
+    const { onExplodeModeChange } = modelViewerMock.mock.calls.at(-1)![0] as unknown as {
+      onExplodeModeChange: (mode: string) => void;
+    };
+    act(() => onExplodeModeChange(mode));
+  };
+
   it("shows a placeholder when there are no previewable files", () => {
     render(<ViewerTab model={fakeModel([])} />);
     expect(screen.getByText("No previewable files")).toBeInTheDocument();
@@ -428,6 +439,7 @@ describe("ViewerTab", () => {
     const fileB = fakeFile({ id: 2, rel_path: "b.stl", blob_hash: "hashB", glb_status: "ok" });
     render(<ViewerTab model={fakeModel([fileA, fileB])} />);
     await screen.findByTestId("model-viewer");
+    pushExplodeMode("explode");
 
     expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-explode", "0");
 
@@ -451,6 +463,7 @@ describe("ViewerTab", () => {
     const fileB = fakeFile({ id: 2, rel_path: "b.stl", blob_hash: "hashB", glb_status: "ok" });
     render(<ViewerTab model={fakeModel([fileA, fileB])} />);
     await screen.findByTestId("model-viewer");
+    pushExplodeMode("explode");
 
     const partLoaded = () => {
       const { onPartLoaded } = modelViewerMock.mock.calls.at(-1)![0] as unknown as {
@@ -479,6 +492,24 @@ describe("ViewerTab", () => {
     // scene).
     partLoaded();
     await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-explode", "0"));
+  });
+
+  it("labels the control 'Separate parts' for an overlapping pile and hides it for mode none", async () => {
+    const fileA = fakeFile({ id: 1, rel_path: "a.stl", blob_hash: "hashA", glb_status: "ok" });
+    const fileB = fakeFile({ id: 2, rel_path: "b.stl", blob_hash: "hashB", glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([fileA, fileB])} />);
+    await screen.findByTestId("model-viewer");
+
+    pushExplodeMode("separate");
+    expect(screen.getByRole("slider", { name: "Separate parts" })).toBeInTheDocument();
+    expect(screen.queryByRole("slider", { name: "Explode" })).not.toBeInTheDocument();
+
+    pushExplodeMode("explode");
+    expect(screen.getByRole("slider", { name: "Explode" })).toBeInTheDocument();
+
+    pushExplodeMode("none");
+    expect(screen.queryByRole("slider", { name: "Explode" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("slider", { name: "Separate parts" })).not.toBeInTheDocument();
   });
 
   it("Screenshot calls the published screenshot bridge and downloads the resulting PNG", async () => {
@@ -845,6 +876,7 @@ describe("ViewerTab", () => {
     const fileB = fakeFile({ id: 2, rel_path: "b.stl", blob_hash: "hashB", glb_status: "ok" });
     render(<ViewerTab model={fakeModel([fileA, fileB])} />);
     await screen.findByTestId("model-viewer");
+    pushExplodeMode("explode");
 
     fireEvent.change(screen.getByRole("slider", { name: "Explode" }), { target: { value: "0.4" } });
     fireEvent.click(screen.getByRole("button", { name: "New window" }));

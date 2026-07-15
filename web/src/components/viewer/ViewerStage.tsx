@@ -1,4 +1,12 @@
-import { Component, Suspense, lazy, useCallback, type KeyboardEvent, type ReactNode } from "react";
+import {
+  Component,
+  Suspense,
+  lazy,
+  useCallback,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import {
   BoxIcon,
   CameraIcon,
@@ -25,6 +33,8 @@ import { FilamentChip } from "@/components/ui/filament-chip";
 import { BackgroundSwatches } from "@/components/viewer/BackgroundSwatches";
 import { SegmentedControl } from "@/components/viewer/SegmentedControl";
 import type { BackgroundPreset } from "@/components/viewer/background";
+import { explodeControlLabel } from "@/components/viewer/explode";
+import type { ExplodeMode } from "@/components/viewer/explode";
 import {
   LIGHTING_PRESET_LABELS,
   LIGHTING_PRESET_ORDER,
@@ -161,6 +171,7 @@ function MeshCanvas({
   fitSignal,
   apiRef,
   onPartLoaded,
+  onExplodeModeChange,
 }: {
   parts: ViewerPart[];
   background: string;
@@ -174,6 +185,7 @@ function MeshCanvas({
   /** Task 5 explode view: forwarded straight through to `ModelViewer` -- see
    * `ViewerStage`'s `handlePartLoaded` for what it does. */
   onPartLoaded: () => void;
+  onExplodeModeChange: (mode: ExplodeMode) => void;
 }) {
   if (parts.length === 0) {
     return (
@@ -200,6 +212,7 @@ function MeshCanvas({
             fitSignal={fitSignal}
             apiRef={apiRef}
             onPartLoaded={onPartLoaded}
+            onExplodeModeChange={onExplodeModeChange}
           />
         </Suspense>
       </ViewerErrorBoundary>
@@ -441,6 +454,11 @@ export function ViewerStage({
     if (tools.explode !== 0) onToolsChange({ explode: 0 });
   }, [tools.explode, onToolsChange]);
 
+  // Explode classification reported by `ModelViewer` once parts load --
+  // "none" until then (and for single-part / degenerate scenes), which keeps
+  // the control hidden. Drives the Explode/Separate-parts block below.
+  const [explodeMode, setExplodeMode] = useState<ExplodeMode>("none");
+
   // `viewerApiRef.current` is populated by `ModelViewer`'s `CaptureBridge`
   // only once the canvas has mounted -- `?.` guards the (brief) window
   // before that effect runs, or the empty-parts placeholder case where
@@ -546,6 +564,7 @@ export function ViewerStage({
             fitSignal={fitSignal}
             apiRef={viewerApiRef}
             onPartLoaded={handlePartLoaded}
+            onExplodeModeChange={setExplodeMode}
           />
         </div>
 
@@ -814,22 +833,24 @@ export function ViewerStage({
               )}
             </div>
 
-            {/* Explode view (Task 5): only meaningful with more than one GLB
-                part to pull apart -- `files` is the GLB-ready part list (see
-                `ViewerStageProps.files`), not merely the checked subset, so
-                the slider stays available even while only one part happens
-                to be checked right now. */}
-            {files.length > 1 && (
+            {/* Explode / Separate-parts control. `ModelViewer` classifies the
+                loaded parts and reports the mode up: "explode" for a genuine
+                assembly (parts spread in space -> radial explode), "separate"
+                for an overlapping pile of separate files (-> grid layout), and
+                "none" when there's nothing to pull apart (fewer than two
+                loaded parts), which hides the control. Both modes share the
+                one `tools.explode` value; only the label differs. */}
+            {explodeMode !== "none" && (
               <div className="flex flex-col gap-3">
                 <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-                  Explode
+                  {explodeControlLabel(explodeMode)}
                 </span>
                 <input
                   type="range"
                   min={0}
                   max={1}
                   step={0.01}
-                  aria-label="Explode"
+                  aria-label={explodeControlLabel(explodeMode)}
                   value={tools.explode}
                   onChange={(event) => onToolsChange({ explode: Number(event.target.value) })}
                   className="w-full"

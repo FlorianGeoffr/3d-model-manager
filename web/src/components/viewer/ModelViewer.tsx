@@ -80,6 +80,8 @@ import {
   useBounds,
   useGLTF,
 } from "@react-three/drei";
+import { explodeLayout } from "@/components/viewer/explode";
+import type { ExplodeMode, PartExtent } from "@/components/viewer/explode";
 import type { LightingRig } from "@/components/viewer/lighting";
 import {
   sectionPlaneParams,
@@ -429,6 +431,7 @@ export default function ModelViewer({
   fitSignal,
   apiRef,
   onPartLoaded,
+  onExplodeModeChange,
 }: {
   parts: ViewerPart[];
   background: string;
@@ -454,6 +457,11 @@ export default function ModelViewer({
    * itself), and firing this on those re-runs would let the explode reset
    * clobber values the slider just set -- see `onLoaded`'s comment. */
   onPartLoaded?: () => void;
+  /** Reports the current explode classification ("explode" real assembly /
+   * "separate" overlapping pile / "none" nothing to separate) up to
+   * `ViewerStage`, which gates + labels the slider from it. Deduped: fires
+   * only when the mode string changes. */
+  onExplodeModeChange?: (mode: ExplodeMode) => void;
 }) {
   const [loadedParts, setLoadedParts] = useState<Map<number, { box: THREE.Box3; triangles: number }>>(
     () => new Map(),
@@ -601,23 +609,32 @@ export default function ModelViewer({
     return new THREE.Plane(new THREE.Vector3(...normal), constant);
   }, [tools.section, allBox, s]);
 
-  // Task 5 explode view: each loaded part's `<group>` position offset, in
-  // NATIVE mm -- deliberately not pre-scaled by `s`, because this offset is
-  // applied INSIDE `Center`/`Resize` (see `GltfPart`'s `<group position=…>`
-  // below), and `Resize` scales that whole subtree (including this offset)
-  // by `s` on its way out. Pre-scaling here would double-apply it. Naturally
-  // yields a zero vector at `tools.explode === 0` (multiplying by 0) without
-  // a separate branch for it. `null`/empty when nothing has loaded.
-  const offsets = useMemo(() => {
-    const map = new Map<number, [number, number, number]>();
-    if (!allBox) return map;
-    const allCenter = allBox.getCenter(new THREE.Vector3());
+  // Explode/separate view: each loaded part's `<group>` position offset, in
+  // NATIVE mm (see `GltfPart`'s `<group position=…>` -- these apply INSIDE
+  // `Center`/`Resize`, which rescales the subtree, so pre-scaling by `s` would
+  // double-apply). `explodeLayout` classifies the loaded parts: a real
+  // assembly (parts already spread apart) explodes radially from the shared
+  // center; an overlapping pile (separate files each centered on their own
+  // origin) falls back to a grid so the parts actually separate; fewer than
+  // two loaded parts is `mode: "none"` with no offsets. Naturally zero at
+  // `tools.explode === 0`, so the resting view is untouched.
+  const { mode: explodeMode, offsets } = useMemo(() => {
+    const extents: PartExtent[] = [];
     for (const [id, { box }] of loadedParts) {
-      const offset = box.getCenter(new THREE.Vector3()).sub(allCenter).multiplyScalar(tools.explode);
-      map.set(id, [offset.x, offset.y, offset.z]);
+      const center = box.getCenter(new THREE.Vector3());
+      const size = box.getSize(new THREE.Vector3());
+      extents.push({ id, center: [center.x, center.y, center.z], size: [size.x, size.y, size.z] });
     }
-    return map;
-  }, [loadedParts, allBox, tools.explode]);
+    return explodeLayout(extents, tools.explode);
+  }, [loadedParts, tools.explode]);
+
+  const lastModeRef = useRef<ExplodeMode | null>(null);
+  useEffect(() => {
+    if (!onExplodeModeChange) return;
+    if (lastModeRef.current === explodeMode) return;
+    lastModeRef.current = explodeMode;
+    onExplodeModeChange(explodeMode);
+  }, [explodeMode, onExplodeModeChange]);
 
   // Reports the combined mm-scale bounding box + triangle count of every
   // currently VISIBLE, loaded part -- "how big is this print?" for

@@ -67,12 +67,15 @@ export const GAP_FRACTION = 0.2;
  *   parts on the build plate); the Y offset is always 0.
  */
 export function explodeLayout(parts: PartExtent[], explode: number): ExplodeLayout {
-  if (parts.length < 2) return { mode: "none", offsets: new Map() };
+  const usable = parts.filter(
+    (part) => part.center.every(Number.isFinite) && part.size.every(Number.isFinite),
+  );
+  if (usable.length < 2) return { mode: "none", offsets: new Map() };
 
   const axes = [0, 1, 2] as const;
   const min: [number, number, number] = [Infinity, Infinity, Infinity];
   const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
-  for (const part of parts) {
+  for (const part of usable) {
     for (const a of axes) {
       const lo = part.center[a] - part.size[a] / 2;
       const hi = part.center[a] + part.size[a] / 2;
@@ -88,7 +91,7 @@ export function explodeLayout(parts: PartExtent[], explode: number): ExplodeLayo
 
   let maxSpread = 0;
   let maxPartDim = 0;
-  for (const part of parts) {
+  for (const part of usable) {
     const dx = part.center[0] - allCenter[0];
     const dy = part.center[1] - allCenter[1];
     const dz = part.center[2] - allCenter[2];
@@ -111,7 +114,7 @@ export function explodeLayout(parts: PartExtent[], explode: number): ExplodeLayo
 
   if (positioned) {
     const offsets = new Map<number, [number, number, number]>();
-    for (const part of parts) {
+    for (const part of usable) {
       offsets.set(part.id, [
         scale(part.center[0] - allCenter[0]),
         scale(part.center[1] - allCenter[1]),
@@ -124,19 +127,20 @@ export function explodeLayout(parts: PartExtent[], explode: number): ExplodeLayo
   // Overlapping pile: grid layout on the horizontal XZ plane. Cell
   // assignment is keyed by ascending part id (not input order) so a
   // shuffled input array produces identical offsets per id.
-  const sortedIds = parts.map((part) => part.id).sort((a, b) => a - b);
-  const byId = new Map(parts.map((part) => [part.id, part]));
+  const sortedIds = usable.map((part) => part.id).sort((a, b) => a - b);
+  const byId = new Map(usable.map((part) => [part.id, part]));
 
-  const n = parts.length;
+  const n = usable.length;
   const cols = Math.ceil(Math.sqrt(n));
   const rows = Math.ceil(n / cols);
 
   let cellW = 0;
   let cellD = 0;
-  for (const part of parts) {
+  for (const part of usable) {
     if (part.size[0] > cellW) cellW = part.size[0];
     if (part.size[2] > cellD) cellD = part.size[2];
   }
+  if (Math.max(cellW, cellD) <= 0) return { mode: "none", offsets: new Map() };
   const gap = GAP_FRACTION * Math.max(cellW, cellD);
   const stepX = cellW + gap;
   const stepZ = cellD + gap;

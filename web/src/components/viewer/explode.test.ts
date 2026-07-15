@@ -47,6 +47,35 @@ describe("explodeLayout mode classification", () => {
     ];
     expect(explodeLayout(parts, 1)).toEqual({ mode: "none", offsets: new Map() });
   });
+
+  it("non-finite size on one of two parts -> none (the lone finite part can't lay out alone)", () => {
+    const parts: PartExtent[] = [
+      { id: 0, center: [0, 0, 0], size: [10, 10, 10] },
+      { id: 1, center: [5, 0, 0], size: [Infinity, Infinity, Infinity] },
+    ];
+    expect(explodeLayout(parts, 1)).toEqual({ mode: "none", offsets: new Map() });
+  });
+
+  it("non-finite center on one of two parts -> none", () => {
+    const parts: PartExtent[] = [
+      { id: 0, center: [0, 0, 0], size: [10, 10, 10] },
+      { id: 1, center: [NaN, 0, 0], size: [10, 10, 10] },
+    ];
+    expect(explodeLayout(parts, 1)).toEqual({ mode: "none", offsets: new Map() });
+  });
+
+  it("one non-finite part among three -> the two finite parts still classify/lay out normally, non-finite part gets no offset", () => {
+    const parts: PartExtent[] = [
+      { id: 0, center: [0, 0, 0], size: [10, 10, 10] },
+      { id: 1, center: [100, 0, 0], size: [10, 10, 10] },
+      { id: 2, center: [Infinity, 0, 0], size: [10, 10, 10] },
+    ];
+    const { mode, offsets } = explodeLayout(parts, 1);
+    expect(mode).toBe("explode");
+    expect(offsets.get(0)).toEqual([-50, 0, 0]);
+    expect(offsets.get(1)).toEqual([50, 0, 0]);
+    expect(offsets.has(2)).toBe(false);
+  });
 });
 
 describe("explodeLayout radial (explode) branch", () => {
@@ -81,6 +110,14 @@ describe("explodeLayout radial (explode) branch", () => {
 });
 
 describe("explodeLayout grid (separate) branch", () => {
+  it("parts with no horizontal (XZ) footprint -> none, not separate with zero offsets", () => {
+    const parts: PartExtent[] = [
+      { id: 0, center: [0, 0, 0], size: [0, 50, 0] },
+      { id: 1, center: [0, 0, 0], size: [0, 50, 0] },
+    ];
+    expect(explodeLayout(parts, 1)).toEqual({ mode: "none", offsets: new Map() });
+  });
+
   it("4 overlapping unit-cube parts land in a 2x2 grid with no overlap, Y offset 0", () => {
     const { mode, offsets } = explodeLayout(overlappingPile(4), 1);
     expect(mode).toBe("separate");

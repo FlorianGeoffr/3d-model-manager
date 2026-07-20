@@ -16,6 +16,11 @@ from app.models import Model
 from app.tasks.base import sync_session
 from tests.gallery_seed import bulk_seed_models
 
+# Whole module is a wall-clock budget -- excluded in CI, where shared-runner
+# jitter makes the 1s bound meaningless. See the `perf` marker in
+# pyproject.toml.
+pytestmark = pytest.mark.perf
+
 
 @pytest.mark.asyncio
 async def test_1k_model_gallery_under_1s(authenticated_client: httpx.AsyncClient) -> None:

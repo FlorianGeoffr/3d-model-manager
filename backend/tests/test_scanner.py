@@ -755,9 +755,7 @@ async def test_multi_backend_scan_recognizes_replicas_and_does_not_adopt_them(
     assert scan_run.report["adopted"] == []
     with base.sync_session() as session:
         phantom = (
-            session.execute(select(Model).where(Model.review_state == "adopted"))
-            .scalars()
-            .all()
+            session.execute(select(Model).where(Model.review_state == "adopted")).scalars().all()
         )
         assert phantom == []
         refreshed = session.get(File, file.id)
@@ -912,6 +910,7 @@ async def test_checkpoint_commit_survives_mid_scan_crash(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.perf
 def test_pass2_scales_to_50k_files_with_bounded_queries_and_time(
     migrated_db: str,
 ) -> None:

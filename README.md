@@ -19,16 +19,74 @@ Research notes: [docs/research/](docs/research/)
 
 ## Status
 
+[![CI](https://github.com/metril/3d-model-manager/actions/workflows/ci.yml/badge.svg)](https://github.com/metril/3d-model-manager/actions/workflows/ci.yml)
+[![Release](https://github.com/metril/3d-model-manager/actions/workflows/release.yml/badge.svg)](https://github.com/metril/3d-model-manager/actions/workflows/release.yml)
+
 Pre-alpha — under active development. See the spec for the M0–M6 milestone plan.
 
 ## Quickstart (Docker Compose)
 
-Requires Docker with the Compose plugin.
+Requires Docker with the Compose plugin, **v2.24 or newer** (Feb 2024) — the
+production overlay uses Compose's `!reset` tag to suppress the from-source
+build. Check with `docker compose version`.
+
+```sh
+cp .env.example .env
+docker compose -f compose.yaml -f compose.prod.yaml pull
+docker compose -f compose.yaml -f compose.prod.yaml up -d
+```
+
+Adding `-f compose.prod.yaml` is what makes this the *pull* path: the overlay
+points every app service at the published
+`ghcr.io/metril/3d-model-manager` image instead of building locally. That
+matters more than it sounds — a from-source build compiles `gltfpack` from C++
+and installs OCCT and `f3d`, which takes **15-25 minutes**. Pulling takes as
+long as your connection does.
+
+**Pin a release** rather than tracking `latest`, so an upgrade is something you
+choose rather than something that happens to you on the next `up`:
+
+```sh
+IMAGE_TAG=v0.1.0 docker compose -f compose.yaml -f compose.prod.yaml up -d
+```
+
+`IMAGE_TAG` is read from your shell or from the root `.env` (Compose
+auto-loads that file for interpolation), so putting `IMAGE_TAG=v0.1.0` in
+`.env` alongside everything else is the tidier option and applies to every
+subsequent command without repeating it. Unset, it defaults to `latest`. See
+"Releases & versioning" below for what each published tag means.
+
+All five app services — `api`, `worker-io`, `worker-cpu`, `beat`, `printerd` —
+run this **one** image; they differ only by the `ROLE` env var and their
+`command`. There is nothing to pull per-service.
+
+Confirm what's actually running:
+
+```sh
+curl -s localhost:8080/api/health
+# {"status":"ok","version":"0.1.0"}
+```
+
+The published image is **`linux/amd64` only** for now — an arm64 build is
+blocked on an upstream dependency, and [docs/arm64-status.md](docs/arm64-status.md)
+records exactly which one and what would unblock it.
+
+### Building from source instead
+
+For development, or on a platform with no published image, omit
+`-f compose.prod.yaml` — that alone selects `compose.yaml`'s `build:` blocks:
 
 ```sh
 cp .env.example .env
 docker compose up -d --build
 ```
+
+Expect the 15-25 minute first build described above. Subsequent builds reuse
+Docker's layer cache and are much faster.
+
+### What comes up
+
+Either path brings up the same stack.
 
 This starts every service, always — there are no compose profiles to opt
 into: `api` (port `8080`), `worker-io` (uploads/store), `worker-cpu` (the
@@ -87,6 +145,38 @@ docker run --rm -e PUID=1000 -e PGID=1000 -e ROLE=api tdmm:local id -u
 
 ## Upgrading
 
+**Routine upgrade** (published image). Point `IMAGE_TAG` at the new release,
+pull, and bring the stack back up:
+
+```sh
+IMAGE_TAG=v0.2.0 docker compose -f compose.yaml -f compose.prod.yaml pull
+IMAGE_TAG=v0.2.0 docker compose -f compose.yaml -f compose.prod.yaml up -d
+curl -s localhost:8080/api/health
+# {"status":"ok","version":"0.2.0"}
+```
+
+That `/api/health` check is the whole verification step — it reports the
+version baked into the image that is actually running, not the one you meant
+to deploy. If it still shows the old version, the containers didn't get
+recreated.
+
+**There is no separate migration step.** The `api` container runs Alembic
+migrations on startup, so bringing it up on a new image is what applies them.
+But **migrations are one-way** — there is no downgrade path, and rolling
+`IMAGE_TAG` back to the previous release does *not* roll the schema back. An
+older image against a newer schema is not a supported configuration.
+
+So: **take a database backup before upgrading.** See "Backup & Restore"
+below for the `pg_dump` command and, just as importantly, the
+`printer.key` that has to travel with it.
+
+From a source checkout, the equivalent is:
+
+```sh
+git pull
+docker compose up -d --build
+```
+
 If you're upgrading a deployment from before the Settings-UI move (Round
 10): the five old env vars (`PRINTER_ENABLED`, `SCAN_INTERVAL`,
 `COLLECTION_SYNC_INTERVAL`, `WATCH_INTERVAL`, `WATCH_STABLE`) and
@@ -98,6 +188,61 @@ all further changes happen live from the Settings UI. Once you've
 confirmed the values under **Settings → General → Automation & scheduling**
 and **Settings → Printer** look right, delete those lines from `.env` —
 they no longer do anything.
+
+## Releases & versioning
+
+Releases are automated by
+[release-please](https://github.com/googleapis/release-please), driven by
+[Conventional Commits](https://www.conventionalcommits.org/). The commit
+message prefix on `main` decides the next version:
+
+- `feat:` → **minor** bump
+- `fix:` → **patch** bump
+- a breaking change (`feat!:`, or a `BREAKING CHANGE:` footer) → also a
+  **minor** bump while the project is pre-1.0, not a jump to `1.0.0`
+  (`bump-minor-pre-major` in `release-please-config.json`) — a "Pre-alpha"
+  project reaching 1.0 by accident helps nobody
+
+Other prefixes (`chore:`, `docs:`, `refactor:`, `test:`) don't trigger a
+release on their own.
+
+release-please keeps a **release PR permanently open** against `main`, and
+rewrites it on every push: its diff is the pending `CHANGELOG.md` entry and
+the version bumps. Nothing is published while it sits there. **Merging that
+PR is the act of cutting a release** — it creates the `vX.Y.Z` tag, commits
+the changelog, publishes the image ladder below, and opens a GitHub Release
+with the extension attached. `CHANGELOG.md` is generated by that process; it
+is never hand-edited.
+
+### Published image tags
+
+All on `ghcr.io/metril/3d-model-manager`:
+
+| Tag | Moves? | Use it for |
+|---|---|---|
+| `v0.1.0` | Never | **Production.** An exact release, byte-for-byte reproducible. |
+| `0.1` | Yes — newest patch in that minor series | Automatic patch updates, no feature changes. |
+| `0` | Yes — newest release in that major series | Pre-1.0 this carries **no compatibility promise**; it exists for ladder symmetry. Don't deploy it. |
+| `latest` | Yes — newest stable release | Casual/first-time deployments. |
+| `edge` | Yes — **every** push to `main` | Testing unreleased work. **Not supported**: it can contain schema changes whose migrations are not in any release. |
+| `sha-<short>` | Never | Pinning one specific commit, e.g. bisecting a regression. |
+
+Every image reports its own build, so you never have to infer it from the tag
+you think you pulled — `GET /api/health` returns it, and it's also
+`info.version` in `/api/openapi.json` (and so in the `/docs` header). The
+value is one of:
+
+- a release semver, e.g. `0.1.0`
+- `edge-<short sha>` for a build from a `main` push
+- `dev` for an unstamped local `docker build` with no `APP_VERSION` build-arg
+
+### Browser extension
+
+The extension is versioned **in lockstep with the app** — same number, always
+— and each release publishes it as a sideload zip
+(`tdmm-extension-<version>.zip`, with a `.sha256` sidecar) attached to the
+GitHub Release. Install and verification steps are in
+[extension/README.md](extension/README.md).
 
 ## Storage backends & the scanner
 

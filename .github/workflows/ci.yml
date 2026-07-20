@@ -1,0 +1,207 @@
+name: CI
+
+# Pull-request gate. Runs exactly the suites README "Development" documents --
+# backend ruff + pytest, web lint/typecheck-build/vitest, the extension's
+# node:test suite -- plus a non-publishing image build so a broken
+# docker/Dockerfile is caught before it can reach main.
+#
+# Deliberately pull_request-only. Push-to-main is covered by release.yml, which
+# re-runs these same gates as a `needs:` barrier in front of the GHCR publish;
+# triggering here as well would bill every merge twice for an identical tree.
+# The cost is duplicated job definitions across the two files -- this repo has
+# no reusable-workflow layer and isn't big enough to warrant one.
+#
+# The docker-compose end-to-end flow (scripts/e2e.sh) is NOT here: it does a
+# cold build of the whole image, including the from-source gltfpack C++ compile
+# and a uv sync over cadquery-ocp/f3d, which is a 15-25 minute round trip. It
+# lives in e2e.yml (nightly + on demand + the `run-e2e` PR label).
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Supersede an in-flight run when a new commit lands on the same PR branch.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+# Nothing here publishes anything. docker-smoke builds with push=false and never
+# logs in to GHCR, which also keeps it working on fork PRs where GITHUB_TOKEN
+# has no package scope.
+permissions:
+  contents: read
+
+env:
+  # Keep in step with docker/Dockerfile's `COPY --from=ghcr.io/astral-sh/uv:...`
+  # so CI and the image resolve backend/uv.lock with the same uv.
+  UV_VERSION: "0.11.29"
+
+jobs:
+  backend-lint:
+    name: Backend lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          # Matches backend/.python-version and the runtime image's base.
+          python-version: "3.12"
+      - name: Install uv
+        # No astral-sh/setup-uv: the house action set is checkout / setup-* /
+        # docker/*, and uv is one pip install away. Pinned so a uv release can't
+        # change dependency resolution under a previously-green build.
+        run: pip install "uv==${{ env.UV_VERSION }}"
+      - name: ruff check
+        working-directory: backend
+        run: uv run ruff check .
+      - name: ruff format --check
+        working-directory: backend
+        run: uv run ruff format --check .
+
+  backend-test:
+    name: Backend tests (pytest + testcontainers)
+    runs-on: ubuntu-latest
+    # ~1344 tests, several standing up real containers. The 360-minute default
+    # is useless as a hang detector; 40 is generous against observed runtime.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v6
+        with:
+          # Node is needed here NOT for the frontend but for gltfpack: the
+          # optimize_glb tests resolve the binary off PATH, and
+          # backend/tests/conftest.py prepends backend/.tools/node_modules/.bin
+          # -- a no-op until scripts/fetch-gltfpack.sh has populated it.
+          node-version: "24"
+      - name: Install uv
+        run: pip install "uv==${{ env.UV_VERSION }}"
+      - name: Fetch gltfpack
+        # See the setup-node comment. Without this the optimize_glb tests
+        # silently degrade instead of exercising the real CLI.
+        run: scripts/fetch-gltfpack.sh
+      - name: Pre-pull testcontainer images
+        # testcontainers talks to the runner's already-running Docker daemon --
+        # nothing to install. But the first fixture needing an image would
+        # otherwise absorb the registry pull inside its own container-start
+        # timeout, a classic source of "flaky on a cold runner". Images match
+        # backend/tests/conftest.py and backend/tests/storage_containers.py.
+        run: |
+          docker pull postgres:16-alpine
+          docker pull redis:7-alpine
+          docker pull minio/minio
+      - name: pytest
+        working-directory: backend
+        # `-m` is single-valued in pytest, so passing it here REPLACES
+        # pyproject's `addopts = "-m 'not e2e and not live_importer'"` rather
+        # than combining with it -- both exclusions must be repeated verbatim or
+        # CI starts dialling real Thingiverse/Printables and reaching for a
+        # compose stack that isn't up.
+        #
+        # `not perf` is the CI-only addition: test_gallery_perf.py asserts a
+        # 1.0s wall-clock budget and test_scanner.py's 50k-file harness a 30s
+        # one. Meaningful on a dev box, meaningless on a shared 2-vCPU runner.
+        # They still run, in the advisory backend-perf job below.
+        run: uv run pytest -q --durations=20 -m 'not e2e and not live_importer and not perf'
+
+  backend-perf:
+    name: Backend perf harnesses (advisory)
+    runs-on: ubuntu-latest
+    # Non-blocking on purpose. Red here means "go look on real hardware", not
+    # "block the merge" -- making it required would train everyone to ignore it,
+    # which is worse than advisory.
+    continue-on-error: true
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: pip install "uv==${{ env.UV_VERSION }}"
+      - name: Pre-pull testcontainer images
+        run: |
+          docker pull postgres:16-alpine
+          docker pull redis:7-alpine
+      - name: pytest -m perf
+        working-directory: backend
+        run: uv run pytest -q --durations=0 -m 'perf and not e2e and not live_importer'
+
+  web:
+    name: Web (lint + build + vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: npm ci
+        working-directory: web
+        run: npm ci
+      - name: oxlint (baseline-gated)
+        working-directory: web
+        # This repo carries a known, ACCEPTED baseline of oxlint *warnings*
+        # (14 at time of writing, react/only-export-components on the shadcn
+        # component files). The gate every dev round actually applies is "zero
+        # NEW warnings", so neither obvious option works:
+        #   * plain `oxlint` exits 0 on warnings -> a regression sails through;
+        #   * `--deny-warnings` promotes all 14 to errors -> red on day one.
+        # `--max-warnings` fails only when the count EXCEEDS the baseline.
+        #
+        # RATCHET: when you genuinely fix some of these, lower OXLINT_BASELINE
+        # in the same PR (and in release.yml, which carries a copy). Leaving it
+        # high is how a baseline quietly becomes a budget.
+        env:
+          OXLINT_BASELINE: "14"
+        run: npx oxlint --max-warnings="$OXLINT_BASELINE" --format=github
+      - name: Build (tsc -b + vite build)
+        working-directory: web
+        run: npm run build
+      - name: vitest
+        working-directory: web
+        run: npm run test
+
+  extension:
+    name: Extension tests (node:test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: node --test
+        # Glob form, NOT a bare `extension/test` directory: the directory form
+        # is broken on Node 24 (extension/README.md "Running the tests"). There
+        # is no package.json under extension/ -- plain unbundled MV3 JS with
+        # zero dependencies, so nothing to install first.
+        run: node --test extension/test/*.test.js
+
+  docker-smoke:
+    name: Docker build smoke (amd64)
+    runs-on: ubuntu-latest
+    # A cold build here is slow (gltfpack compiles from source; uv sync pulls
+    # cadquery-ocp/f3d) but the gha cache makes the steady state cheap, and it
+    # is the only thing between a broken Dockerfile and a broken :edge publish.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v4
+      - name: Build (no push)
+        uses: docker/build-push-action@v7
+        with:
+          # Context is the REPO ROOT, not docker/ -- the image needs both
+          # backend/ and web/ (see the header comment in docker/Dockerfile).
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64
+          push: false
+          build-args: |
+            APP_VERSION=pr-${{ github.event.pull_request.number }}
+          # Its own cache scope so PR builds can't evict the release scope.
+          cache-from: type=gha,scope=tdmm-pr
+          cache-to: type=gha,mode=max,scope=tdmm-pr

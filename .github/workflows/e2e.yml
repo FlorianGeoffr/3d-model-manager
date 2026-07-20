@@ -1,0 +1,103 @@
+name: E2E
+
+# The docker-compose acceptance gate: scripts/e2e.sh brings the whole stack up
+# with `docker compose up -d --build`, waits up to 120s for GET /api/health,
+# runs everything under backend/tests_e2e/ against the real HTTP API, then tears
+# the stack down again.
+#
+# NOT on the PR gate, on purpose. That cold build compiles gltfpack from source
+# and runs a `uv sync` over cadquery-ocp/f3d/OCCT -- a 25+ minute round trip
+# even before the tests start. Paying that on every push to every PR would make
+# the gate useless; ci.yml's docker-smoke job already catches a broken
+# Dockerfile, which is the failure mode most PRs can actually introduce.
+#
+# So it fires three ways instead:
+#   * nightly at 04:00 UTC, to catch drift from moving base images and from
+#     upstream containers (postgres/redis/minio) rather than from our commits;
+#   * `workflow_dispatch`, for "I want to know before I merge";
+#   * on a pull request labelled `run-e2e` -- opt-in per PR. `synchronize` is in
+#     the trigger list alongside `labeled` so that once the label is on, each
+#     new push to that PR re-runs it; without it you would get exactly one run,
+#     at labelling time, against a tree that then moves on.
+#
+# The `live_importer` marker stays excluded here as everywhere else -- those
+# tests dial the real Thingiverse and Printables APIs, which is not something a
+# scheduled job should be doing on someone else's rate limit. Note that e2e.sh
+# passes `-m e2e`, and pytest's `-m` is single-valued, so that REPLACES
+# backend/pyproject.toml's `addopts = "-m 'not e2e and not live_importer'"`
+# rather than combining with it. That is safe only because nothing under
+# backend/tests_e2e/ carries the live_importer marker -- check that still holds
+# before adding tests there.
+
+on:
+  schedule:
+    # 04:00 UTC daily. Off-peak for the shared runner pool, and far enough from
+    # midnight that a nightly upstream image push has landed.
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+  pull_request:
+    types: [labeled, synchronize]
+
+# One e2e run per ref. Unlike release.yml this DOES cancel in flight: it
+# publishes nothing, so a superseded run is pure wasted runner time, and a
+# 25-minute job is exactly the kind that piles up behind a busy PR.
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+# Read-only. Nothing here pushes an image, cuts a tag, or comments on a PR.
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: Compose e2e (scripts/e2e.sh)
+    # The label gate. `pull_request` fires on EVERY labelled/synchronize event,
+    # including labels that have nothing to do with us, so the job itself has to
+    # decide. The non-PR events (schedule, workflow_dispatch) short-circuit the
+    # first clause and always run.
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'run-e2e')
+    runs-on: ubuntu-latest
+    # Cold build (~25 min) + health wait + the e2e suite, with headroom for a
+    # slow registry. Enough that a genuine hang still gets killed.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          # Matches backend/.python-version and the image's base.
+          python-version: "3.12"
+
+      - name: Install uv
+        # e2e.sh's last line is `uv run --project backend pytest ...`, so uv has
+        # to be on PATH on the RUNNER, not just inside the image. Pinned to the
+        # same version as ci.yml/release.yml and docker/Dockerfile.
+        run: pip install "uv==0.11.29"
+
+      - name: Seed .env
+        # e2e.sh will `cp .env.example .env` if missing and then REWRITE it to
+        # pin an ADMIN_PASSWORD if none is set (it needs a known password -- the
+        # random first-run one is printed to the api log once and the test can't
+        # read it back). Writing it here first means the script's
+        # `grep -qE '^ADMIN_PASSWORD=.+'` already matches, so it takes its no-op
+        # path and mutates nothing. That keeps a script developers run locally
+        # free of CI-only branches.
+        run: |
+          cp .env.example .env
+          printf '\nADMIN_PASSWORD=e2e-ci-admin-password\n' >> .env
+
+      - name: Run the e2e flow
+        # Builds the stack, waits on health, runs backend/tests_e2e/, and tears
+        # down via its own EXIT trap -- including on failure.
+        run: scripts/e2e.sh
+
+      - name: Compose logs on failure
+        if: failure()
+        # Best-effort extra context. e2e.sh's cleanup trap already dumps the api
+        # container's last 100 lines and then runs `docker compose down`, so by
+        # the time this fires the containers are usually gone and the output is
+        # empty -- which is why it is `|| true` and not a gate. It still earns
+        # its place for the failure modes that abort BEFORE the trap installs
+        # (bad .env, missing docker) or that kill the job mid-teardown.
+        run: docker compose logs --tail=200 || true

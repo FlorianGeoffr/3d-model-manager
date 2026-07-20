@@ -1,5 +1,11 @@
 [project]
 name = "tdmm"
+# Deliberately NOT tracked by release-please (it is absent from `extra-files`
+# in release-please-config.json). backend/uv.lock records this same version
+# for the virtual root project (uv.lock line ~2342), so rewriting one without
+# regenerating the other risks the Dockerfile's `uv sync --frozen`. This
+# distribution version is inert -- the version users actually see comes from
+# APP_VERSION (app.config.Settings.app_version, GET /api/health).
 version = "0.1.0"
 description = "3D Model Manager backend"
 requires-python = ">=3.12"
@@ -71,6 +77,7 @@ asyncio_default_test_loop_scope = "session"
 markers = [
     "e2e: end-to-end tests against a live docker compose stack (see scripts/e2e.sh); excluded from the default run by the -m in addopts below",
     "live_importer: live-network importer smoke tests (real Thingiverse/Printables); excluded from the default gate by the -m in addopts",
+    "perf: wall-clock performance harnesses (test_gallery_perf.py's 1.0s endpoint budget, test_scanner.py's 50k-file 30s budget); still in the default local run, but excluded in CI where shared-runner jitter makes the budgets meaningless -- see .github/workflows/ci.yml",
 ]
 # `-m 'not e2e and not live_importer'` keeps `uv run pytest` (the unit-suite
 # gate) off the network entirely: `not e2e` skips the live-docker-compose

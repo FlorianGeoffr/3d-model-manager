@@ -110,9 +110,7 @@ def relocate_model_storage(job_id: str, model_id: int, target_backend_id: int, m
         with base.sync_session() as s:
             jobs.mark_done(s, job_id)
     except Exception:
-        logger.warning(
-            "relocate %s: succeeded but marking done failed", job_id, exc_info=True
-        )
+        logger.warning("relocate %s: succeeded but marking done failed", job_id, exc_info=True)
 
 
 @celery_app.task(name="app.tasks.relocate.relocate_all_models")

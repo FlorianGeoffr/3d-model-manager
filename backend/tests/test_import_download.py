@@ -93,7 +93,9 @@ def test_stream_remote_to_spool_rel_path_from_response_raising_leaves_no_spool(
     monkeypatch, data_dir
 ):
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=b"<html>not an image</html>", headers={"content-type": "text/html"})
+        return httpx.Response(
+            200, content=b"<html>not an image</html>", headers={"content-type": "text/html"}
+        )
 
     monkeypatch.setattr(
         download,

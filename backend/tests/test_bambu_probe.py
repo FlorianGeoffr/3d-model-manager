@@ -9,8 +9,8 @@ import json
 import time
 
 from app.printers import probe
-from app.printers.base import PrinterConnection, ProbeResult
 from app.printers.bambu import BambuLanAdapter
+from app.printers.base import PrinterConnection, ProbeResult
 
 CONN = PrinterConnection(host="1.2.3.4", serial="SERIAL123", access_code="12345678")
 

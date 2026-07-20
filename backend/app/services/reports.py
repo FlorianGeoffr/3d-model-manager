@@ -166,7 +166,9 @@ async def resolve_duplicates(
             skipped.extend(
                 SkippedCopyOut(
                     file_id=entry.file_id,
-                    reason="keeper_missing" if entry.is_current_revision else "not_current_revision",
+                    reason="keeper_missing"
+                    if entry.is_current_revision
+                    else "not_current_revision",
                 )
                 for entry in group.files
                 if entry.file_id != choice.file_id

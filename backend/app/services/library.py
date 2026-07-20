@@ -569,8 +569,7 @@ async def bulk_hard_delete_models(
         return 0
 
     models_by_id = {
-        m.id: m
-        for m in (await db.execute(select(Model).where(Model.id.in_(unique_ids)))).scalars()
+        m.id: m for m in (await db.execute(select(Model).where(Model.id.in_(unique_ids)))).scalars()
     }
     missing = [i for i in unique_ids if i not in models_by_id]
     if missing:
@@ -667,8 +666,7 @@ async def bulk_update_models(
     """
     unique_ids = list(dict.fromkeys(ids))  # de-dupe, preserve order
     models_by_id = {
-        m.id: m
-        for m in (await db.execute(select(Model).where(Model.id.in_(unique_ids)))).scalars()
+        m.id: m for m in (await db.execute(select(Model).where(Model.id.in_(unique_ids)))).scalars()
     }
     missing = [i for i in unique_ids if i not in models_by_id]
     if missing:

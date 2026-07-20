@@ -91,9 +91,10 @@ def tls_server(tmp_path):
         def _serve() -> None:
             with contextlib.suppress(OSError):
                 conn, _addr = listener.accept()
-                with contextlib.suppress(ssl.SSLError, OSError), ctx.wrap_socket(
-                    conn, server_side=True
-                ) as tls:
+                with (
+                    contextlib.suppress(ssl.SSLError, OSError),
+                    ctx.wrap_socket(conn, server_side=True) as tls,
+                ):
                     tls.recv(1)  # let the client's TLS handshake complete, then idle
             listener.close()
 

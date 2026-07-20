@@ -575,7 +575,11 @@ async def test_mislabeled_3mf_zip_download_is_renamed_not_extracted(
 async def _revision_rel_paths(db_session, model_id: int) -> list[str]:
     model = await db_session.get(Model, model_id)
     rows = (
-        (await db_session.execute(select(File).where(File.revision_id == model.current_revision_id)))
+        (
+            await db_session.execute(
+                select(File).where(File.revision_id == model.current_revision_id)
+            )
+        )
         .scalars()
         .all()
     )
@@ -616,7 +620,9 @@ async def test_gallery_images_are_downloaded_stored_and_set_as_cover(
     cover_file = next(
         f
         for f in (
-            await db_session.execute(select(File).where(File.revision_id == model.current_revision_id))
+            await db_session.execute(
+                select(File).where(File.revision_id == model.current_revision_id)
+            )
         )
         .scalars()
         .all()

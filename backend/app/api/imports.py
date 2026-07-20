@@ -95,7 +95,10 @@ async def search_imports(
         if target in errors_by_site:
             per_site.append(
                 SiteSearchStatus(
-                    site=target.value, count=0, has_more=False, status="error",
+                    site=target.value,
+                    count=0,
+                    has_more=False,
+                    status="error",
                     detail=errors_by_site[target],
                 )
             )

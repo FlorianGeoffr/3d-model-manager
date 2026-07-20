@@ -48,12 +48,16 @@ async def follow(
     """Follow a remote list. Following the same ``(site, list_id)`` twice is a
     409 rather than a silent duplicate -- the UI should offer "unfollow"."""
     existing = (
-        await db.execute(
-            select(FollowedCollection).where(
-                FollowedCollection.site == site, FollowedCollection.list_id == list_id
+        (
+            await db.execute(
+                select(FollowedCollection).where(
+                    FollowedCollection.site == site, FollowedCollection.list_id == list_id
+                )
             )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
     if existing is not None:
         raise HTTPException(
             status.HTTP_409_CONFLICT, f"already following {site.value} list {list_id!r}"
@@ -134,8 +138,10 @@ async def resolve_display_collections(
 
     stamped_ids = {p.collection_id for p in pendings}
     stamped_rows = (
-        await db.execute(select(FollowedCollection).where(FollowedCollection.id.in_(stamped_ids)))
-    ).scalars().all()
+        (await db.execute(select(FollowedCollection).where(FollowedCollection.id.in_(stamped_ids))))
+        .scalars()
+        .all()
+    )
     stamped_by_id = {row.id: row for row in stamped_rows}
 
     sites = {p.site for p in pendings}
@@ -192,9 +198,7 @@ async def resolve_display_collections(
             result[pending.id] = (best_id, best_title)
         else:
             stamped = stamped_by_id.get(pending.collection_id)
-            title = (
-                stamped.title if stamped is not None else f"Collection #{pending.collection_id}"
-            )
+            title = stamped.title if stamped is not None else f"Collection #{pending.collection_id}"
             result[pending.id] = (pending.collection_id, title)
     return result
 

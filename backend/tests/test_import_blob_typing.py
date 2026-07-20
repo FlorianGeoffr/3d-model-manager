@@ -204,7 +204,9 @@ def test_specific_format_blob_restored_under_different_specific_name_is_untouche
         blob = session.get(Blob, stl_staged.blob_hash)
         assert blob.format == BlobFormat.STL
 
-        threemf_staged = _stage(settings, "part.3mf", content)  # SAME bytes, a DIFFERENT specific format
+        threemf_staged = _stage(
+            settings, "part.3mf", content
+        )  # SAME bytes, a DIFFERENT specific format
         assert threemf_staged.blob_hash == stl_staged.blob_hash
         assert threemf_staged.format_ == BlobFormat.THREEMF
         library.store_imported_file_sync(

@@ -135,9 +135,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Downgrade schema."""
-    op.drop_constraint(
-        op.f("fk_files_backend_id_storage_backends"), "files", type_="foreignkey"
-    )
+    op.drop_constraint(op.f("fk_files_backend_id_storage_backends"), "files", type_="foreignkey")
     op.drop_index(op.f("ix_files_backend_id"), table_name="files")
     op.drop_column("files", "backend_id")
 

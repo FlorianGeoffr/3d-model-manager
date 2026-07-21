@@ -347,9 +347,11 @@ def test_resolve_and_attach_sync_same_filename_twice_replaces() -> None:
 
     with tasks_base.sync_session() as s:
         model = s.get(Model, first.model_id)
-        files = s.execute(
-            select(File).where(File.revision_id == model.current_revision_id)
-        ).scalars().all()
+        files = (
+            s.execute(select(File).where(File.revision_id == model.current_revision_id))
+            .scalars()
+            .all()
+        )
         assert len(files) == 1
         assert files[0].blob_hash == blake3.blake3(content2).hexdigest()
 

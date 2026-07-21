@@ -50,12 +50,17 @@ def _tcp_check(host: str, *, port: int = _PORT, timeout: float = 4.0) -> ProbeRe
     except OSError:
         return ProbeResult(
             ok=False,
-            detail=f"Can't reach {host}:{port}. Check the printer is on the network and the IP is right.",
+            detail=(
+                f"Can't reach {host}:{port}. Check the printer is on the "
+                "network and the IP is right."
+            ),
         )
     return None
 
 
-def _cert_check(host: str, serial: str, *, port: int = _PORT, timeout: float = 4.0) -> ProbeResult | None:
+def _cert_check(
+    host: str, serial: str, *, port: int = _PORT, timeout: float = 4.0
+) -> ProbeResult | None:
     """Stage 2: read the TLS cert's subject CN and cross-match it against
     the printer's configured serial -- catches "right IP, wrong printer" and
     "typo'd the serial" before we ever try to authenticate."""
@@ -72,7 +77,10 @@ def _cert_check(host: str, serial: str, *, port: int = _PORT, timeout: float = 4
     if cn and cn != serial:
         return ProbeResult(
             ok=False,
-            detail=f"Serial mismatch: {host} reports {cn}, but you entered {serial}. Use Detect to fix it.",
+            detail=(
+                f"Serial mismatch: {host} reports {cn}, but you entered "
+                f"{serial}. Use Detect to fix it."
+            ),
         )
     return None
 
@@ -147,7 +155,10 @@ def _mqtt_probe(conn: PrinterConnection, *, timeout: float) -> ProbeResult:
         if not connected.wait(timeout):
             return ProbeResult(
                 ok=False,
-                detail=f"Can't reach {host}:{_PORT}. Check the printer is on the network and the IP is right.",
+                detail=(
+                    f"Can't reach {host}:{_PORT}. Check the printer is on the "
+                    "network and the IP is right."
+                ),
             )
         rc = outcome["rc"]
         if rc != 0:
@@ -159,7 +170,9 @@ def _mqtt_probe(conn: PrinterConnection, *, timeout: float) -> ProbeResult:
                         "printer (Settings → Network)."
                     ),
                 )
-            return ProbeResult(ok=False, detail=f"The printer refused the MQTT connection (code {rc}).")
+            return ProbeResult(
+                ok=False, detail=f"The printer refused the MQTT connection (code {rc})."
+            )
         remaining = max(deadline - time.monotonic(), 0.0)
         if not got_report.wait(remaining):
             return ProbeResult(

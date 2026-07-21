@@ -27,9 +27,7 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    op.create_index(
-        "ix_imports_site_external_id", "imports", ["site", "external_id"], unique=False
-    )
+    op.create_index("ix_imports_site_external_id", "imports", ["site", "external_id"], unique=False)
 
 
 def downgrade() -> None:

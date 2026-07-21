@@ -311,15 +311,12 @@ def test_duplicate_member_name_is_renamed_not_skipped_and_both_survive() -> None
     assert set(by_rel_path) == {"Dupe/part.stl", "Dupe/part (2).stl"}
     assert by_rel_path["Dupe/part.stl"].spool_path.read_bytes() == b"first copy"
     assert (
-        by_rel_path["Dupe/part (2).stl"].spool_path.read_bytes()
-        == b"second copy, different bytes"
+        by_rel_path["Dupe/part (2).stl"].spool_path.read_bytes() == b"second copy, different bytes"
     )
     # Two distinct staged files -- own token, own spool path -- not a rename
     # of one in place.
     assert by_rel_path["Dupe/part.stl"].token != by_rel_path["Dupe/part (2).stl"].token
-    assert (
-        by_rel_path["Dupe/part.stl"].spool_path != by_rel_path["Dupe/part (2).stl"].spool_path
-    )
+    assert by_rel_path["Dupe/part.stl"].spool_path != by_rel_path["Dupe/part (2).stl"].spool_path
 
 
 def test_three_way_duplicate_member_name_gets_sequential_suffixes() -> None:

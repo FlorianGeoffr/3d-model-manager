@@ -106,9 +106,7 @@ async def bulk_delete_models(
     segment must come before the ``{slug}`` path-param routes or it would be
     parsed as a slug.
     """
-    deleted = await library.bulk_hard_delete_models(
-        db, backend, settings, ids=payload.ids
-    )
+    deleted = await library.bulk_hard_delete_models(db, backend, settings, ids=payload.ids)
     return ModelBulkDeleteOut(deleted=deleted)
 
 

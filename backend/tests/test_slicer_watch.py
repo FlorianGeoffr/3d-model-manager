@@ -79,9 +79,7 @@ def test_settings_env_vars_map_to_short_watch_fields(monkeypatch: pytest.MonkeyP
     assert settings.printer_enabled is True
 
 
-async def test_stable_supported_file_is_imported_and_moved(
-    watch_dir: Path, db_session
-) -> None:
+async def test_stable_supported_file_is_imported_and_moved(watch_dir: Path, db_session) -> None:
     f = watch_dir / "Benchy_PLA_1h2m.gcode"
     f.write_bytes(b"stable-gcode-bytes" * 20)
     _age(f, 3600)
@@ -96,8 +94,14 @@ async def test_stable_supported_file_is_imported_and_moved(
     model = (await db_session.execute(select(Model))).scalar_one()
     assert model.name == "Benchy"
     files = (
-        await db_session.execute(select(File).where(File.revision_id == model.current_revision_id))
-    ).scalars().all()
+        (
+            await db_session.execute(
+                select(File).where(File.revision_id == model.current_revision_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert [file.rel_path for file in files] == ["Benchy_PLA_1h2m.gcode"]
 
 
@@ -171,8 +175,14 @@ async def test_matches_existing_model_name_case_insensitively(
     count = await db_session.scalar(select(func.count()).select_from(Model))
     assert count == 1  # attached to the existing model, no new one created
     files = (
-        await db_session.execute(select(File).where(File.revision_id == model.current_revision_id))
-    ).scalars().all()
+        (
+            await db_session.execute(
+                select(File).where(File.revision_id == model.current_revision_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert [file.rel_path for file in files] == ["widget_PETG_45m.gcode"]
 
 
@@ -191,9 +201,7 @@ async def test_unsupported_extension_is_moved_to_failed_no_model(
     assert count == 0
 
 
-async def test_entries_inside_terminal_dirs_are_never_touched(
-    watch_dir: Path, db_session
-) -> None:
+async def test_entries_inside_terminal_dirs_are_never_touched(watch_dir: Path, db_session) -> None:
     imported_dir = watch_dir / IMPORTED_DIRNAME
     imported_dir.mkdir()
     already_imported = imported_dir / "Already_PLA_1h2m.gcode"

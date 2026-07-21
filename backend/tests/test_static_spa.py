@@ -169,4 +169,11 @@ async def test_health_still_works_when_static_enabled(static_dir: Path) -> None:
         response = await client.get("/api/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    # Shape-checked, not equality-checked: this test is about the SPA catch-all
+    # not shadowing the api_router route, so it only cares that /api/health is
+    # still reachable and still the health payload. Asserting the whole dict
+    # would make it a second place to update every time that payload grows
+    # (see tests/test_health.py, which owns the payload contract).
+    body = response.json()
+    assert body["status"] == "ok"
+    assert "version" in body

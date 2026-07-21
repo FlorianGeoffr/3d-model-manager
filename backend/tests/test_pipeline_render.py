@@ -1,9 +1,11 @@
 """``render_thumb`` pipeline step tests (Task 6; SPEC pipeline rows 5-6;
 RESEARCH §4): ``app.pipeline.render.render_glb_png`` as a pure function
 against real f3d (no mocking the tool under test -- Global Constraints "Real
-infra in tests"), then the registered step itself for both branches: mesh/cad
-blobs render their already-converted ``glb`` derivative, png/jpg blobs go
-straight to ``thumbs.make_thumbs_from_image`` on the original bytes.
+infra in tests"), the engine-creation guard that keeps a host with no usable
+GL backend from core-dumping the worker, then the registered step itself for
+both branches: mesh/cad blobs render their already-converted ``glb``
+derivative, png/jpg blobs go straight to ``thumbs.make_thumbs_from_image`` on
+the original bytes.
 
 Render assertions follow the brief's exact recipe: real PNG magic bytes, the
 requested dimensions, and non-uniform pixel content
@@ -13,8 +15,11 @@ frame.
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 
+import f3d
 import pytest
 import trimesh
 from PIL import Image
@@ -77,6 +82,219 @@ def test_render_glb_png_engine_is_reused_across_calls(tmp_path: Path) -> None:
         assert out.read_bytes()[:8] == _PNG_MAGIC
         with Image.open(out) as image:
             assert image.size == (256, 256)
+
+
+# ---------------------------------------------------------------------------
+# `render._engine` backend selection. `create_osmesa()` raises when OSMesa is
+# missing, but `create(True)` SIGSEGVs when EGL is unusable -- so the EGL
+# branch is rehearsed in a child process first. These tests drive the child's
+# outcome by faking `subprocess.run`'s result rather than hand-writing the
+# diagnostic, so `_egl_probe_failure`'s own returncode/signal formatting is
+# under test too.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _fresh_engine_cache():
+    """``_engine`` is ``lru_cache``d, so a test that exercises its
+    construction branches has to drop the process-wide engine on the way in
+    AND on the way out -- otherwise it either never runs its branch (an
+    earlier render test already cached a real engine) or leaves a stub behind
+    for every test after it.
+    """
+    render._engine.cache_clear()
+    yield
+    render._engine.cache_clear()
+
+
+class _StubEngine:
+    """Stand-in for ``f3d.Engine``: ``_engine`` only touches ``.options``."""
+
+    def __init__(self) -> None:
+        self.options: dict[str, object] = {}
+
+
+def _no_osmesa(*args, **kwargs):
+    """What real f3d does on a host without the unversioned libOSMesa.so."""
+    raise RuntimeError("Cannot find OSMesa library")
+
+
+@pytest.mark.usefixtures("_fresh_engine_cache")
+def test_engine_prefers_osmesa_and_never_spawns_the_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The supported (container) path must cost exactly nothing: OSMesa is
+    tried in-process because it fails safely, and the subprocess probe exists
+    only to guard the branch after it.
+    """
+    stub = _StubEngine()
+
+    def _probe_boom():
+        raise AssertionError("the EGL probe must not spawn when OSMesa works")
+
+    monkeypatch.setattr(f3d.Engine, "create_osmesa", lambda: stub)
+    monkeypatch.setattr(render, "_egl_probe_failure", _probe_boom)
+
+    engine = render._engine()
+
+    assert engine is stub
+    assert stub.options == render._RENDER_OPTIONS
+
+
+@pytest.mark.usefixtures("_fresh_engine_cache")
+def test_engine_falls_back_to_egl_when_the_probe_survives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The dev-host path: no OSMesa, but the child process came back clean,
+    so the EGL branch is the one taken.
+
+    `create(True)` is stubbed rather than genuinely called. What's under test
+    is control flow -- probe first, EGL only after it survives -- and the real
+    call is precisely what SIGSEGVs on a host with no swrast driver, so
+    invoking it here would hand this test a core dump as its failure mode, on
+    the exact code path it exists to stop core-dumping. It does survive on a
+    dev box and on CI, but only because libgl1-mesa-dri is installed there for
+    OSMesa's sake -- far too incidental to hang a test's safety on. Real EGL
+    creation is covered out-of-process, and crash-proof, by the probe test
+    below.
+    """
+    calls: list[object] = []
+    stub = _StubEngine()
+
+    def _probe_ok():
+        calls.append("probe")
+        return None
+
+    def _create(offscreen):
+        calls.append(("create", offscreen))
+        return stub
+
+    monkeypatch.setattr(f3d.Engine, "create_osmesa", _no_osmesa)
+    monkeypatch.setattr(render, "_egl_probe_failure", _probe_ok)
+    monkeypatch.setattr(f3d.Engine, "create", _create)
+
+    engine = render._engine()
+
+    # Order is the safety property: the probe has to run BEFORE the call it
+    # guards, not merely at some point during construction.
+    assert calls == ["probe", ("create", True)]
+    assert engine is stub
+    assert stub.options == render._RENDER_OPTIONS
+
+
+@pytest.mark.usefixtures("_fresh_engine_cache")
+def test_engine_raises_actionable_error_when_the_probe_segfaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for the CI core dump: with neither backend available
+    `create(True)` dies on SIGSEGV instead of raising, which took a whole
+    pytest process down with exit 139 mid-suite. The child absorbs that (a
+    signal death surfaces as a negative returncode, not an exception), and
+    `create(True)` must never be reached in THIS process -- the whole point
+    is that the operator gets a message rather than a core file.
+    """
+    runs: list[list[str]] = []
+
+    def _fake_run(cmd, **kwargs):
+        runs.append(cmd)
+        return subprocess.CompletedProcess(cmd, -11, stdout="", stderr="libEGL warning: DRI2\n")
+
+    def _create_boom(*args, **kwargs):
+        raise AssertionError("create(True) must not run once the probe reported a crash")
+
+    monkeypatch.setattr(f3d.Engine, "create_osmesa", _no_osmesa)
+    monkeypatch.setattr(f3d.Engine, "create", _create_boom)
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        render._engine()
+
+    message = str(excinfo.value)
+    assert "libosmesa6" in message
+    assert "libOSMesa.so" in message
+    assert "docker/Dockerfile" in message
+    # The returncode/signal and the child's stderr are the only diagnostics
+    # an operator gets -- nothing was raised in-process to inspect.
+    assert "SIGSEGV" in message
+    assert "-11" in message
+    assert "libEGL warning: DRI2" in message
+    # The original OSMesa failure stays chained, so both halves of "no usable
+    # backend" are visible in one traceback.
+    assert "Cannot find OSMesa library" in str(excinfo.value.__cause__)
+    # A real child process, not an in-process call -- the only arrangement
+    # that can survive the crash being guarded against.
+    assert runs == [[sys.executable, "-c", render._EGL_PROBE_SCRIPT]]
+
+
+@pytest.mark.usefixtures("_fresh_engine_cache")
+def test_a_real_child_segfault_becomes_a_catchable_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guarantee end to end, with the mechanism itself unmocked: a child
+    that genuinely dies on SIGSEGV comes back as an exception this process can
+    catch, and this process is still alive to catch it.
+
+    The sibling test above fakes `subprocess.run`'s result, which pins the
+    message formatting but would pass just as happily if the isolation were
+    bogus -- if the probe script were exec'd in-process, say. Only a real
+    signal death proves the isolation is real. `ctypes.string_at(0)` is an
+    instant, reliable SIGSEGV that needs no f3d import, so this costs
+    milliseconds; the genuine EGL crash it stands in for can't be summoned on
+    demand, since it depends on the host's driver stack and does NOT reproduce
+    inside a plain container (f3d's wheel bundles its own Mesa).
+
+    A regression here doesn't show up as a red test: the whole suite dies with
+    exit 139, which is precisely the symptom this guard exists to prevent.
+    """
+    monkeypatch.setattr(f3d.Engine, "create_osmesa", _no_osmesa)
+    monkeypatch.setattr(render, "_EGL_PROBE_SCRIPT", "import ctypes; ctypes.string_at(0)")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        render._engine()
+
+    assert "SIGSEGV" in str(excinfo.value)
+    assert "libosmesa6" in str(excinfo.value)
+
+
+@pytest.mark.usefixtures("_fresh_engine_cache")
+def test_engine_raises_actionable_error_when_the_probe_times_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A driver init that wedges is as unusable as one that crashes, and
+    worse for a worker: without the timeout the job would hang forever
+    instead of failing. Same clean `RuntimeError` as the segfault branch.
+    """
+
+    def _fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+
+    monkeypatch.setattr(f3d.Engine, "create_osmesa", _no_osmesa)
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        render._engine()
+
+    message = str(excinfo.value)
+    assert "timed out" in message
+    assert "libosmesa6" in message
+    assert "docker/Dockerfile" in message
+
+
+def test_egl_probe_helper_really_spawns_a_child_and_never_raises() -> None:
+    """The probe unmocked, on this host -- the only test that proves the
+    child script itself is valid. A probe that fell over on its own code
+    (typo, un-importable f3d) would report "EGL unusable" on every host,
+    including the many where it is fine, turning a working dev box into a
+    hard error. Dev boxes have Mesa EGL but no OSMesa, so this comes back
+    clean; the shape assertion holds on a GL-less host too, where the
+    contract that matters is "returns a diagnostic instead of taking this
+    process down". Costs ~1s: one interpreter start, 32x32 of an empty scene.
+    """
+    result = render._egl_probe_failure()
+
+    assert result is None or result.startswith("EGL probe"), result
+    assert "SyntaxError" not in (result or "")
+    assert "ModuleNotFoundError" not in (result or "")
 
 
 # ---------------------------------------------------------------------------

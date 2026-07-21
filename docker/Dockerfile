@@ -30,7 +30,12 @@ FROM python:3.12-slim AS runtime
 
 # uv is copied in as a static binary from its own distroless image (SPEC
 # Task 9), not pip-installed.
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+#
+# Pinned, not `:latest`: a floating tag means the resolver that produced
+# backend/uv.lock can silently differ from the one consuming it, and makes
+# a rebuild of an old release tag non-reproducible. Bump deliberately, and
+# keep in step with the `pip install uv==` in .github/workflows/*.yml.
+COPY --from=ghcr.io/astral-sh/uv:0.11.29 /uv /usr/local/bin/uv
 
 # GL runtime libs (RESEARCH §4 / Global Constraints "Local prerequisites"):
 # - libosmesa6 + libgl1-mesa-dri: f3d software rendering -- this container
@@ -85,6 +90,21 @@ COPY --from=web-build /web/dist ./static
 
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
+
+# Version stamp. CI passes --build-arg APP_VERSION=<semver> on release
+# builds and APP_VERSION=edge-<short sha> on every other push to main; a
+# plain local `docker build` gets `dev`. Read back at runtime by
+# app.config.Settings and surfaced via FastAPI(version=...) +
+# GET /api/health.
+#
+# Placement is load-bearing: an ARG/ENV invalidates every layer BELOW it,
+# and this value changes on literally every build. It therefore has to sit
+# under the expensive layers -- the apt/GL install, `uv sync --frozen`
+# (minutes), the gltfpack COPY, the backend and static COPYs -- or the
+# cache is worthless. It is declared ONLY in this stage, so web-build and
+# gltfpack-build keep caching.
+ARG APP_VERSION=dev
+ENV APP_VERSION=${APP_VERSION}
 
 # Root is still the default (unchanged M1 choice: the `local` storage
 # backend writes into a bind-mounted host directory (./library), and root

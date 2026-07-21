@@ -184,7 +184,9 @@ async def test_list_prints_empty_for_model_with_no_prints(
 # ---------------------------------------------------------------------------
 
 
-async def test_patch_print_only_changes_sent_fields(authenticated_client: httpx.AsyncClient) -> None:
+async def test_patch_print_only_changes_sent_fields(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
     model = await _create_model(authenticated_client, "Print Patch")
     created = await authenticated_client.post(
         f"/api/models/{model['id']}/prints",
@@ -215,7 +217,9 @@ async def test_patch_print_invalid_result_is_422(authenticated_client: httpx.Asy
     assert response.status_code == 422
 
 
-async def test_patch_print_negative_duration_is_422(authenticated_client: httpx.AsyncClient) -> None:
+async def test_patch_print_negative_duration_is_422(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
     model = await _create_model(authenticated_client, "Print Patch Negative")
     created = await authenticated_client.post(f"/api/models/{model['id']}/prints", json={})
     print_id = created.json()["id"]

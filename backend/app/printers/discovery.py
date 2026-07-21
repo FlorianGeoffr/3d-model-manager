@@ -41,7 +41,9 @@ def read_cert_cn(host: str, port: int = 8883, *, timeout: float = 4.0) -> str:
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
-    with socket.create_connection((host, port), timeout=timeout) as sock:
-        with ctx.wrap_socket(sock, server_hostname=host) as tls:
-            der = tls.getpeercert(binary_form=True)
+    with (
+        socket.create_connection((host, port), timeout=timeout) as sock,
+        ctx.wrap_socket(sock, server_hostname=host) as tls,
+    ):
+        der = tls.getpeercert(binary_form=True)
     return _cn_from_der(der or b"")

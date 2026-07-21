@@ -7,11 +7,44 @@ library, and keeps the app's stored MakerWorld cookie fresh while you browse
 
 ## Install (sideload)
 
-This extension isn't published to the Chrome Web Store — load it from source:
+This extension isn't published to the Chrome Web Store — sideload it from the
+zip attached to each GitHub release:
 
-1. Open `chrome://extensions`.
-2. Enable **Developer mode** (top right).
-3. Click **Load unpacked** and select this `extension/` folder.
+1. Download `tdmm-extension-<version>.zip` and its `.sha256` sidecar from the
+   [latest release](https://github.com/metril/3d-model-manager/releases/latest).
+2. Verify it, then unpack:
+
+   ```sh
+   sha256sum -c tdmm-extension-<version>.zip.sha256
+   unzip tdmm-extension-<version>.zip -d tdmm-extension
+   ```
+
+3. Open `chrome://extensions`.
+4. Enable **Developer mode** (top right).
+5. Click **Load unpacked** and select the unzipped folder (the one containing
+   `manifest.json`).
+
+Chrome won't update a "Load unpacked" extension for you — to upgrade, download
+the newer release's zip, unpack it over the same folder, and hit **Reload** on
+the extension's card in `chrome://extensions`.
+
+**Or, for development**: point **Load unpacked** at this `extension/` folder
+directly from a source checkout. Same steps 3-5, no download — and your edits
+are live on **Reload**.
+
+### Versioning
+
+The extension shares one version with the app, always. Release `v0.4.0` of
+the app ships extension `0.4.0`; there is no independent extension version to
+track.
+
+Establishing that cost a **one-time renumber from `0.3.0` down to `0.1.0`**
+when the extension moved onto the app's release train. That's a version going
+*backwards*, which sounds alarming and isn't: Chrome's downgrade protection
+applies to **packed CRX updates delivered through an update URL**, and this
+extension is installed unpacked via **Load unpacked**, which performs no
+version comparison at all. If you have an older sideload, replace the folder
+and reload — nothing will object.
 
 ## Configure
 

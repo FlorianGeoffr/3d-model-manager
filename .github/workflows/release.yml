@@ -1,0 +1,459 @@
+name: Release
+
+# Automated semver releases (release-please, driven by Conventional Commits)
+# plus container publishing to GHCR.
+#
+# Versioning contract:
+#   * EVERY push to main publishes ghcr.io/metril/3d-model-manager:edge and
+#     :sha-<short>, built from that exact tree, stamped APP_VERSION=edge-<sha>.
+#   * Merging the release PR release-please maintains ADDITIONALLY cuts the
+#     vX.Y.Z tag, writes CHANGELOG.md, publishes the full ladder
+#     (:X.Y.Z, :X.Y, :X, :latest), stamps APP_VERSION=X.Y.Z, rebuilds the
+#     browser-extension zip, and attaches it to the GitHub Release.
+#
+# release-please and the build run in the SAME workflow run, gated on
+# release-please's `release_created` output. That is NOT a stylistic choice:
+# refs pushed by GITHUB_TOKEN do not fire workflow events, so a separate
+# `on: push: tags` workflow would never run for a release-please tag. The only
+# alternatives are a PAT (banned by house convention) or a GitHub App. If this
+# is ever "cleaned up" into two workflows, releases will silently stop
+# publishing images while still creating tags -- the worst possible failure.
+#
+# Architecture: linux/amd64 only, for now. The build-by-digest + imagetools
+# merge structure is kept even with a single-entry matrix so that re-enabling
+# arm64 is a one-line uncomment -- see docs/arm64-status.md for exactly what
+# blocks it (f3d, and only f3d, as of 2026-07).
+
+on:
+  push:
+    branches: [main]
+
+# Never cancel a release in flight -- a half-published manifest list, or a tag
+# without an image, is far worse than a redundant run. (ci.yml uses
+# cancel-in-progress: true; this deliberately does not.)
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+  UV_VERSION: "0.11.29"
+
+jobs:
+  release-please:
+    name: release-please
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # create the tag, the CHANGELOG commit, the Release
+      pull-requests: write   # open and keep updating the release PR
+    outputs:
+      release_created: ${{ steps.rp.outputs.release_created }}
+      tag_name: ${{ steps.rp.outputs.tag_name }}
+      version: ${{ steps.rp.outputs.version }}
+      major: ${{ steps.rp.outputs.major }}
+      minor: ${{ steps.rp.outputs.minor }}
+    steps:
+      - id: rp
+        uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # Config lives in release-please-config.json +
+          # .release-please-manifest.json at the repo root (default locations).
+
+  # ---- Gates -------------------------------------------------------------
+  # Copies of ci.yml's jobs. ci.yml is pull_request-only, so these do not
+  # duplicate work -- they are what stops a red main from publishing :edge.
+
+  backend-lint:
+    name: Backend lint (ruff)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install "uv==${{ env.UV_VERSION }}"
+      - working-directory: backend
+        run: uv run ruff check .
+      - working-directory: backend
+        run: uv run ruff format --check .
+
+  backend-test:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"   # for scripts/fetch-gltfpack.sh, see ci.yml
+      - run: pip install "uv==${{ env.UV_VERSION }}"
+      - name: Fetch gltfpack
+        run: scripts/fetch-gltfpack.sh
+      - name: Install f3d's GL runtime (OSMesa software rendering)
+        # Without this, render.py's EGL fallback segfaults the pytest process
+        # (exit 139) instead of failing a test -- see ci.yml for the full why.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libosmesa6 libgl1-mesa-dri libgl1
+          so="$(ldconfig -p | awk '/libOSMesa\.so\./ {print $NF; exit}')"
+          if [ -z "$so" ]; then
+            echo "::error::libosmesa6 installed but ldconfig reports no libOSMesa.so.*"
+            exit 1
+          fi
+          sudo ln -sf "$so" "$(dirname "$so")/libOSMesa.so"
+          sudo ldconfig
+      - name: Verify f3d can render headless
+        working-directory: backend
+        run: |
+          uv run python -c "
+          import f3d
+          f3d.Engine.autoload_plugins()
+          engine = f3d.Engine.create_osmesa()
+          engine.window.size = (64, 64)
+          engine.window.render_to_image(False)
+          print('f3d OSMesa engine OK')
+          "
+      - name: Pre-pull testcontainer images
+        run: |
+          docker pull postgres:16-alpine
+          docker pull redis:7-alpine
+          docker pull minio/minio
+      - name: pytest
+        working-directory: backend
+        # See ci.yml for why the full `-m` expression is repeated verbatim.
+        run: uv run pytest -q -m 'not e2e and not live_importer and not perf'
+
+  web:
+    name: Web
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - working-directory: web
+        run: npm ci
+      - name: oxlint (baseline-gated)
+        working-directory: web
+        # Keep OXLINT_BASELINE in step with ci.yml's copy.
+        env:
+          OXLINT_BASELINE: "14"
+        run: npx oxlint --max-warnings="$OXLINT_BASELINE"
+      - working-directory: web
+        run: npm run build
+      - working-directory: web
+        run: npm run test
+
+  extension:
+    name: Extension tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      # Glob form -- the bare-directory form is broken on Node 24.
+      - run: node --test extension/test/*.test.js
+
+  # ---- Build -------------------------------------------------------------
+
+  build:
+    name: Build ${{ matrix.arch }}
+    needs: [release-please, backend-lint, backend-test, web, extension]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read     # checkout only
+      packages: write    # push the by-digest image to GHCR
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+          # - platform: linux/arm64
+          #   runner: ubuntu-24.04-arm     # free for public repos, native (no QEMU)
+          #   arch: arm64
+          #
+          # BLOCKED on f3d, and only f3d. `uv sync --frozen` cannot resolve on
+          # linux/aarch64 because f3d 3.5.0 publishes x86_64-only wheels with no
+          # sdist -- a hard "no matching distribution", which neither QEMU nor a
+          # native ARM runner can fix. Upstream f3d-app/f3d#3089 (open since
+          # 2026-05, status "Discuss") targets the app binary, not the wheel.
+          #
+          # The other three gaps are all cheaply solvable when the time comes:
+          #   cascadio -> bump to >=0.0.18rc6, which ships aarch64
+          #   lib3mf   -> pure-python wrapper + one small .so; cmake it and repack
+          #   embreex  -> drop it from trimesh[easy]
+          # cadquery-ocp, manifold3d and trimesh already resolve on aarch64.
+          #
+          # The real fix is porting backend/app/pipeline/render.py off f3d onto
+          # VTK (already in uv.lock via cadquery-ocp, and it DOES ship aarch64
+          # with working OSMesa/EGL). That changes thumbnail appearance and needs
+          # a re-render backfill, so it is its own project.
+          # Full analysis: docs/arm64-status.md
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v4
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve APP_VERSION
+        id: appver
+        # Release runs bake the real semver. Every other push to main bakes
+        # `edge-<short sha>` -- a bare "edge" in GET /api/health tells an
+        # operator nothing, the sha tells them everything.
+        run: |
+          if [ "${{ needs.release-please.outputs.release_created }}" = "true" ]; then
+            echo "value=${{ needs.release-please.outputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=edge-$(echo "${GITHUB_SHA}" | cut -c1-7)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          # Repo root as context: the image needs backend/ AND web/.
+          context: .
+          file: docker/Dockerfile
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            APP_VERSION=${{ steps.appver.outputs.value }}
+          # Hand-rolled rather than docker/metadata-action: this job consumes no
+          # tags (push-by-digest), and writing image.version here guarantees the
+          # label matches the APP_VERSION actually baked in, instead of whatever
+          # metadata-action would infer from the ref.
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.appver.outputs.value }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          # push-by-digest: publish layers + config under a content address with
+          # NO tag. The merge job stitches the manifest list. name-canonical
+          # makes the pushed image record its canonical repository name.
+          outputs: type=image,"name=${{ env.IMAGE_NAME }}",push-by-digest=true,name-canonical=true,push=true
+          # Per-arch cache scope. Mandatory once the matrix has >1 entry: a
+          # shared scope would have the legs writing mutually useless cross-arch
+          # layers into one bucket and evicting each other every run.
+          #
+          # SIZE NOTE: mode=max exports every layer of every stage, and this
+          # image carries cadquery-ocp + f3d + OCCT -- plausibly 2-3 GB. That
+          # sits close to GitHub's 10 GB per-repo cache cap. If you see eviction
+          # thrash (gltfpack recompiling every run, build times not improving),
+          # step down to mode=min, then to registry cache:
+          #   type=registry,ref=${{ env.IMAGE_NAME }}:buildcache-${{ matrix.arch }}
+          cache-from: type=gha,scope=tdmm-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=tdmm-${{ matrix.arch }}
+
+      - name: Export digest
+        # A zero-byte file NAMED after the digest. Artifacts move filenames
+        # between jobs far more simply than they move job outputs, and the merge
+        # job only ever needs the names.
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: digests-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Merge manifest list
+    needs: [release-please, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # push the manifest list
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/digests
+          # Filter to digests-* explicitly: docker/build-push-action@v7 also
+          # uploads a `*.dockerbuild` artifact per invocation, which we have no
+          # use for and which has been a source of flaky blob-storage timeouts.
+          pattern: digests-*
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v4
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          # The ONE place tags are computed. The `enable=` conditions on the last
+          # four are what makes a single workflow serve both paths: non-release
+          # pushes get edge + sha only; a release run gets those plus the full
+          # ladder. The bare-major tag is `0` while pre-1.0 and carries no
+          # compatibility promise -- kept for ladder symmetry, but the README
+          # points users at :X.Y.Z or :latest.
+          tags: |
+            type=raw,value=edge,enable={{is_default_branch}}
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable=${{ needs.release-please.outputs.release_created == 'true' }}
+            type=raw,value=${{ needs.release-please.outputs.version }},enable=${{ needs.release-please.outputs.release_created == 'true' }}
+            type=raw,value=${{ needs.release-please.outputs.major }}.${{ needs.release-please.outputs.minor }},enable=${{ needs.release-please.outputs.release_created == 'true' }}
+            type=raw,value=${{ needs.release-please.outputs.major }},enable=${{ needs.release-please.outputs.release_created == 'true' }}
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        # jq turns metadata-action's tag array into `-t <tag> -t <tag> ...`;
+        # printf expands the digest-named sentinel files into
+        # `<image>@sha256:<digest>` operands. imagetools assembles the manifest
+        # list server-side -- no layer is re-uploaded. This works identically for
+        # a one-entry matrix, which is why the structure is kept for amd64-only.
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "${IMAGE_NAME}@sha256:%s " *)
+
+      - name: Inspect image
+        # Cheap proof of what actually landed in the list. Read this step's log
+        # when a `docker pull` on some platform mysteriously 404s.
+        run: docker buildx imagetools inspect "${IMAGE_NAME}:${{ steps.meta.outputs.version }}"
+
+  # ---- Release-only ------------------------------------------------------
+
+  package-extension:
+    name: Package browser extension
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Verify the manifest version matches the release
+        # release-please rewrote extension/manifest.json's "version" via the json
+        # extra-file, and this job checks out that very commit. A mismatch means
+        # the extra-files wiring has silently stopped working -- fail loudly
+        # rather than ship a zip whose internal version disagrees with its name.
+        run: |
+          manifest_version="$(jq -r .version extension/manifest.json)"
+          expected="${{ needs.release-please.outputs.version }}"
+          if [ "$manifest_version" != "$expected" ]; then
+            echo "::error::extension/manifest.json says '$manifest_version' but the release is '$expected' -- check extra-files in release-please-config.json"
+            exit 1
+          fi
+      - name: Build the zip
+        # Ship exactly what Chrome loads: manifest.json + src/. NOT test/ (node
+        # test suites the browser never sees), NOT README.md, NOT dist/ (the old
+        # hand-built artifact -- git-ignored, and rebuilt right here). `cd
+        # extension` roots the archive at manifest.json, so unzipping yields a
+        # folder "Load unpacked" accepts directly. -X drops extra file
+        # attributes for a more reproducible archive.
+        run: |
+          version="${{ needs.release-please.outputs.version }}"
+          mkdir -p dist
+          (cd extension && zip -r -X "../dist/tdmm-extension-${version}.zip" manifest.json src)
+          (cd dist && sha256sum "tdmm-extension-${version}.zip" > "tdmm-extension-${version}.zip.sha256")
+          unzip -l "dist/tdmm-extension-${version}.zip"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: extension-zip
+          path: |
+            dist/tdmm-extension-*.zip
+            dist/tdmm-extension-*.zip.sha256
+          if-no-files-found: error
+
+  release:
+    name: Attach assets to the GitHub Release
+    needs: [release-please, merge, package-extension]
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # upload assets to, and edit the body of, the Release
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0   # full history for release-note generation
+      - uses: actions/download-artifact@v8
+        with:
+          # Filter explicitly -- build-push-action's *.dockerbuild artifacts have
+          # no business on a Release, and downloading them has been flaky.
+          pattern: extension-zip
+          path: dist
+          merge-multiple: true
+      - name: Attach assets and deploy instructions
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.release-please.outputs.tag_name }}
+          files: |
+            dist/tdmm-extension-*.zip
+            dist/tdmm-extension-*.zip.sha256
+          # DEVIATION, deliberate: no `generate_release_notes: true`, and
+          # `append_body` instead of a replacing body. release-please already
+          # created this Release with the CHANGELOG.md section as its body --
+          # generated notes would duplicate it, and a plain `body:` would clobber
+          # it. We append the operator-facing bits underneath.
+          append_body: true
+          body: |
+            ## Container images
+
+            ```
+            docker pull ghcr.io/${{ github.repository }}:${{ needs.release-please.outputs.tag_name }}
+            docker pull ghcr.io/${{ github.repository }}:${{ needs.release-please.outputs.major }}.${{ needs.release-please.outputs.minor }}
+            docker pull ghcr.io/${{ github.repository }}:latest
+            ```
+
+            `linux/amd64`. One image serves every app service (`api`,
+            `worker-io`, `worker-cpu`, `beat`, `printerd`) — they differ only by
+            `ROLE`/`command`.
+
+            ## Deploying
+
+            ```bash
+            IMAGE_TAG=${{ needs.release-please.outputs.tag_name }} \
+              docker compose -f compose.yaml -f compose.prod.yaml pull
+            IMAGE_TAG=${{ needs.release-please.outputs.tag_name }} \
+              docker compose -f compose.yaml -f compose.prod.yaml up -d
+            ```
+
+            Confirm what's running:
+
+            ```bash
+            curl -s localhost:8080/api/health
+            # {"status":"ok","version":"${{ needs.release-please.outputs.version }}"}
+            ```
+
+            ## Browser extension
+
+            `tdmm-extension-${{ needs.release-please.outputs.version }}.zip` below
+            is the sideload bundle. Verify, unzip, then `chrome://extensions` →
+            **Developer mode** → **Load unpacked** → pick the unzipped folder.
+
+            ```bash
+            sha256sum -c tdmm-extension-${{ needs.release-please.outputs.version }}.zip.sha256
+            ```

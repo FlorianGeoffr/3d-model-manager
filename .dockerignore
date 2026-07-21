@@ -23,6 +23,22 @@ web/dist/
 data/
 library/
 
+# Repo content no build stage COPYs. The image is built from backend/, web/
+# and docker/ only, so everything here is pure upload cost on every build
+# (and a spurious cache-busting context change whenever it's edited):
+# - extension/  unbundled MV3 browser extension, shipped as a Release zip
+# - docs/       specs and design notes
+# - scripts/    host-side helpers (fetch-gltfpack.sh, e2e.sh,
+#               bambu_postprocess.py) -- the image builds gltfpack from
+#               source in its own stage and never shells out to these
+# - .github/    CI definitions
+# - compose*.yaml  deployment topology, consumed by the Compose CLI
+extension/
+docs/
+scripts/
+.github/
+compose*.yaml
+
 # Env/secrets
 *.env
 .env.*

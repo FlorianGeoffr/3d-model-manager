@@ -378,7 +378,9 @@ def test_reconcile_tears_down_disabled_printer_thread(
 # ---------------------------------------------------------------------------
 
 
-def test_reconcile_restarts_worker_when_host_changes(redis_url, printer_enabled, migrated_db, fake_adapter):
+def test_reconcile_restarts_worker_when_host_changes(
+    redis_url, printer_enabled, migrated_db, fake_adapter
+):
     settings = get_settings()
     pid = _seed_printer(settings, name="p", enabled=True)
     daemon = PrinterDaemon(settings)
@@ -401,7 +403,9 @@ def test_reconcile_restarts_worker_when_host_changes(redis_url, printer_enabled,
         daemon.stop()
 
 
-def test_reconcile_restarts_worker_when_serial_changes(redis_url, printer_enabled, migrated_db, fake_adapter):
+def test_reconcile_restarts_worker_when_serial_changes(
+    redis_url, printer_enabled, migrated_db, fake_adapter
+):
     settings = get_settings()
     pid = _seed_printer(settings, name="p", enabled=True)
     daemon = PrinterDaemon(settings)
@@ -439,7 +443,9 @@ def test_reconcile_restarts_worker_when_access_code_changes(
         daemon.stop()
 
 
-def test_reconcile_does_not_restart_on_name_only_change(redis_url, printer_enabled, migrated_db, fake_adapter):
+def test_reconcile_does_not_restart_on_name_only_change(
+    redis_url, printer_enabled, migrated_db, fake_adapter
+):
     settings = get_settings()
     pid = _seed_printer(settings, name="p", enabled=True)
     daemon = PrinterDaemon(settings)

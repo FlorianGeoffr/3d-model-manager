@@ -20,6 +20,15 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="", extra="ignore")
 
+    # Version stamp baked into the image by docker/Dockerfile's `ARG
+    # APP_VERSION` (CI sets the release-please semver on release builds,
+    # `edge-<short sha>` otherwise). `dev` is what an unstamped image or a
+    # bare local `uvicorn app.main:app` reports. Surfaced on
+    # FastAPI(version=...) -- so it lands in /api/openapi.json and the /docs
+    # header -- and in the unauthenticated GET /api/health payload, the one
+    # endpoint an operator can hit to answer "what is actually running?"
+    # without a session.
+    app_version: str = "dev"
     database_url: str = "postgresql+asyncpg://tdmm:tdmm@localhost:5432/tdmm"
     redis_url: str = "redis://localhost:6379/0"
     data_dir: Path = Path("./data")

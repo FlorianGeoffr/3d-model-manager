@@ -182,9 +182,7 @@ class PrinterDaemon:
         try:
             self.start_printer(printer)
         except Exception as exc:
-            log.error(
-                "printerd: failed to start printer %s: %s", printer.id, type(exc).__name__
-            )
+            log.error("printerd: failed to start printer %s: %s", printer.id, type(exc).__name__)
 
     def _subscribe_commands(self, printer_id: int, worker: PrinterWorker) -> None:
         pubsub = self.redis.pubsub()

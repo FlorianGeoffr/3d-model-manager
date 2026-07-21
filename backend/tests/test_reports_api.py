@@ -11,7 +11,8 @@ from collections.abc import Awaitable, Callable
 import blake3
 import httpx
 import pytest
-from sqlalchemy import delete as sa_delete, select
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.enums import BlobFormat, BlobKind

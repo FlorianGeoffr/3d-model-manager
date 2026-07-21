@@ -133,9 +133,7 @@ async def _fresh_file_row(db_session, file_id: int) -> File | None:
     ``redownload_model`` deleted through its own (separate, sync) session --
     a plain ``.get()`` skips the SQL entirely when the PK is already loaded,
     identity-map staleness and all. A fresh ``SELECT`` always hits the DB."""
-    return (
-        await db_session.execute(select(File).where(File.id == file_id))
-    ).scalar_one_or_none()
+    return (await db_session.execute(select(File).where(File.id == file_id))).scalar_one_or_none()
 
 
 # ---------------------------------------------------------------------------

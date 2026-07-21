@@ -1,0 +1,59 @@
+# Production overlay: run the PUBLISHED image instead of building from source.
+#
+#   docker compose -f compose.yaml -f compose.prod.yaml pull
+#   docker compose -f compose.yaml -f compose.prod.yaml up -d
+#
+# Pin a specific release for anything you care about; the default `latest`
+# follows the newest stable release and will move under you:
+#
+#   IMAGE_TAG=v0.1.0 docker compose -f compose.yaml -f compose.prod.yaml up -d
+#
+# `edge` also exists (every push to main) and is NOT a supported deployment
+# target -- it ships unreleased migrations. Check what you're actually running
+# with `curl -s localhost:8080/api/health`.
+#
+# Everything else -- ports, env_file, volumes, healthchecks, depends_on, the
+# ROLE/command that differentiate the five app services, and the stock
+# postgres/redis services -- comes from compose.yaml unchanged. This file only
+# swaps where the image comes from.
+#
+# WHY `build: !reset null` on every service: Compose merges override files
+# ADDITIVELY. Without it each service keeps compose.yaml's `build:` block, and
+# `docker compose up` will happily build from source the moment the image isn't
+# already in the local store -- exactly what pulling was supposed to avoid.
+# `!reset` needs Compose v2.24+ (Feb 2024). `pull_policy: always` is the
+# belt-and-braces for older Compose: it forces a registry pull ahead of any build
+# decision, and also means `up -d` picks up a moved `latest`/`edge` tag without a
+# separate `pull`.
+#
+# The five services are all the SAME image (compose.yaml differentiates them by
+# ROLE env / command), so the override is identical for each. Written longhand
+# rather than via a YAML anchor + merge key: `!reset` is a Compose custom tag
+# applied over the parsed tree, and its interaction with `<<:` is not worth being
+# clever about in a deploy file.
+
+services:
+  api:
+    image: ghcr.io/metril/3d-model-manager:${IMAGE_TAG:-latest}
+    build: !reset null
+    pull_policy: always
+
+  worker-io:
+    image: ghcr.io/metril/3d-model-manager:${IMAGE_TAG:-latest}
+    build: !reset null
+    pull_policy: always
+
+  worker-cpu:
+    image: ghcr.io/metril/3d-model-manager:${IMAGE_TAG:-latest}
+    build: !reset null
+    pull_policy: always
+
+  beat:
+    image: ghcr.io/metril/3d-model-manager:${IMAGE_TAG:-latest}
+    build: !reset null
+    pull_policy: always
+
+  printerd:
+    image: ghcr.io/metril/3d-model-manager:${IMAGE_TAG:-latest}
+    build: !reset null
+    pull_policy: always

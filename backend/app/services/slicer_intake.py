@@ -71,14 +71,20 @@ async def _find_model_by_name_ci(db: AsyncSession, name: str) -> Model | None:
     between same-named ones.
     """
     stmt = (
-        select(Model).where(func.lower(Model.name) == name.lower()).order_by(Model.id.asc()).limit(1)
+        select(Model)
+        .where(func.lower(Model.name) == name.lower())
+        .order_by(Model.id.asc())
+        .limit(1)
     )
     return (await db.execute(stmt)).scalar_one_or_none()
 
 
 def _find_model_by_name_ci_sync(session: SyncSession, name: str) -> Model | None:
     stmt = (
-        select(Model).where(func.lower(Model.name) == name.lower()).order_by(Model.id.asc()).limit(1)
+        select(Model)
+        .where(func.lower(Model.name) == name.lower())
+        .order_by(Model.id.asc())
+        .limit(1)
     )
     return session.execute(stmt).scalar_one_or_none()
 
@@ -163,9 +169,7 @@ async def resolve_and_attach(
     job = await jobs_service.create_job(
         db, id=spool_token, type="store_to_backend", subject_type="file", subject_id=file.id
     )
-    store_to_backend.apply_async(
-        args=[str(job.id), file.id, str(spool_path)], task_id=str(job.id)
-    )
+    store_to_backend.apply_async(args=[str(job.id), file.id, str(spool_path)], task_id=str(job.id))
 
     return IntakeResult(
         model_id=model.id,
@@ -235,9 +239,7 @@ def resolve_and_attach_sync(
         # check: reject rather than race an in-flight `store_to_backend` job
         # for the file being replaced.
         if library.file_store_pending_sync(session, existing):
-            raise RuntimeError(
-                f"rel_path {rel_path!r} is still processing; retry once stored"
-            )
+            raise RuntimeError(f"rel_path {rel_path!r} is still processing; retry once stored")
         # M3 fix-review: mirror the async twin's (`finalize_upload`) same-key
         # overwrite ordering -- delete only the ROW here (flushed, not
         # committed, so it folds into `store_imported_file_sync`'s commit

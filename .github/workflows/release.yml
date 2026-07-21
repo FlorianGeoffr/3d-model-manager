@@ -98,6 +98,31 @@ jobs:
       - run: pip install "uv==${{ env.UV_VERSION }}"
       - name: Fetch gltfpack
         run: scripts/fetch-gltfpack.sh
+      - name: Install f3d's GL runtime (OSMesa software rendering)
+        # Without this, render.py's EGL fallback segfaults the pytest process
+        # (exit 139) instead of failing a test -- see ci.yml for the full why.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libosmesa6 libgl1-mesa-dri libgl1
+          so="$(ldconfig -p | awk '/libOSMesa\.so\./ {print $NF; exit}')"
+          if [ -z "$so" ]; then
+            echo "::error::libosmesa6 installed but ldconfig reports no libOSMesa.so.*"
+            exit 1
+          fi
+          sudo ln -sf "$so" "$(dirname "$so")/libOSMesa.so"
+          sudo ldconfig
+      - name: Verify f3d can render headless
+        working-directory: backend
+        run: |
+          uv run python -c "
+          import f3d
+          f3d.Engine.autoload_plugins()
+          engine = f3d.Engine.create_osmesa()
+          engine.window.size = (64, 64)
+          engine.window.render_to_image(False)
+          print('f3d OSMesa engine OK')
+          "
       - name: Pre-pull testcontainer images
         run: |
           docker pull postgres:16-alpine

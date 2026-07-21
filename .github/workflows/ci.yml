@@ -83,6 +83,49 @@ jobs:
         # See the setup-node comment. Without this the optimize_glb tests
         # silently degrade instead of exercising the real CLI.
         run: scripts/fetch-gltfpack.sh
+      - name: Install f3d's GL runtime (OSMesa software rendering)
+        # app/pipeline/render.py builds its f3d engine with create_osmesa() and
+        # falls back to create(True) (EGL offscreen) only if that RAISES. A bare
+        # runner has neither path available, and the failure mode is brutal:
+        # create_osmesa() raises "Cannot find OSMesa library", then the EGL
+        # fallback SEGFAULTS -- no GPU render node, no swrast driver -- taking
+        # the whole pytest process down with exit 139 mid-suite. It is not a
+        # test failure you can read; it is a core dump.
+        #
+        # So install exactly what docker/Dockerfile installs and put CI on the
+        # container's proven path. The f3d tests then exercise the real
+        # renderer, which is the point of having them. f3d dlopens the
+        # UNVERSIONED "libOSMesa.so", a name only libosmesa6-dev ships -- the
+        # symlink supplies that one name without dragging in dev headers.
+        # Resolved via ldconfig rather than hardcoding the soname so a Mesa
+        # major bump doesn't silently put us back on the segfaulting path.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libosmesa6 libgl1-mesa-dri libgl1
+          so="$(ldconfig -p | awk '/libOSMesa\.so\./ {print $NF; exit}')"
+          if [ -z "$so" ]; then
+            echo "::error::libosmesa6 installed but ldconfig reports no libOSMesa.so.* -- f3d will segfault in the EGL fallback"
+            exit 1
+          fi
+          sudo ln -sf "$so" "$(dirname "$so")/libOSMesa.so"
+          sudo ldconfig
+      - name: Verify f3d can render headless
+        working-directory: backend
+        # Two seconds here buys a legible error instead of a bare "exit code
+        # 139" forty minutes into the suite. Asserts the OSMesa path
+        # specifically: if this ever silently regressed to the EGL fallback the
+        # suite would go back to core-dumping, so `create_osmesa()` is called
+        # directly rather than through render.py's try/except.
+        run: |
+          uv run python -c "
+          import f3d
+          f3d.Engine.autoload_plugins()
+          engine = f3d.Engine.create_osmesa()
+          engine.window.size = (64, 64)
+          engine.window.render_to_image(False)
+          print('f3d OSMesa engine OK')
+          "
       - name: Pre-pull testcontainer images
         # testcontainers talks to the runner's already-running Docker daemon --
         # nothing to install. But the first fixture needing an image would

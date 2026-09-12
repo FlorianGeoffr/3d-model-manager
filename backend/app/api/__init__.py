@@ -52,6 +52,7 @@ from app.api import (
     scan,
     settings,
     slicer,
+    stats,
     tags,
     uploads,
 )
@@ -86,5 +87,6 @@ protected_router.include_router(imports.router)
 protected_router.include_router(collections.router)
 protected_router.include_router(queue.router)
 protected_router.include_router(reports.router)
+protected_router.include_router(stats.router)
 
 api_router.include_router(protected_router)

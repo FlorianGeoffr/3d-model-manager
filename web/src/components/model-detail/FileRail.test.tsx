@@ -30,6 +30,7 @@ function baseProps(colors: PartColors = {}) {
   return {
     checkedIds: new Set<number>(),
     onToggleFile: vi.fn(),
+    onSetAllChecked: vi.fn(),
     colors,
     onSetPartColor: vi.fn(),
     onClearPartColor: vi.fn(),
@@ -73,6 +74,44 @@ describe("FileRail", () => {
       />,
     );
     expect(screen.getByText("Assembly (2 parts)")).toBeInTheDocument();
+  });
+
+  it("shows the checked-count and wires All/None to onSetAllChecked, regardless of whether Assembly is expanded", () => {
+    const onSetAllChecked = vi.fn();
+    const glbFiles = [fakeFile({ id: 1, glb_status: "ok" }), fakeFile({ id: 2, glb_status: "ok" })];
+    render(
+      <FileRail
+        glbFiles={glbFiles}
+        otherFiles={[]}
+        selection={{ type: "file", id: 999 }}
+        onSelect={vi.fn()}
+        {...baseProps()}
+        checkedIds={new Set([1])}
+        onSetAllChecked={onSetAllChecked}
+      />,
+    );
+
+    expect(screen.getByText("1 of 2")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show all parts" }));
+    expect(onSetAllChecked).toHaveBeenCalledWith(true);
+    fireEvent.click(screen.getByRole("button", { name: "None — hide all parts" }));
+    expect(onSetAllChecked).toHaveBeenCalledWith(false);
+  });
+
+  it("disables All when every part is checked and None when none are", () => {
+    const glbFiles = [fakeFile({ id: 1, glb_status: "ok" }), fakeFile({ id: 2, glb_status: "ok" })];
+    render(
+      <FileRail
+        glbFiles={glbFiles}
+        otherFiles={[]}
+        selection={{ type: "assembly" }}
+        onSelect={vi.fn()}
+        {...baseProps()}
+        checkedIds={new Set([1, 2])}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Show all parts" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "None — hide all parts" })).not.toBeDisabled();
   });
 
   it("expands per-part visibility checkboxes and color swatches only when the Assembly entry is selected", () => {

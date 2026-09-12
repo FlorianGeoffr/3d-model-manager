@@ -1,6 +1,7 @@
 import { Boxes, RotateCcwIcon } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { FilamentChip } from "@/components/ui/filament-chip";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -79,6 +80,7 @@ export function FileRail({
   onSelect,
   checkedIds,
   onToggleFile,
+  onSetAllChecked,
   colors,
   onSetPartColor,
   onClearPartColor,
@@ -89,21 +91,58 @@ export function FileRail({
   onSelect: (selection: StudioSelection) => void;
   checkedIds: ReadonlySet<number>;
   onToggleFile: (fileId: number, checked: boolean) => void;
+  onSetAllChecked: (checked: boolean) => void;
   colors: PartColors;
   onSetPartColor: (fileId: number, hex: string) => void;
   onClearPartColor: (fileId: number) => void;
 }) {
   const assemblySelected = isSameSelection(selection, { type: "assembly" });
+  const checkedCount = glbFiles.filter((file) => checkedIds.has(file.id)).length;
 
   return (
     <TooltipProvider>
       <nav aria-label="Files" className="flex w-56 shrink-0 flex-col gap-1">
       {glbFiles.length > 0 && (
         <div className="space-y-1">
-          <RailRow selected={assemblySelected} onClick={() => onSelect({ type: "assembly" })}>
-            <Boxes className="size-4 shrink-0 text-muted-foreground" />
-            <span className="min-w-0 flex-1 truncate">Assembly ({glbFiles.length} parts)</span>
-          </RailRow>
+          <div
+            className={cn(
+              "flex items-center gap-1 rounded-md pr-1",
+              assemblySelected && "bg-secondary text-secondary-foreground",
+            )}
+          >
+            <button
+              type="button"
+              aria-pressed={assemblySelected}
+              onClick={() => onSelect({ type: "assembly" })}
+              className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50 hover:bg-muted"
+            >
+              <Boxes className="size-4 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate">Assembly ({glbFiles.length} parts)</span>
+            </button>
+            <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+              {checkedCount} of {glbFiles.length}
+            </span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="xs"
+              aria-label="Show all parts"
+              disabled={checkedCount === glbFiles.length}
+              onClick={() => onSetAllChecked(true)}
+            >
+              All
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="xs"
+              aria-label="None — hide all parts"
+              disabled={checkedCount === 0}
+              onClick={() => onSetAllChecked(false)}
+            >
+              None
+            </Button>
+          </div>
           {assemblySelected && (
             <div className="space-y-1 pl-2">
               {glbFiles.map((file) => {

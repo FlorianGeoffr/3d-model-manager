@@ -20,7 +20,12 @@ function StudioWorkspaceGeneration({
   others: FileOut[];
 }) {
   const coverUrl = model.cover_blob_hash ? `/api/blobs/${model.cover_blob_hash}/thumb?size=512` : null;
-  const { stageProps } = useViewerScene({ slug: model.slug, files: glbable, coverUrl });
+  const { stageProps } = useViewerScene({
+    slug: model.slug,
+    files: glbable,
+    coverUrl,
+    defaultAllChecked: true,
+  });
 
   const [selection, setSelection] = useState<StudioSelection | undefined>(() =>
     glbable.length > 0 ? { type: "assembly" } : others[0] ? { type: "file", id: others[0].id } : undefined,
@@ -60,6 +65,7 @@ function StudioWorkspaceGeneration({
         onSelect={setSelection}
         checkedIds={stageProps.checkedIds}
         onToggleFile={stageProps.onToggleFile}
+        onSetAllChecked={stageProps.onSetAllChecked}
         colors={stageProps.colors}
         onSetPartColor={stageProps.onSetPartColor}
         onClearPartColor={stageProps.onClearPartColor}

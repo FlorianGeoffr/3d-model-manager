@@ -140,6 +140,15 @@ describe("StudioWorkspace", () => {
     expect(screen.getByTestId("plate-panel")).toHaveAttribute("data-compact", "true");
   });
 
+  it("opens with every part checked (unlike the standalone /viewer/$slug default of just the first)", async () => {
+    const fileA = fakeFile({ id: 1, rel_path: "a.stl", glb_status: "ok" });
+    const fileB = fakeFile({ id: 2, rel_path: "b.stl", glb_status: "ok" });
+    render(<StudioWorkspace model={fakeModel([fileA, fileB])} />);
+
+    expect(await screen.findByTestId("model-viewer")).toHaveAttribute("data-parts", "1:1,2:1");
+    expect(screen.getByText("2 of 2")).toBeInTheDocument();
+  });
+
   it("toggling a part checkbox in the rail updates the mounted viewer's visibility without remounting it", async () => {
     const fileA = fakeFile({ id: 1, rel_path: "a.stl", glb_status: "ok" });
     const fileB = fakeFile({ id: 2, rel_path: "b.stl", glb_status: "ok" });
@@ -149,11 +158,24 @@ describe("StudioWorkspace", () => {
     const rail = screen.getByRole("navigation", { name: "Files" });
     fireEvent.click(within(rail).getByRole("checkbox", { name: "b.stl" }));
 
-    await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-parts", "1:1,2:1"));
+    await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-parts", "1:1,2:0"));
     // The canvas mock is a plain function component (not spied on mount), so
     // pin the no-remount guarantee via the visible-parts flag flipping in
     // place instead of a call-count assertion -- the same `data-parts`
-    // attribute a remount would otherwise reset is still `1:1,2:1` here.
+    // attribute a remount would otherwise reset is still `1:1,2:0` here.
+  });
+
+  it("the rail's All/None buttons drive onSetAllChecked across every part", async () => {
+    const fileA = fakeFile({ id: 1, rel_path: "a.stl", glb_status: "ok" });
+    const fileB = fakeFile({ id: 2, rel_path: "b.stl", glb_status: "ok" });
+    render(<StudioWorkspace model={fakeModel([fileA, fileB])} />);
+    await screen.findByTestId("model-viewer");
+
+    fireEvent.click(screen.getByRole("button", { name: "None — hide all parts" }));
+    await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-parts", "1:0,2:0"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Show all parts" }));
+    await waitFor(() => expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-parts", "1:1,2:1"));
   });
 
   it("resyncs the default selection when the model's glb file set changes (router reuse across $slug)", async () => {

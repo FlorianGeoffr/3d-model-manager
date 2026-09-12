@@ -107,6 +107,12 @@ interface ViewerErrorBoundaryProps {
    * the resetKey the error happened under, tracked in state), so a crash
    * doesn't get stuck on the fallback forever without remounting anything. */
   resetKey: string;
+  /** Fix wave finding 3: lets `ViewerStage` know the canvas crashed so it can
+   * drop the thumbnail crossfade cover -- otherwise a load failure left the
+   * cover image sitting opaque over this boundary's own fallback forever
+   * (the cover only ever cleared on `onPartLoaded`, which a crash never
+   * fires). */
+  onError?: () => void;
 }
 
 interface ViewerErrorBoundaryState {
@@ -119,6 +125,10 @@ class ViewerErrorBoundary extends Component<ViewerErrorBoundaryProps, ViewerErro
 
   static getDerivedStateFromError(): Pick<ViewerErrorBoundaryState, "hasError"> {
     return { hasError: true };
+  }
+
+  componentDidCatch() {
+    this.props.onError?.();
   }
 
   // Derives state from props instead of a `componentDidUpdate` + `setState`
@@ -177,6 +187,7 @@ function MeshCanvas({
   onPartLoaded,
   onExplodeModeChange,
   hasCoverThumbnail,
+  onError,
 }: {
   parts: ViewerPart[];
   background: string;
@@ -191,6 +202,9 @@ function MeshCanvas({
    * `ViewerStage`'s `handlePartLoaded` for what it does. */
   onPartLoaded: () => void;
   onExplodeModeChange: (mode: ExplodeMode) => void;
+  /** Fix wave finding 3: forwarded to `ViewerErrorBoundary` so a canvas-level
+   * crash can clear the thumbnail crossfade cover in `ViewerStage`. */
+  onError?: () => void;
   /** R9-D item 8: when the model has a cover thumbnail, `ViewerStage`
    * already shows it as a full-stage overlay while the GLB loads (see
    * `ViewerStage`'s thumbnail layer), so this component's own Suspense
@@ -216,7 +230,7 @@ function MeshCanvas({
 
   return (
     <>
-      <ViewerErrorBoundary resetKey={visibleParts.map((part) => part.id).join("|")}>
+      <ViewerErrorBoundary resetKey={visibleParts.map((part) => part.id).join("|")} onError={onError}>
         <Suspense fallback={hasCoverThumbnail ? null : <Skeleton className="h-full w-full" />}>
           <ModelViewer
             parts={parts}
@@ -381,6 +395,16 @@ export interface ViewerStageProps {
    * the old "blank canvas until the GLB pops in" gap with something to look
    * at. */
   coverUrl?: string | null;
+  /** Fix wave finding 4: `ViewerTab`'s `MeshSection` keeps the inline stage
+   * mounted while the Expand dialog's own stage is also mounted (open), so
+   * without this both stages' `Shift+F` hotkey bindings would fire on one
+   * keypress -- both see `document.fullscreenElement === null` (the
+   * Fullscreen API is async) and both call `requestFullscreen`, so whichever
+   * stage isn't visible can "win" the fullscreen request. Only the currently
+   * visible/active stage should bind the hotkey; defaults to `true` since
+   * every other caller (the dialog itself, the pop-out window) only ever has
+   * one stage mounted at a time. */
+  active?: boolean;
 }
 
 /** Strip + canvas + collapsible parts panel -- the whole redesigned viewer
@@ -437,6 +461,7 @@ export function ViewerStage({
   onFit,
   viewerApiRef,
   coverUrl,
+  active = true,
 }: ViewerStageProps) {
   // The strip only exists to host actions. With the panel open and no
   // pop-out/expand actions to show (the window's steady state), it would be
@@ -501,6 +526,34 @@ export function ViewerStage({
     return () => window.clearTimeout(id);
   }, [modelReady]);
 
+  // Fix wave finding 3: `thumbnailMounted` used to clear ONLY off
+  // `modelReady`, which only ever flipped from `handlePartLoaded` (a load
+  // SUCCESS). A canvas-level crash (`ViewerErrorBoundary`) rendered its
+  // "Preview failed to load" fallback underneath this cover, which kept
+  // painting an opaque thumbnail + spinner over it forever -- the user never
+  // saw the error. `handleLoadError` drops the cover immediately (no fade,
+  // unlike the success path) so the error card is never hidden behind it
+  // even briefly.
+  const handleLoadError = useCallback(() => {
+    firstLoadRef.current = true;
+    setModelReady(true);
+    setThumbnailMounted(false);
+  }, []);
+
+  // Safety net for failure modes that never reach `ViewerErrorBoundary` at
+  // all -- e.g. every part unchecked before the first load, or a per-part
+  // load failure that `ModelViewer`'s `PartErrorBoundary` swallows locally
+  // (renders `null`, never throws up to this boundary) -- either of which
+  // would otherwise leave the cover mounted with no load/error signal ever
+  // firing. If nothing has resolved the loading state within 8s, drop the
+  // cover so the user at least sees the canvas underneath instead of a
+  // frozen thumbnail.
+  useEffect(() => {
+    if (modelReady || !coverUrl || parts.length === 0) return;
+    const id = window.setTimeout(() => setThumbnailMounted(false), 8000);
+    return () => window.clearTimeout(id);
+  }, [modelReady, coverUrl, parts.length]);
+
   // Explode classification reported by `ModelViewer` once parts load --
   // "none" until then (and for single-part / degenerate scenes), which keeps
   // the control hidden. Drives the Explode/Separate-parts block below.
@@ -560,7 +613,7 @@ export function ViewerStage({
       void stageRef.current?.requestFullscreen();
     }
   }, []);
-  useHotkeys({ F: toggleFullscreen });
+  useHotkeys({ F: toggleFullscreen }, { enabled: active });
 
   return (
     <TooltipProvider>
@@ -636,6 +689,7 @@ export function ViewerStage({
             onPartLoaded={handlePartLoaded}
             onExplodeModeChange={setExplodeMode}
             hasCoverThumbnail={Boolean(coverUrl) && parts.length > 0}
+            onError={handleLoadError}
           />
           {coverUrl && parts.length > 0 && thumbnailMounted && (
             <img

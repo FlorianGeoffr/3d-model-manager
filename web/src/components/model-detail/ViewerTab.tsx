@@ -39,6 +39,10 @@ function MeshSection({
           showWindowButtons
           showExpand
           onExpand={() => setExpanded(true)}
+          // Fix wave finding 4: this stage stays mounted while the Expand
+          // dialog is open, so it must give up its Shift+F binding to the
+          // dialog's own (visible) stage below.
+          active={!expanded}
         />
       </div>
 

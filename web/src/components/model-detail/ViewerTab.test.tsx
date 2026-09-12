@@ -967,6 +967,27 @@ describe("ViewerTab", () => {
     expect(within(dialog).queryByRole("button", { name: "Expand" })).not.toBeInTheDocument();
   });
 
+  it("Shift+F fullscreens only the active stage while the Expand dialog is open (fix wave finding 4)", async () => {
+    // Before the fix, the inline stage stayed mounted (and kept its
+    // document-level Shift+F binding) while the dialog's own stage was also
+    // mounted -- one keypress fired BOTH handlers, each calling
+    // `requestFullscreen` since both see `document.fullscreenElement ===
+    // null` (the Fullscreen API is async). This pins it to exactly one call.
+    const requestFullscreenSpy = vi.fn().mockResolvedValue(undefined);
+    HTMLElement.prototype.requestFullscreen = requestFullscreenSpy;
+
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file])} />);
+    await screen.findByTestId("model-viewer");
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand" }));
+    await screen.findByRole("dialog");
+
+    fireEvent.keyDown(document.body, { key: "F", shiftKey: true });
+
+    expect(requestFullscreenSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("shows a preparing-preview card while the GLB conversion job is pending", () => {
     const file = fakeFile({ glb_status: "pending" });
     render(<ViewerTab model={fakeModel([file])} />);
@@ -1105,6 +1126,47 @@ describe("ViewerTab thumbnail load crossfade (R9-D item 8)", () => {
       vi.advanceTimersByTime(250);
     });
 
+    expect(screen.queryByTestId("viewer-thumbnail")).not.toBeInTheDocument();
+  });
+
+  it("drops the cover immediately (no fade) when the canvas crashes, so the error card is visible (fix wave finding 3)", async () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    modelViewerMock.mockImplementation(() => {
+      throw new Error("bad glb");
+    });
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file], "coverhash")} />);
+
+    expect(await screen.findByText("Preview failed to load")).toBeInTheDocument();
+    // Before the fix, `thumbnailMounted` only ever cleared off a load
+    // SUCCESS (`onPartLoaded`), which a crash never fires -- the cover
+    // stayed opaque over this fallback forever.
+    expect(screen.queryByTestId("viewer-thumbnail")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("viewer-loading-indicator")).not.toBeInTheDocument();
+
+    modelViewerMock.mockImplementation(defaultModelViewerImpl);
+    consoleSpy.mockRestore();
+  });
+
+  it("drops the cover after an 8s safety timeout if neither a load nor an error ever fires (fix wave finding 3)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    // A per-part load failure (`ModelViewer`'s own `PartErrorBoundary`)
+    // renders `null` and never calls `onPartLoaded` or throws up to
+    // `ViewerErrorBoundary` -- nothing ever signals "done loading". The
+    // safety timeout is the only thing that recovers the cover here.
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file], "coverhash")} />);
+    await screen.findByTestId("model-viewer");
+
+    expect(screen.getByTestId("viewer-thumbnail")).toBeInTheDocument();
+
+    // `shouldAdvanceTime` also ticks the fake clock forward with real wall
+    // time (needed so `findByTestId` above can still resolve its lazy
+    // import), so this asserts "eventually gone by ~8s", not a razor's-edge
+    // boundary against it.
+    await act(async () => {
+      vi.advanceTimersByTime(9000);
+    });
     expect(screen.queryByTestId("viewer-thumbnail")).not.toBeInTheDocument();
   });
 });

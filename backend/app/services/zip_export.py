@@ -1,0 +1,193 @@
+"""Streaming ZIP export for a model or a followed collection (R11-A plan
+item 12).
+
+Files are read through the storage backend abstraction
+(``app.storage.base.StorageBackend.read``), never loaded whole into memory.
+``zipstream-ng`` builds the archive incrementally: each file is queued and
+immediately drained (via ``ZipStream.file()``) before the next one is even
+resolved, so a backend read for file N+1 is never issued until file N's
+bytes have been fully yielded -- proving the stream is genuinely
+incremental, not "buffer it all, then zip it".
+"""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator, Sequence
+from pathlib import PurePosixPath
+from zipfile import ZIP_DEFLATED, ZIP_STORED
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from zipstream import ZipStream
+
+from app.config import Settings
+from app.models import Blob, File, FollowedCollection, Model
+from app.models.enums import BlobFormat
+from app.services.storage_backends import resolve_backend_for_file
+
+# Already-compressed archive formats -- re-deflating them wastes CPU for
+# ~0 size benefit, so they're stored raw in the export zip.
+_STORED_FORMATS = {BlobFormat.THREEMF, BlobFormat.GCODE_3MF}
+
+
+class EmptyModelError(Exception):
+    """Raised when a model has no current-revision files to export."""
+
+    def __init__(self, model: Model) -> None:
+        self.model = model
+        super().__init__(f"model {model.slug!r} has no files")
+
+
+def _compress_type_for(blob_format: BlobFormat) -> int:
+    return ZIP_STORED if blob_format in _STORED_FORMATS else ZIP_DEFLATED
+
+
+def _dedupe_name(used: set[str], name: str) -> str:
+    """Return ``name``, or ``"<stem> (2).<ext>"``/``"<stem> (3).<ext>"``/...
+    the first time it collides with a name already ``used`` (mutated in
+    place to record whichever name is returned)."""
+    if name not in used:
+        used.add(name)
+        return name
+    stem, dot, ext = name.rpartition(".")
+    if not dot:
+        stem, ext = name, ""
+    n = 2
+    while True:
+        candidate = f"{stem} ({n}).{ext}" if ext else f"{stem} ({n})"
+        if candidate not in used:
+            used.add(candidate)
+            return candidate
+        n += 1
+
+
+def _readme_bytes(model: Model) -> bytes:
+    lines = [f"Name: {model.name}"]
+    if model.source_url:
+        lines.append(f"Source: {model.source_url}")
+    if model.source_author:
+        lines.append(f"Author: {model.source_author}")
+    if model.source_license:
+        lines.append(f"License: {model.source_license}")
+    return ("\n".join(lines) + "\n").encode()
+
+
+async def _current_revision_files(db: AsyncSession, model: Model) -> list[tuple[File, Blob]]:
+    if model.current_revision_id is None:
+        return []
+    stmt = (
+        select(File, Blob)
+        .join(Blob, Blob.hash == File.blob_hash)
+        .where(File.revision_id == model.current_revision_id)
+        .order_by(File.rel_path)
+    )
+    return [(f, b) for f, b in (await db.execute(stmt)).all()]
+
+
+async def _add_model_entries(
+    zs: ZipStream,
+    db: AsyncSession,
+    settings: Settings,
+    model: Model,
+    *,
+    prefix: str,
+    used_names: set[str],
+) -> AsyncIterator[bytes]:
+    """Queue README + every current-revision file of ``model`` under
+    ``prefix`` (e.g. ``"<model-slug>"`` or
+    ``"<collection-name>/<model-slug>"``), draining each entry as soon as
+    it's queued so files stay in strict one-at-a-time streaming order."""
+    readme_name = _dedupe_name(used_names, "README.txt")
+    zs.add(_readme_bytes(model), f"{prefix}/{readme_name}")
+    for chunk in zs.file():
+        yield chunk
+
+    files = await _current_revision_files(db, model)
+    for file, blob in files:
+        backend = await resolve_backend_for_file(db, settings, file)
+        arcname = _dedupe_name(used_names, PurePosixPath(file.rel_path).name)
+        zs.add(
+            backend.read(file.storage_path),
+            f"{prefix}/{arcname}",
+            size=blob.size,
+            compress_type=_compress_type_for(blob.format),
+        )
+        for chunk in zs.file():
+            yield chunk
+
+
+async def iter_model_zip(
+    db: AsyncSession, settings: Settings, model: Model
+) -> AsyncIterator[bytes]:
+    """Stream a zip of ``model``'s current revision as
+    ``<model-slug>/<original filename>`` entries plus a ``README.txt``.
+
+    Raises :class:`EmptyModelError` if the model has zero current-revision
+    files -- callers turn that into a 409.
+    """
+    files = await _current_revision_files(db, model)
+    if not files:
+        raise EmptyModelError(model)
+
+    zs = ZipStream()
+    used_names: set[str] = set()
+    async for chunk in _add_model_entries(
+        zs, db, settings, model, prefix=model.slug, used_names=used_names
+    ):
+        yield chunk
+    for chunk in zs.footer():
+        yield chunk
+
+
+async def first_chunk(gen: AsyncIterator[bytes]) -> tuple[bytes, AsyncIterator[bytes]]:
+    """Force ``gen`` to run up to its first ``yield`` (or raise, e.g.
+    :class:`EmptyModelError`) and return that chunk plus an async iterator
+    that replays it followed by the rest of ``gen`` -- lets a route decide
+    the response status (200 vs 409) before any bytes are actually streamed
+    to the client, without buffering the whole export."""
+    chunk = await gen.__anext__()
+
+    async def _rest() -> AsyncIterator[bytes]:
+        yield chunk
+        async for c in gen:
+            yield c
+
+    return chunk, _rest()
+
+
+async def _collection_models(db: AsyncSession, collection: FollowedCollection) -> Sequence[Model]:
+    stmt = (
+        select(Model)
+        .where(Model.source_collection_id == collection.id)
+        .order_by(Model.name, Model.id)
+    )
+    return (await db.execute(stmt)).scalars().all()
+
+
+async def iter_collection_zip(
+    db: AsyncSession, settings: Settings, collection: FollowedCollection
+) -> AsyncIterator[bytes]:
+    """Stream a zip nesting every model in ``collection`` as
+    ``<collection-name>/<model-slug>/...`` (same per-model layout as
+    :func:`iter_model_zip`). Models with zero current-revision files are
+    silently skipped rather than failing the whole export.
+    """
+    models = await _collection_models(db, collection)
+
+    zs = ZipStream()
+    for model in models:
+        files = await _current_revision_files(db, model)
+        if not files:
+            continue
+        used_names: set[str] = set()
+        async for chunk in _add_model_entries(
+            zs,
+            db,
+            settings,
+            model,
+            prefix=f"{collection.title}/{model.slug}",
+            used_names=used_names,
+        ):
+            yield chunk
+    for chunk in zs.footer():
+        yield chunk

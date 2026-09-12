@@ -108,7 +108,7 @@ export function AutomationCard() {
     if (!settings.data || !draft) return;
     if (!validate(draft)) return;
     update.mutate({
-      printer_enabled: settings.data.printer_enabled,
+      ...settings.data,
       scan_interval_s: Number(draft.scan_interval_s),
       collection_sync_interval_s: Number(draft.collection_sync_interval_s),
       watch_interval_s: Number(draft.watch_interval_s),

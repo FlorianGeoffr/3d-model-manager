@@ -60,6 +60,14 @@ class AppConfig(BaseModel):
     collection_sync_interval_s: int
     watch_interval_s: int
     watch_stable_s: float
+    # R11-B item 14 (print cost estimate): currency-agnostic per-kg/per-hour
+    # rates the frontend multiplies against a print's filament_g/duration_s
+    # (app.lib.printCost's estimatePrintCost, web/src/lib/printCost.ts) --
+    # never used server-side, just stored/exposed like the five fields
+    # above. No env backing (unlike those five): a fresh row always seeds
+    # these two literal defaults.
+    filament_cost_per_kg: float = 20.0
+    machine_cost_per_hour: float = 0.0
 
 
 def _env_config(settings: Settings) -> AppConfig:

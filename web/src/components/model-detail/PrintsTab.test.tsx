@@ -119,6 +119,7 @@ function printEntry(overrides: Partial<PrintEntry> = {}): PrintEntry {
     printed_at: "2026-07-01T10:00:00Z",
     printer_name: "Bambu X1C",
     filament: "PLA Black",
+    filament_g: null,
     result: "success",
     duration_min: 125,
     notes: null,
@@ -127,11 +128,29 @@ function printEntry(overrides: Partial<PrintEntry> = {}): PrintEntry {
   };
 }
 
-function setupGet(overrides: { prints?: PrintEntry[]; printers?: unknown[]; queue?: QueueEntry[] } = {}) {
+const DEFAULT_APP_SETTINGS = {
+  printer_enabled: false,
+  scan_interval_s: 0,
+  collection_sync_interval_s: 0,
+  watch_interval_s: 0,
+  watch_stable_s: 10,
+  filament_cost_per_kg: 20,
+  machine_cost_per_hour: 0,
+};
+
+function setupGet(
+  overrides: {
+    prints?: PrintEntry[];
+    printers?: unknown[];
+    queue?: QueueEntry[];
+    appSettings?: typeof DEFAULT_APP_SETTINGS;
+  } = {},
+) {
   getMock.mockImplementation((path: string) => {
     if (path === "/models/1/prints") return Promise.resolve(overrides.prints ?? []);
     if (path === "/printers") return Promise.resolve(overrides.printers ?? []);
     if (path === "/queue") return Promise.resolve(overrides.queue ?? []);
+    if (path === "/settings/app") return Promise.resolve(overrides.appSettings ?? DEFAULT_APP_SETTINGS);
     return Promise.resolve([]);
   });
 }
@@ -191,6 +210,25 @@ describe("PrintsTab -- list", () => {
     expect(within(row).getByText("125 min")).toBeInTheDocument();
     expect(within(row).getByText("nozzle clog")).toBeInTheDocument();
   });
+
+  it("shows an estimated cost when filament_g/duration_min and app settings are present", async () => {
+    setupGet({
+      prints: [printEntry({ filament_g: 100, duration_min: 60 })],
+      appSettings: { ...DEFAULT_APP_SETTINGS, filament_cost_per_kg: 20, machine_cost_per_hour: 2 },
+    });
+    renderPrintsTab();
+
+    // 100g @ 20/kg = 2.00; 60min (1h) @ 2/hr = 2.00 -> 4.00
+    await waitFor(() => expect(screen.getByText("Est. cost: 4.00")).toBeInTheDocument());
+  });
+
+  it("shows no estimated cost when neither filament_g nor duration_min is known", async () => {
+    setupGet({ prints: [printEntry({ filament_g: null, duration_min: null })] });
+    renderPrintsTab();
+
+    const row = await screen.findByRole("listitem");
+    expect(within(row).queryByText(/Est\. cost/)).not.toBeInTheDocument();
+  });
 });
 
 describe("PrintsTab -- log form", () => {
@@ -207,6 +245,7 @@ describe("PrintsTab -- log form", () => {
       printer_name: null,
       result: "success",
       filament: null,
+      filament_g: null,
       duration_min: null,
       notes: null,
     });

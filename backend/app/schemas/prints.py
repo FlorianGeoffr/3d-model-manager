@@ -26,6 +26,7 @@ class PrintCreateIn(BaseModel):
     printed_at: datetime | None = None
     printer_name: str | None = None
     filament: str | None = None
+    filament_g: float | None = Field(default=None, ge=0)
     result: PrintResult = PrintResult.SUCCESS
     duration_min: int | None = Field(default=None, ge=0)
     notes: str | None = None
@@ -40,6 +41,7 @@ class PrintPatchIn(BaseModel):
     printed_at: datetime | None = None
     printer_name: str | None = None
     filament: str | None = None
+    filament_g: float | None = Field(default=None, ge=0)
     result: PrintResult | None = None
     duration_min: int | None = Field(default=None, ge=0)
     notes: str | None = None
@@ -64,6 +66,7 @@ class PrintOut(BaseModel):
     printed_at: datetime
     printer_name: str | None
     filament: str | None
+    filament_g: float | None
     result: PrintResult
     duration_min: int | None
     notes: str | None
@@ -77,6 +80,7 @@ class PrintOut(BaseModel):
             printed_at=row.printed_at,
             printer_name=row.printer_name,
             filament=row.filament,
+            filament_g=row.filament_g,
             result=row.result,
             duration_min=row.duration_min,
             notes=row.notes,

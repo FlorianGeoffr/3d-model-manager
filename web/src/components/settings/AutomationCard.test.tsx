@@ -28,6 +28,8 @@ function fakeSettings(overrides: Partial<AppSettings> = {}): AppSettings {
     collection_sync_interval_s: 1800,
     watch_interval_s: 30,
     watch_stable_s: 5,
+    filament_cost_per_kg: 20,
+    machine_cost_per_hour: 0,
     ...overrides,
   };
 }
@@ -106,6 +108,8 @@ describe("AutomationCard", () => {
         collection_sync_interval_s: 1800,
         watch_interval_s: 30,
         watch_stable_s: 5,
+        filament_cost_per_kg: 20,
+        machine_cost_per_hour: 0,
       }),
     );
     expect(await screen.findByText("Saved.")).toBeInTheDocument();

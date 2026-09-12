@@ -114,6 +114,8 @@ function fakeAppSettings() {
     collection_sync_interval_s: 3600,
     watch_interval_s: 0,
     watch_stable_s: 5,
+    filament_cost_per_kg: 20,
+    machine_cost_per_hour: 0,
   };
 }
 

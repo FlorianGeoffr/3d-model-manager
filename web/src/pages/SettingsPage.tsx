@@ -9,6 +9,7 @@ import { ChangePasswordCard } from "@/components/settings/ChangePasswordCard";
 import { PrinterEnabledCard } from "@/components/settings/PrinterEnabledCard";
 import { PrinterSetupCard } from "@/components/settings/PrinterSetupCard";
 import { PrintablesAccountCard } from "@/components/settings/PrintablesAccountCard";
+import { PrintCostCard } from "@/components/settings/PrintCostCard";
 import { ScanReport } from "@/components/settings/ScanReport";
 import { SiteTokensCard } from "@/components/settings/SiteTokensCard";
 import { SlicerIntegrationCard } from "@/components/settings/SlicerIntegrationCard";
@@ -60,6 +61,7 @@ export function SettingsPage() {
           </TabsList>
           <TabsContent value="general" className="space-y-6">
             <AutomationCard />
+            <PrintCostCard />
             <ChangePasswordCard />
           </TabsContent>
           <TabsContent value="storage" className="space-y-6">

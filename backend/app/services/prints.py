@@ -25,6 +25,7 @@ async def create_print(
     printed_at: datetime | None,
     printer_name: str | None,
     filament: str | None,
+    filament_g: float | None = None,
     result: PrintResult,
     duration_min: int | None,
     notes: str | None,
@@ -33,6 +34,7 @@ async def create_print(
         model_id=model_id,
         printer_name=printer_name,
         filament=filament,
+        filament_g=filament_g,
         result=result,
         duration_min=duration_min,
         notes=notes,
@@ -70,7 +72,15 @@ async def patch_print(db: AsyncSession, print_id: int, changes: dict[str, object
     only the fields present in the request body change.
     """
     row = await _get_print_or_404(db, print_id)
-    for field in ("printed_at", "printer_name", "filament", "result", "duration_min", "notes"):
+    for field in (
+        "printed_at",
+        "printer_name",
+        "filament",
+        "filament_g",
+        "result",
+        "duration_min",
+        "notes",
+    ):
         if field in changes:
             setattr(row, field, changes[field])
     await db.commit()

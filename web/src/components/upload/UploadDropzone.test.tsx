@@ -15,7 +15,10 @@ const { uploadFileMock, eventsListener } = vi.hoisted(() => ({
   eventsListener: { current: null as ((event: JobUpdatedEvent) => void) | null },
 }));
 
-vi.mock("@/api/upload", () => ({ uploadFile: uploadFileMock }));
+vi.mock("@/api/upload", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/upload")>();
+  return { ...actual, uploadFile: uploadFileMock };
+});
 
 vi.mock("@/hooks/useEvents", () => ({
   useEvents: () => ({
@@ -134,5 +137,32 @@ describe("UploadDropzone", () => {
     resolveUpload(fakeUploadResult("job-1"));
 
     await waitFor(() => expect(screen.getByText("Stored")).toBeInTheDocument());
+  });
+
+  it("shows the duplicate card on a 409 and retries with allow_duplicate via 'Upload anyway'", async () => {
+    const { DuplicateUploadError } = await import("@/api/upload");
+    uploadFileMock.mockRejectedValueOnce(
+      new DuplicateUploadError({
+        detail: "duplicate",
+        existing: { slug: "dragon", name: "Dragon", url: "/models/dragon" },
+        suggested_name: "a (2)",
+      }),
+    );
+    uploadFileMock.mockResolvedValueOnce(fakeUploadResult("job-2"));
+    const resolveTarget = vi.fn().mockResolvedValue(TARGET);
+
+    const { container } = render(<UploadDropzone resolveTarget={resolveTarget} />);
+    addFileToQueue(container, "a.stl");
+    fireEvent.click(screen.getByRole("button", { name: /^Upload/ }));
+
+    expect(await screen.findByText("Dragon")).toBeInTheDocument();
+    expect(uploadFileMock).toHaveBeenCalledTimes(1);
+    expect(uploadFileMock.mock.calls[0][0]).not.toHaveProperty("allowDuplicate", true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Upload anyway" }));
+
+    await waitFor(() => expect(uploadFileMock).toHaveBeenCalledTimes(2));
+    expect(uploadFileMock.mock.calls[1][0]).toMatchObject({ allowDuplicate: true });
+    expect(await screen.findByText("Processing")).toBeInTheDocument();
   });
 });

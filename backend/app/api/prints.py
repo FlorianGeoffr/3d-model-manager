@@ -33,6 +33,7 @@ async def create_print(
         printed_at=payload.printed_at,
         printer_name=payload.printer_name,
         filament=payload.filament,
+        filament_g=payload.filament_g,
         result=payload.result,
         duration_min=payload.duration_min,
         notes=payload.notes,

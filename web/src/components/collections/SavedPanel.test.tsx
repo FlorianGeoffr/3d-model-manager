@@ -102,6 +102,7 @@ function fakeFollowed(overrides: Partial<FollowedCollection> = {}): FollowedColl
     last_synced_at: null,
     last_error: null,
     created_at: "2026-07-09T00:00:00Z",
+    preview_thumbnails: [],
     ...overrides,
   };
 }
@@ -174,6 +175,31 @@ describe("FollowedCard", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Unfollow" }));
     expect(unfollowMock).toHaveBeenCalledWith(1);
+  });
+
+  it("renders a 2x2 collage of the collection's preview thumbnails with empty tiles for the rest", async () => {
+    followedBox.current = {
+      data: [fakeFollowed({ preview_thumbnails: ["/a.jpg", "/b.jpg"] })],
+      isLoading: false,
+    };
+    renderCard(FollowedCard);
+
+    await screen.findByText("Desk stuff");
+    const images = screen.getAllByTestId("collage-thumb");
+    expect(images).toHaveLength(2);
+    expect(images.map((img) => img.getAttribute("src"))).toEqual(["/a.jpg", "/b.jpg"]);
+    for (const img of images) {
+      expect(img).toHaveAttribute("loading", "lazy");
+    }
+  });
+
+  it("links 'Download ZIP' straight at the collection's zip endpoint with `download`", async () => {
+    followedBox.current = { data: [fakeFollowed()], isLoading: false };
+    renderCard(FollowedCard);
+
+    const link = await screen.findByRole("link", { name: /Download Desk stuff as zip/i });
+    expect(link).toHaveAttribute("href", "/api/collections/1/zip");
+    expect(link).toHaveAttribute("download");
   });
 });
 

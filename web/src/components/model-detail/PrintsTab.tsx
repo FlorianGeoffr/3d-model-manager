@@ -8,6 +8,7 @@
 import { useId, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 
+import { useAppSettings } from "@/api/appSettings";
 import { useLogPrint, usePatchPrint, useDeletePrint, usePrints } from "@/api/prints";
 import { usePrinters } from "@/api/printers";
 import { useQueue, useRemoveQueueEntry } from "@/api/queue";
@@ -21,6 +22,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { formatDateTime, toDatetimeLocalValue } from "@/lib/format";
+import { estimatePrintCost, formatPrintCost } from "@/lib/printCost";
 
 /** Sentinel `Select` value for "no printer" -- Radix `SelectItem` reserves
  * an empty-string value for "no selection", so it can't represent `null`
@@ -47,6 +49,7 @@ interface PrintDraft {
   printerName: string;
   result: PrintResult;
   filament: string;
+  filamentG: string;
   durationMin: string;
   notes: string;
 }
@@ -57,6 +60,7 @@ function emptyDraft(): PrintDraft {
     printerName: NO_PRINTER,
     result: "success",
     filament: "",
+    filamentG: "",
     durationMin: "",
     notes: "",
   };
@@ -68,6 +72,7 @@ function draftFromEntry(entry: PrintEntry): PrintDraft {
     printerName: entry.printer_name ?? NO_PRINTER,
     result: entry.result,
     filament: entry.filament ?? "",
+    filamentG: entry.filament_g != null ? String(entry.filament_g) : "",
     durationMin: entry.duration_min != null ? String(entry.duration_min) : "",
     notes: entry.notes ?? "",
   };
@@ -157,6 +162,17 @@ function PrintFields({
           onChange={(event) => onFieldChange("durationMin", event.target.value)}
         />
       </div>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor={`${id}-filament-g`}>Filament used (g)</Label>
+        <Input
+          id={`${id}-filament-g`}
+          type="number"
+          min={0}
+          step="any"
+          value={draft.filamentG}
+          onChange={(event) => onFieldChange("filamentG", event.target.value)}
+        />
+      </div>
       <div className="flex flex-col gap-1.5 sm:col-span-2">
         <Label htmlFor={`${id}-notes`}>Notes</Label>
         <Textarea
@@ -200,6 +216,7 @@ function PrintComposer({
       printer_name: draft.printerName === NO_PRINTER ? null : draft.printerName,
       result: draft.result,
       filament: draft.filament.trim() || null,
+      filament_g: draft.filamentG.trim() === "" ? null : Number(draft.filamentG),
       duration_min: draft.durationMin.trim() === "" ? null : Number(draft.durationMin),
       notes: draft.notes.trim() || null,
     };
@@ -249,6 +266,8 @@ function PrintRow({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<PrintDraft>(() => draftFromEntry(entry));
   const [touched, setTouched] = useState<Partial<Record<keyof PrintDraft, true>>>({});
+  // Hooks must run unconditionally, ahead of the `editing` early return below.
+  const settings = useAppSettings();
 
   function handleFieldChange<K extends keyof PrintDraft>(key: K, value: PrintDraft[K]) {
     setDraft((prev) => ({ ...prev, [key]: value }));
@@ -261,6 +280,7 @@ function PrintRow({
     if (touched.printerName) patch.printer_name = draft.printerName === NO_PRINTER ? null : draft.printerName;
     if (touched.result) patch.result = draft.result;
     if (touched.filament) patch.filament = draft.filament.trim() || null;
+    if (touched.filamentG) patch.filament_g = draft.filamentG.trim() === "" ? null : Number(draft.filamentG);
     if (touched.durationMin) patch.duration_min = draft.durationMin.trim() === "" ? null : Number(draft.durationMin);
     if (touched.notes) patch.notes = draft.notes.trim() || null;
     onSave(patch, () => setEditing(false));
@@ -289,6 +309,15 @@ function PrintRow({
   }
 
   const badge = RESULT_BADGE[entry.result];
+  const cost = settings.data
+    ? estimatePrintCost(
+        {
+          filament_g: entry.filament_g,
+          duration_s: entry.duration_min != null ? entry.duration_min * 60 : null,
+        },
+        settings.data,
+      )
+    : null;
 
   return (
     <li className="rounded-lg border border-border p-3">
@@ -300,8 +329,14 @@ function PrintRow({
           </Badge>
           {entry.printer_name ? <span className="text-muted-foreground">{entry.printer_name}</span> : null}
           {entry.filament ? <span className="text-muted-foreground">{entry.filament}</span> : null}
+          {entry.filament_g != null ? (
+            <span className="text-muted-foreground">{entry.filament_g} g</span>
+          ) : null}
           {entry.duration_min != null ? (
             <span className="text-muted-foreground">{entry.duration_min} min</span>
+          ) : null}
+          {cost != null ? (
+            <span className="text-muted-foreground">Est. cost: {formatPrintCost(cost)}</span>
           ) : null}
         </div>
         <div className="flex shrink-0 gap-3 text-xs">

@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session as SyncSession
 
 from app.models.enums import ImportSite, ImportState
+from app.models.library import File, Model, Revision
 from app.models.system import Import
 
 
@@ -98,3 +99,33 @@ def find_active_import_sync(
         .limit(1)
     )
     return session.execute(stmt).scalars().first()
+
+
+# ---------------------------------------------------------------------------
+# R11-C item 18: PUT /uploads' content-identity dedup guard. Different
+# identity than the import guards above (content hash, not (site,
+# external_id)), but the same "already in the library" shape -- kept here so
+# any future hash-based dedup check has one canonical lookup, not a second
+# copy of this join.
+# ---------------------------------------------------------------------------
+
+
+async def find_model_by_blob_hash(
+    db: AsyncSession, blob_hash: str, *, exclude_model_id: int | None = None
+) -> Model | None:
+    """The first (lowest-id) model that already has a file with this blob
+    hash, excluding ``exclude_model_id`` (the model the current upload is
+    targeting -- re-uploading identical bytes onto the SAME model is not a
+    duplicate). ``None`` if the content is genuinely new to the library.
+    """
+    stmt = (
+        select(Model)
+        .join(Revision, Revision.model_id == Model.id)
+        .join(File, File.revision_id == Revision.id)
+        .where(File.blob_hash == blob_hash)
+        .order_by(Model.id)
+        .limit(1)
+    )
+    if exclude_model_id is not None:
+        stmt = stmt.where(Model.id != exclude_model_id)
+    return (await db.execute(stmt)).scalars().first()

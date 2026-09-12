@@ -63,6 +63,8 @@ class AppSettingsIn(BaseModel):
     collection_sync_interval_s: int = Field(ge=0)
     watch_interval_s: int = Field(ge=0)
     watch_stable_s: float = Field(ge=0)
+    filament_cost_per_kg: float = Field(default=20.0, ge=0)
+    machine_cost_per_hour: float = Field(default=0.0, ge=0)
 
 
 class AppSettingsOut(BaseModel):
@@ -71,6 +73,8 @@ class AppSettingsOut(BaseModel):
     collection_sync_interval_s: int
     watch_interval_s: int
     watch_stable_s: float
+    filament_cost_per_kg: float
+    machine_cost_per_hour: float
 
     @classmethod
     def from_config(cls, config: AppConfig) -> AppSettingsOut:

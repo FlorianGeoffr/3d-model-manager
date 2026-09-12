@@ -1688,16 +1688,18 @@ async def try_delete_duplicate_copy(
 
 async def list_tags(db: AsyncSession) -> list[TagOut]:
     tags = (await db.execute(select(Tag).order_by(Tag.name))).scalars().all()
-    return [TagOut(id=t.id, name=t.name) for t in tags]
+    return [TagOut(id=t.id, name=t.name, color=t.color) for t in tags]
 
 
-async def add_tag_to_model(db: AsyncSession, model_id: int, name: str) -> TagOut:
+async def add_tag_to_model(
+    db: AsyncSession, model_id: int, name: str, color: str | None = None
+) -> TagOut:
     """Get-or-create the tag, then associate it with the model (idempotent)."""
     model = await get_model_by_id(db, model_id)
 
     tag = (await db.execute(select(Tag).where(Tag.name == name))).scalar_one_or_none()
     if tag is None:
-        tag = Tag(name=name)
+        tag = Tag(name=name, color=color)
         db.add(tag)
         await db.flush()
 
@@ -1713,7 +1715,16 @@ async def add_tag_to_model(db: AsyncSession, model_id: int, name: str) -> TagOut
         # actual new link, not the idempotent no-op re-tag.
         model.updated_at = func.now()
     await db.commit()
-    return TagOut(id=tag.id, name=tag.name)
+    return TagOut(id=tag.id, name=tag.name, color=tag.color)
+
+
+async def set_tag_color(db: AsyncSession, tag_id: int, color: str | None) -> TagOut:
+    tag = await db.get(Tag, tag_id)
+    if tag is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"tag {tag_id} not found")
+    tag.color = color
+    await db.commit()
+    return TagOut(id=tag.id, name=tag.name, color=tag.color)
 
 
 async def remove_tag_from_model(db: AsyncSession, model_id: int, name: str) -> None:

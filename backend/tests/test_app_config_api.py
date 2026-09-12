@@ -22,6 +22,8 @@ _DEFAULTS = {
     "collection_sync_interval_s": 0,
     "watch_interval_s": 0,
     "watch_stable_s": 10.0,
+    "filament_cost_per_kg": 20.0,
+    "machine_cost_per_hour": 0.0,
 }
 
 
@@ -58,6 +60,8 @@ async def test_put_persists_all_five_fields_and_get_reflects_them(authenticated_
         "collection_sync_interval_s": 60,
         "watch_interval_s": 15,
         "watch_stable_s": 5.5,
+        "filament_cost_per_kg": 25.0,
+        "machine_cost_per_hour": 2.5,
     }
     put = await authenticated_client.put("/api/settings/app", json=payload)
     assert put.status_code == 200
@@ -90,6 +94,36 @@ async def test_put_negative_watch_stable_is_422(authenticated_client):
     assert r.status_code == 422
 
 
+# ---------------------------------------------------------------------------
+# R11-B item 14: print cost estimate rates (filament_cost_per_kg,
+# machine_cost_per_hour) -- same full-replace AppSettings row, no secrets.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_put_omitting_cost_fields_uses_schema_defaults(authenticated_client):
+    excluded = ("filament_cost_per_kg", "machine_cost_per_hour")
+    payload = {k: v for k, v in _DEFAULTS.items() if k not in excluded}
+    r = await authenticated_client.put("/api/settings/app", json=payload)
+    assert r.status_code == 200
+    assert r.json()["filament_cost_per_kg"] == 20.0
+    assert r.json()["machine_cost_per_hour"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_put_negative_filament_cost_is_422(authenticated_client):
+    payload = {**_DEFAULTS, "filament_cost_per_kg": -1}
+    r = await authenticated_client.put("/api/settings/app", json=payload)
+    assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_put_negative_machine_cost_is_422(authenticated_client):
+    payload = {**_DEFAULTS, "machine_cost_per_hour": -1}
+    r = await authenticated_client.put("/api/settings/app", json=payload)
+    assert r.status_code == 422
+
+
 @pytest.mark.asyncio
 async def test_row_with_only_one_field_falls_back_to_env_for_the_rest(
     authenticated_client, db_session, monkeypatch
@@ -105,6 +139,8 @@ async def test_row_with_only_one_field_falls_back_to_env_for_the_rest(
     assert body["watch_interval_s"] == 20  # env fallback -- not in the row
     assert body["scan_interval_s"] == 0  # default fallback -- not in the row
     assert body["watch_stable_s"] == 10.0  # default fallback -- not in the row
+    assert body["filament_cost_per_kg"] == 20.0  # default fallback -- not in the row
+    assert body["machine_cost_per_hour"] == 0.0  # default fallback -- not in the row
 
 
 # ---------------------------------------------------------------------------

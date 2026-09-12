@@ -275,13 +275,27 @@ export interface DiffResponse {
 
 // -- tags ----------------------------------------------------------
 
+export type TagColor =
+  | "slate"
+  | "red"
+  | "orange"
+  | "amber"
+  | "green"
+  | "teal"
+  | "blue"
+  | "indigo"
+  | "violet"
+  | "pink";
+
 export interface TagCreate {
   name: string;
+  color?: TagColor | null;
 }
 
 export interface TagOut {
   id: number;
   name: string;
+  color?: TagColor | null;
 }
 
 // -- uploads (backend/app/schemas/uploads.py) --------------------------------
@@ -291,6 +305,20 @@ export interface UploadResult {
   blob_hash: string;
   size: number;
   job_id: string;
+}
+
+export interface ExistingUploadModel {
+  slug: string;
+  name: string;
+  url: string;
+}
+
+/** ``PUT /uploads`` 409 body: this content already exists elsewhere in the
+ * library (R11-C item 18). */
+export interface DuplicateUploadOut {
+  detail: "duplicate";
+  existing: ExistingUploadModel;
+  suggested_name: string;
 }
 
 // -- jobs (backend/app/schemas/jobs.py) --------------------------------
@@ -458,6 +486,34 @@ export interface AppSettings {
   collection_sync_interval_s: number;
   watch_interval_s: number;
   watch_stable_s: number;
+  // R11-B item 14 (print cost estimate): currency-agnostic rates the
+  // frontend multiplies against a print's filament_g/duration_s
+  // (`@/lib/printCost`'s `estimatePrintCost`). Never interpreted server-side.
+  filament_cost_per_kg: number;
+  machine_cost_per_hour: number;
+}
+
+// `GET /api/stats` (backend/app/schemas/stats.py, R11-B item 13): cheap
+// dashboard aggregates, cached server-side for 30s -- polling this is fine.
+export interface StatsOut {
+  models: { total: number; favorites: number; archived: number; drafts: number };
+  files: {
+    total: number;
+    bytes_total: number;
+    bytes_by_backend: Record<string, number>;
+    by_format: Record<string, number>;
+  };
+  tags: number;
+  collections: number;
+  prints: {
+    total: number;
+    succeeded: number;
+    failed: number;
+    filament_g_total: number;
+    duration_s_total: number;
+  };
+  recent: { models_added_7d: number; prints_7d: number };
+  jobs: { running: number; queued: number; failed_24h: number };
 }
 
 export type PrinterKind = "bambu_lan";
@@ -670,6 +726,8 @@ export interface FollowedCollection {
   last_synced_at: string | null;
   last_error: string | null;
   created_at: string;
+  /** Up to 4 member-model thumbnail URLs for the card's 2x2 collage. */
+  preview_thumbnails: string[];
 }
 
 /** An item a `review`-mode sync found but didn't import. */
@@ -787,6 +845,7 @@ export interface PrintEntry {
   printed_at: string;
   printer_name: string | null;
   filament: string | null;
+  filament_g: number | null;
   result: PrintResult;
   duration_min: number | null;
   notes: string | null;
@@ -800,6 +859,7 @@ export interface PrintCreateIn {
   printed_at?: string;
   printer_name?: string | null;
   filament?: string | null;
+  filament_g?: number | null;
   result?: PrintResult;
   duration_min?: number | null;
   notes?: string | null;
@@ -812,6 +872,7 @@ export interface PrintPatchIn {
   printed_at?: string;
   printer_name?: string | null;
   filament?: string | null;
+  filament_g?: number | null;
   result?: PrintResult;
   duration_min?: number | null;
   notes?: string | null;

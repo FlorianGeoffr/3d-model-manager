@@ -1,9 +1,11 @@
 import { lazy, Suspense, useState } from "react";
 import { ImageIcon, LayersIcon, LoaderCircleIcon } from "lucide-react";
 
+import { useAppSettings } from "@/api/appSettings";
 import { Button } from "@/components/ui/button";
 import { humanizeDuration } from "@/lib/format";
-import type { FileOut, PlateOut } from "@/api/types";
+import { estimatePrintCost, formatPrintCost } from "@/lib/printCost";
+import type { AppSettings, FileOut, PlateOut } from "@/api/types";
 
 // `gcode-preview` drives its own three.js/WebGL renderer (Global Constraints
 // "BUNDLE RULE") — loaded only once someone actually asks to preview layers.
@@ -38,18 +40,25 @@ function metaLine(file: FileOut): string | null {
   return filtered.length > 0 ? filtered.join(" · ") : null;
 }
 
-/** `Plate {index} · {humanizeDuration(prediction_s)} · {weight_g} g`, skipping
- * any part whose source value is null (Task 9 brief). */
-function plateCaption(plate: PlateOut): string {
+/** `Plate {index} · {humanizeDuration(prediction_s)} · {weight_g} g [·
+ * Est. cost: N.NN]`, skipping any part whose source value is null (Task 9
+ * brief; the cost segment is R11-B item 14, added only when app settings
+ * are loaded AND at least one of weight/duration is known). */
+function plateCaption(plate: PlateOut, settings: AppSettings | undefined): string {
+  const cost = settings
+    ? estimatePrintCost({ filament_g: plate.weight_g, duration_s: plate.prediction_s }, settings)
+    : null;
   const parts = [
     `Plate ${plate.index}`,
     plate.prediction_s !== null ? humanizeDuration(plate.prediction_s) : null,
     plate.weight_g !== null ? `${Math.round(plate.weight_g)} g` : null,
+    cost !== null ? `Est. cost: ${formatPrintCost(cost)}` : null,
   ];
   return parts.filter((part): part is string => part !== null).join(" · ");
 }
 
 function PlateCard({ blobHash, plate }: { blobHash: string; plate: PlateOut }) {
+  const settings = useAppSettings();
   return (
     <div className="w-48 shrink-0 space-y-2 rounded-lg border border-border p-3">
       <div className="flex aspect-square items-center justify-center overflow-hidden rounded bg-muted">
@@ -63,7 +72,7 @@ function PlateCard({ blobHash, plate }: { blobHash: string; plate: PlateOut }) {
           <ImageIcon className="size-8 text-muted-foreground" />
         )}
       </div>
-      <p className="text-xs text-muted-foreground">{plateCaption(plate)}</p>
+      <p className="text-xs text-muted-foreground">{plateCaption(plate, settings.data)}</p>
       {plate.filaments.length > 0 && (
         <div className="flex flex-wrap gap-1">
           {plate.filaments.map((filament, index) => (

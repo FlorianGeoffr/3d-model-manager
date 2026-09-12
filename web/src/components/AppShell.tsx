@@ -4,6 +4,7 @@ import {
   Bookmark,
   CopyCheck,
   HelpCircle,
+  LayoutDashboard,
   ListChecks,
   ListOrdered,
   LoaderCircleIcon,
@@ -175,6 +176,7 @@ function ScanChip() {
 // "sync" and users simply could not find it.
 const NAV_ITEMS = [
   { to: "/", label: "Library", icon: SquareLibrary },
+  { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/collections", label: "Collections", icon: Bookmark },
   { to: "/printer", label: "Printer", icon: Printer },
   { to: "/jobs", label: "Jobs", icon: ListChecks },

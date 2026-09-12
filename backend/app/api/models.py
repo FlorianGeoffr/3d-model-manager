@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_storage_backend
@@ -24,8 +25,9 @@ from app.schemas.library import (
     ModelRelocateIn,
 )
 from app.services import jobs as jobs_service
-from app.services import library
+from app.services import library, zip_export
 from app.services import storage_backends as storage_backends_service
+from app.services.http_names import content_disposition_attachment
 from app.storage.base import StorageBackend
 from app.tasks.importing import redownload_model as redownload_model_task
 from app.tasks.relocate import relocate_model_storage
@@ -193,6 +195,28 @@ async def redownload_model(
     # `relocate_model` below).
     await db.refresh(job)
     return JobOut.from_model(job)
+
+
+@router.get("/{slug}/zip")
+async def download_model_zip(
+    slug: str,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> StreamingResponse:
+    """Stream a zip of ``model``'s current revision (plan item 12): every
+    current-revision file plus a ``README.txt`` with provenance. 409 if the
+    model has zero files -- there'd be nothing to zip."""
+    model = await library.get_model_by_slug(db, slug)
+    try:
+        _chunk, body = await zip_export.first_chunk(zip_export.iter_model_zip(db, settings, model))
+    except zip_export.EmptyModelError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+
+    return StreamingResponse(
+        body,
+        media_type="application/zip",
+        headers={"Content-Disposition": content_disposition_attachment(f"{model.slug}.zip")},
+    )
 
 
 @router.post("/{slug}/relocate", response_model=JobOut)

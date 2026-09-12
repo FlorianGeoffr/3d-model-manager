@@ -12,6 +12,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     Column,
+    Float,
     ForeignKey,
     Identity,
     Index,
@@ -137,6 +138,10 @@ class Tag(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
     name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    # Palette key (see app.schemas.library.TAG_COLORS), not a free-form
+    # value -- enforced by a Literal at the API layer and a CHECK
+    # constraint in the DB (some paths write model_tags/tags directly).
+    color: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class Note(Base):
@@ -199,6 +204,10 @@ class Print(Base):
     printed_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
     printer_name: Mapped[str | None] = mapped_column(Text)
     filament: Mapped[str | None] = mapped_column(Text)
+    # Grams used, distinct from the free-text `filament` snapshot above
+    # (R11-B item 14: print cost estimate + the dashboard's
+    # `prints.filament_g_total` stat need an actual number to sum).
+    filament_g: Mapped[float | None] = mapped_column(Float)
     result: Mapped[PrintResult] = mapped_column(
         str_enum(PrintResult, "print_result"),
         nullable=False,

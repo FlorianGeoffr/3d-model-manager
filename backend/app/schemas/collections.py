@@ -25,9 +25,14 @@ class FollowedCollectionOut(BaseModel):
     last_synced_at: datetime | None
     last_error: str | None
     created_at: datetime
+    # Up to 4 member-model thumbnail URLs for the card's 2x2 collage (R11-C
+    # item 17); empty when nothing has a ready cover yet.
+    preview_thumbnails: list[str] = []
 
     @classmethod
-    def from_model(cls, row: FollowedCollection) -> FollowedCollectionOut:
+    def from_model(
+        cls, row: FollowedCollection, preview_thumbnails: list[str] | None = None
+    ) -> FollowedCollectionOut:
         return cls(
             id=row.id,
             site=row.site,
@@ -38,6 +43,7 @@ class FollowedCollectionOut(BaseModel):
             last_synced_at=row.last_synced_at,
             last_error=row.last_error,
             created_at=row.created_at,
+            preview_thumbnails=preview_thumbnails or [],
         )
 
 

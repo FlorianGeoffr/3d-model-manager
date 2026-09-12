@@ -146,6 +146,7 @@ const FOLLOWED_COLLECTION: FollowedCollection = {
   last_synced_at: null,
   last_error: null,
   created_at: "2026-01-01T00:00:00Z",
+  preview_thumbnails: [],
 };
 
 function mockGalleryOkWithCollections(collections: FollowedCollection[]) {

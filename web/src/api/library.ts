@@ -429,6 +429,17 @@ export function useTags() {
   return useQuery(tagsQueryOptions);
 }
 
+/** name -> color lookup, for chip rendering wherever only the tag name is
+ * on hand (`ModelSummary.tags`/`ModelDetail.tags` are `string[]`, colors
+ * live only on the global `/api/tags` list). Cheap: `useTags`' result is
+ * shared react-query cache, so this doesn't add a request per caller. */
+export function useTagColorMap(): Record<string, TagOut["color"]> {
+  const { data } = useTags();
+  const map: Record<string, TagOut["color"]> = {};
+  for (const tag of data ?? []) map[tag.name] = tag.color;
+  return map;
+}
+
 export function useAddTag(slug: string, modelId: number) {
   const queryClient = useQueryClient();
   return useMutation({
@@ -437,6 +448,15 @@ export function useAddTag(slug: string, modelId: number) {
       void queryClient.invalidateQueries({ queryKey: modelQueryOptions(slug).queryKey });
       void queryClient.invalidateQueries({ queryKey: tagsQueryOptions.queryKey });
     },
+  });
+}
+
+export function useSetTagColor() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, color }: { id: number; color: TagOut["color"] }) =>
+      api.patch<TagOut>(`/tags/${id}`, { color }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: tagsQueryOptions.queryKey }),
   });
 }
 

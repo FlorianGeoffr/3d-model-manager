@@ -50,6 +50,7 @@ _PATH_PARAM_VALUES = {
     "filename": "placeholder.stl",
     "note_id": "1",
     "name": "placeholder-tag",
+    "tag_id": "1",
     "job_id": str(uuid.uuid4()),
     "blob_hash": "a" * 64,
     "index": "1",

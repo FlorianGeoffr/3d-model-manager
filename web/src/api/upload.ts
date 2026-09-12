@@ -4,7 +4,7 @@
  * `{ onProgress }` callback so tests can fake the uploader instead of
  * mocking the global `XMLHttpRequest`.
  */
-import type { UploadResult } from "@/api/types";
+import type { DuplicateUploadOut, UploadResult } from "@/api/types";
 
 export interface UploadParams {
   modelId: number;
@@ -12,6 +12,9 @@ export interface UploadParams {
   relPath: string;
   file: Blob;
   replace?: boolean;
+  /** Bypasses the content-hash duplicate check (R11-C item 18) -- the
+   * "Upload anyway" retry after a `DuplicateUploadError`. */
+  allowDuplicate?: boolean;
 }
 
 export interface UploadCallbacks {
@@ -20,16 +23,45 @@ export interface UploadCallbacks {
 
 export type UploadFn = (params: UploadParams, callbacks?: UploadCallbacks) => Promise<UploadResult>;
 
-function extractErrorDetail(xhr: XMLHttpRequest): string | null {
+/** Thrown instead of a plain `Error` when the upload 409s because this
+ * content's blake3 hash already exists elsewhere in the library -- carries
+ * the structured body so the UI can render "Already in your library" with
+ * a link + retry, instead of just a generic failure message. */
+export class DuplicateUploadError extends Error {
+  readonly existing: DuplicateUploadOut["existing"];
+  readonly suggestedName: string;
+
+  constructor(body: DuplicateUploadOut) {
+    super("duplicate content");
+    this.name = "DuplicateUploadError";
+    this.existing = body.existing;
+    this.suggestedName = body.suggested_name;
+  }
+}
+
+function parseJson(xhr: XMLHttpRequest): unknown {
   try {
-    const data: unknown = JSON.parse(xhr.responseText);
-    if (data !== null && typeof data === "object" && typeof (data as { detail?: unknown }).detail === "string") {
-      return (data as { detail: string }).detail;
-    }
+    return JSON.parse(xhr.responseText);
   } catch {
-    // not JSON — fall through
+    return null;
+  }
+}
+
+function extractErrorDetail(xhr: XMLHttpRequest): string | null {
+  const data = parseJson(xhr);
+  if (data !== null && typeof data === "object" && typeof (data as { detail?: unknown }).detail === "string") {
+    return (data as { detail: string }).detail;
   }
   return null;
+}
+
+function isDuplicateUploadBody(data: unknown): data is DuplicateUploadOut {
+  return (
+    data !== null &&
+    typeof data === "object" &&
+    (data as { detail?: unknown }).detail === "duplicate" &&
+    typeof (data as { existing?: unknown }).existing === "object"
+  );
 }
 
 export const uploadFile: UploadFn = (params, callbacks = {}) => {
@@ -40,6 +72,7 @@ export const uploadFile: UploadFn = (params, callbacks = {}) => {
       rel_path: params.relPath,
     });
     if (params.replace) searchParams.set("replace", "true");
+    if (params.allowDuplicate) searchParams.set("allow_duplicate", "true");
 
     const xhr = new XMLHttpRequest();
     xhr.open("PUT", `/api/uploads?${searchParams.toString()}`);
@@ -56,6 +89,13 @@ export const uploadFile: UploadFn = (params, callbacks = {}) => {
         } catch {
           reject(new Error("invalid upload response"));
         }
+      } else if (xhr.status === 409) {
+        const data = parseJson(xhr);
+        if (isDuplicateUploadBody(data)) {
+          reject(new DuplicateUploadError(data));
+          return;
+        }
+        reject(new Error(extractErrorDetail(xhr) ?? `upload failed with status ${xhr.status}`));
       } else {
         reject(new Error(extractErrorDetail(xhr) ?? `upload failed with status ${xhr.status}`));
       }

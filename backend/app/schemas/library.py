@@ -400,11 +400,21 @@ class DiffResponse(BaseModel):
 
 # -- tags -------------------------------------------------------------
 
+TagColor = Literal[
+    "slate", "red", "orange", "amber", "green", "teal", "blue", "indigo", "violet", "pink"
+]
+
 
 class TagCreate(BaseModel):
     name: NonEmptyStr
+    color: TagColor | None = None
+
+
+class TagUpdate(BaseModel):
+    color: TagColor | None = None
 
 
 class TagOut(BaseModel):
     id: int
     name: str
+    color: TagColor | None = None

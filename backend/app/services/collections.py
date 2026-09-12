@@ -15,16 +15,71 @@ from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session as SyncSession
+from sqlalchemy.orm import aliased
 
 from app.models.collections import FollowedCollection, PendingImport, RemoteCollectionItem
 from app.models.enums import CollectionSyncMode, ImportSite
+from app.models.library import Model
 
 # -- followed collections -------------------------------------------------
+
+# R11-C item 17: at most this many preview thumbnails per collection card.
+_PREVIEW_COUNT = 4
 
 
 async def list_followed(db: AsyncSession) -> list[FollowedCollection]:
     stmt = select(FollowedCollection).order_by(FollowedCollection.id)
     return list((await db.execute(stmt)).scalars().all())
+
+
+async def preview_thumbnails_by_collection(
+    db: AsyncSession, collection_ids: Sequence[int]
+) -> dict[int, list[str]]:
+    """``{collection_id: [thumbnail url, ...]}`` (<= ``_PREVIEW_COUNT`` each)
+    for the collage on each followed-collection card.
+
+    One query selects the candidate MODEL ROWS -- a window function ranks
+    each collection's models most-recently-imported-first and keeps only the
+    top ``_PREVIEW_COUNT`` per collection, so this is a single query
+    regardless of how many collections are being rendered (not one per
+    collection). Cover-URL derivation then reuses
+    ``app.services.library``'s own gallery-cover machinery (import deferred
+    to dodge a circular import at module load) rather than duplicating its
+    thumb-readiness joins; models whose cover isn't ready yet are simply
+    skipped, same as the gallery.
+    """
+    if not collection_ids:
+        return {}
+
+    from app.services.library import _gallery_aggregates, _gallery_cover_url
+
+    rank = (
+        func.row_number()
+        .over(partition_by=Model.source_collection_id, order_by=Model.id.desc())
+        .label("rank")
+    )
+    ranked = select(Model, rank).where(Model.source_collection_id.in_(collection_ids)).subquery()
+    model_alias = aliased(Model, ranked)
+    stmt = (
+        select(model_alias)
+        .where(ranked.c.rank <= _PREVIEW_COUNT)
+        .order_by(ranked.c.source_collection_id, ranked.c.rank)
+    )
+    models = list((await db.execute(stmt)).scalars().all())
+    if not models:
+        return {}
+
+    aggregates, cover_ok_hashes = await _gallery_aggregates(db, models)
+
+    out: dict[int, list[str]] = {}
+    for model in models:
+        if model.source_collection_id is None:
+            continue
+        agg = aggregates.get(model.current_revision_id) if model.current_revision_id else None
+        url = _gallery_cover_url(model, agg, cover_ok_hashes)
+        if url is not None:
+            out.setdefault(model.source_collection_id, []).append(url)
+    return out
 
 
 async def get_followed(db: AsyncSession, collection_id: int) -> FollowedCollection:

@@ -13,17 +13,29 @@ import uuid
 import anyio
 from blake3 import blake3
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.db import get_db
-from app.schemas.uploads import UploadResult
+from app.schemas.uploads import DuplicateUploadOut, ExistingUploadModel, UploadResult
 from app.services import jobs as jobs_service
 from app.services import library, spool
+from app.services.import_dedup import find_model_by_blob_hash
 from app.services.layout import infer_blob_kind_format
 from app.tasks.ingest import store_to_backend
 
 router = APIRouter(tags=["uploads"])
+
+
+class _DuplicateBlob(Exception):
+    """Internal signal: the streamed blob's hash already exists elsewhere in
+    the library. Raised (rather than returned directly) so it flows through
+    the same spool-cleanup ``finally``/``except`` path as every other
+    failure between the stream and the job dispatch."""
+
+    def __init__(self, body: DuplicateUploadOut) -> None:
+        self.body = body
 
 
 @router.put("/uploads", status_code=status.HTTP_201_CREATED, response_model=UploadResult)
@@ -33,9 +45,10 @@ async def upload_file(
     revision_id: int,
     rel_path: str,
     replace: bool = False,
+    allow_duplicate: bool = False,
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
-) -> UploadResult:
+) -> UploadResult | JSONResponse:
     model, revision = await library.validate_upload_target(
         db, model_id=model_id, revision_id=revision_id, rel_path=rel_path, replace=replace
     )
@@ -66,6 +79,21 @@ async def upload_file(
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "empty upload body")
 
         blob_hash = hasher.hexdigest()
+
+        if not allow_duplicate:
+            existing = await find_model_by_blob_hash(db, blob_hash, exclude_model_id=model_id)
+            if existing is not None:
+                raise _DuplicateBlob(
+                    DuplicateUploadOut(
+                        existing=ExistingUploadModel(
+                            slug=existing.slug,
+                            name=existing.name,
+                            url=f"/models/{existing.slug}",
+                        ),
+                        suggested_name=f"{model.name} (2)",
+                    )
+                )
+
         kind, format_ = infer_blob_kind_format(rel_path)
 
         file = await library.finalize_upload(
@@ -83,6 +111,9 @@ async def upload_file(
         job = await jobs_service.create_job(
             db, id=token, type="store_to_backend", subject_type="file", subject_id=file.id
         )
+    except _DuplicateBlob as dup:
+        await anyio.to_thread.run_sync(lambda: path.unlink(missing_ok=True))
+        return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=dup.body.model_dump())
     except BaseException:
         await anyio.to_thread.run_sync(lambda: path.unlink(missing_ok=True))
         raise

@@ -57,6 +57,7 @@ async def test_create_print_accepts_all_fields(authenticated_client: httpx.Async
             "printed_at": "2026-07-01T10:00:00Z",
             "printer_name": "Bambu X1C",
             "filament": "PLA Black",
+            "filament_g": 42.5,
             "result": "fail",
             "duration_min": 125,
             "notes": "warped corner",
@@ -68,9 +69,35 @@ async def test_create_print_accepts_all_fields(authenticated_client: httpx.Async
     assert body["printed_at"] == "2026-07-01T10:00:00Z"
     assert body["printer_name"] == "Bambu X1C"
     assert body["filament"] == "PLA Black"
+    assert body["filament_g"] == 42.5
     assert body["result"] == "fail"
     assert body["duration_min"] == 125
     assert body["notes"] == "warped corner"
+
+
+async def test_create_print_negative_filament_g_is_422(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    model = await _create_model(authenticated_client, "Print Negative Filament")
+
+    response = await authenticated_client.post(
+        f"/api/models/{model['id']}/prints", json={"filament_g": -1}
+    )
+
+    assert response.status_code == 422
+
+
+async def test_patch_print_filament_g(authenticated_client: httpx.AsyncClient) -> None:
+    model = await _create_model(authenticated_client, "Print Patch Filament")
+    created = await authenticated_client.post(f"/api/models/{model['id']}/prints", json={})
+    print_id = created.json()["id"]
+
+    response = await authenticated_client.patch(
+        f"/api/prints/{print_id}", json={"filament_g": 12.0}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["filament_g"] == 12.0
 
 
 async def test_create_print_unknown_model_is_404(authenticated_client: httpx.AsyncClient) -> None:

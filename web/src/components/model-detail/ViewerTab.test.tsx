@@ -395,7 +395,7 @@ describe("ViewerTab", () => {
 
     // Simulate `ModelViewer`'s `OrbitPresetGuard` reporting a real user
     // orbit via the `onCameraPresetClear` prop the mock was last called with.
-    const { onCameraPresetClear } = modelViewerMock.mock.calls.at(-1)![0] as {
+    const { onCameraPresetClear } = modelViewerMock.mock.calls.at(-1)![0] as unknown as {
       onCameraPresetClear: () => void;
     };
     act(() => onCameraPresetClear());

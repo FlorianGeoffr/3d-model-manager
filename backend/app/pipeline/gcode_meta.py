@@ -212,9 +212,7 @@ def parse_gcode_meta(stream: BinaryIO) -> GcodeMeta:
     layer_height_mm = _parse_float(_first(raw, "layer_height", "layer height"))
     infill_pct = _parse_pct(_first(raw, "sparse_infill_density", "fill_density"))
     filament_type = _first(raw, "filament_type", "filament type")
-    layer_count = _parse_int(
-        _first(raw, "total layer number", "layer count")
-    )
+    layer_count = _parse_int(_first(raw, "total layer number", "layer count"))
     if layer_count is None:
         directive = _LAYER_COUNT_DIRECTIVE_RE.search(text)
         layer_count = int(directive.group(1)) if directive else None

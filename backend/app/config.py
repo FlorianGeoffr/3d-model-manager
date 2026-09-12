@@ -100,9 +100,7 @@ class Settings(BaseSettings):
     # reverse proxy in front of the API should be handled by uvicorn's
     # `--proxy-headers`/`--forwarded-allow-ips`, not by this app trusting
     # forwarded headers itself. Env: `TDMM_PUBLIC_URL`.
-    public_url: str | None = Field(
-        default=None, validation_alias=AliasChoices("TDMM_PUBLIC_URL")
-    )
+    public_url: str | None = Field(default=None, validation_alias=AliasChoices("TDMM_PUBLIC_URL"))
 
 
 @lru_cache

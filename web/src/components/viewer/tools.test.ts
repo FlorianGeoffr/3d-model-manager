@@ -211,9 +211,9 @@ describe("useViewerTools", () => {
 
   it("falls back to the stored grid value when `initial` doesn't specify grid", () => {
     localStorage.setItem("viewer-tools", JSON.stringify({ grid: false }));
-    const { result } = renderHook(() => useViewerTools({ wireframe: true }));
+    const { result } = renderHook(() => useViewerTools({ shading: "wireframe" }));
 
     expect(result.current.tools.grid).toBe(false);
-    expect(result.current.tools.wireframe).toBe(true);
+    expect(result.current.tools.shading).toBe("wireframe");
   });
 });

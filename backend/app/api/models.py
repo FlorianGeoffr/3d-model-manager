@@ -61,9 +61,11 @@ async def list_models(
     limit: int = Query(20, ge=1, le=100),
     cursor: str | None = None,
     db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> GalleryPage:
     items, next_cursor = await library.list_models(
         db,
+        settings,
         q=q,
         tag=tag,
         format_=format,

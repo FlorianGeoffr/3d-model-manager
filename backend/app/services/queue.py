@@ -38,7 +38,9 @@ async def _to_out(
     model_ids = [e.model_id for e in entries]
     stmt = select(Model).where(Model.id.in_(model_ids)).options(selectinload(Model.tags))
     models_by_id = {m.id: m for m in (await db.execute(stmt)).scalars().unique().all()}
-    summaries = await library.build_model_summaries(db, [models_by_id[e.model_id] for e in entries])
+    summaries = await library.build_model_summaries(
+        db, settings, [models_by_id[e.model_id] for e in entries]
+    )
     summary_by_model_id = {s.id: s for s in summaries}
 
     revision_ids = [

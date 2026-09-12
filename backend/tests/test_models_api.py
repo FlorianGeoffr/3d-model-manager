@@ -1576,6 +1576,76 @@ async def test_gallery_printable_file_is_newest_sliced_gcode_3mf(
     assert item["printable_file"]["id"] == newest.id
 
 
+async def test_gallery_printable_file_carries_plate_meta(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    """Review fix: `printable_file` used to come back with `meta: null`,
+    so the Send-to-printer dialog's plate picker had nothing to read and
+    silently defaulted to plate 1. `printable_file.meta.plates` must be
+    populated straight off the gallery list.
+    """
+    created = await _create_model(authenticated_client, "Sliced Plate Meta Model")
+    model = await db_session.get(Model, created["id"])
+    revision = await db_session.get(Revision, model.current_revision_id)
+
+    sliced = await seed_file(
+        model,
+        revision,
+        "print.gcode.3mf",
+        b"sliced-bytes",
+        blob_format=BlobFormat.GCODE_3MF,
+        blob_kind=BlobKind.SLICED,
+    )
+    db_session.add(
+        BlobMeta(
+            blob_hash=sliced.blob_hash,
+            plate_count=2,
+            raw={
+                "plates": [
+                    {"index": 1, "prediction_s": 100, "weight_g": 5.0, "filaments": []},
+                    {"index": 2, "prediction_s": 200, "weight_g": 8.0, "filaments": []},
+                ]
+            },
+        )
+    )
+    await db_session.commit()
+
+    item = await _gallery_item(authenticated_client, created["slug"])
+
+    assert item["printable_file"]["id"] == sliced.id
+    assert item["printable_file"]["meta"] is not None
+    plates = item["printable_file"]["meta"]["plates"]
+    assert [p["index"] for p in plates] == [1, 2]
+
+
+async def test_gallery_dims_mm_falls_back_to_mesh_when_slicer_file_has_no_meta(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    """Review fix: `dims_mm` used to short-circuit to `None` whenever a
+    `best_slicer_file` existed at all, even if THAT file's own `BlobMeta`
+    row was missing -- never falling through to a sibling mesh's dims. A
+    `.3mf` with no extracted meta alongside an `.stl` that does have one
+    must still surface the mesh's dims.
+    """
+    created = await _create_model(authenticated_client, "3mf No Meta Model")
+    model = await db_session.get(Model, created["id"])
+    revision = await db_session.get(Revision, model.current_revision_id)
+
+    await seed_file(model, revision, "part.3mf", b"3mf-bytes", blob_format=BlobFormat.THREEMF)
+    stl_file = await seed_file(model, revision, "part.stl", b"stl-bytes")
+    db_session.add(BlobMeta(blob_hash=stl_file.blob_hash, dims_mm=[7.0, 8.0, 9.0]))
+    await db_session.commit()
+
+    item = await _gallery_item(authenticated_client, created["slug"])
+
+    assert item["best_slicer_file"]["format"] == "3mf"
+    assert item["dims_mm"] == [7.0, 8.0, 9.0]
+
+
 async def test_gallery_dims_and_file_picks_are_null_without_files(
     authenticated_client: httpx.AsyncClient,
 ) -> None:

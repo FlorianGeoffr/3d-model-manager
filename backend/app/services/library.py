@@ -768,12 +768,16 @@ class _GalleryAggregate:
 
 
 async def _gallery_aggregates(
-    db: AsyncSession, page_models: list[Model]
+    db: AsyncSession, settings: Settings, page_models: list[Model]
 ) -> tuple[dict[int, _GalleryAggregate], set[str]]:
     """``({revision_id: _GalleryAggregate}, {ok-thumb cover_blob_hash})`` for
-    ``page_models``'s current revisions -- three queries total for the whole
+    ``page_models``'s current revisions -- four queries total for the whole
     page (file/format/print-time/thumb-ok join, assembly-thumb-ok set,
-    cover-blob-ok set), never one per model or per file.
+    cover-blob-ok set, and ONE batched meta-enrichment query keyed by the
+    DISTINCT ``blob_hash`` set of the ``best_slicer_file``/``printable_file``
+    picks -- Phase 6 review fix: the Send-to-printer dialog needs
+    ``printable_file.meta.plates`` to pick a plate, not just the bare
+    ``FileOut``), never one per model or per file.
     """
     revision_ids = [m.current_revision_id for m in page_models if m.current_revision_id is not None]
     if not revision_ids:
@@ -890,6 +894,43 @@ async def _gallery_aggregates(
             ).scalars()
         )
 
+    # Resolve each bucket's file picks first so the DISTINCT blob_hash set
+    # across the whole page can be enriched with ONE extra query, rather
+    # than reaching for `.meta` per-bucket.
+    best_slicer_by_revision: dict[int, dict | None] = {}
+    printable_by_revision: dict[int, dict | None] = {}
+    pick_blob_hashes: set[str] = set()
+    for revision_id, bucket in buckets.items():
+        best_slicer_row = None
+        if bucket["slicer_candidates"]:
+            best_slicer_row = min(
+                bucket["slicer_candidates"],
+                key=lambda r: (_SLICER_FORMAT_PRIORITY[r["format"]], r["rel_path"]),
+            )
+            pick_blob_hashes.add(best_slicer_row["blob_hash"])
+        best_slicer_by_revision[revision_id] = best_slicer_row
+
+        printable_row = None
+        if bucket["printable_candidates"]:
+            printable_row = max(bucket["printable_candidates"], key=lambda r: r["id"])
+            pick_blob_hashes.add(printable_row["blob_hash"])
+        printable_by_revision[revision_id] = printable_row
+
+    pick_enrichments: dict[str, FileEnrichment] = {}
+    if pick_blob_hashes:
+        pick_blobs = (
+            (
+                await db.execute(
+                    select(Blob)
+                    .where(Blob.hash.in_(pick_blob_hashes))
+                    .options(selectinload(Blob.meta), selectinload(Blob.derivatives))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        pick_enrichments = await _build_file_enrichments(settings, pick_blobs)
+
     aggregates: dict[int, _GalleryAggregate] = {}
     for revision_id, bucket in buckets.items():
         first_ok_thumb = next(
@@ -901,20 +942,21 @@ async def _gallery_aggregates(
             None,
         )
 
-        best_slicer_row = None
-        if bucket["slicer_candidates"]:
-            best_slicer_row = min(
-                bucket["slicer_candidates"],
-                key=lambda r: (_SLICER_FORMAT_PRIORITY[r["format"]], r["rel_path"]),
-            )
-        best_slicer_file = _gallery_file_out(best_slicer_row) if best_slicer_row else None
+        best_slicer_row = best_slicer_by_revision[revision_id]
+        best_slicer_file = (
+            _gallery_file_out(best_slicer_row, pick_enrichments.get(best_slicer_row["blob_hash"]))
+            if best_slicer_row
+            else None
+        )
 
-        printable_row = None
-        if bucket["printable_candidates"]:
-            printable_row = max(bucket["printable_candidates"], key=lambda r: r["id"])
-        printable_file = _gallery_file_out(printable_row) if printable_row else None
+        printable_row = printable_by_revision[revision_id]
+        printable_file = (
+            _gallery_file_out(printable_row, pick_enrichments.get(printable_row["blob_hash"]))
+            if printable_row
+            else None
+        )
 
-        if best_slicer_row is not None:
+        if best_slicer_row is not None and best_slicer_row["dims_mm"] is not None:
             dims_mm = best_slicer_row["dims_mm"]
         elif bucket["mesh_candidates"]:
             dims_mm = max(bucket["mesh_candidates"], key=lambda t: t[0])[1]["dims_mm"]
@@ -935,12 +977,13 @@ async def _gallery_aggregates(
     return aggregates, cover_ok_hashes
 
 
-def _gallery_file_out(row: dict) -> FileOut:
+def _gallery_file_out(row: dict, enrichment: FileEnrichment | None = None) -> FileOut:
     """Build a ``FileOut`` for ``ModelSummary.best_slicer_file``/
     ``printable_file`` straight from the ``_gallery_aggregates`` batch query
-    row -- no per-file enrichment query (``meta``/``thumb_ready``/
-    ``glb_status`` stay at their defaults), keeping the gallery page's query
-    count fixed.
+    row, plus ``enrichment`` (Phase 6 review fix) resolved by ONE extra
+    batched query keyed by the DISTINCT blob_hash set of just these picks --
+    keeping the gallery page's query count fixed rather than growing with
+    the page size.
     """
     return FileOut(
         id=row["id"],
@@ -953,6 +996,10 @@ def _gallery_file_out(row: dict) -> FileOut:
         kind=row["kind"],
         mtime=row["mtime"],
         verified_at=row["verified_at"],
+        meta=enrichment.meta if enrichment else None,
+        thumb_ready=enrichment.thumb_ready if enrichment else False,
+        glb_status=enrichment.glb_status if enrichment else None,
+        glb_preview_ready=enrichment.glb_preview_ready if enrichment else False,
     )
 
 
@@ -988,7 +1035,9 @@ def _gallery_render_url(model: Model, aggregate: _GalleryAggregate | None) -> st
     return None
 
 
-async def build_model_summaries(db: AsyncSession, models: list[Model]) -> list[ModelSummary]:
+async def build_model_summaries(
+    db: AsyncSession, settings: Settings, models: list[Model]
+) -> list[ModelSummary]:
     """Build ``ModelSummary`` rows for an arbitrary list of already-loaded
     ``models`` (Branch 4 Task 1) -- not just one gallery page. Shared by
     ``list_models`` and the print queue's ``GET /queue``
@@ -996,7 +1045,7 @@ async def build_model_summaries(db: AsyncSession, models: list[Model]) -> list[M
     aggregate-then-assemble logic. Callers must have ``selectinload``ed
     ``Model.tags`` already.
     """
-    aggregates, cover_ok_hashes = await _gallery_aggregates(db, models)
+    aggregates, cover_ok_hashes = await _gallery_aggregates(db, settings, models)
 
     items = []
     for m in models:
@@ -1031,6 +1080,7 @@ async def build_model_summaries(db: AsyncSession, models: list[Model]) -> list[M
 
 async def list_models(
     db: AsyncSession,
+    settings: Settings,
     *,
     q: str | None,
     tag: str | None,
@@ -1123,7 +1173,7 @@ async def list_models(
     has_more = len(page_models) > limit
     page_models = page_models[:limit]
 
-    items = await build_model_summaries(db, page_models)
+    items = await build_model_summaries(db, settings, page_models)
 
     next_cursor = None
     if has_more and page_models:

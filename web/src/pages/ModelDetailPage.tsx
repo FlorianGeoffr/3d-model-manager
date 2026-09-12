@@ -3,15 +3,11 @@ import { getRouteApi } from "@tanstack/react-router";
 
 import { useModel } from "@/api/library";
 import { ArchivedBanner } from "@/components/model-detail/ArchivedBanner";
-import { FilesTab } from "@/components/model-detail/FilesTab";
 import { ModelHeader } from "@/components/model-detail/ModelHeader";
-import { NotesTab } from "@/components/model-detail/NotesTab";
-import { PrintsTab } from "@/components/model-detail/PrintsTab";
 import { RelatedModels } from "@/components/model-detail/RelatedModels";
-import { RevisionsTab } from "@/components/model-detail/RevisionsTab";
-import { ViewerTab } from "@/components/model-detail/ViewerTab";
+import { SidePanel } from "@/components/model-detail/SidePanel";
+import { StudioWorkspace } from "@/components/model-detail/StudioWorkspace";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ApiError } from "@/api/client";
 
 const routeApi = getRouteApi("/authenticated/models/$slug");
@@ -60,30 +56,10 @@ export function ModelDetailPage() {
       <ModelHeader model={model} editMode={editMode} onToggleEditMode={() => setEditMode((prev) => !prev)} />
       <ArchivedBanner model={model} />
       <RelatedModels model={model} />
-      <Tabs defaultValue="files">
-        <TabsList>
-          <TabsTrigger value="files">Files</TabsTrigger>
-          <TabsTrigger value="viewer">3D View</TabsTrigger>
-          <TabsTrigger value="revisions">Revisions</TabsTrigger>
-          <TabsTrigger value="notes">Notes</TabsTrigger>
-          <TabsTrigger value="prints">Prints</TabsTrigger>
-        </TabsList>
-        <TabsContent value="files">
-          <FilesTab model={model} />
-        </TabsContent>
-        <TabsContent value="viewer">
-          <ViewerTab model={model} />
-        </TabsContent>
-        <TabsContent value="revisions">
-          <RevisionsTab model={model} />
-        </TabsContent>
-        <TabsContent value="notes">
-          <NotesTab model={model} />
-        </TabsContent>
-        <TabsContent value="prints">
-          <PrintsTab model={model} />
-        </TabsContent>
-      </Tabs>
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_380px]">
+        <StudioWorkspace model={model} />
+        <SidePanel model={model} />
+      </div>
     </div>
   );
 }

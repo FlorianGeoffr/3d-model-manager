@@ -15,12 +15,35 @@ export const SLICER_OPTIONS: SlicerOption[] = [
   { id: "elegooslicer", label: "Elegoo Slicer", scheme: "elegooslicer" },
 ];
 
-const ELIGIBLE_FORMATS: ReadonlySet<BlobFormat> = new Set<BlobFormat>(["stl", "3mf", "step", "obj"]);
+const ELIGIBLE_FORMATS: ReadonlySet<BlobFormat> = new Set<BlobFormat>([
+  "stl",
+  "3mf",
+  "step",
+  "obj",
+  "iges",
+]);
 
 /** Raw-geometry formats a desktop slicer can open -- excludes sliced
  * outputs (`gcode`, `gcode_3mf`) and non-model files (images, `other`). */
 export function isSlicerEligible(file: FileOut): boolean {
   return ELIGIBLE_FORMATS.has(file.format);
+}
+
+/** Preference order for the header's single "Open in slicer" target when
+ * multiple eligible files exist on the current revision -- a `3mf` (already
+ * project-shaped) beats a bare `step`, which beats `obj`/`iges`. Ties within
+ * a format break on `rel_path` for a deterministic pick. */
+export const SLICER_FORMAT_PRIORITY: readonly BlobFormat[] = ["3mf", "step", "obj", "stl", "iges"];
+
+/** Picks the single best slicer-eligible, verified file on a revision's file
+ * list -- `SLICER_FORMAT_PRIORITY` order, then `rel_path` to break ties.
+ * Returns `undefined` when nothing qualifies. */
+export function pickBestSlicerFile(files: FileOut[]): FileOut | undefined {
+  const eligible = files.filter((file) => file.verified_at && isSlicerEligible(file));
+  return eligible.sort((a, b) => {
+    const rank = SLICER_FORMAT_PRIORITY.indexOf(a.format) - SLICER_FORMAT_PRIORITY.indexOf(b.format);
+    return rank !== 0 ? rank : a.rel_path.localeCompare(b.rel_path);
+  })[0];
 }
 
 export const LAST_SLICER_STORAGE_KEY = "tdmm.lastSlicer";

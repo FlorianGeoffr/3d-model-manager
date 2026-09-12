@@ -391,12 +391,8 @@ async def _model_with_ready_cover(
 @pytest.mark.asyncio
 async def test_preview_thumbnails_by_collection_returns_ready_covers(db_session) -> None:
     followed = await _follow(db_session, list_id="preview1")
-    await _model_with_ready_cover(
-        db_session, source_collection_id=followed.id, blob_hash="a" * 64
-    )
-    await _model_with_ready_cover(
-        db_session, source_collection_id=followed.id, blob_hash="b" * 64
-    )
+    await _model_with_ready_cover(db_session, source_collection_id=followed.id, blob_hash="a" * 64)
+    await _model_with_ready_cover(db_session, source_collection_id=followed.id, blob_hash="b" * 64)
     await db_session.commit()
 
     previews = await svc.preview_thumbnails_by_collection(db_session, [followed.id])

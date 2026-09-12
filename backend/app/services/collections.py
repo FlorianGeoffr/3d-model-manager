@@ -58,11 +58,7 @@ async def preview_thumbnails_by_collection(
         .over(partition_by=Model.source_collection_id, order_by=Model.id.desc())
         .label("rank")
     )
-    ranked = (
-        select(Model, rank)
-        .where(Model.source_collection_id.in_(collection_ids))
-        .subquery()
-    )
+    ranked = select(Model, rank).where(Model.source_collection_id.in_(collection_ids)).subquery()
     model_alias = aliased(Model, ranked)
     stmt = (
         select(model_alias)

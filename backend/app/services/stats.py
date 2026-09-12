@@ -122,14 +122,10 @@ async def _prints_stats(db: AsyncSession) -> PrintsStats:
 async def _recent_stats(db: AsyncSession) -> RecentStats:
     cutoff = datetime.now(UTC) - timedelta(days=7)
     models_added_7d = (
-        await db.execute(
-            select(func.count()).select_from(Model).where(Model.created_at >= cutoff)
-        )
+        await db.execute(select(func.count()).select_from(Model).where(Model.created_at >= cutoff))
     ).scalar_one()
     prints_7d = (
-        await db.execute(
-            select(func.count()).select_from(Print).where(Print.printed_at >= cutoff)
-        )
+        await db.execute(select(func.count()).select_from(Print).where(Print.printed_at >= cutoff))
     ).scalar_one()
     return RecentStats(models_added_7d=models_added_7d, prints_7d=prints_7d)
 
@@ -141,9 +137,7 @@ async def _jobs_stats(db: AsyncSession) -> JobsStats:
             select(
                 func.count().filter(Job.state == "running"),
                 func.count().filter(Job.state == "queued"),
-                func.count().filter(
-                    Job.state.in_(("failed", "dead")), Job.updated_at >= cutoff
-                ),
+                func.count().filter(Job.state.in_(("failed", "dead")), Job.updated_at >= cutoff),
             ).select_from(Job)
         )
     ).one()

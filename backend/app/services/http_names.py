@@ -41,4 +41,4 @@ def content_disposition_attachment(name: str) -> str:
     # `quote`'s default safe set already excludes CR/LF and quotes; also
     # exclude "/" so a title containing one can't look like a path segment.
     encoded = quote(name, safe="")
-    return f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{encoded}'
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"

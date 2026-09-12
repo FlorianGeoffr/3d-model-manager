@@ -202,9 +202,7 @@ async def iter_collection_zip(
     silently skipped rather than failing the whole export.
     """
     models = await _collection_models(db, collection)
-    collection_prefix = _safe_path_segment(
-        collection.title, fallback=f"collection-{collection.id}"
-    )
+    collection_prefix = _safe_path_segment(collection.title, fallback=f"collection-{collection.id}")
 
     zs = ZipStream()
     for model in models:

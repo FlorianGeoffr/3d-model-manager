@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearch } from "@tanstack/react-router";
+import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import {
   ArchiveIcon,
   BookmarkIcon,
@@ -30,6 +31,7 @@ import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { chunkIntoRows, columnsForWidth } from "@/lib/grid";
 import { useDebouncedValue } from "@/lib/format";
 import { BLOB_FORMATS, type BlobFormat, type ModelSummary } from "@/api/types";
 import { FORMAT_LABELS } from "@/lib/formatMeta";
@@ -144,19 +146,49 @@ export function LibraryPage() {
   const items = modelsQuery.data?.pages.flatMap((page) => page.items) ?? [];
   const selectedItems = items.filter((model) => selectedIds.has(model.id));
 
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  // R9-A item 2: virtualize the grid by row rather than by card, since
+  // `useWindowVirtualizer` measures along a single axis and the grid wraps.
+  // Column count tracks the grid container's own width via ResizeObserver
+  // (mirroring the `grid-cols-*` breakpoints below) rather than the
+  // viewport, so it stays correct regardless of any surrounding chrome.
+  const gridRef = useRef<HTMLDivElement | null>(null);
+  const [columns, setColumns] = useState(() => columnsForWidth(0));
 
   useEffect(() => {
-    const sentinel = sentinelRef.current;
-    if (!sentinel) return;
-    const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting) && modelsQuery.hasNextPage && !modelsQuery.isFetchingNextPage) {
-        void modelsQuery.fetchNextPage();
-      }
+    const el = gridRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? 0;
+      setColumns(columnsForWidth(width));
     });
-    observer.observe(sentinel);
+    observer.observe(el);
     return () => observer.disconnect();
-  }, [modelsQuery]);
+  }, []);
+
+  const rows = useMemo(() => chunkIntoRows(items, columns), [items, columns]);
+
+  // A fixed `estimateSize` (rather than dynamic per-row measurement) keeps
+  // this deterministic under jsdom, which reports 0 for every element's
+  // layout box -- dynamic measurement would collapse every row to zero
+  // height there and defeat virtualization in tests. ~340px approximates a
+  // card's image (aspect-square) plus its text content at a typical column
+  // width; a few pixels of slop between rows is an acceptable trade-off.
+  const ROW_HEIGHT_ESTIMATE = 340;
+  const rowVirtualizer = useWindowVirtualizer({
+    count: rows.length,
+    estimateSize: () => ROW_HEIGHT_ESTIMATE,
+    overscan: 3,
+    scrollMargin: gridRef.current?.offsetTop ?? 0,
+  });
+  const virtualRows = rowVirtualizer.getVirtualItems();
+
+  useEffect(() => {
+    const lastVisible = virtualRows.at(-1);
+    if (!lastVisible) return;
+    if (lastVisible.index >= rows.length - 1 && modelsQuery.hasNextPage && !modelsQuery.isFetchingNextPage) {
+      void modelsQuery.fetchNextPage();
+    }
+  }, [virtualRows, rows.length, modelsQuery]);
 
   const isEmpty = !modelsQuery.isLoading && items.length === 0;
   const tags = tagsQuery.data ?? [];
@@ -334,20 +366,31 @@ export function LibraryPage() {
         </Card>
       ) : (
         <>
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
-            {items.map((model, index) => (
-              <ModelCard
-                key={model.id}
-                model={model}
-                index={index}
-                selectable={selectMode}
-                selected={selectedIds.has(model.id)}
-                onSelectChange={toggleSelected}
-                onModifiedClick={handleModifiedClick}
-              />
-            ))}
+          <div ref={gridRef} className="relative w-full" style={{ height: rowVirtualizer.getTotalSize() }}>
+            {virtualRows.map((virtualRow) => {
+              const row = rows[virtualRow.index] ?? [];
+              return (
+                <div
+                  key={virtualRow.key}
+                  data-index={virtualRow.index}
+                  className="absolute top-0 left-0 grid w-full grid-cols-2 gap-4 pb-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6"
+                  style={{ transform: `translateY(${virtualRow.start - rowVirtualizer.options.scrollMargin}px)` }}
+                >
+                  {row.map((model, columnIndex) => (
+                    <ModelCard
+                      key={model.id}
+                      model={model}
+                      index={virtualRow.index * columns + columnIndex}
+                      selectable={selectMode}
+                      selected={selectedIds.has(model.id)}
+                      onSelectChange={toggleSelected}
+                      onModifiedClick={handleModifiedClick}
+                    />
+                  ))}
+                </div>
+              );
+            })}
           </div>
-          <div ref={sentinelRef} className="h-1" />
           {modelsQuery.isFetchingNextPage && (
             <p className="py-4 text-center text-sm text-muted-foreground">Loading more…</p>
           )}

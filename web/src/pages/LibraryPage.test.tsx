@@ -43,17 +43,16 @@ vi.mock("sonner", () => ({
   toast: { success: toastSuccessMock, error: toastErrorMock },
 }));
 
-// jsdom doesn't implement `IntersectionObserver` (the gallery grid's
-// infinite-scroll sentinel uses it) -- every earlier test in this file only
-// ever renders the empty/error state (no grid, no sentinel), so this never
-// came up before. A minimal stub is enough: none of these tests exercise
-// scroll-triggered pagination, only that the grid/select-mode UI renders.
-class MockIntersectionObserver {
+// jsdom doesn't implement `ResizeObserver` (the virtualized grid's column
+// count comes from observing the grid container's width, R9-A item 2) -- a
+// minimal stub that never fires is enough: it leaves the grid at its
+// smallest (2-column) layout, which every test here is fine with.
+class MockResizeObserver {
   observe() {}
   unobserve() {}
   disconnect() {}
 }
-vi.stubGlobal("IntersectionObserver", MockIntersectionObserver);
+vi.stubGlobal("ResizeObserver", MockResizeObserver);
 
 // Radix's Popover never reaches an interactive open state under jsdom (same
 // floating-ui/dismissable-layer limitation documented for `<Select>` in
@@ -500,5 +499,58 @@ describe("LibraryPage", () => {
     fireEvent.click(cardLink("Test Model"), { ctrlKey: true });
     await waitFor(() => expect(screen.queryByText(/selected/)).not.toBeInTheDocument());
     expect(router.state.location.pathname).toBe("/");
+  });
+});
+
+describe("LibraryPage -- virtualized grid (R9-A item 2)", () => {
+  it("renders far fewer than 200 cards in the DOM for a 200-item page", async () => {
+    const models: ModelSummary[] = Array.from({ length: 200 }, (_, i) => ({
+      ...GALLERY_MODEL,
+      id: i + 1,
+      slug: `model-${i + 1}`,
+      name: `Model ${i + 1}`,
+    }));
+    mockGalleryOkWithModels(models);
+    renderLibraryPage();
+
+    await screen.findByText("Model 1");
+
+    const renderedCardTitles = screen.getAllByRole("heading", { level: 3 });
+    expect(renderedCardTitles.length).toBeGreaterThan(0);
+    expect(renderedCardTitles.length).toBeLessThan(200);
+  });
+
+  it("fetches the next page once the last virtual row is reached and more pages exist", async () => {
+    getMock.mockImplementation((path: string) => {
+      if (path.startsWith("/models")) {
+        return Promise.resolve(
+          path.includes("cursor=")
+            ? { items: [], next_cursor: null }
+            : { items: [GALLERY_MODEL, GALLERY_MODEL_2], next_cursor: "page-2" },
+        );
+      }
+      return Promise.resolve([]);
+    });
+    renderLibraryPage();
+
+    await screen.findByText("Test Model");
+
+    // Two items at the default (2-column) layout is exactly one row --
+    // the only, and therefore last, virtual row -- so it should trigger
+    // fetchNextPage as soon as it renders.
+    await waitFor(() => expect(lastModelsCall()).toContain("cursor=page-2"));
+  });
+
+  it("does not fetch a next page once hasNextPage is false", async () => {
+    mockGalleryOkWithModels([GALLERY_MODEL, GALLERY_MODEL_2]);
+    renderLibraryPage();
+
+    await screen.findByText("Test Model");
+
+    const callsMade = getMock.mock.calls.filter((call: unknown[]) => (call[0] as string).startsWith("/models")).length;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(
+      getMock.mock.calls.filter((call: unknown[]) => (call[0] as string).startsWith("/models")).length,
+    ).toBe(callsMade);
   });
 });

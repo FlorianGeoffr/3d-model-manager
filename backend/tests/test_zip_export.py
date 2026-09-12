@@ -166,6 +166,54 @@ async def test_collection_zip_nests_per_model(
     }
 
 
+async def test_current_revision_files_fetched_once_per_model(
+    authenticated_client: httpx.AsyncClient,
+    db_session,
+    seed_file,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A collection zip must fetch each model's current-revision files
+    exactly once, not once for the empty-check and again for the entry loop
+    (review finding 6 -- a 200-model export was issuing 400 queries)."""
+    collection = FollowedCollection(
+        site=ImportSite.THINGIVERSE,
+        list_id="count-list",
+        kind="likes",
+        title="Counted",
+        mode=CollectionSyncMode.REVIEW,
+    )
+    db_session.add(collection)
+    await db_session.commit()
+    await db_session.refresh(collection)
+
+    created_a = await _create_model(authenticated_client, "Count A")
+    created_b = await _create_model(authenticated_client, "Count B")
+    model_a = await library.get_model_by_slug(db_session, created_a["slug"])
+    model_b = await library.get_model_by_slug(db_session, created_b["slug"])
+    model_a.source_collection_id = collection.id
+    model_b.source_collection_id = collection.id
+    await db_session.commit()
+
+    revision_a = await db_session.get(Revision, model_a.current_revision_id)
+    revision_b = await db_session.get(Revision, model_b.current_revision_id)
+    await seed_file(model_a, revision_a, "a.stl", b"AAA")
+    await seed_file(model_b, revision_b, "b.stl", b"BBB")
+
+    calls: list[int] = []
+    original = zip_export._current_revision_files
+
+    async def counting(db, model):
+        calls.append(model.id)
+        return await original(db, model)
+
+    monkeypatch.setattr(zip_export, "_current_revision_files", counting)
+
+    response = await authenticated_client.get(f"/api/collections/{collection.id}/zip")
+
+    assert response.status_code == 200
+    assert calls == [model_a.id, model_b.id]
+
+
 async def test_collection_zip_skips_models_with_no_files(
     authenticated_client: httpx.AsyncClient, db_session, seed_file
 ) -> None:

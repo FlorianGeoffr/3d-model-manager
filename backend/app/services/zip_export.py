@@ -89,20 +89,22 @@ async def _add_model_entries(
     db: AsyncSession,
     settings: Settings,
     model: Model,
+    files: list[tuple[File, Blob]],
     *,
     prefix: str,
     used_names: set[str],
 ) -> AsyncIterator[bytes]:
-    """Queue README + every current-revision file of ``model`` under
-    ``prefix`` (e.g. ``"<model-slug>"`` or
-    ``"<collection-name>/<model-slug>"``), draining each entry as soon as
-    it's queued so files stay in strict one-at-a-time streaming order."""
+    """Queue README + every current-revision file of ``model`` (already
+    fetched by the caller as ``files``, so it's read once per model rather
+    than once per caller *and* once here) under ``prefix`` (e.g.
+    ``"<model-slug>"`` or ``"<collection-name>/<model-slug>"``), draining
+    each entry as soon as it's queued so files stay in strict one-at-a-time
+    streaming order."""
     readme_name = _dedupe_name(used_names, "README.txt")
     zs.add(_readme_bytes(model), f"{prefix}/{readme_name}")
     for chunk in zs.file():
         yield chunk
 
-    files = await _current_revision_files(db, model)
     for file, blob in files:
         backend = await resolve_backend_for_file(db, settings, file)
         arcname = _dedupe_name(used_names, PurePosixPath(file.rel_path).name)
@@ -132,7 +134,7 @@ async def iter_model_zip(
     zs = ZipStream()
     used_names: set[str] = set()
     async for chunk in _add_model_entries(
-        zs, db, settings, model, prefix=model.slug, used_names=used_names
+        zs, db, settings, model, files, prefix=model.slug, used_names=used_names
     ):
         yield chunk
     for chunk in zs.footer():
@@ -185,6 +187,7 @@ async def iter_collection_zip(
             db,
             settings,
             model,
+            files,
             prefix=f"{collection.title}/{model.slug}",
             used_names=used_names,
         ):

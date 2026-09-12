@@ -5,6 +5,8 @@ import { ClockIcon, FileStackIcon, StarIcon, XIcon } from "lucide-react";
 
 import { modelQueryOptions, usePatchModel, useTagColorMap } from "@/api/library";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { OpenInSlicerButton } from "@/components/model-detail/OpenInSlicerButton";
+import { SendToPrinterButton } from "@/components/model-detail/SendToPrinterButton";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -12,14 +14,23 @@ import { SpecRow, type SpecItem } from "@/components/ui/spec-row";
 import { FORMAT_LABELS, formatIcon } from "@/lib/formatMeta";
 import { formatDate, humanizeDuration } from "@/lib/format";
 import { tagColorClass } from "@/lib/tagColors";
+import { cn } from "@/lib/utils";
 import type { ModelSummary } from "@/api/types";
 
 const VISIBLE_TAGS = 3;
+const VISIBLE_FORMATS = 3;
+
+/** `W × D × H mm`, one decimal each -- `null` when the model has no
+ * current-revision bounding box yet. */
+function formatDims(dims: number[] | null): string | null {
+  if (!dims || dims.length < 3) return null;
+  const [w, d, h] = dims;
+  return `${w.toFixed(1)} × ${d.toFixed(1)} × ${h.toFixed(1)} mm`;
+}
 
 export function ModelCard({
   model,
   index,
-  selectable = false,
   selected = false,
   onSelectChange,
   onModifiedClick,
@@ -29,9 +40,8 @@ export function ModelCard({
    * ctrl/cmd/shift+click range selection; optional so the card still works
    * standalone (e.g. in tests) without select support. */
   index?: number;
-  /** Bulk-select mode (LibraryPage): shows a checkbox overlay instead of
-   * (or alongside) the favorite star, none of which navigate the card. */
-  selectable?: boolean;
+  /** Selection is implicit (no separate select-mode toggle): the checkbox
+   * always exists, shown on hover or once `selected`. */
   selected?: boolean;
   onSelectChange?: (id: number, next: boolean) => void;
   /** Ctrl/Cmd/Shift+click range/toggle select (R9-A item 6): fired instead
@@ -58,8 +68,13 @@ export function ModelCard({
   }
   const visibleTags = model.tags.slice(0, VISIBLE_TAGS);
   const overflowCount = model.tags.length - visibleTags.length;
+  const uniqueFormats = Array.from(new Set(model.formats));
+  const visibleFormats = uniqueFormats.slice(0, VISIBLE_FORMATS);
+  const formatOverflowCount = uniqueFormats.length - visibleFormats.length;
   const primaryFormat = model.formats[0];
   const Icon = formatIcon(primaryFormat);
+  const dimsLabel = formatDims(model.dims_mm);
+  const hasQuickActions = model.best_slicer_file !== null || model.printable_file !== null;
   const showCover = model.cover !== null && !coverErrored;
   // Photo-first cards, render on hover (feat/import-fidelity T4): `cover`
   // (now photo-first per T2) stays the card's resting image; a distinct
@@ -115,7 +130,7 @@ export function ModelCard({
       onFocus={onIntent}
     >
       <Card className="h-full gap-3 overflow-hidden py-0 pb-4 transition-shadow hover:shadow-md">
-        <div className="relative aspect-square overflow-hidden bg-muted">
+        <div className="relative aspect-[4/3] overflow-hidden bg-muted">
           {showCover ? (
             <>
               <img
@@ -153,21 +168,24 @@ export function ModelCard({
             </div>
           )}
           <div className="absolute top-2 left-2 flex flex-col items-start gap-1.5">
-            {selectable && (
-              // Same `display: contents` + stop-propagation trick as the
-              // review-dismiss control below -- the card body is a
-              // whole-surface `<Link>`, and Radix's checkbox click would
-              // otherwise bubble up and navigate away instead of toggling
-              // selection.
-              <span className="contents" onClick={stopCardNavigation}>
-                <Checkbox
-                  checked={selected}
-                  onCheckedChange={(checked) => onSelectChange?.(model.id, checked === true)}
-                  aria-label={`Select ${model.name}`}
-                  className="bg-background/80 backdrop-blur-sm"
-                />
-              </span>
-            )}
+            {/* Selection is implicit (no select-mode toggle): the checkbox
+                is always mounted, just hidden until hover/focus or until
+                the card is actually selected. Same `display: contents` +
+                stop-propagation trick as the review-dismiss control below --
+                the card body is a whole-surface `<Link>`, and Radix's
+                checkbox click would otherwise bubble up and navigate away
+                instead of toggling selection. */}
+            <span className="contents" onClick={stopCardNavigation}>
+              <Checkbox
+                checked={selected}
+                onCheckedChange={(checked) => onSelectChange?.(model.id, checked === true)}
+                aria-label={`Select ${model.name}`}
+                className={cn(
+                  "bg-background/80 backdrop-blur-sm transition-opacity",
+                  selected ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
+                )}
+              />
+            </span>
             {model.source_site && (
               <Badge variant="secondary" className="capitalize backdrop-blur-sm" data-testid="source-badge">
                 {model.source_site}
@@ -221,6 +239,28 @@ export function ModelCard({
               </button>
             </span>
           </div>
+          {(dimsLabel !== null || hasQuickActions) && (
+            <div
+              className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 bg-gradient-to-t from-black/70 to-transparent px-2 py-1.5 opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100"
+              data-testid="hover-overlay"
+            >
+              {dimsLabel !== null ? (
+                <span className="tabular-mono truncate text-xs text-white">{dimsLabel}</span>
+              ) : (
+                <span />
+              )}
+              {hasQuickActions && (
+                <span className="contents" onClick={stopCardNavigation}>
+                  <div className="flex items-center gap-1">
+                    {model.best_slicer_file && (
+                      <OpenInSlicerButton file={model.best_slicer_file} size="icon-sm" />
+                    )}
+                    {model.printable_file && <SendToPrinterButton file={model.printable_file} />}
+                  </div>
+                </span>
+              )}
+            </div>
+          )}
         </div>
         <CardContent className="flex flex-col gap-2 px-4">
           <h3 className="truncate text-sm font-medium" title={model.name}>
@@ -241,11 +281,16 @@ export function ModelCard({
           )}
 
           <div className="flex flex-wrap gap-1" data-testid="format-badges">
-            {model.formats.map((format) => (
-              <Badge key={format} variant="outline">
-                {FORMAT_LABELS[format]}
-              </Badge>
-            ))}
+            {visibleFormats.map((format) => {
+              const ChipIcon = formatIcon(format);
+              return (
+                <Badge key={format} variant="outline" className="gap-1">
+                  <ChipIcon className="size-3" />
+                  {FORMAT_LABELS[format]}
+                </Badge>
+              );
+            })}
+            {formatOverflowCount > 0 && <Badge variant="outline">+{formatOverflowCount}</Badge>}
           </div>
 
           <p className="font-mono text-xs text-muted-foreground">

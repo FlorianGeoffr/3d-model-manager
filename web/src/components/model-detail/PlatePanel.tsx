@@ -97,8 +97,14 @@ function PlateCard({ blobHash, plate }: { blobHash: string; plate: PlateOut }) {
 }
 
 /** Per-plate time/weight/filament breakdown for a sliced file (Task 9),
- * replacing the ViewerTab's earlier sliced-file placeholder card. */
-export function PlatePanel({ file }: { file: FileOut }) {
+ * replacing the ViewerTab's earlier sliced-file placeholder card.
+ *
+ * `compact` (Phase 4 studio) renders just the plate-card strip -- no header/
+ * meta lines, no "Preview layers" button -- for the thin strip
+ * `StudioSurface` shows beneath the assembly viewer when the model has both
+ * ready GLB parts AND sliced files, so neither view has to hide behind the
+ * other. */
+export function PlatePanel({ file, compact = false }: { file: FileOut; compact?: boolean }) {
   const plates = file.meta?.plates ?? [];
   const header = headerLine(file);
   const meta = metaLine(file);
@@ -106,27 +112,30 @@ export function PlatePanel({ file }: { file: FileOut }) {
 
   return (
     <div className="space-y-3">
-      {header ? <p className="text-sm text-muted-foreground">{header}</p> : null}
-      {meta ? <p className="text-sm text-muted-foreground">{meta}</p> : null}
-      {previewOpen ? (
-        <Suspense
-          fallback={
-            <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
-              <LoaderCircleIcon className="size-4 animate-spin" />
-              Loading g-code preview…
-            </div>
-          }
-        >
-          <GcodePreview fileId={file.id} />
-        </Suspense>
-      ) : (
-        <Button variant="outline" size="sm" onClick={() => setPreviewOpen(true)}>
-          <LayersIcon className="size-4" />
-          Preview layers
-        </Button>
-      )}
+      {!compact && header ? <p className="text-sm text-muted-foreground">{header}</p> : null}
+      {!compact && meta ? <p className="text-sm text-muted-foreground">{meta}</p> : null}
+      {!compact &&
+        (previewOpen ? (
+          <Suspense
+            fallback={
+              <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
+                <LoaderCircleIcon className="size-4 animate-spin" />
+                Loading g-code preview…
+              </div>
+            }
+          >
+            <GcodePreview fileId={file.id} />
+          </Suspense>
+        ) : (
+          <Button variant="outline" size="sm" onClick={() => setPreviewOpen(true)}>
+            <LayersIcon className="size-4" />
+            Preview layers
+          </Button>
+        ))}
       {plates.length === 0 ? (
-        <p className="py-8 text-center text-sm text-muted-foreground">No plate details available yet.</p>
+        !compact && (
+          <p className="py-8 text-center text-sm text-muted-foreground">No plate details available yet.</p>
+        )
       ) : (
         <div className="flex gap-3 overflow-x-auto pb-2">
           {plates.map((plate) => (

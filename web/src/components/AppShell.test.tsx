@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider, createMemoryHistory, createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AppShell } from "@/components/AppShell";
@@ -35,6 +35,19 @@ vi.mock("@/api/scan", () => ({
 vi.mock("@/api/auth", () => ({
   useAuth: () => ({ data: { username: "tester" } }),
   useLogout: () => ({ mutate: vi.fn(), isPending: false }),
+}));
+
+vi.mock("@/api/collections", () => ({
+  useFollowedCollections: () => ({ data: [] }),
+}));
+
+vi.mock("@/api/printers", () => ({
+  usePrinters: () => ({ data: [] }),
+  usePrinterStatus: () => ({ data: undefined }),
+}));
+
+vi.mock("@/api/library", () => ({
+  useModelSearchQuery: () => ({ data: undefined }),
 }));
 
 // AppShell wraps its children in the app-wide SSE `EventsProvider`, which
@@ -73,7 +86,7 @@ describe("AppShell nav", () => {
 
     renderShell();
 
-    expect(await screen.findByText("Library")).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: "Library" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Printer/ })).not.toBeInTheDocument();
   });
 
@@ -123,6 +136,22 @@ describe("AppShell nav", () => {
     const link = await screen.findByRole("link", { name: /Collections/ });
     expect(link.textContent).toBe("Collections");
   });
+
+  // R12 studio shell: nav is grouped (Library / Operations) with visible
+  // group labels, Settings pinned outside both groups.
+  it("renders group labels and keeps Settings out of both groups", async () => {
+    featuresBox.current = { printer_enabled: true };
+
+    renderShell();
+
+    const nav = await screen.findByRole("navigation");
+    const groupLabels = within(nav)
+      .getAllByText(/^(Library|Operations)$/)
+      .filter((el) => el.tagName === "DIV")
+      .map((el) => el.textContent);
+    expect(groupLabels).toEqual(["Library", "Operations"]);
+    expect(screen.getByRole("link", { name: /Settings/ })).toBeInTheDocument();
+  });
 });
 
 describe("AppShell keyboard shortcuts dialog (R9-C item 5)", () => {
@@ -134,7 +163,7 @@ describe("AppShell keyboard shortcuts dialog (R9-C item 5)", () => {
 
   it("`?` opens the keyboard shortcuts dialog", async () => {
     renderShell();
-    await screen.findByText("Library");
+    await screen.findByRole("link", { name: "Library" });
 
     fireEvent.keyDown(document.body, { key: "?" });
 
@@ -144,7 +173,7 @@ describe("AppShell keyboard shortcuts dialog (R9-C item 5)", () => {
 
   it("the sidebar's Keyboard shortcuts button opens the same dialog", async () => {
     renderShell();
-    await screen.findByText("Library");
+    await screen.findByRole("link", { name: "Library" });
 
     fireEvent.click(screen.getByRole("button", { name: "Keyboard shortcuts" }));
 
@@ -168,7 +197,7 @@ describe("AppShell scan chip (R9-D item 7)", () => {
 
     renderShell();
 
-    await screen.findByText("Library");
+    await screen.findByRole("link", { name: "Library" });
     expect(screen.queryByText(/Scanning/)).not.toBeInTheDocument();
     expect(screen.queryByText("Scan done")).not.toBeInTheDocument();
   });
@@ -217,7 +246,7 @@ describe("AppShell scan chip (R9-D item 7)", () => {
 
     renderShell();
 
-    await screen.findByText("Library");
+    await screen.findByRole("link", { name: "Library" });
     expect(screen.queryByText(/Scan/)).not.toBeInTheDocument();
   });
 });

@@ -175,6 +175,9 @@ const GALLERY_MODEL: ModelSummary = {
   source_collection_id: null,
   source_collection_title: null,
   favorite: false,
+  dims_mm: null,
+  best_slicer_file: null,
+  printable_file: null,
 };
 
 const GALLERY_MODEL_2: ModelSummary = {
@@ -348,14 +351,11 @@ describe("LibraryPage", () => {
     await waitFor(() => expect(lastModelsCall()).not.toContain("archived="));
   });
 
-  it("select mode reveals a checkbox per card and a floating action bar once one is checked", async () => {
+  it("checking a card's (always-mounted) checkbox reveals a floating action bar", async () => {
     mockGalleryOkWithModels([GALLERY_MODEL]);
     renderLibraryPage();
     await screen.findByText("Test Model");
 
-    expect(screen.queryByRole("checkbox", { name: "Select Test Model" })).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "Select" }));
     const checkbox = await screen.findByRole("checkbox", { name: "Select Test Model" });
     expect(screen.queryByText(/selected/)).not.toBeInTheDocument();
 
@@ -370,8 +370,6 @@ describe("LibraryPage", () => {
     postMock.mockImplementation(() => new Promise(() => {}));
     renderLibraryPage();
     await screen.findByText("Test Model");
-
-    fireEvent.click(screen.getByRole("button", { name: "Select" }));
     fireEvent.click(await screen.findByRole("checkbox", { name: "Select Test Model" }));
     await screen.findByText("1 selected");
 
@@ -389,8 +387,6 @@ describe("LibraryPage", () => {
     mockGalleryOkWithModels([GALLERY_MODEL]);
     renderLibraryPage();
     await screen.findByText("Test Model");
-
-    fireEvent.click(screen.getByRole("button", { name: "Select" }));
     fireEvent.click(await screen.findByRole("checkbox", { name: "Select Test Model" }));
     await screen.findByText("1 selected");
 
@@ -411,8 +407,6 @@ describe("LibraryPage", () => {
     });
     renderLibraryPage();
     await screen.findByText("Test Model");
-
-    fireEvent.click(screen.getByRole("button", { name: "Select" }));
     fireEvent.click(await screen.findByRole("checkbox", { name: "Select Test Model" }));
     await screen.findByText("1 selected");
 
@@ -430,8 +424,6 @@ describe("LibraryPage", () => {
     postMock.mockResolvedValueOnce({ deleted: 2 });
     renderLibraryPage();
     await screen.findByText("Test Model");
-
-    fireEvent.click(screen.getByRole("button", { name: "Select" }));
     fireEvent.click(await screen.findByRole("checkbox", { name: "Select Test Model" }));
     fireEvent.click(await screen.findByRole("checkbox", { name: "Select Test Model 2" }));
     await screen.findByText("2 selected");
@@ -453,8 +445,6 @@ describe("LibraryPage", () => {
     mockGalleryOkWithModels([GALLERY_MODEL]);
     renderLibraryPage();
     await screen.findByText("Test Model");
-
-    fireEvent.click(screen.getByRole("button", { name: "Select" }));
     fireEvent.click(await screen.findByRole("checkbox", { name: "Select Test Model" }));
     await screen.findByText("1 selected");
 
@@ -478,8 +468,6 @@ describe("LibraryPage", () => {
     );
     renderLibraryPage();
     await screen.findByText("Test Model");
-
-    fireEvent.click(screen.getByRole("button", { name: "Select" }));
     fireEvent.click(await screen.findByRole("checkbox", { name: "Select Test Model" }));
     await screen.findByText("1 selected");
 
@@ -629,23 +617,19 @@ describe("LibraryPage -- keyboard shortcuts (R9-C item 5)", () => {
     mockGalleryOkWithModels([GALLERY_MODEL]);
     renderLibraryPage();
     await screen.findByText("Test Model");
-
-    fireEvent.click(screen.getByRole("button", { name: "Select" }));
     fireEvent.click(await screen.findByRole("checkbox", { name: "Select Test Model" }));
     await screen.findByText("1 selected");
 
     fireEvent.keyDown(document.body, { key: "Escape" });
 
     await waitFor(() => expect(screen.queryByText(/selected/)).not.toBeInTheDocument());
-    expect(screen.getByRole("button", { name: "Select" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("checkbox", { name: "Select Test Model" })).not.toBeChecked();
   });
 
   it("Escape does nothing to the selection while the bulk-delete confirm dialog is open (fix wave finding 5)", async () => {
     mockGalleryOkWithModels([GALLERY_MODEL]);
     renderLibraryPage();
     await screen.findByText("Test Model");
-
-    fireEvent.click(screen.getByRole("button", { name: "Select" }));
     fireEvent.click(await screen.findByRole("checkbox", { name: "Select Test Model" }));
     await screen.findByText("1 selected");
 
@@ -661,15 +645,13 @@ describe("LibraryPage -- keyboard shortcuts (R9-C item 5)", () => {
     fireEvent.keyDown(document.body, { key: "Escape" });
 
     expect(screen.getByText("1 selected")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Select" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("checkbox", { name: "Select Test Model" })).toBeChecked();
   });
 
   it("Delete opens the bulk-delete confirm when there is a selection", async () => {
     mockGalleryOkWithModels([GALLERY_MODEL]);
     renderLibraryPage();
     await screen.findByText("Test Model");
-
-    fireEvent.click(screen.getByRole("button", { name: "Select" }));
     fireEvent.click(await screen.findByRole("checkbox", { name: "Select Test Model" }));
     await screen.findByText("1 selected");
 
@@ -689,7 +671,7 @@ describe("LibraryPage -- keyboard shortcuts (R9-C item 5)", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
-  it("mod+a selects every loaded item and enters select mode", async () => {
+  it("mod+a selects every loaded item even with no prior selection", async () => {
     mockGalleryOkWithModels([GALLERY_MODEL, GALLERY_MODEL_2]);
     renderLibraryPage();
     await screen.findByText("Test Model");
@@ -697,17 +679,27 @@ describe("LibraryPage -- keyboard shortcuts (R9-C item 5)", () => {
     fireEvent.keyDown(document.body, { key: "a", ctrlKey: true });
 
     expect(await screen.findByText("2 selected")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Select" })).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("a selects every loaded item once already in select mode", async () => {
+  it("a selects every loaded item once a selection is already active", async () => {
+    mockGalleryOkWithModels([GALLERY_MODEL, GALLERY_MODEL_2]);
+    renderLibraryPage();
+    await screen.findByText("Test Model");
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Select Test Model" }));
+    await screen.findByText("1 selected");
+
+    fireEvent.keyDown(document.body, { key: "a" });
+
+    expect(await screen.findByText("2 selected")).toBeInTheDocument();
+  });
+
+  it("a bare 'a' does nothing while there is no active selection", async () => {
     mockGalleryOkWithModels([GALLERY_MODEL, GALLERY_MODEL_2]);
     renderLibraryPage();
     await screen.findByText("Test Model");
 
-    fireEvent.click(screen.getByRole("button", { name: "Select" }));
     fireEvent.keyDown(document.body, { key: "a" });
 
-    expect(await screen.findByText("2 selected")).toBeInTheDocument();
+    expect(screen.queryByText(/selected/)).not.toBeInTheDocument();
   });
 });

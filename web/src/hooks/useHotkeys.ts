@@ -14,6 +14,16 @@ function isEditableTarget(target: EventTarget | null): boolean {
   return target.isContentEditable || editable === "" || editable === "true";
 }
 
+/** Whether a spec's modifiers include mod/ctrl/meta -- such bindings bypass
+ * the editable-target guard below (a plain single-key shortcut like `"f"`
+ * still respects it, since typing "f" into a text field must not trigger
+ * it). */
+function hasModOrCtrlOrMeta(spec: string): boolean {
+  const parts = spec.split("+");
+  parts.pop();
+  return parts.some((modifier) => modifier === "mod" || modifier === "ctrl" || modifier === "meta");
+}
+
 /** Parses a spec like `"mod+a"` or `"F"` and reports whether `event` matches
  * it. `mod` is Ctrl on Linux/Windows, Meta (Cmd) on macOS. Modifiers not
  * named in the spec (ctrl/meta/alt) must be unpressed, so a bare `"a"`
@@ -49,9 +59,11 @@ function matchesSpec(spec: string, event: KeyboardEvent): boolean {
 /** Document-level keyboard shortcuts. `bindings` maps a key spec to a
  * handler; the latest `bindings` is read via a ref on every keydown, so
  * callers don't need to memoize it. Repeats are ignored, as are events
- * targeting an input/textarea/select/contenteditable -- except `Escape`,
- * which always fires so it can always back out of something. The matched
- * handler's `event.preventDefault()` is called for it automatically. */
+ * targeting an input/textarea/select/contenteditable -- except `Escape` and
+ * specs carrying a mod/ctrl/meta modifier (e.g. `mod+k`), which always fire
+ * so a shortcut like Cmd+K keeps working while focus sits in a text field
+ * (including the field the shortcut itself opens). The matched handler's
+ * `event.preventDefault()` is called for it automatically. */
 export function useHotkeys(
   bindings: Record<string, (event: KeyboardEvent) => void>,
   opts?: { enabled?: boolean },
@@ -65,14 +77,14 @@ export function useHotkeys(
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.repeat) return;
-      if (event.key !== "Escape" && isEditableTarget(event.target)) return;
+      const editable = event.key !== "Escape" && isEditableTarget(event.target);
 
       for (const [spec, handler] of Object.entries(bindingsRef.current)) {
-        if (matchesSpec(spec, event)) {
-          event.preventDefault();
-          handler(event);
-          return;
-        }
+        if (!matchesSpec(spec, event)) continue;
+        if (editable && !hasModOrCtrlOrMeta(spec)) continue;
+        event.preventDefault();
+        handler(event);
+        return;
       }
     }
 

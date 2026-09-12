@@ -59,6 +59,7 @@ export function useViewerScene({
   initial,
   persist = true,
   coverUrl,
+  defaultAllChecked = false,
 }: {
   slug: string;
   files: FileOut[];
@@ -75,9 +76,19 @@ export function useViewerScene({
    * would let comparing settings in a pop-out silently change the tab's saved
    * defaults. */
   persist?: boolean;
+  /** When `initial.checkedIds` is absent, seed with every file checked
+   * instead of only `files[0]`. The studio surface passes `true` -- its
+   * `FileRail` is the single source of truth for part visibility and always
+   * shows the "N of M" count plus All/None, so a model shouldn't open with
+   * only one of N parts visible. `/viewer/$slug` (no option passed) keeps the
+   * original single-part default. */
+  defaultAllChecked?: boolean;
 }): { stageProps: StagePropsBundle } {
   const [checkedIds, setCheckedIds] = useState<ReadonlySet<number>>(
-    () => new Set(initial?.checkedIds ?? (files[0] ? [files[0].id] : [])),
+    () =>
+      new Set(
+        initial?.checkedIds ?? (defaultAllChecked ? files.map((file) => file.id) : files[0] ? [files[0].id] : []),
+      ),
   );
   const [panelOpen, setPanelOpen] = useState(initial?.panelOpen ?? true);
   const [colors, setColors] = useState<PartColors>(() => initial?.colors ?? loadPartColors(slug));

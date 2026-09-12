@@ -90,6 +90,29 @@ describe("useHotkeys", () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
+  it("fires a mod+key binding even when the target is an input (e.g. mod+k, mod+b)", () => {
+    const paletteHandler = vi.fn();
+    const sidebarHandler = vi.fn();
+    const { getByLabelText } = render(
+      <Bound bindings={{ "mod+k": paletteHandler, "mod+b": sidebarHandler }} />,
+    );
+
+    fireKey({ key: "k", ctrlKey: true }, getByLabelText("text-input"));
+    fireKey({ key: "b", ctrlKey: true }, getByLabelText("text-input"));
+    expect(paletteHandler).toHaveBeenCalledTimes(1);
+    expect(sidebarHandler).toHaveBeenCalledTimes(1);
+  });
+
+  it("still ignores a plain-key binding on an editable target even when another binding for the same key carries a modifier", () => {
+    const plain = vi.fn();
+    const withMod = vi.fn();
+    const { getByLabelText } = render(<Bound bindings={{ k: plain, "mod+k": withMod }} />);
+
+    fireKey({ key: "k" }, getByLabelText("text-input"));
+    expect(plain).not.toHaveBeenCalled();
+    expect(withMod).not.toHaveBeenCalled();
+  });
+
   it("still fires Escape even when the target is an input", () => {
     const handler = vi.fn();
     const { getByLabelText } = render(<Bound bindings={{ Escape: handler }} />);

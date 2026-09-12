@@ -4,7 +4,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ModelCard } from "@/components/gallery/ModelCard";
-import type { ModelSummary } from "@/api/types";
+import type { FileOut, ModelSummary } from "@/api/types";
 
 // `usePatchModel` (the "Needs review" dismiss control) calls `api.patch`;
 // spy on it so the dismiss test can assert the request, and so the whole
@@ -40,12 +40,14 @@ const MODEL: ModelSummary = {
   source_collection_id: null,
   source_collection_title: null,
   favorite: false,
+  dims_mm: null,
+  best_slicer_file: null,
+  printable_file: null,
 };
 
 function renderCard(
   model: ModelSummary,
   cardProps: {
-    selectable?: boolean;
     selected?: boolean;
     onSelectChange?: (id: number, next: boolean) => void;
     index?: number;
@@ -219,16 +221,9 @@ describe("ModelCard", () => {
     expect(screen.getByText("Articulated Dragon")).toBeInTheDocument();
   });
 
-  it("shows no select checkbox when not in select mode", async () => {
-    renderCard(MODEL);
-
-    await screen.findByText("Articulated Dragon");
-    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
-  });
-
-  it("shows a select checkbox when selectable, and calls onSelectChange without navigating", async () => {
+  it("always mounts a select checkbox (hover/selected-only visibility), and calls onSelectChange without navigating", async () => {
     const onSelectChange = vi.fn();
-    const { router } = renderCard(MODEL, { selectable: true, selected: false, onSelectChange });
+    const { router } = renderCard(MODEL, { selected: false, onSelectChange });
 
     const checkbox = await screen.findByRole("checkbox", { name: "Select Articulated Dragon" });
     expect(checkbox).not.toBeChecked();
@@ -240,7 +235,7 @@ describe("ModelCard", () => {
   });
 
   it("renders the checkbox as checked when selected", async () => {
-    renderCard(MODEL, { selectable: true, selected: true, onSelectChange: vi.fn() });
+    renderCard(MODEL, { selected: true, onSelectChange: vi.fn() });
 
     expect(await screen.findByRole("checkbox", { name: "Select Articulated Dragon" })).toBeChecked();
   });
@@ -368,5 +363,79 @@ describe("ModelCard -- ctrl/cmd/shift+click range select (R9-A item 6)", () => {
     fireEvent.click(link);
 
     expect(onModifiedClick).not.toHaveBeenCalled();
+  });
+});
+
+describe("ModelCard -- format chips (Phase 5)", () => {
+  it("dedupes formats and caps chips at 3 with a +N overflow badge", async () => {
+    renderCard({ ...MODEL, formats: ["stl", "stl", "3mf", "step", "obj"] });
+
+    const formatBadges = within(await screen.findByTestId("format-badges"));
+    expect(formatBadges.getByText("STL")).toBeInTheDocument();
+    expect(formatBadges.getByText("3MF")).toBeInTheDocument();
+    expect(formatBadges.getByText("STEP")).toBeInTheDocument();
+    expect(formatBadges.queryByText("OBJ")).not.toBeInTheDocument();
+    expect(formatBadges.getByText("+1")).toBeInTheDocument();
+  });
+
+  it("shows no overflow badge when there are 3 or fewer unique formats", async () => {
+    renderCard({ ...MODEL, formats: ["stl", "3mf"] });
+
+    const formatBadges = within(await screen.findByTestId("format-badges"));
+    expect(formatBadges.queryByText(/^\+\d+$/)).not.toBeInTheDocument();
+  });
+});
+
+describe("ModelCard -- hover overlay with dims and quick actions (Phase 5)", () => {
+  const SLICER_FILE: FileOut = {
+    id: 10,
+    revision_id: 1,
+    rel_path: "model.3mf",
+    storage_path: "/x",
+    blob_hash: "hash",
+    size: 100,
+    format: "3mf",
+    kind: "cad",
+    mtime: null,
+    verified_at: null,
+    meta: null,
+    thumb_ready: false,
+    glb_status: null,
+    glb_preview_ready: false,
+  };
+  it("shows formatted mm dimensions in the hover overlay", async () => {
+    renderCard({ ...MODEL, dims_mm: [120.456, 80.1, 45] });
+
+    const overlay = within(await screen.findByTestId("hover-overlay"));
+    expect(overlay.getByText("120.5 × 80.1 × 45.0 mm")).toBeInTheDocument();
+  });
+
+  it("renders no hover overlay when there are no dims and no quick actions", async () => {
+    renderCard(MODEL);
+
+    await screen.findByText("Articulated Dragon");
+    expect(screen.queryByTestId("hover-overlay")).not.toBeInTheDocument();
+  });
+
+  it("shows an Open in slicer quick action when best_slicer_file is set", async () => {
+    renderCard({ ...MODEL, best_slicer_file: SLICER_FILE });
+
+    expect(await screen.findByTestId("hover-overlay")).toBeInTheDocument();
+    expect(screen.getByLabelText(/Open model\.3mf in/)).toBeInTheDocument();
+  });
+
+  it("quick actions stop propagation instead of navigating the card", async () => {
+    const { router } = renderCard({ ...MODEL, best_slicer_file: SLICER_FILE });
+
+    fireEvent.click(await screen.findByLabelText(/Open model\.3mf in/));
+
+    expect(router.state.location.pathname).toBe("/");
+  });
+
+  it("hides the printer quick action when printable_file is unset even with a slicer file present", async () => {
+    renderCard({ ...MODEL, best_slicer_file: SLICER_FILE, printable_file: null });
+
+    await screen.findByTestId("hover-overlay");
+    expect(screen.queryByLabelText(/^Print /)).not.toBeInTheDocument();
   });
 });

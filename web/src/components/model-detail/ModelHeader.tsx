@@ -47,7 +47,8 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { SpecRow, type SpecItem } from "@/components/ui/spec-row";
 import { formatDate, formatDateTime } from "@/lib/format";
 import { FORMAT_LABELS } from "@/lib/formatMeta";
-import { isSlicerEligible } from "@/lib/slicers";
+import { sanitizeDescriptionHtml } from "@/lib/richText";
+import { pickBestSlicerFile } from "@/lib/slicers";
 import type { ModelDetail } from "@/api/types";
 
 type RedownloadMode = "revision" | "replace";
@@ -152,13 +153,11 @@ export function ModelHeader({
   const filaments = modelFilaments(model);
   const formats = revisionFormats(model);
   const fileCount = model.current_revision?.files.length ?? 0;
-  // R10-C: the header's "Open in slicer" split button targets the first
-  // slicer-eligible (stl/3mf/step/obj) stored file on the current
-  // revision -- there's no broader "primary file" concept to hang this off
-  // of yet, and picking the first one deterministically beats guessing.
-  const slicerFile = model.current_revision?.files.find(
-    (file) => file.verified_at && isSlicerEligible(file),
-  );
+  // R10-C: the header's "Open in slicer" split button targets the best
+  // slicer-eligible (3mf/step/obj/stl/iges) stored file on the current
+  // revision, per `SLICER_FORMAT_PRIORITY` -- there's no broader "primary
+  // file" concept to hang this off of yet.
+  const slicerFile = pickBestSlicerFile(model.current_revision?.files ?? []);
   const specItems: Array<SpecItem | null> = [
     fileCount > 0
       ? { icon: <FileStackIcon />, label: `${fileCount} ${fileCount === 1 ? "file" : "files"}` }
@@ -200,7 +199,10 @@ export function ModelHeader({
             <>
               <h1 className="text-2xl font-semibold">{model.name}</h1>
               {model.description && (
-                <p className="text-sm text-muted-foreground">{model.description}</p>
+                <div
+                  className="prose-compact text-sm text-muted-foreground"
+                  dangerouslySetInnerHTML={{ __html: sanitizeDescriptionHtml(model.description) }}
+                />
               )}
             </>
           )}

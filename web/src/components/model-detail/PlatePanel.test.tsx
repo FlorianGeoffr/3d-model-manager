@@ -1,8 +1,16 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 
 import { PlatePanel } from "@/components/model-detail/PlatePanel";
 import type { BlobMetaOut, FileOut, PlateOut } from "@/api/types";
+
+// `GcodePreview` is a `React.lazy` chunk wrapping `gcode-preview`'s own
+// WebGL renderer -- stub it so the "Preview layers" button's lazy-mount
+// wiring can be exercised without touching three.js/WebGL in jsdom.
+const gcodePreviewMock = vi.fn(({ fileId }: { fileId: number }) => (
+  <div data-testid="gcode-preview-stub" data-file-id={fileId} />
+));
+vi.mock("@/components/viewer/GcodePreview", () => ({ default: gcodePreviewMock }));
 
 const PLATE_1: PlateOut = {
   index: 1,
@@ -55,6 +63,9 @@ function fakeFile(meta: Partial<BlobMetaOut> | null): FileOut {
             nozzle: null,
             printer_model: null,
             plate_count: null,
+            layer_count: null,
+            infill_pct: null,
+            slicer: null,
             plates: null,
             ...meta,
           },
@@ -109,5 +120,41 @@ describe("PlatePanel", () => {
     render(<PlatePanel file={fakeFile(null)} />);
 
     expect(screen.getByText("No plate details available yet.")).toBeInTheDocument();
+  });
+
+  it("shows the slicer/duration/filament/infill metadata line (R10-B)", () => {
+    render(
+      <PlatePanel
+        file={fakeFile({
+          slicer: "OrcaSlicer",
+          print_time_s: 3690,
+          filament_g: 12.5,
+          layer_height: 0.2,
+          infill_pct: 15,
+          filament_types: ["PLA"],
+          plates: [PLATE_1],
+        })}
+      />,
+    );
+
+    expect(screen.getByText("OrcaSlicer · 1h 2m · 13 g · 0.2 mm layers · 15% infill · PLA")).toBeInTheDocument();
+  });
+
+  it("omits the metadata line entirely when every field is null", () => {
+    render(<PlatePanel file={fakeFile({ plates: [PLATE_1] })} />);
+
+    expect(screen.queryByText(/infill/)).not.toBeInTheDocument();
+  });
+
+  it("only lazily mounts the g-code preview after clicking 'Preview layers'", async () => {
+    render(<PlatePanel file={fakeFile({ plates: [PLATE_1] })} />);
+
+    expect(screen.queryByTestId("gcode-preview-stub")).not.toBeInTheDocument();
+    expect(gcodePreviewMock).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /preview layers/i }));
+
+    await waitFor(() => expect(screen.getByTestId("gcode-preview-stub")).toBeInTheDocument());
+    expect(screen.getByTestId("gcode-preview-stub")).toHaveAttribute("data-file-id", "1");
   });
 });

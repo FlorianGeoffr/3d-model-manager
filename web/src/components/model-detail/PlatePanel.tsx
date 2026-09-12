@@ -1,7 +1,13 @@
-import { ImageIcon } from "lucide-react";
+import { lazy, Suspense, useState } from "react";
+import { ImageIcon, LayersIcon, LoaderCircleIcon } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
 import { humanizeDuration } from "@/lib/format";
 import type { FileOut, PlateOut } from "@/api/types";
+
+// `gcode-preview` drives its own three.js/WebGL renderer (Global Constraints
+// "BUNDLE RULE") — loaded only once someone actually asks to preview layers.
+const GcodePreview = lazy(() => import("@/components/viewer/GcodePreview"));
 
 /** `{printer_model} · {nozzle} mm nozzle · {layer_height} mm layers`, skipping
  * any part whose source value is null (Task 9 brief). */
@@ -13,6 +19,23 @@ function headerLine(file: FileOut): string | null {
   if (meta.nozzle !== null) parts.push(`${meta.nozzle} mm nozzle`);
   if (meta.layer_height !== null) parts.push(`${meta.layer_height} mm layers`);
   return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+/** `{slicer} · {duration} · {filament_g} g · {layer_height} mm · {infill}%
+ * infill · {filament_type}`, skipping any null part (R10-B). */
+function metaLine(file: FileOut): string | null {
+  const meta = file.meta;
+  if (!meta) return null;
+  const parts = [
+    meta.slicer,
+    meta.print_time_s !== null ? humanizeDuration(meta.print_time_s) : null,
+    meta.filament_g !== null ? `${Math.round(meta.filament_g)} g` : null,
+    meta.layer_height !== null ? `${meta.layer_height} mm layers` : null,
+    meta.infill_pct !== null ? `${meta.infill_pct}% infill` : null,
+    meta.filament_types && meta.filament_types.length > 0 ? meta.filament_types.join("/") : null,
+  ];
+  const filtered = parts.filter((part): part is string => Boolean(part));
+  return filtered.length > 0 ? filtered.join(" · ") : null;
 }
 
 /** `Plate {index} · {humanizeDuration(prediction_s)} · {weight_g} g`, skipping
@@ -69,10 +92,30 @@ function PlateCard({ blobHash, plate }: { blobHash: string; plate: PlateOut }) {
 export function PlatePanel({ file }: { file: FileOut }) {
   const plates = file.meta?.plates ?? [];
   const header = headerLine(file);
+  const meta = metaLine(file);
+  const [previewOpen, setPreviewOpen] = useState(false);
 
   return (
     <div className="space-y-3">
       {header ? <p className="text-sm text-muted-foreground">{header}</p> : null}
+      {meta ? <p className="text-sm text-muted-foreground">{meta}</p> : null}
+      {previewOpen ? (
+        <Suspense
+          fallback={
+            <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
+              <LoaderCircleIcon className="size-4 animate-spin" />
+              Loading g-code preview…
+            </div>
+          }
+        >
+          <GcodePreview fileId={file.id} />
+        </Suspense>
+      ) : (
+        <Button variant="outline" size="sm" onClick={() => setPreviewOpen(true)}>
+          <LayersIcon className="size-4" />
+          Preview layers
+        </Button>
+      )}
       {plates.length === 0 ? (
         <p className="py-8 text-center text-sm text-muted-foreground">No plate details available yet.</p>
       ) : (

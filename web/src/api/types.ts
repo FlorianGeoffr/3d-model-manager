@@ -147,6 +147,9 @@ export interface BlobMetaOut {
   nozzle: number | null;
   printer_model: string | null;
   plate_count: number | null;
+  layer_count: number | null;
+  infill_pct: number | null;
+  slicer: string | null;
   plates: PlateOut[] | null;
 }
 

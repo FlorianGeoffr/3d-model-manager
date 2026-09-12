@@ -140,8 +140,24 @@ function NavLink({ item, collapsed, badge }: { item: NavItem; collapsed: boolean
 /** Grouped sidebar nav (R12 studio shell): LIBRARY/OPERATIONS groups from
  * `navItems.ts`, a dynamic Collections sublist, and a collapsible icon-rail
  * mode. Owns its own data (auth, features, scan chip, followed collections)
- * so `AppShell` stays a thin composition root. */
-export function AppSidebar({ onOpenShortcuts }: { onOpenShortcuts: () => void }) {
+ * so `AppShell` stays a thin composition root.
+ *
+ * Below `lg` the collapsible rail becomes an off-canvas drawer instead: at
+ * 400px width a permanently-visible `w-14`/`w-56` column leaves too little
+ * room for the studio to lay out without horizontal overflow, so `AppShell`
+ * hides it by default and opens it via `mobileOpen` (the topbar's hamburger
+ * button). It closes itself on a nav click, Esc, or backdrop click; none of
+ * that applies at `lg+`, where it's always visible and `mobileOpen` is
+ * ignored. */
+export function AppSidebar({
+  onOpenShortcuts,
+  mobileOpen,
+  onCloseMobile,
+}: {
+  onOpenShortcuts: () => void;
+  mobileOpen: boolean;
+  onCloseMobile: () => void;
+}) {
   const { data: me } = useAuth();
   const logout = useLogout();
   const navigate = useNavigate();
@@ -149,6 +165,15 @@ export function AppSidebar({ onOpenShortcuts }: { onOpenShortcuts: () => void })
   const failedImports = useFailedImportsCount();
   const followed = useFollowedCollections();
   const [collapsed, setCollapsed] = useSidebarCollapsed();
+
+  useEffect(() => {
+    if (!mobileOpen) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") onCloseMobile();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [mobileOpen, onCloseMobile]);
 
   const printerEnabled = !!features.data?.printer_enabled;
   const visibleGroups = NAV_GROUPS.map((group) => ({
@@ -165,13 +190,31 @@ export function AppSidebar({ onOpenShortcuts }: { onOpenShortcuts: () => void })
   }
 
   return (
-    <aside
-      className={cn(
-        "flex shrink-0 flex-col border-r border-border bg-card transition-[width] duration-150",
-        collapsed ? "w-14" : "w-56",
+    <>
+      {/* Backdrop: mobile-drawer mode only (`lg:hidden`) -- clicking it
+          closes the drawer the same as Esc or a nav click. */}
+      {mobileOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-black/50 lg:hidden"
+          aria-hidden
+          onClick={onCloseMobile}
+        />
       )}
-    >
-      <div
+      <aside
+        className={cn(
+          "fixed inset-y-0 left-0 z-50 flex w-64 shrink-0 flex-col border-r border-border bg-card transition-transform duration-150",
+          "lg:static lg:z-auto lg:w-auto lg:translate-x-0 lg:transition-[width]",
+          mobileOpen ? "translate-x-0" : "-translate-x-full",
+          collapsed && "lg:w-14",
+          !collapsed && "lg:w-56",
+        )}
+        onClick={(event) => {
+          // Close the drawer on any nav click (an <a> inside) below `lg` --
+          // harmless at `lg+`, where `mobileOpen` is never true.
+          if ((event.target as HTMLElement).closest("a")) onCloseMobile();
+        }}
+      >
+        <div
         className={cn(
           "flex items-center justify-between gap-1 px-4 py-4",
           collapsed && "justify-center px-2",
@@ -274,6 +317,7 @@ export function AppSidebar({ onOpenShortcuts }: { onOpenShortcuts: () => void })
           </Button>
         </div>
       </div>
-    </aside>
+      </aside>
+    </>
   );
 }

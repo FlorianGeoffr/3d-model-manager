@@ -15,7 +15,7 @@ export function SidebarPrinterWidget({ collapsed }: { collapsed: boolean }) {
   const enabled = !!features.data?.printer_enabled;
   const printers = usePrinters({ enabled });
   const printer = printers.data?.[0];
-  const status = usePrinterStatus(printer?.id ?? -1);
+  const status = usePrinterStatus(printer?.id ?? -1, { enabled: printer !== undefined });
 
   if (!enabled || !printer) return null;
 

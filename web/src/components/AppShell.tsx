@@ -20,6 +20,10 @@ export function AppShell() {
   // AppShell is mounted on every authenticated route.
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // Below `lg` the sidebar is an off-canvas drawer (see `AppSidebar`) --
+  // this is the only state it needs from outside itself, opened by the
+  // topbar's hamburger button.
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   useHotkeys({ "?": () => setShortcutsOpen(true) });
 
   return (
@@ -27,7 +31,11 @@ export function AppShell() {
       <div className="flex min-h-svh">
         {/* Collapsed icon-rail nav renders Tooltips; Radix throws without a provider. */}
         <TooltipProvider delayDuration={200}>
-          <AppSidebar onOpenShortcuts={() => setShortcutsOpen(true)} />
+          <AppSidebar
+            onOpenShortcuts={() => setShortcutsOpen(true)}
+            mobileOpen={mobileNavOpen}
+            onCloseMobile={() => setMobileNavOpen(false)}
+          />
         </TooltipProvider>
         {/* `min-w-0` keeps this column (and its content) from being forced
             wider by the sidebar's own width -- the brief's "main content
@@ -35,7 +43,7 @@ export function AppShell() {
             is really "don't let a wide child force the layout back open",
             which a flex-1 + min-w-0 column already prevents. */}
         <div className="flex min-w-0 flex-1 flex-col">
-          <TopBar onOpenPalette={() => setPaletteOpen(true)} />
+          <TopBar onOpenPalette={() => setPaletteOpen(true)} onOpenMobileNav={() => setMobileNavOpen(true)} />
           <main className="flex-1 overflow-y-auto p-6">
             <Outlet />
           </main>

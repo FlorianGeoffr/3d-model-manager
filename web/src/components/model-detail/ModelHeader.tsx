@@ -47,6 +47,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { SpecRow, type SpecItem } from "@/components/ui/spec-row";
 import { formatDate, formatDateTime } from "@/lib/format";
 import { FORMAT_LABELS } from "@/lib/formatMeta";
+import { sanitizeDescriptionHtml } from "@/lib/richText";
 import { pickBestSlicerFile } from "@/lib/slicers";
 import type { ModelDetail } from "@/api/types";
 
@@ -198,7 +199,10 @@ export function ModelHeader({
             <>
               <h1 className="text-2xl font-semibold">{model.name}</h1>
               {model.description && (
-                <p className="text-sm text-muted-foreground">{model.description}</p>
+                <div
+                  className="prose-compact text-sm text-muted-foreground"
+                  dangerouslySetInnerHTML={{ __html: sanitizeDescriptionHtml(model.description) }}
+                />
               )}
             </>
           )}

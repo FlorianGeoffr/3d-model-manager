@@ -95,11 +95,12 @@ export function useDetectSerial() {
  * stopping entirely once `gcode_state` reaches a confirmed terminal state
  * (Task 11 fold of the M4 backlog minor -- mirrors `useJob`/
  * `usePrintJobs`'s terminal-state stop). */
-export function usePrinterStatus(id: number) {
+export function usePrinterStatus(id: number, options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: ["printers", id, "status"] as const,
     queryFn: () => api.get<PrinterStatusOut>(`/printers/${id}/status`),
     refetchInterval: (q) => statusRefetchInterval(q.state.data?.gcode_state),
+    enabled: options?.enabled ?? true,
   });
 }
 

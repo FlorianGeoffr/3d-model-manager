@@ -101,7 +101,7 @@ export function FileRail({
 
   return (
     <TooltipProvider>
-      <nav aria-label="Files" className="flex w-56 shrink-0 flex-col gap-1">
+      <nav aria-label="Files" className="flex w-full min-w-0 flex-col gap-1 md:w-56 md:shrink-0">
       {glbFiles.length > 0 && (
         <div className="space-y-1">
           <div

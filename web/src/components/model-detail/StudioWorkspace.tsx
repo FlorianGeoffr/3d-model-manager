@@ -57,7 +57,7 @@ function StudioWorkspaceGeneration({
           : undefined;
 
   return (
-    <div className="flex min-w-0 flex-1 gap-4">
+    <div className="flex min-w-0 flex-1 flex-col gap-4 md:flex-row">
       <FileRail
         glbFiles={glbable}
         otherFiles={others}

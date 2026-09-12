@@ -161,3 +161,35 @@
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
+
+/* Compact rich-text rendering for sanitized model descriptions (imported
+   HTML from MakerWorld/Printables/Thingiverse) -- a hand-rolled stand-in
+   for @tailwindcss/typography, scoped tight since this only ever renders
+   in a small muted-text header block, not a full article. */
+@utility prose-compact {
+  & p {
+    margin-block: 0.5em;
+  }
+  & p:first-child {
+    margin-top: 0;
+  }
+  & p:last-child {
+    margin-bottom: 0;
+  }
+  & ul,
+  & ol {
+    margin-block: 0.5em;
+    padding-inline-start: 1.25em;
+  }
+  & li {
+    margin-block: 0.15em;
+  }
+  & a {
+    color: var(--color-primary);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  & strong {
+    font-weight: 600;
+  }
+}

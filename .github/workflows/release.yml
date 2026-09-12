@@ -127,7 +127,7 @@ jobs:
         run: |
           docker pull postgres:16-alpine
           docker pull redis:7-alpine
-          docker pull minio/minio
+          docker pull quay.io/minio/minio:latest
       - name: pytest
         working-directory: backend
         # See ci.yml for why the full `-m` expression is repeated verbatim.
@@ -264,7 +264,7 @@ jobs:
           # step down to mode=min, then to registry cache:
           #   type=registry,ref=${{ env.IMAGE_NAME }}:buildcache-${{ matrix.arch }}
           cache-from: type=gha,scope=tdmm-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=tdmm-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=tdmm-${{ matrix.arch }},ignore-error=true
 
       - name: Export digest
         # A zero-byte file NAMED after the digest. Artifacts move filenames

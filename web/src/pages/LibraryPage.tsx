@@ -149,7 +149,10 @@ export function LibraryPage() {
   );
 
   const modelsQuery = useModelsQuery(filters);
-  const items = modelsQuery.data?.pages.flatMap((page) => page.items) ?? [];
+  const items = useMemo(
+    () => modelsQuery.data?.pages.flatMap((page) => page.items) ?? [],
+    [modelsQuery.data],
+  );
   const selectedItems = items.filter((model) => selectedIds.has(model.id));
 
   function selectAll() {

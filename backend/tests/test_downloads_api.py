@@ -320,6 +320,62 @@ async def test_slicer_link_token_allows_download_without_cookie(
     assert response.content == content
 
 
+async def test_slicer_link_ignores_forwarded_headers(
+    authenticated_client: httpx.AsyncClient,
+    seed_file,
+    db_session,
+) -> None:
+    """Review finding 3: a client-supplied ``X-Forwarded-Host``/
+    ``X-Forwarded-Proto`` must NOT influence the minted URL's origin --
+    only ``request.base_url`` (or ``TDMM_PUBLIC_URL`` if configured, see
+    the test below) may.
+    """
+    created = await _create_model(authenticated_client, "Forwarded Header Target")
+    model = await db_session.get(Model, created["id"])
+    revision_id = created["current_revision"]["id"]
+    revision = await db_session.get(Revision, revision_id)
+    file = await seed_file(model, revision, "forwarded.stl", b"bytes")
+
+    response = await authenticated_client.post(
+        f"/api/files/{file.id}/slicer-link",
+        headers={
+            "X-Forwarded-Proto": "https",
+            "X-Forwarded-Host": "attacker.example.com",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    url = response.json()["url"]
+    assert "attacker.example.com" not in url
+    assert url.startswith("http://test/")
+
+
+async def test_slicer_link_uses_configured_public_url(
+    authenticated_client: httpx.AsyncClient,
+    seed_file,
+    db_session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When ``TDMM_PUBLIC_URL`` is set, it wins over ``request.base_url``
+    (and is what an operator behind a reverse proxy/CDN needs)."""
+    created = await _create_model(authenticated_client, "Public URL Target")
+    model = await db_session.get(Model, created["id"])
+    revision_id = created["current_revision"]["id"]
+    revision = await db_session.get(Revision, revision_id)
+    file = await seed_file(model, revision, "public.stl", b"bytes")
+
+    monkeypatch.setenv("TDMM_PUBLIC_URL", "https://models.example.com")
+    get_settings.cache_clear()
+    try:
+        response = await authenticated_client.post(f"/api/files/{file.id}/slicer-link")
+    finally:
+        get_settings.cache_clear()
+
+    assert response.status_code == 200, response.text
+    url = response.json()["url"]
+    assert url.startswith(f"https://models.example.com/api/files/{file.id}/download")
+
+
 async def test_slicer_link_requires_auth(client: httpx.AsyncClient) -> None:
     response = await client.post("/api/files/1/slicer-link")
 

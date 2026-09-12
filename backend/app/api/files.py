@@ -162,19 +162,27 @@ class SlicerLinkResponse(BaseModel):
     expires_at: datetime
 
 
-def _absolute_origin(request: Request) -> str:
-    """Build ``scheme://host`` for this request, honoring
-    ``X-Forwarded-Proto``/``X-Forwarded-Host`` (set by a reverse proxy in
-    front of the API) over the request's own scheme/host -- the signed URL
-    handed to a desktop slicer must be reachable from outside the proxy.
+def _absolute_origin(request: Request, settings: Settings) -> str:
+    """Build ``scheme://host`` for the signed URL handed to a desktop
+    slicer (review finding 3: the old version trusted client-supplied
+    ``X-Forwarded-Proto``/``X-Forwarded-Host``/``Host`` headers with no
+    allowlist, letting anyone mint a token embedded in an attacker-chosen
+    absolute URL).
+
+    ``settings.public_url`` (``TDMM_PUBLIC_URL``), when configured, is
+    always authoritative -- it's the operator's own declared externally-
+    reachable origin. Otherwise this falls back to ``request.base_url``
+    (this request's own scheme/host as uvicorn resolved it) and
+    deliberately does NOT read any ``X-Forwarded-*`` header directly: a
+    reverse proxy in front of this API should instead be pointed at
+    uvicorn's own ``--proxy-headers``/``--forwarded-allow-ips``, which
+    parses/validates those headers from only the configured trusted proxy
+    IP(s) before this code (or anything else in the app) ever sees the
+    request -- that's the one place trusting a forwarded header is safe.
     """
-    scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
-    host = (
-        request.headers.get("x-forwarded-host")
-        or request.headers.get("host")
-        or request.url.netloc
-    )
-    return f"{scheme}://{host}"
+    if settings.public_url:
+        return settings.public_url.rstrip("/")
+    return str(request.base_url).rstrip("/")
 
 
 @router.post("/{file_id}/slicer-link", response_model=SlicerLinkResponse)
@@ -198,5 +206,6 @@ async def create_slicer_link(
 
     token = signed_urls.sign_file_download(settings, file_id)
     expires_at = datetime.now(UTC) + timedelta(seconds=signed_urls.DEFAULT_TTL_S)
-    url = f"{_absolute_origin(request)}/api/files/{file_id}/download?token={quote(token, safe='')}"
+    origin = _absolute_origin(request, settings)
+    url = f"{origin}/api/files/{file_id}/download?token={quote(token, safe='')}"
     return SlicerLinkResponse(url=url, expires_at=expires_at)

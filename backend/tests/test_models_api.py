@@ -1136,7 +1136,12 @@ async def test_bulk_delete_two_models_deletes_files_sidecars_and_rows(
         dir_name = model["current_revision"]["dir_name"]
         upload = await authenticated_client.put(
             "/api/uploads",
-            params={"model_id": model["id"], "revision_id": revision_id, "rel_path": "part.stl"},
+            params={
+                "model_id": model["id"],
+                "revision_id": revision_id,
+                "rel_path": "part.stl",
+                "allow_duplicate": "true",
+            },
             content=b"hello-world",
         )
         assert upload.status_code == 201, upload.text
@@ -1236,6 +1241,7 @@ async def test_bulk_delete_409_when_any_model_has_pending_store_job_nothing_dele
             "model_id": clean["id"],
             "revision_id": clean_revision_id,
             "rel_path": "part.stl",
+            "allow_duplicate": "true",
         },
         content=b"hello-world",
     )

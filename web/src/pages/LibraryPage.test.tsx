@@ -6,7 +6,7 @@ import {
   createRoute,
   createRouter,
 } from "@tanstack/react-router";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -43,17 +43,41 @@ vi.mock("sonner", () => ({
   toast: { success: toastSuccessMock, error: toastErrorMock },
 }));
 
-// jsdom doesn't implement `IntersectionObserver` (the gallery grid's
-// infinite-scroll sentinel uses it) -- every earlier test in this file only
-// ever renders the empty/error state (no grid, no sentinel), so this never
-// came up before. A minimal stub is enough: none of these tests exercise
-// scroll-triggered pagination, only that the grid/select-mode UI renders.
-class MockIntersectionObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
+// jsdom doesn't implement `ResizeObserver` (the virtualized grid's column
+// count comes from observing the grid container's width, R9-A item 2). This
+// fake is controllable: it records every observed element and its
+// constructor's callback, so a test can fire a synthetic resize (`fireGridResize`)
+// and assert the resulting column count / painted `gridTemplateColumns` --
+// covering fix wave finding 6, which the old no-op stub could never reach
+// (it left the grid stuck at its 2-column fallback, which happened to match
+// the pre-fix bug).
+let resizeObserverCallbacks: ResizeObserverCallback[] = [];
+let resizeObserverTargets: Element[] = [];
+class FakeResizeObserver implements ResizeObserver {
+  constructor(callback: ResizeObserverCallback) {
+    resizeObserverCallbacks.push(callback);
+  }
+  observe(target: Element) {
+    resizeObserverTargets.push(target);
+  }
+  unobserve(target: Element) {
+    resizeObserverTargets = resizeObserverTargets.filter((el) => el !== target);
+  }
+  disconnect() {
+    resizeObserverTargets = [];
+  }
 }
-vi.stubGlobal("IntersectionObserver", MockIntersectionObserver);
+vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+
+/** Fires every currently-registered ResizeObserver callback with `width` as
+ * the observed content-box width, as if the grid container had been
+ * resized to that width in a real browser. */
+function fireGridResize(width: number) {
+  const entries = resizeObserverTargets.map(
+    (target) => ({ target, contentRect: { width } }) as ResizeObserverEntry,
+  );
+  resizeObserverCallbacks.forEach((callback) => callback(entries, {} as ResizeObserver));
+}
 
 // Radix's Popover never reaches an interactive open state under jsdom (same
 // floating-ui/dismissable-layer limitation documented for `<Select>` in
@@ -70,8 +94,15 @@ function renderLibraryPage(initialEntries: string[] = ["/"]) {
   const rootRoute = createRootRoute();
   const libraryRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", component: LibraryPage });
   const uploadRoute = createRoute({ getParentRoute: () => rootRoute, path: "/upload", component: () => null });
+  // A modified click on a card must NOT navigate here -- so a matching
+  // detail route exists to prove it (same shape as ModelCard.test.tsx).
+  const detailRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/models/$slug",
+    component: () => null,
+  });
   const router = createRouter({
-    routeTree: rootRoute.addChildren([libraryRoute, uploadRoute]),
+    routeTree: rootRoute.addChildren([libraryRoute, uploadRoute, detailRoute]),
     history: createMemoryHistory({ initialEntries }),
   });
   // Mirrors the app's real global MutationCache error toast
@@ -88,11 +119,14 @@ function renderLibraryPage(initialEntries: string[] = ["/"]) {
     }),
     defaultOptions: { queries: { retry: false } },
   });
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
-    </QueryClientProvider>,
-  );
+  return {
+    router,
+    ...render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    ),
+  };
 }
 
 function mockGalleryOk() {
@@ -149,6 +183,20 @@ const GALLERY_MODEL_2: ModelSummary = {
   name: "Test Model 2",
 };
 
+const GALLERY_MODEL_3: ModelSummary = {
+  ...GALLERY_MODEL,
+  id: 3,
+  slug: "test-model-3",
+  name: "Test Model 3",
+};
+
+const GALLERY_MODEL_4: ModelSummary = {
+  ...GALLERY_MODEL,
+  id: 4,
+  slug: "test-model-4",
+  name: "Test Model 4",
+};
+
 function mockGalleryOkWithModels(models: ModelSummary[]) {
   getMock.mockImplementation((path: string) => {
     if (path.startsWith("/models")) return Promise.resolve({ items: models, next_cursor: null });
@@ -182,6 +230,8 @@ beforeEach(() => {
   postMock.mockResolvedValue({ updated: 0 });
   toastSuccessMock.mockClear();
   toastErrorMock.mockClear();
+  resizeObserverCallbacks = [];
+  resizeObserverTargets = [];
 });
 
 describe("LibraryPage", () => {
@@ -442,5 +492,221 @@ describe("LibraryPage", () => {
     expect(toastSuccessMock).not.toHaveBeenCalled();
     // Action bar still present with the selection intact.
     expect(screen.getByText("1 selected")).toBeInTheDocument();
+  });
+
+  function cardLink(name: string): HTMLElement {
+    const link = screen.getByText(name).closest("a");
+    if (!link) throw new Error(`no card link found for "${name}"`);
+    return link;
+  }
+
+  it("shift-clicking two cards selects the inclusive range between them, auto-entering select mode", async () => {
+    mockGalleryOkWithModels([GALLERY_MODEL, GALLERY_MODEL_2, GALLERY_MODEL_3, GALLERY_MODEL_4]);
+    const { router } = renderLibraryPage();
+    await screen.findByText("Test Model");
+
+    fireEvent.click(cardLink("Test Model"), { shiftKey: true });
+    await screen.findByText("1 selected");
+
+    fireEvent.click(cardLink("Test Model 4"), { shiftKey: true });
+
+    expect(await screen.findByText("4 selected")).toBeInTheDocument();
+    // No navigation happened on either modified click.
+    expect(router.state.location.pathname).toBe("/");
+  });
+
+  it("ctrl-clicking a card toggles just that card's selection", async () => {
+    mockGalleryOkWithModels([GALLERY_MODEL, GALLERY_MODEL_2]);
+    const { router } = renderLibraryPage();
+    await screen.findByText("Test Model");
+
+    fireEvent.click(cardLink("Test Model"), { ctrlKey: true });
+    expect(await screen.findByText("1 selected")).toBeInTheDocument();
+
+    fireEvent.click(cardLink("Test Model"), { ctrlKey: true });
+    await waitFor(() => expect(screen.queryByText(/selected/)).not.toBeInTheDocument());
+    expect(router.state.location.pathname).toBe("/");
+  });
+});
+
+describe("LibraryPage -- virtualized grid (R9-A item 2)", () => {
+  it("renders far fewer than 200 cards in the DOM for a 200-item page", async () => {
+    const models: ModelSummary[] = Array.from({ length: 200 }, (_, i) => ({
+      ...GALLERY_MODEL,
+      id: i + 1,
+      slug: `model-${i + 1}`,
+      name: `Model ${i + 1}`,
+    }));
+    mockGalleryOkWithModels(models);
+    renderLibraryPage();
+
+    await screen.findByText("Model 1");
+
+    const renderedCardTitles = screen.getAllByRole("heading", { level: 3 });
+    expect(renderedCardTitles.length).toBeGreaterThan(0);
+    expect(renderedCardTitles.length).toBeLessThan(200);
+  });
+
+  it("fetches the next page once the last virtual row is reached and more pages exist", async () => {
+    getMock.mockImplementation((path: string) => {
+      if (path.startsWith("/models")) {
+        return Promise.resolve(
+          path.includes("cursor=")
+            ? { items: [], next_cursor: null }
+            : { items: [GALLERY_MODEL, GALLERY_MODEL_2], next_cursor: "page-2" },
+        );
+      }
+      return Promise.resolve([]);
+    });
+    renderLibraryPage();
+
+    await screen.findByText("Test Model");
+
+    // Two items at the default (2-column) layout is exactly one row --
+    // the only, and therefore last, virtual row -- so it should trigger
+    // fetchNextPage as soon as it renders.
+    await waitFor(() => expect(lastModelsCall()).toContain("cursor=page-2"));
+  });
+
+  it("attaches its ResizeObserver on first render and grows past 2 columns once the container is measured wider (fix wave findings 1, 2, 6)", async () => {
+    const models: ModelSummary[] = Array.from({ length: 12 }, (_, i) => ({
+      ...GALLERY_MODEL,
+      id: i + 1,
+      slug: `model-${i + 1}`,
+      name: `Model ${i + 1}`,
+    }));
+    mockGalleryOkWithModels(models);
+    renderLibraryPage();
+
+    await screen.findByText("Model 1");
+
+    // Finding 1: the observer must be attached on the very first render that
+    // has a real grid, not stuck waiting on a skeleton-branch effect that
+    // never re-runs.
+    expect(resizeObserverTargets.length).toBeGreaterThan(0);
+
+    act(() => fireGridResize(1300));
+
+    // Finding 2: the row's painted `gridTemplateColumns` must come from the
+    // SAME `columns` state `chunkIntoRows` used to build the row, so the two
+    // can never disagree the way the old viewport-based Tailwind classes did.
+    await waitFor(() => {
+      const row = document.querySelector('[data-index="0"]') as HTMLElement | null;
+      expect(row).not.toBeNull();
+      expect(row!.style.gridTemplateColumns).toBe("repeat(5, minmax(0, 1fr))");
+    });
+  });
+
+  it("does not fetch a next page once hasNextPage is false", async () => {
+    mockGalleryOkWithModels([GALLERY_MODEL, GALLERY_MODEL_2]);
+    renderLibraryPage();
+
+    await screen.findByText("Test Model");
+
+    const callsMade = getMock.mock.calls.filter((call: unknown[]) => (call[0] as string).startsWith("/models")).length;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(
+      getMock.mock.calls.filter((call: unknown[]) => (call[0] as string).startsWith("/models")).length,
+    ).toBe(callsMade);
+  });
+});
+
+describe("LibraryPage -- keyboard shortcuts (R9-C item 5)", () => {
+  it("`/` focuses the search input", async () => {
+    mockGalleryOkWithModels([GALLERY_MODEL]);
+    renderLibraryPage();
+    await screen.findByText("Test Model");
+
+    const search = screen.getByLabelText("Search models");
+    expect(search).not.toHaveFocus();
+
+    fireEvent.keyDown(document.body, { key: "/" });
+    expect(search).toHaveFocus();
+  });
+
+  it("Escape exits select mode and clears the selection", async () => {
+    mockGalleryOkWithModels([GALLERY_MODEL]);
+    renderLibraryPage();
+    await screen.findByText("Test Model");
+
+    fireEvent.click(screen.getByRole("button", { name: "Select" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Select Test Model" }));
+    await screen.findByText("1 selected");
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+
+    await waitFor(() => expect(screen.queryByText(/selected/)).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Select" })).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("Escape does nothing to the selection while the bulk-delete confirm dialog is open (fix wave finding 5)", async () => {
+    mockGalleryOkWithModels([GALLERY_MODEL]);
+    renderLibraryPage();
+    await screen.findByText("Test Model");
+
+    fireEvent.click(screen.getByRole("button", { name: "Select" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Select Test Model" }));
+    await screen.findByText("1 selected");
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await screen.findByRole("dialog");
+
+    // Escape while the ConfirmDialog is open must be left to Radix's own
+    // Escape handling (which closes just the dialog) -- the page-level
+    // Escape binding used to fire unconditionally and silently discard the
+    // whole selection underneath it. Radix's own handler may still close
+    // the dialog itself; what must NOT happen is the selection getting
+    // wiped along with it.
+    fireEvent.keyDown(document.body, { key: "Escape" });
+
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Select" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("Delete opens the bulk-delete confirm when there is a selection", async () => {
+    mockGalleryOkWithModels([GALLERY_MODEL]);
+    renderLibraryPage();
+    await screen.findByText("Test Model");
+
+    fireEvent.click(screen.getByRole("button", { name: "Select" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Select Test Model" }));
+    await screen.findByText("1 selected");
+
+    fireEvent.keyDown(document.body, { key: "Delete" });
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Delete 1 model?")).toBeInTheDocument();
+  });
+
+  it("Delete does nothing when there is no selection", async () => {
+    mockGalleryOkWithModels([GALLERY_MODEL]);
+    renderLibraryPage();
+    await screen.findByText("Test Model");
+
+    fireEvent.keyDown(document.body, { key: "Delete" });
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("mod+a selects every loaded item and enters select mode", async () => {
+    mockGalleryOkWithModels([GALLERY_MODEL, GALLERY_MODEL_2]);
+    renderLibraryPage();
+    await screen.findByText("Test Model");
+
+    fireEvent.keyDown(document.body, { key: "a", ctrlKey: true });
+
+    expect(await screen.findByText("2 selected")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Select" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("a selects every loaded item once already in select mode", async () => {
+    mockGalleryOkWithModels([GALLERY_MODEL, GALLERY_MODEL_2]);
+    renderLibraryPage();
+    await screen.findByText("Test Model");
+
+    fireEvent.click(screen.getByRole("button", { name: "Select" }));
+    fireEvent.keyDown(document.body, { key: "a" });
+
+    expect(await screen.findByText("2 selected")).toBeInTheDocument();
   });
 });

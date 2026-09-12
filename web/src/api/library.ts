@@ -2,7 +2,16 @@
  * Query/mutation hooks for the library domain (models, revisions, tags,
  * notes, files) — Task 8.
  */
-import { queryOptions, useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  queryOptions,
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type InfiniteData,
+  type QueryClient,
+  type QueryKey,
+} from "@tanstack/react-query";
 
 import { api } from "@/api/client";
 import type {
@@ -17,6 +26,7 @@ import type {
   ModelPatch,
   ModelRedownloadIn,
   ModelRelocateIn,
+  ModelSummary,
   NoteCreate,
   NoteOut,
   RevisionCreate,
@@ -24,6 +34,106 @@ import type {
   RevisionSummary,
   TagOut,
 } from "@/api/types";
+
+/** Prefix shared by every `useModelsQuery` cache entry (the full key also
+ * carries the active `GalleryFilters`) -- R9-B's optimistic mutations match
+ * against this prefix so a favorite/rename/archive/bulk edit updates every
+ * cached filter variant of the list, not just the one currently mounted. */
+const LIST_QUERY_KEY = ["models", "list"] as const;
+
+type ListPages = InfiniteData<GalleryPage>;
+type ListSnapshot = Array<[QueryKey, ListPages | undefined]>;
+
+/** Maps `updater` over every cached page of every list query matching
+ * `listKeyPrefix`, replacing/removing the items it flags and leaving
+ * everything else -- including pages/queries `updater` never touches --
+ * referentially identical (structural sharing, so unaffected cards don't
+ * re-render). `updater` returns: a replacement `ModelSummary` to patch that
+ * item in place, `null` to remove it (archive/delete), or `undefined` to
+ * leave it untouched. Returns a snapshot of the pre-patch cache state for
+ * `onError` to restore. Pure aside from the `queryClient` cache writes, and
+ * shared by every mutation below so they can't drift on the merge logic. */
+export function patchModelInListCache(
+  queryClient: QueryClient,
+  listKeyPrefix: QueryKey,
+  updater: (model: ModelSummary) => ModelSummary | null | undefined,
+): ListSnapshot {
+  const snapshot = queryClient.getQueriesData<ListPages>({ queryKey: listKeyPrefix });
+  for (const [queryKey, data] of snapshot) {
+    if (!data) continue;
+    let listChanged = false;
+    const pages = data.pages.map((page) => {
+      let pageChanged = false;
+      const items: ModelSummary[] = [];
+      for (const item of page.items) {
+        const result = updater(item);
+        if (result === undefined) {
+          items.push(item);
+          continue;
+        }
+        pageChanged = true;
+        if (result !== null) items.push(result);
+      }
+      if (!pageChanged) return page;
+      listChanged = true;
+      return { ...page, items };
+    });
+    if (listChanged) queryClient.setQueryData<ListPages>(queryKey, { ...data, pages });
+  }
+  return snapshot;
+}
+
+function restoreListSnapshot(queryClient: QueryClient, snapshot: ListSnapshot): void {
+  for (const [queryKey, data] of snapshot) {
+    queryClient.setQueryData(queryKey, data);
+  }
+}
+
+/** Finds the slugs of every cached list item whose id is in `ids` --
+ * used so a bulk mutation (which only receives ids) can still snapshot and
+ * optimistically patch the matching model-detail queries. Reads from a
+ * snapshot taken before the mutation, not the live cache, so it reflects
+ * the pre-patch state. */
+function slugsForIds(snapshot: ListSnapshot, ids: ReadonlySet<number>): string[] {
+  const slugs = new Set<string>();
+  for (const [, data] of snapshot) {
+    if (!data) continue;
+    for (const page of data.pages) {
+      for (const item of page.items) {
+        if (ids.has(item.id)) slugs.add(item.slug);
+      }
+    }
+  }
+  return [...slugs];
+}
+
+/** Applies the fields a `ModelPatch` can carry that also exist on the
+ * lighter-weight `ModelSummary` shown in the gallery grid -- `cover_blob_hash`
+ * and `is_archived` aren't part of `ModelSummary`, so they're left for the
+ * server round-trip (`cover_blob_hash` needs derivative computation anyway,
+ * and `is_archived` is handled by `useArchiveModel`'s own optimistic path). */
+function applyPatchToSummary(item: ModelSummary, payload: ModelPatch): ModelSummary {
+  return {
+    ...item,
+    ...(payload.name !== undefined ? { name: payload.name } : {}),
+    ...(payload.description !== undefined ? { description: payload.description } : {}),
+    ...(payload.favorite !== undefined ? { favorite: payload.favorite } : {}),
+    ...(payload.review_state !== undefined ? { review_state: payload.review_state } : {}),
+  };
+}
+
+/** Folds a server-confirmed `ModelDetail` back into a cached `ModelSummary`
+ * after a successful patch/archive, for the fields both shapes share. */
+function mergeDetailIntoSummary(item: ModelSummary, detail: ModelDetail): ModelSummary {
+  return {
+    ...item,
+    name: detail.name,
+    description: detail.description,
+    favorite: detail.favorite,
+    review_state: detail.review_state,
+    tags: detail.tags,
+  };
+}
 
 export interface GalleryFilters {
   q?: string;
@@ -114,12 +224,34 @@ export function useCreateModel() {
 
 export function usePatchModel(slug: string) {
   const queryClient = useQueryClient();
+  const detailKey = modelQueryOptions(slug).queryKey;
   return useMutation({
     mutationFn: (payload: ModelPatch) => api.patch<ModelDetail>(`/models/${slug}`, payload),
-    onSuccess: (data) => {
-      queryClient.setQueryData(modelQueryOptions(slug).queryKey, data);
-      void queryClient.invalidateQueries({ queryKey: ["models", "list"] });
+    onMutate: async (payload) => {
+      await queryClient.cancelQueries({ queryKey: LIST_QUERY_KEY });
+      const listSnapshot = patchModelInListCache(queryClient, LIST_QUERY_KEY, (item) =>
+        item.slug === slug ? applyPatchToSummary(item, payload) : undefined,
+      );
+      const detailSnapshot = queryClient.getQueryData<ModelDetail>(detailKey);
+      if (detailSnapshot) queryClient.setQueryData(detailKey, { ...detailSnapshot, ...payload });
+      return { listSnapshot, detailSnapshot };
     },
+    onError: (_err, _payload, context) => {
+      if (!context) return;
+      restoreListSnapshot(queryClient, context.listSnapshot);
+      queryClient.setQueryData(detailKey, context.detailSnapshot);
+    },
+    onSuccess: (data) => {
+      queryClient.setQueryData(detailKey, data);
+      patchModelInListCache(queryClient, LIST_QUERY_KEY, (item) =>
+        item.slug === slug ? mergeDetailIntoSummary(item, data) : undefined,
+      );
+    },
+    // Single-field patches (favorite/name/description) don't touch the list
+    // query -- `onSuccess` above already folded the server response into
+    // every cached list page, so a full list invalidation would just cost a
+    // refetch (and re-render every card) for no new information.
+    onSettled: () => void queryClient.invalidateQueries({ queryKey: detailKey }),
   });
 }
 
@@ -134,7 +266,42 @@ export function useBulkUpdateModels() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (payload: ModelBulkIn) => api.post<ModelBulkOut>("/models/bulk", payload),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["models"] }),
+    onMutate: async (payload) => {
+      await queryClient.cancelQueries({ queryKey: LIST_QUERY_KEY });
+      const idSet = new Set(payload.ids);
+      const applyBulk = (tags: string[], favorite: boolean): { tags: string[]; favorite: boolean } => {
+        let nextTags = tags;
+        if (payload.add_tags?.length || payload.remove_tags?.length) {
+          const set = new Set(tags);
+          for (const tag of payload.add_tags ?? []) set.add(tag);
+          for (const tag of payload.remove_tags ?? []) set.delete(tag);
+          nextTags = [...set];
+        }
+        return { tags: nextTags, favorite: payload.favorite ?? favorite };
+      };
+      const listSnapshot = patchModelInListCache(queryClient, LIST_QUERY_KEY, (item) => {
+        if (!idSet.has(item.id)) return undefined;
+        return { ...item, ...applyBulk(item.tags, item.favorite) };
+      });
+      const slugs = slugsForIds(listSnapshot, idSet);
+      const detailSnapshots = slugs.map(
+        (slug) => [modelQueryOptions(slug).queryKey, queryClient.getQueryData<ModelDetail>(modelQueryOptions(slug).queryKey)] as const,
+      );
+      for (const [key, detail] of detailSnapshots) {
+        if (!detail) continue;
+        queryClient.setQueryData(key, { ...detail, ...applyBulk(detail.tags, detail.favorite) });
+      }
+      return { listSnapshot, detailSnapshots };
+    },
+    onError: (_err, _payload, context) => {
+      if (!context) return;
+      restoreListSnapshot(queryClient, context.listSnapshot);
+      for (const [key, data] of context.detailSnapshots) queryClient.setQueryData(key, data);
+    },
+    onSettled: (_data, _err, _payload, context) => {
+      void queryClient.invalidateQueries({ queryKey: LIST_QUERY_KEY });
+      for (const [key] of context?.detailSnapshots ?? []) void queryClient.invalidateQueries({ queryKey: key });
+    },
   });
 }
 
@@ -154,12 +321,23 @@ export function useBulkDeleteModels() {
   return useMutation({
     mutationFn: ({ ids }: { ids: number[]; slugs: string[] }) =>
       api.post<ModelBulkDeleteOut>("/models/bulk-delete", { ids }),
+    onMutate: async ({ ids }) => {
+      await queryClient.cancelQueries({ queryKey: LIST_QUERY_KEY });
+      const idSet = new Set(ids);
+      const listSnapshot = patchModelInListCache(queryClient, LIST_QUERY_KEY, (item) =>
+        idSet.has(item.id) ? null : undefined,
+      );
+      return { listSnapshot };
+    },
+    onError: (_err, _payload, context) => {
+      if (context) restoreListSnapshot(queryClient, context.listSnapshot);
+    },
     onSuccess: (_data, { slugs }) => {
       for (const slug of slugs) {
         queryClient.removeQueries({ queryKey: modelQueryOptions(slug).queryKey });
       }
     },
-    onSettled: () => void queryClient.invalidateQueries({ queryKey: ["models"] }),
+    onSettled: () => void queryClient.invalidateQueries({ queryKey: LIST_QUERY_KEY }),
   });
 }
 
@@ -170,11 +348,33 @@ export function useBulkDeleteModels() {
  * archived-model banner's "Unarchive" action (`false`). */
 export function useArchiveModel(slug: string) {
   const queryClient = useQueryClient();
+  const detailKey = modelQueryOptions(slug).queryKey;
   return useMutation({
     mutationFn: (is_archived: boolean) => api.patch<ModelDetail>(`/models/${slug}`, { is_archived }),
+    onMutate: async (is_archived) => {
+      await queryClient.cancelQueries({ queryKey: LIST_QUERY_KEY });
+      // Archiving removes the card from every cached list page (mirrors the
+      // backend's default `archived=false` filter). Unarchiving doesn't try
+      // to reinsert it -- position/sort is server-owned -- `onSettled`'s
+      // list invalidation below picks it back up on refetch instead.
+      const listSnapshot = patchModelInListCache(queryClient, LIST_QUERY_KEY, (item) =>
+        item.slug === slug && is_archived ? null : undefined,
+      );
+      const detailSnapshot = queryClient.getQueryData<ModelDetail>(detailKey);
+      if (detailSnapshot) queryClient.setQueryData(detailKey, { ...detailSnapshot, is_archived });
+      return { listSnapshot, detailSnapshot };
+    },
+    onError: (_err, _payload, context) => {
+      if (!context) return;
+      restoreListSnapshot(queryClient, context.listSnapshot);
+      queryClient.setQueryData(detailKey, context.detailSnapshot);
+    },
     onSuccess: (data) => {
-      queryClient.setQueryData(modelQueryOptions(slug).queryKey, data);
-      void queryClient.invalidateQueries({ queryKey: ["models", "list"] });
+      queryClient.setQueryData(detailKey, data);
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: detailKey });
+      void queryClient.invalidateQueries({ queryKey: LIST_QUERY_KEY });
     },
   });
 }

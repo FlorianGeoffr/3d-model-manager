@@ -195,6 +195,19 @@ describe("ModelHeader -- favorite + queue actions", () => {
     );
   });
 
+  // R9-C item 5: the `f` hotkey reuses the same `usePatchModel` mutation as
+  // the star button above.
+  it("`f` toggles favorite via the same mutation as the star button", async () => {
+    renderHeader(false);
+    await screen.findByRole("button", { name: "Add to favorites" });
+
+    fireEvent.keyDown(document.body, { key: "f" });
+
+    await waitFor(() =>
+      expect(patchMock).toHaveBeenCalledExactlyOnceWith("/models/articulated-dragon", { favorite: true }),
+    );
+  });
+
   it("'Add to queue' posts the model id to the queue endpoint", async () => {
     renderHeader(false);
 

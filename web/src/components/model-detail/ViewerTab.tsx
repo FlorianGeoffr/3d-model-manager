@@ -18,8 +18,16 @@ import type { FileOut, ModelDetail } from "@/api/types";
  * and panel-collapsed state -- and so the standalone pop-out window can reuse
  * the exact same stage. Per-part colors (M8 G2) persist per model in
  * localStorage. */
-function MeshSection({ files, slug }: { files: FileOut[]; slug: string }) {
-  const { stageProps } = useViewerScene({ slug, files });
+function MeshSection({
+  files,
+  slug,
+  coverUrl,
+}: {
+  files: FileOut[];
+  slug: string;
+  coverUrl: string | null;
+}) {
+  const { stageProps } = useViewerScene({ slug, files, coverUrl });
   const [expanded, setExpanded] = useState(false);
 
   return (
@@ -31,6 +39,10 @@ function MeshSection({ files, slug }: { files: FileOut[]; slug: string }) {
           showWindowButtons
           showExpand
           onExpand={() => setExpanded(true)}
+          // Fix wave finding 4: this stage stays mounted while the Expand
+          // dialog is open, so it must give up its Shift+F binding to the
+          // dialog's own (visible) stage below.
+          active={!expanded}
         />
       </div>
 
@@ -121,7 +133,12 @@ export function ViewerTab({ model }: { model: ModelDetail }) {
           part ids from a previous model would carry over to the next one,
           leaving every box unchecked. */}
       {glbable.length > 0 && (
-        <MeshSection key={glbable.map((file) => file.id).join(",")} files={glbable} slug={model.slug} />
+        <MeshSection
+          key={glbable.map((file) => file.id).join(",")}
+          files={glbable}
+          slug={model.slug}
+          coverUrl={model.cover_blob_hash ? `/api/blobs/${model.cover_blob_hash}/thumb?size=512` : null}
+        />
       )}
 
       {selectedFile && (

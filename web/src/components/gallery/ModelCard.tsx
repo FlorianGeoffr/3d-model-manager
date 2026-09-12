@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
 import { ClockIcon, FileStackIcon, StarIcon, XIcon } from "lucide-react";
 
-import { usePatchModel } from "@/api/library";
+import { modelQueryOptions, usePatchModel } from "@/api/library";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
@@ -16,20 +17,43 @@ const VISIBLE_TAGS = 3;
 
 export function ModelCard({
   model,
+  index,
   selectable = false,
   selected = false,
   onSelectChange,
+  onModifiedClick,
 }: {
   model: ModelSummary;
+  /** This card's position in the gallery's flat item list -- used only for
+   * ctrl/cmd/shift+click range selection; optional so the card still works
+   * standalone (e.g. in tests) without select support. */
+  index?: number;
   /** Bulk-select mode (LibraryPage): shows a checkbox overlay instead of
    * (or alongside) the favorite star, none of which navigate the card. */
   selectable?: boolean;
   selected?: boolean;
   onSelectChange?: (id: number, next: boolean) => void;
+  /** Ctrl/Cmd/Shift+click range/toggle select (R9-A item 6): fired instead
+   * of navigating when the card's `<Link>` is clicked with a modifier held. */
+  onModifiedClick?: (event: React.MouseEvent, index: number) => void;
 }) {
   const [coverErrored, setCoverErrored] = useState(false);
   const [renderErrored, setRenderErrored] = useState(false);
+  // R9-A item 1: the hover-render `<img>` only gets a `src` once the card's
+  // actually been hovered -- until then it stays mounted (so the opacity
+  // crossfade still works once it does) but src-less, so the browser never
+  // fetches a render for a card the user hasn't shown any intent on.
+  const [hovered, setHovered] = useState(false);
   const patchModel = usePatchModel(model.slug);
+  const queryClient = useQueryClient();
+
+  // R9-A item 4: warm the model detail query on hover/focus intent so the
+  // click-through navigation renders instantly. A `staleTime` keeps it from
+  // being refetched immediately on mount if the user does follow through.
+  function onIntent() {
+    setHovered(true);
+    void queryClient.prefetchQuery({ ...modelQueryOptions(model.slug), staleTime: 30_000 });
+  }
   const visibleTags = model.tags.slice(0, VISIBLE_TAGS);
   const overflowCount = model.tags.length - visibleTags.length;
   const primaryFormat = model.formats[0];
@@ -69,8 +93,25 @@ export function ModelCard({
     event.stopPropagation();
   }
 
+  // R9-A item 6: a modified click selects instead of navigating. Any
+  // modified click auto-enters select mode via the parent's handler.
+  function onLinkClick(event: React.MouseEvent) {
+    if (onModifiedClick && (event.shiftKey || event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      onModifiedClick(event, index ?? 0);
+    }
+  }
+
   return (
-    <Link to="/models/$slug" params={{ slug: model.slug }} className="group block">
+    <Link
+      to="/models/$slug"
+      params={{ slug: model.slug }}
+      className="group block"
+      preload="intent"
+      onClick={onLinkClick}
+      onPointerEnter={onIntent}
+      onFocus={onIntent}
+    >
       <Card className="h-full gap-3 overflow-hidden py-0 pb-4 transition-shadow hover:shadow-md">
         <div className="relative aspect-square overflow-hidden bg-muted">
           {showCover ? (
@@ -78,15 +119,21 @@ export function ModelCard({
               <img
                 src={model.cover ?? undefined}
                 alt={model.name}
+                loading="lazy"
+                decoding="async"
+                fetchPriority="low"
                 className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.04] motion-reduce:transition-none motion-reduce:group-hover:scale-100"
                 onError={() => setCoverErrored(true)}
               />
               {showRenderHover && (
                 <img
-                  src={model.render_url ?? undefined}
+                  src={hovered ? (model.render_url ?? undefined) : undefined}
                   alt=""
                   aria-hidden="true"
                   data-testid="render-hover-img"
+                  loading="lazy"
+                  decoding="async"
+                  fetchPriority="low"
                   className="absolute inset-0 h-full w-full object-cover opacity-0 transition-opacity duration-300 group-hover:opacity-100 motion-reduce:transition-none"
                   onError={() => setRenderErrored(true)}
                 />

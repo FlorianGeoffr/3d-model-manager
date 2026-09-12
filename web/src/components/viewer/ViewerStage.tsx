@@ -3,6 +3,8 @@ import {
   Suspense,
   lazy,
   useCallback,
+  useEffect,
+  useRef,
   useState,
   type KeyboardEvent,
   type ReactNode,
@@ -12,6 +14,7 @@ import {
   CameraIcon,
   ExternalLinkIcon,
   Grid3x3Icon,
+  LoaderCircleIcon,
   Maximize2Icon,
   PanelRightCloseIcon,
   PanelRightOpenIcon,
@@ -27,6 +30,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { useHotkeys } from "@/hooks/useHotkeys";
 import { cn } from "@/lib/utils";
 import { usePrinterStatus } from "@/api/printers";
 import { FilamentChip } from "@/components/ui/filament-chip";
@@ -103,6 +107,12 @@ interface ViewerErrorBoundaryProps {
    * the resetKey the error happened under, tracked in state), so a crash
    * doesn't get stuck on the fallback forever without remounting anything. */
   resetKey: string;
+  /** Fix wave finding 3: lets `ViewerStage` know the canvas crashed so it can
+   * drop the thumbnail crossfade cover -- otherwise a load failure left the
+   * cover image sitting opaque over this boundary's own fallback forever
+   * (the cover only ever cleared on `onPartLoaded`, which a crash never
+   * fires). */
+  onError?: () => void;
 }
 
 interface ViewerErrorBoundaryState {
@@ -115,6 +125,10 @@ class ViewerErrorBoundary extends Component<ViewerErrorBoundaryProps, ViewerErro
 
   static getDerivedStateFromError(): Pick<ViewerErrorBoundaryState, "hasError"> {
     return { hasError: true };
+  }
+
+  componentDidCatch() {
+    this.props.onError?.();
   }
 
   // Derives state from props instead of a `componentDidUpdate` + `setState`
@@ -172,6 +186,8 @@ function MeshCanvas({
   apiRef,
   onPartLoaded,
   onExplodeModeChange,
+  hasCoverThumbnail,
+  onError,
 }: {
   parts: ViewerPart[];
   background: string;
@@ -186,6 +202,20 @@ function MeshCanvas({
    * `ViewerStage`'s `handlePartLoaded` for what it does. */
   onPartLoaded: () => void;
   onExplodeModeChange: (mode: ExplodeMode) => void;
+  /** Fix wave finding 3: forwarded to `ViewerErrorBoundary` so a canvas-level
+   * crash can clear the thumbnail crossfade cover in `ViewerStage`. */
+  onError?: () => void;
+  /** R9-D item 8: when the model has a cover thumbnail, `ViewerStage`
+   * already shows it as a full-stage overlay while the GLB loads (see
+   * `ViewerStage`'s thumbnail layer), so this component's own Suspense
+   * fallback (the lazy-chunk import only -- GLB loads happen inside
+   * `ModelViewer`'s own internal Canvas suspense and never reach here) can
+   * skip the full-stage `Skeleton` and render nothing; a small corner
+   * spinner in `ViewerStage` covers the "still loading" affordance instead.
+   * Falls back to the old full-stage `Skeleton` when there's no thumbnail to
+   * cover the gap (e.g. the pop-out window, or a model with no cover
+   * image). */
+  hasCoverThumbnail: boolean;
 }) {
   if (parts.length === 0) {
     return (
@@ -200,8 +230,8 @@ function MeshCanvas({
 
   return (
     <>
-      <ViewerErrorBoundary resetKey={visibleParts.map((part) => part.id).join("|")}>
-        <Suspense fallback={<Skeleton className="h-full w-full" />}>
+      <ViewerErrorBoundary resetKey={visibleParts.map((part) => part.id).join("|")} onError={onError}>
+        <Suspense fallback={hasCoverThumbnail ? null : <Skeleton className="h-full w-full" />}>
           <ModelViewer
             parts={parts}
             background={background}
@@ -357,6 +387,24 @@ export interface ViewerStageProps {
    * prop path from the Screenshot button's click handler into a `<Canvas>`
    * child otherwise. */
   viewerApiRef: React.MutableRefObject<ViewerApi | null>;
+  /** R9-D item 8: the model's cover/thumbnail image URL (`null`/`undefined`
+   * when the model has none, e.g. the pop-out window today), rendered as a
+   * full-stage overlay over the canvas until the first part has loaded, then
+   * faded out over ~250ms (`prefers-reduced-motion` swaps instantly via
+   * Tailwind's `motion-reduce:` variant -- no JS branching needed). Replaces
+   * the old "blank canvas until the GLB pops in" gap with something to look
+   * at. */
+  coverUrl?: string | null;
+  /** Fix wave finding 4: `ViewerTab`'s `MeshSection` keeps the inline stage
+   * mounted while the Expand dialog's own stage is also mounted (open), so
+   * without this both stages' `Shift+F` hotkey bindings would fire on one
+   * keypress -- both see `document.fullscreenElement === null` (the
+   * Fullscreen API is async) and both call `requestFullscreen`, so whichever
+   * stage isn't visible can "win" the fullscreen request. Only the currently
+   * visible/active stage should bind the hotkey; defaults to `true` since
+   * every other caller (the dialog itself, the pop-out window) only ever has
+   * one stage mounted at a time. */
+  active?: boolean;
 }
 
 /** Strip + canvas + collapsible parts panel -- the whole redesigned viewer
@@ -412,6 +460,8 @@ export function ViewerStage({
   fitSignal,
   onFit,
   viewerApiRef,
+  coverUrl,
+  active = true,
 }: ViewerStageProps) {
   // The strip only exists to host actions. With the panel open and no
   // pop-out/expand actions to show (the window's steady state), it would be
@@ -450,9 +500,59 @@ export function ViewerStage({
   // present when the slider last moved. A no-op during the initial eager
   // load, since `tools.explode` starts at 0 -- see `ModelViewer`'s
   // `onPartLoaded` doc comment.
+  // R9-D item 8: the "GLB has loaded" half of the thumbnail crossfade --
+  // `firstLoadRef` guards against `handlePartLoaded` firing again on a LATER
+  // part (multi-part scenes) re-triggering the fade, since only the FIRST
+  // part to load ends the "still loading" state the thumbnail covers.
+  const firstLoadRef = useRef(false);
+  const [modelReady, setModelReady] = useState(false);
   const handlePartLoaded = useCallback(() => {
+    if (!firstLoadRef.current) {
+      firstLoadRef.current = true;
+      setModelReady(true);
+    }
     if (tools.explode !== 0) onToolsChange({ explode: 0 });
   }, [tools.explode, onToolsChange]);
+
+  // R9-D item 8: keeps the thumbnail `<img>` mounted for the ~250ms fade
+  // (Tailwind `transition-opacity`) after `modelReady` flips, then unmounts
+  // it -- a plain timer rather than an `onTransitionEnd` handler because
+  // `prefers-reduced-motion` (via `motion-reduce:transition-none`) removes
+  // the CSS transition entirely, which would never fire that event.
+  const [thumbnailMounted, setThumbnailMounted] = useState(true);
+  useEffect(() => {
+    if (!modelReady) return;
+    const id = window.setTimeout(() => setThumbnailMounted(false), 250);
+    return () => window.clearTimeout(id);
+  }, [modelReady]);
+
+  // Fix wave finding 3: `thumbnailMounted` used to clear ONLY off
+  // `modelReady`, which only ever flipped from `handlePartLoaded` (a load
+  // SUCCESS). A canvas-level crash (`ViewerErrorBoundary`) rendered its
+  // "Preview failed to load" fallback underneath this cover, which kept
+  // painting an opaque thumbnail + spinner over it forever -- the user never
+  // saw the error. `handleLoadError` drops the cover immediately (no fade,
+  // unlike the success path) so the error card is never hidden behind it
+  // even briefly.
+  const handleLoadError = useCallback(() => {
+    firstLoadRef.current = true;
+    setModelReady(true);
+    setThumbnailMounted(false);
+  }, []);
+
+  // Safety net for failure modes that never reach `ViewerErrorBoundary` at
+  // all -- e.g. every part unchecked before the first load, or a per-part
+  // load failure that `ModelViewer`'s `PartErrorBoundary` swallows locally
+  // (renders `null`, never throws up to this boundary) -- either of which
+  // would otherwise leave the cover mounted with no load/error signal ever
+  // firing. If nothing has resolved the loading state within 8s, drop the
+  // cover so the user at least sees the canvas underneath instead of a
+  // frozen thumbnail.
+  useEffect(() => {
+    if (modelReady || !coverUrl || parts.length === 0) return;
+    const id = window.setTimeout(() => setThumbnailMounted(false), 8000);
+    return () => window.clearTimeout(id);
+  }, [modelReady, coverUrl, parts.length]);
 
   // Explode classification reported by `ModelViewer` once parts load --
   // "none" until then (and for single-part / degenerate scenes), which keeps
@@ -476,22 +576,44 @@ export function ViewerStage({
 
   // `F`/`R`/`W`/`G` shortcuts on the canvas wrapper -- ignored while any
   // modifier is held (so `Ctrl+F`/`Cmd+R`/etc. keep their browser-native
-  // meaning instead of being hijacked).
+  // meaning instead of being hijacked). `stopPropagation` on a match keeps
+  // a plain "f" from also bubbling to the ModelHeader's document-level `f`
+  // favorite-toggle hotkey (R9-C item 5) -- without it, fitting the view
+  // here would also toggle the model's favorite.
   const handleCanvasKeyDown = useCallback(
     (event: KeyboardEvent<HTMLDivElement>) => {
       if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
       if (event.key === "f" || event.key === "F") {
+        event.stopPropagation();
         onFit();
       } else if (event.key === "r" || event.key === "R") {
+        event.stopPropagation();
         handleAutoRotateToggle();
       } else if (event.key === "w" || event.key === "W") {
+        event.stopPropagation();
         handleWireframeToggle();
       } else if (event.key === "g" || event.key === "G") {
+        event.stopPropagation();
         handleGridToggle();
       }
     },
     [onFit, handleAutoRotateToggle, handleWireframeToggle, handleGridToggle],
   );
+
+  // R9-C item 5: `Shift+F` fullscreens the stage container via the
+  // Fullscreen API. Document-level (via `useHotkeys`) rather than on the
+  // canvas wrapper's own `onKeyDown` like the shortcuts above, since the
+  // wrapper needing focus first would make this harder to discover than the
+  // other viewer controls. Bound only while this component is mounted.
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const toggleFullscreen = useCallback(() => {
+    if (document.fullscreenElement) {
+      void document.exitFullscreen();
+    } else {
+      void stageRef.current?.requestFullscreen();
+    }
+  }, []);
+  useHotkeys({ F: toggleFullscreen }, { enabled: active });
 
   return (
     <TooltipProvider>
@@ -549,6 +671,7 @@ export function ViewerStage({
 
       <div className={cn(BODY_BASE_CLASS, variant === "inline" && INLINE_BODY_HEIGHT_CLASS)}>
         <div
+          ref={stageRef}
           className="relative min-h-0 flex-1 overflow-hidden rounded-lg border border-border outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
           tabIndex={0}
           onKeyDown={handleCanvasKeyDown}
@@ -565,7 +688,29 @@ export function ViewerStage({
             apiRef={viewerApiRef}
             onPartLoaded={handlePartLoaded}
             onExplodeModeChange={setExplodeMode}
+            hasCoverThumbnail={Boolean(coverUrl) && parts.length > 0}
+            onError={handleLoadError}
           />
+          {coverUrl && parts.length > 0 && thumbnailMounted && (
+            <img
+              src={coverUrl}
+              alt=""
+              aria-hidden="true"
+              data-testid="viewer-thumbnail"
+              className={cn(
+                "pointer-events-none absolute inset-0 h-full w-full object-cover transition-opacity duration-[250ms] motion-reduce:transition-none",
+                modelReady ? "opacity-0" : "opacity-100",
+              )}
+            />
+          )}
+          {coverUrl && parts.length > 0 && !modelReady && (
+            <div
+              data-testid="viewer-loading-indicator"
+              className="pointer-events-none absolute top-2 right-2 rounded-full bg-background/70 p-1.5 backdrop-blur-sm"
+            >
+              <LoaderCircleIcon className="size-4 animate-spin text-muted-foreground" />
+            </div>
+          )}
         </div>
 
         {panelOpen && (

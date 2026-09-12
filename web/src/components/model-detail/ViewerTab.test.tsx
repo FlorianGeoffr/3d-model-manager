@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Children, isValidElement, useEffect, type ReactNode } from "react";
 
 import { ViewerTab } from "@/components/model-detail/ViewerTab";
@@ -161,7 +161,7 @@ function fakeFile(overrides: Partial<FileOut> = {}): FileOut {
   };
 }
 
-function fakeModel(files: FileOut[]): ModelDetail {
+function fakeModel(files: FileOut[], coverBlobHash: string | null = null): ModelDetail {
   return {
     id: 1,
     slug: "test-model",
@@ -174,7 +174,7 @@ function fakeModel(files: FileOut[]): ModelDetail {
     source_collection_id: null,
     source_collection_title: null,
     imported_at: null,
-    cover_blob_hash: null,
+    cover_blob_hash: coverBlobHash,
     is_archived: false,
     created_at: "2026-06-01T12:00:00Z",
     updated_at: "2026-06-01T12:00:00Z",
@@ -967,6 +967,27 @@ describe("ViewerTab", () => {
     expect(within(dialog).queryByRole("button", { name: "Expand" })).not.toBeInTheDocument();
   });
 
+  it("Shift+F fullscreens only the active stage while the Expand dialog is open (fix wave finding 4)", async () => {
+    // Before the fix, the inline stage stayed mounted (and kept its
+    // document-level Shift+F binding) while the dialog's own stage was also
+    // mounted -- one keypress fired BOTH handlers, each calling
+    // `requestFullscreen` since both see `document.fullscreenElement ===
+    // null` (the Fullscreen API is async). This pins it to exactly one call.
+    const requestFullscreenSpy = vi.fn().mockResolvedValue(undefined);
+    HTMLElement.prototype.requestFullscreen = requestFullscreenSpy;
+
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file])} />);
+    await screen.findByTestId("model-viewer");
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand" }));
+    await screen.findByRole("dialog");
+
+    fireEvent.keyDown(document.body, { key: "F", shiftKey: true });
+
+    expect(requestFullscreenSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("shows a preparing-preview card while the GLB conversion job is pending", () => {
     const file = fakeFile({ glb_status: "pending" });
     render(<ViewerTab model={fakeModel([file])} />);
@@ -1051,5 +1072,101 @@ describe("ViewerTab", () => {
     expect(await screen.findByTestId("model-viewer")).toHaveTextContent("/api/blobs/goodhash/glb");
     modelViewerMock.mockImplementation(defaultModelViewerImpl);
     consoleSpy.mockRestore();
+  });
+});
+
+describe("ViewerTab thumbnail load crossfade (R9-D item 8)", () => {
+  beforeEach(() => {
+    modelViewerMock.mockClear();
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const firePartLoaded = () => {
+    const { onPartLoaded } = modelViewerMock.mock.calls.at(-1)![0] as unknown as {
+      onPartLoaded: () => void;
+    };
+    act(() => onPartLoaded());
+  };
+
+  it("renders no thumbnail layer when the model has no cover", async () => {
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file], null)} />);
+
+    await screen.findByTestId("model-viewer");
+    expect(screen.queryByTestId("viewer-thumbnail")).not.toBeInTheDocument();
+  });
+
+  it("shows the cover thumbnail over the canvas before the first part loads", async () => {
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file], "coverhash")} />);
+
+    await screen.findByTestId("model-viewer");
+    const thumbnail = screen.getByTestId("viewer-thumbnail");
+    expect(thumbnail).toHaveAttribute("src", "/api/blobs/coverhash/thumb?size=512");
+    expect(thumbnail.className).toContain("opacity-100");
+    expect(screen.getByTestId("viewer-loading-indicator")).toBeInTheDocument();
+  });
+
+  it("fades the thumbnail out and unmounts it once the model has loaded", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file], "coverhash")} />);
+    await screen.findByTestId("model-viewer");
+
+    firePartLoaded();
+
+    expect(screen.getByTestId("viewer-thumbnail").className).toContain("opacity-0");
+    expect(screen.queryByTestId("viewer-loading-indicator")).not.toBeInTheDocument();
+
+    await act(async () => {
+      vi.advanceTimersByTime(250);
+    });
+
+    expect(screen.queryByTestId("viewer-thumbnail")).not.toBeInTheDocument();
+  });
+
+  it("drops the cover immediately (no fade) when the canvas crashes, so the error card is visible (fix wave finding 3)", async () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    modelViewerMock.mockImplementation(() => {
+      throw new Error("bad glb");
+    });
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file], "coverhash")} />);
+
+    expect(await screen.findByText("Preview failed to load")).toBeInTheDocument();
+    // Before the fix, `thumbnailMounted` only ever cleared off a load
+    // SUCCESS (`onPartLoaded`), which a crash never fires -- the cover
+    // stayed opaque over this fallback forever.
+    expect(screen.queryByTestId("viewer-thumbnail")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("viewer-loading-indicator")).not.toBeInTheDocument();
+
+    modelViewerMock.mockImplementation(defaultModelViewerImpl);
+    consoleSpy.mockRestore();
+  });
+
+  it("drops the cover after an 8s safety timeout if neither a load nor an error ever fires (fix wave finding 3)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    // A per-part load failure (`ModelViewer`'s own `PartErrorBoundary`)
+    // renders `null` and never calls `onPartLoaded` or throws up to
+    // `ViewerErrorBoundary` -- nothing ever signals "done loading". The
+    // safety timeout is the only thing that recovers the cover here.
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file], "coverhash")} />);
+    await screen.findByTestId("model-viewer");
+
+    expect(screen.getByTestId("viewer-thumbnail")).toBeInTheDocument();
+
+    // `shouldAdvanceTime` also ticks the fake clock forward with real wall
+    // time (needed so `findByTestId` above can still resolve its lazy
+    // import), so this asserts "eventually gone by ~8s", not a razor's-edge
+    // boundary against it.
+    await act(async () => {
+      vi.advanceTimersByTime(9000);
+    });
+    expect(screen.queryByTestId("viewer-thumbnail")).not.toBeInTheDocument();
   });
 });

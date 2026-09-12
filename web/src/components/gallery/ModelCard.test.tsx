@@ -9,13 +9,16 @@ import type { ModelSummary } from "@/api/types";
 // `usePatchModel` (the "Needs review" dismiss control) calls `api.patch`;
 // spy on it so the dismiss test can assert the request, and so the whole
 // card renders under a real QueryClient (the mutation hook needs one).
-const { patchMock } = vi.hoisted(() => ({ patchMock: vi.fn().mockResolvedValue({}) }));
+const { patchMock, getMock } = vi.hoisted(() => ({
+  patchMock: vi.fn().mockResolvedValue({}),
+  getMock: vi.fn().mockResolvedValue({}),
+}));
 
 vi.mock("@/api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/client")>();
   return {
     ...actual,
-    api: { ...actual.api, patch: patchMock },
+    api: { ...actual.api, patch: patchMock, get: getMock },
   };
 });
 
@@ -41,7 +44,13 @@ const MODEL: ModelSummary = {
 
 function renderCard(
   model: ModelSummary,
-  cardProps: { selectable?: boolean; selected?: boolean; onSelectChange?: (id: number, next: boolean) => void } = {},
+  cardProps: {
+    selectable?: boolean;
+    selected?: boolean;
+    onSelectChange?: (id: number, next: boolean) => void;
+    index?: number;
+    onModifiedClick?: (event: React.MouseEvent, index: number) => void;
+  } = {},
 ) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const rootRoute = createRootRoute();
@@ -61,6 +70,7 @@ function renderCard(
   });
   return {
     router,
+    queryClient,
     ...render(
       <QueryClientProvider client={queryClient}>
         <RouterProvider router={router} />
@@ -71,6 +81,7 @@ function renderCard(
 
 beforeEach(() => {
   patchMock.mockClear();
+  getMock.mockClear();
 });
 
 describe("ModelCard", () => {
@@ -262,5 +273,100 @@ describe("ModelCard -- photo-first cover with a render-on-hover (feat/import-fid
 
     await screen.findByText("Articulated Dragon");
     expect(screen.queryByTestId("render-hover-img")).not.toBeInTheDocument();
+  });
+});
+
+describe("ModelCard -- lazy, non-shifting thumbnails (R9-A item 1)", () => {
+  it("renders the resting cover with lazy-loading attrs", async () => {
+    renderCard({ ...MODEL, cover: "/covers/1.jpg" });
+
+    const cover = await screen.findByAltText("Articulated Dragon");
+    expect(cover).toHaveAttribute("loading", "lazy");
+    expect(cover).toHaveAttribute("decoding", "async");
+    expect(cover).toHaveAttribute("fetchPriority", "low");
+  });
+
+  it("doesn't set the hover image's src until the card has been hovered once, then keeps it mounted", async () => {
+    renderCard({ ...MODEL, cover: "/covers/1.jpg", render_url: "/renders/1.png" });
+
+    await screen.findByText("Articulated Dragon");
+    const hoverImg = screen.getByTestId("render-hover-img");
+    expect(hoverImg).toHaveAttribute("loading", "lazy");
+    expect(hoverImg).toHaveAttribute("decoding", "async");
+    expect(hoverImg).toHaveAttribute("fetchPriority", "low");
+    expect(hoverImg).not.toHaveAttribute("src");
+
+    fireEvent.pointerEnter(screen.getByRole("link"));
+
+    expect(screen.getByTestId("render-hover-img")).toHaveAttribute("src", "/renders/1.png");
+  });
+});
+
+describe("ModelCard -- prefetch on intent (R9-A item 4)", () => {
+  it("prefetches the model detail query on pointerenter, exactly once", async () => {
+    const { queryClient } = renderCard(MODEL);
+    const link = await screen.findByRole("link");
+
+    fireEvent.pointerEnter(link);
+    fireEvent.pointerEnter(link);
+
+    await waitFor(() => expect(getMock).toHaveBeenCalledWith(`/models/${MODEL.slug}`));
+    expect(getMock).toHaveBeenCalledTimes(1);
+    expect(queryClient.getQueryData(["models", "detail", MODEL.slug])).toBeDefined();
+  });
+
+  it("prefetches the model detail query on focus too", async () => {
+    renderCard(MODEL);
+    const link = await screen.findByRole("link");
+
+    fireEvent.focus(link);
+
+    await waitFor(() => expect(getMock).toHaveBeenCalledWith(`/models/${MODEL.slug}`));
+  });
+});
+
+describe("ModelCard -- ctrl/cmd/shift+click range select (R9-A item 6)", () => {
+  it("calls onModifiedClick with the index and prevents navigation on a shift-click", async () => {
+    const onModifiedClick = vi.fn();
+    const { router } = renderCard(MODEL, { index: 3, onModifiedClick });
+    const link = await screen.findByRole("link");
+
+    fireEvent.click(link, { shiftKey: true });
+
+    expect(onModifiedClick).toHaveBeenCalledTimes(1);
+    expect(onModifiedClick.mock.calls[0][1]).toBe(3);
+    expect(router.state.location.pathname).toBe("/");
+  });
+
+  it("calls onModifiedClick and prevents navigation on a ctrl-click", async () => {
+    const onModifiedClick = vi.fn();
+    const { router } = renderCard(MODEL, { index: 1, onModifiedClick });
+    const link = await screen.findByRole("link");
+
+    fireEvent.click(link, { ctrlKey: true });
+
+    expect(onModifiedClick).toHaveBeenCalledTimes(1);
+    expect(router.state.location.pathname).toBe("/");
+  });
+
+  it("calls onModifiedClick and prevents navigation on a cmd (meta) click", async () => {
+    const onModifiedClick = vi.fn();
+    const { router } = renderCard(MODEL, { index: 2, onModifiedClick });
+    const link = await screen.findByRole("link");
+
+    fireEvent.click(link, { metaKey: true });
+
+    expect(onModifiedClick).toHaveBeenCalledTimes(1);
+    expect(router.state.location.pathname).toBe("/");
+  });
+
+  it("plain clicks navigate normally and don't call onModifiedClick", async () => {
+    const onModifiedClick = vi.fn();
+    renderCard(MODEL, { index: 0, onModifiedClick });
+    const link = await screen.findByRole("link");
+
+    fireEvent.click(link);
+
+    expect(onModifiedClick).not.toHaveBeenCalled();
   });
 });

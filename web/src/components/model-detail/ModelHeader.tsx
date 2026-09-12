@@ -17,6 +17,7 @@ import { useArchiveModel, useDeleteModel, usePatchModel, useRedownloadModel } fr
 import { useEnqueueModel } from "@/api/queue";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { InlineEdit } from "@/components/InlineEdit";
+import { useHotkeys } from "@/hooks/useHotkeys";
 import { modelFilaments, revisionFormats } from "@/components/model-detail/modelSpec";
 import { ProvenanceBlock } from "@/components/model-detail/ProvenanceBlock";
 import { StorageLocationBar } from "@/components/model-detail/StorageLocationBar";
@@ -141,6 +142,9 @@ export function ModelHeader({
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const canRedownload = Boolean(model.source_site && model.source_url);
+
+  // R9-C item 5: same mutation as the star button below.
+  useHotkeys({ f: () => patchModel.mutate({ favorite: !model.favorite }) });
 
   const filaments = modelFilaments(model);
   const formats = revisionFormats(model);

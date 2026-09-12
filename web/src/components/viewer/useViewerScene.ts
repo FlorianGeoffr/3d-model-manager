@@ -58,10 +58,15 @@ export function useViewerScene({
   files,
   initial,
   persist = true,
+  coverUrl,
 }: {
   slug: string;
   files: FileOut[];
   initial?: ViewerSceneInitial;
+  /** R9-D item 8: the model's cover thumbnail URL, threaded straight through
+   * to `ViewerStage`'s load crossfade -- see that prop's doc comment.
+   * Undefined for callers with no cover to show (the pop-out window). */
+  coverUrl?: string | null;
   /** Whether this surface writes its state back to shared storage. The tab
    * persists (colors per-model, background/lighting globally). The pop-out
    * window is a URL-derived VIEW and passes `false`: it's seeded with a SUBSET
@@ -231,6 +236,7 @@ export function useViewerScene({
     fitSignal,
     onFit: () => setFitSignal((prev) => prev + 1),
     viewerApiRef,
+    coverUrl,
   };
 
   return { stageProps };

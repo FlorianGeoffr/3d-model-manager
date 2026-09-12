@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearch } from "@tanstack/react-router";
+import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import {
   ArchiveIcon,
   BookmarkIcon,
@@ -30,6 +31,8 @@ import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useHotkeys } from "@/hooks/useHotkeys";
+import { chunkIntoRows, columnsForWidth, estimateRowHeight } from "@/lib/grid";
 import { useDebouncedValue } from "@/lib/format";
 import { BLOB_FORMATS, type BlobFormat, type ModelSummary } from "@/api/types";
 import { FORMAT_LABELS } from "@/lib/formatMeta";
@@ -67,6 +70,7 @@ export function LibraryPage() {
   // other filter on this page.
   const search = useSearch({ strict: false }) as LibrarySearch;
 
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const [searchInput, setSearchInput] = useState("");
   const debouncedSearch = useDebouncedValue(searchInput, 300);
   const [activeTag, setActiveTag] = useState<string | undefined>(undefined);
@@ -83,10 +87,19 @@ export function LibraryPage() {
   // never persisted, never written to the URL.
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  // R9-A item 6: the anchor for shift+click range selection -- the index of
+  // the most recently (modified-)clicked card, cleared whenever selection is
+  // exited so a later range doesn't reach back into a previous selection.
+  const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null);
+  // R9-C item 5: lifted here (rather than local to `SelectionActionBar`) so
+  // the `Delete` hotkey -- fired from anywhere on the page, not just while
+  // focus is inside the selection bar -- can open it.
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
 
   function exitSelectMode() {
     setSelectMode(false);
     setSelectedIds(new Set());
+    setLastSelectedIndex(null);
   }
 
   function toggleSelected(id: number, next: boolean) {
@@ -96,6 +109,24 @@ export function LibraryPage() {
       else updated.delete(id);
       return updated;
     });
+  }
+
+  /** Ctrl/Cmd toggles just this card; Shift selects the inclusive range from
+   * `lastSelectedIndex` (or this index, if there isn't one yet) through this
+   * index, adding to the existing selection rather than replacing it. Either
+   * one auto-enters select mode. */
+  function handleModifiedClick(event: React.MouseEvent, index: number) {
+    setSelectMode(true);
+    if (event.shiftKey) {
+      const anchor = lastSelectedIndex ?? index;
+      const [lo, hi] = anchor <= index ? [anchor, index] : [index, anchor];
+      const rangeIds = items.slice(lo, hi + 1).map((model) => model.id);
+      setSelectedIds((prev) => new Set([...prev, ...rangeIds]));
+    } else {
+      const model = items[index];
+      if (model) toggleSelected(model.id, !selectedIds.has(model.id));
+    }
+    setLastSelectedIndex(index);
   }
 
   const tagsQuery = useTags();
@@ -118,22 +149,132 @@ export function LibraryPage() {
   );
 
   const modelsQuery = useModelsQuery(filters);
-  const items = modelsQuery.data?.pages.flatMap((page) => page.items) ?? [];
+  const items = useMemo(
+    () => modelsQuery.data?.pages.flatMap((page) => page.items) ?? [],
+    [modelsQuery.data],
+  );
   const selectedItems = items.filter((model) => selectedIds.has(model.id));
 
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  function selectAll() {
+    setSelectMode(true);
+    setSelectedIds(new Set(items.map((model) => model.id)));
+  }
+
+  // R9-C item 5: `/` and `Escape` always make sense; `a` only selects
+  // everything while already in select mode (otherwise a bare "a" while
+  // typing in the search box would be indistinguishable from typing an "a"
+  // -- the hook already guards inputs, but scoping this one to select mode
+  // too keeps it from firing over any other future non-input surface).
+  // `mod+a` enters select mode itself, `Escape` leaves it, and `Delete`
+  // opens the existing bulk-delete confirm.
+  useHotkeys({
+    "/": () => searchInputRef.current?.focus(),
+    // Fix wave finding 5: Radix dialogs/popovers (ConfirmDialog,
+    // NewModelDialog, the Tags/Collection popovers) already handle their own
+    // Escape via `DismissableLayer` -- if one of those is open, this
+    // document-level handler must NOT also fire, or dismissing e.g. the
+    // bulk-delete confirm silently discards the whole selection underneath
+    // it. Radix content renders `role="dialog"` for both `Dialog` and
+    // `Popover` in this codebase (see `node_modules/@radix-ui/react-popover`)
+    // with `data-state="open"` while mounted/open.
+    Escape: (event) => {
+      if (document.querySelector('[role="dialog"][data-state="open"]')) return;
+      if (event.target instanceof Element && event.target.closest('[role="dialog"]')) return;
+      exitSelectMode();
+    },
+    ...(selectMode ? { a: () => selectAll() } : {}),
+    "mod+a": () => selectAll(),
+    Delete: () => {
+      if (selectedItems.length > 0) setDeleteConfirmOpen(true);
+    },
+  });
+
+  // R9-A item 2: virtualize the grid by row rather than by card, since
+  // `useWindowVirtualizer` measures along a single axis and the grid wraps.
+  // Column count and container width both track the grid container's own
+  // ResizeObserver (mirroring the `grid-cols-*` breakpoints below) rather
+  // than the viewport, so both stay correct regardless of any surrounding
+  // chrome.
+  //
+  // Fix wave finding 1: this used to be a plain `useRef` + a `[]`-deps
+  // `useEffect` that read `gridRef.current` -- on a normal page load the
+  // FIRST render is always the `modelsQuery.isLoading` skeleton branch (see
+  // below), which never mounts this grid `<div>` at all, so the effect ran
+  // once against `null`, bailed, and never got another chance to attach once
+  // the real grid mounted. A callback ref fixes it structurally: it fires
+  // exactly when React actually mounts/unmounts the node, in whichever
+  // branch that happens, and measures synchronously via
+  // `getBoundingClientRect()` the moment it attaches instead of waiting for
+  // the observer's first async callback.
+  const gridNodeRef = useRef<HTMLDivElement | null>(null);
+  const gridObserverRef = useRef<ResizeObserver | null>(null);
+  const [columns, setColumns] = useState(() => columnsForWidth(0));
+  const [containerWidth, setContainerWidth] = useState(0);
+
+  const gridRef = useCallback((node: HTMLDivElement | null) => {
+    gridObserverRef.current?.disconnect();
+    gridObserverRef.current = null;
+    gridNodeRef.current = node;
+    if (!node) return;
+
+    const rect = node.getBoundingClientRect();
+    setColumns(columnsForWidth(rect.width));
+    setContainerWidth(rect.width);
+
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? 0;
+      setColumns(columnsForWidth(width));
+      setContainerWidth(width);
+    });
+    observer.observe(node);
+    gridObserverRef.current = observer;
+  }, []);
+
+  const rows = useMemo(() => chunkIntoRows(items, columns), [items, columns]);
+
+  // Fix round 1: cards are aspect-square, so a row's height scales directly
+  // with column width -- a single fixed guess (e.g. one number for both a
+  // 2-column phone layout and a 5-column desktop one) overlaps or gaps rows
+  // in production. `estimateRowHeight` derives it from the container's own
+  // measured width instead; `measure()` below re-runs the virtualizer's
+  // layout whenever that estimate changes (width/column changes).
+  const rowHeightEstimate = useMemo(
+    () => estimateRowHeight(containerWidth, columns),
+    [containerWidth, columns],
+  );
+  const rowVirtualizer = useWindowVirtualizer({
+    count: rows.length,
+    estimateSize: () => rowHeightEstimate,
+    overscan: 3,
+    scrollMargin: gridNodeRef.current?.offsetTop ?? 0,
+    // The default measures via ResizeObserver entries / getBoundingClientRect,
+    // which is exactly right in a real browser -- but jsdom (tests) reports
+    // 0 for every element's layout box, which would otherwise collapse every
+    // row to zero height and defeat virtualization. Falling back to the
+    // (now width-aware) estimate keeps behavior correct in both.
+    measureElement: (element) => {
+      const height = element.getBoundingClientRect().height;
+      return height > 0 ? height : rowHeightEstimate;
+    },
+  });
 
   useEffect(() => {
-    const sentinel = sentinelRef.current;
-    if (!sentinel) return;
-    const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting) && modelsQuery.hasNextPage && !modelsQuery.isFetchingNextPage) {
-        void modelsQuery.fetchNextPage();
-      }
-    });
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, [modelsQuery]);
+    rowVirtualizer.measure();
+    // Only re-measure when the estimate itself changes -- `rowVirtualizer`
+    // is a new object identity every render and would otherwise re-run this
+    // on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rowHeightEstimate]);
+
+  const virtualRows = rowVirtualizer.getVirtualItems();
+
+  useEffect(() => {
+    const lastVisible = virtualRows.at(-1);
+    if (!lastVisible) return;
+    if (lastVisible.index >= rows.length - 1 && modelsQuery.hasNextPage && !modelsQuery.isFetchingNextPage) {
+      void modelsQuery.fetchNextPage();
+    }
+  }, [virtualRows, rows.length, modelsQuery]);
 
   const isEmpty = !modelsQuery.isLoading && items.length === 0;
   const tags = tagsQuery.data ?? [];
@@ -145,6 +286,7 @@ export function LibraryPage() {
           <div className="relative max-w-sm flex-1">
             <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
+              ref={searchInputRef}
               value={searchInput}
               onChange={(event) => setSearchInput(event.target.value)}
               placeholder="Search models…"
@@ -311,18 +453,42 @@ export function LibraryPage() {
         </Card>
       ) : (
         <>
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
-            {items.map((model) => (
-              <ModelCard
-                key={model.id}
-                model={model}
-                selectable={selectMode}
-                selected={selectedIds.has(model.id)}
-                onSelectChange={toggleSelected}
-              />
-            ))}
+          <div ref={gridRef} className="relative w-full" style={{ height: rowVirtualizer.getTotalSize() }}>
+            {virtualRows.map((virtualRow) => {
+              const row = rows[virtualRow.index] ?? [];
+              return (
+                <div
+                  key={virtualRow.key}
+                  data-index={virtualRow.index}
+                  ref={rowVirtualizer.measureElement}
+                  className="absolute top-0 left-0 grid w-full gap-4 pb-4"
+                  style={{
+                    transform: `translateY(${virtualRow.start - rowVirtualizer.options.scrollMargin}px)`,
+                    // Fix wave finding 2: this MUST be driven by the same
+                    // `columns` state that `chunkIntoRows` used to build
+                    // `row` below -- viewport-based Tailwind `grid-cols-*`
+                    // classes measure the *viewport*, while `columns` (and
+                    // `chunkIntoRows`) measure the grid *container*
+                    // (viewport minus the sidebar/padding chrome), so the two
+                    // disagreed at every width where that chrome mattered.
+                    gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+                  }}
+                >
+                  {row.map((model, columnIndex) => (
+                    <ModelCard
+                      key={model.id}
+                      model={model}
+                      index={virtualRow.index * columns + columnIndex}
+                      selectable={selectMode}
+                      selected={selectedIds.has(model.id)}
+                      onSelectChange={toggleSelected}
+                      onModifiedClick={handleModifiedClick}
+                    />
+                  ))}
+                </div>
+              );
+            })}
           </div>
-          <div ref={sentinelRef} className="h-1" />
           {modelsQuery.isFetchingNextPage && (
             <p className="py-4 text-center text-sm text-muted-foreground">Loading more…</p>
           )}
@@ -330,7 +496,12 @@ export function LibraryPage() {
       )}
 
       {selectMode && selectedItems.length > 0 && (
-        <SelectionActionBar selectedItems={selectedItems} onDone={exitSelectMode} />
+        <SelectionActionBar
+          selectedItems={selectedItems}
+          onDone={exitSelectMode}
+          deleteConfirmOpen={deleteConfirmOpen}
+          onDeleteConfirmOpenChange={setDeleteConfirmOpen}
+        />
       )}
     </div>
   );
@@ -341,7 +512,17 @@ export function LibraryPage() {
  * `useBulkUpdateModels` (`POST /models/bulk`); queueing has no bulk endpoint,
  * so it loops `useEnqueueModel` over the selection instead. Delete goes
  * through `useBulkDeleteModels` (`POST /models/bulk-delete`, Round 11 T1). */
-function SelectionActionBar({ selectedItems, onDone }: { selectedItems: ModelSummary[]; onDone: () => void }) {
+function SelectionActionBar({
+  selectedItems,
+  onDone,
+  deleteConfirmOpen,
+  onDeleteConfirmOpenChange,
+}: {
+  selectedItems: ModelSummary[];
+  onDone: () => void;
+  deleteConfirmOpen: boolean;
+  onDeleteConfirmOpenChange: (open: boolean) => void;
+}) {
   const [tagToAdd, setTagToAdd] = useState("");
   const [addTagOpen, setAddTagOpen] = useState(false);
   const [removeTagOpen, setRemoveTagOpen] = useState(false);
@@ -537,6 +718,8 @@ function SelectionActionBar({ selectedItems, onDone }: { selectedItems: ModelSum
             <Trash2Icon /> Delete
           </Button>
         }
+        open={deleteConfirmOpen}
+        onOpenChange={onDeleteConfirmOpenChange}
         title={`Delete ${ids.length} model${ids.length === 1 ? "" : "s"}?`}
         description="Permanently deletes the selected models and every file they store. This cannot be undone."
         confirmLabel="Delete"

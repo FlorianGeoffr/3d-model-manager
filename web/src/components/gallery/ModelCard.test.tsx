@@ -9,13 +9,16 @@ import type { ModelSummary } from "@/api/types";
 // `usePatchModel` (the "Needs review" dismiss control) calls `api.patch`;
 // spy on it so the dismiss test can assert the request, and so the whole
 // card renders under a real QueryClient (the mutation hook needs one).
-const { patchMock } = vi.hoisted(() => ({ patchMock: vi.fn().mockResolvedValue({}) }));
+const { patchMock, getMock } = vi.hoisted(() => ({
+  patchMock: vi.fn().mockResolvedValue({}),
+  getMock: vi.fn().mockResolvedValue({}),
+}));
 
 vi.mock("@/api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/client")>();
   return {
     ...actual,
-    api: { ...actual.api, patch: patchMock },
+    api: { ...actual.api, patch: patchMock, get: getMock },
   };
 });
 
@@ -61,6 +64,7 @@ function renderCard(
   });
   return {
     router,
+    queryClient,
     ...render(
       <QueryClientProvider client={queryClient}>
         <RouterProvider router={router} />
@@ -71,6 +75,7 @@ function renderCard(
 
 beforeEach(() => {
   patchMock.mockClear();
+  getMock.mockClear();
 });
 
 describe("ModelCard", () => {
@@ -288,5 +293,28 @@ describe("ModelCard -- lazy, non-shifting thumbnails (R9-A item 1)", () => {
     fireEvent.pointerEnter(screen.getByRole("link"));
 
     expect(screen.getByTestId("render-hover-img")).toHaveAttribute("src", "/renders/1.png");
+  });
+});
+
+describe("ModelCard -- prefetch on intent (R9-A item 4)", () => {
+  it("prefetches the model detail query on pointerenter, exactly once", async () => {
+    const { queryClient } = renderCard(MODEL);
+    const link = await screen.findByRole("link");
+
+    fireEvent.pointerEnter(link);
+    fireEvent.pointerEnter(link);
+
+    await waitFor(() => expect(getMock).toHaveBeenCalledWith(`/models/${MODEL.slug}`));
+    expect(getMock).toHaveBeenCalledTimes(1);
+    expect(queryClient.getQueryData(["models", "detail", MODEL.slug])).toBeDefined();
+  });
+
+  it("prefetches the model detail query on focus too", async () => {
+    renderCard(MODEL);
+    const link = await screen.findByRole("link");
+
+    fireEvent.focus(link);
+
+    await waitFor(() => expect(getMock).toHaveBeenCalledWith(`/models/${MODEL.slug}`));
   });
 });

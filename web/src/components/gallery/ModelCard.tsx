@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
 import { ClockIcon, FileStackIcon, StarIcon, XIcon } from "lucide-react";
 
-import { usePatchModel } from "@/api/library";
+import { modelQueryOptions, usePatchModel } from "@/api/library";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
@@ -35,6 +36,15 @@ export function ModelCard({
   // fetches a render for a card the user hasn't shown any intent on.
   const [hovered, setHovered] = useState(false);
   const patchModel = usePatchModel(model.slug);
+  const queryClient = useQueryClient();
+
+  // R9-A item 4: warm the model detail query on hover/focus intent so the
+  // click-through navigation renders instantly. A `staleTime` keeps it from
+  // being refetched immediately on mount if the user does follow through.
+  function onIntent() {
+    setHovered(true);
+    void queryClient.prefetchQuery({ ...modelQueryOptions(model.slug), staleTime: 30_000 });
+  }
   const visibleTags = model.tags.slice(0, VISIBLE_TAGS);
   const overflowCount = model.tags.length - visibleTags.length;
   const primaryFormat = model.formats[0];
@@ -79,7 +89,9 @@ export function ModelCard({
       to="/models/$slug"
       params={{ slug: model.slug }}
       className="group block"
-      onPointerEnter={() => setHovered(true)}
+      preload="intent"
+      onPointerEnter={onIntent}
+      onFocus={onIntent}
     >
       <Card className="h-full gap-3 overflow-hidden py-0 pb-4 transition-shadow hover:shadow-md">
         <div className="relative aspect-square overflow-hidden bg-muted">

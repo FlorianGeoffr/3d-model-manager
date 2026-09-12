@@ -135,7 +135,7 @@ jobs:
         run: |
           docker pull postgres:16-alpine
           docker pull redis:7-alpine
-          docker pull minio/minio
+          docker pull quay.io/minio/minio:latest
       - name: pytest
         working-directory: backend
         # `-m` is single-valued in pytest, so passing it here REPLACES
@@ -247,4 +247,4 @@ jobs:
             APP_VERSION=pr-${{ github.event.pull_request.number }}
           # Its own cache scope so PR builds can't evict the release scope.
           cache-from: type=gha,scope=tdmm-pr
-          cache-to: type=gha,mode=max,scope=tdmm-pr
+          cache-to: type=gha,mode=max,scope=tdmm-pr,ignore-error=true

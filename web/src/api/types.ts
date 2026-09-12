@@ -307,6 +307,20 @@ export interface UploadResult {
   job_id: string;
 }
 
+export interface ExistingUploadModel {
+  slug: string;
+  name: string;
+  url: string;
+}
+
+/** ``PUT /uploads`` 409 body: this content already exists elsewhere in the
+ * library (R11-C item 18). */
+export interface DuplicateUploadOut {
+  detail: "duplicate";
+  existing: ExistingUploadModel;
+  suggested_name: string;
+}
+
 // -- jobs (backend/app/schemas/jobs.py) --------------------------------
 
 // `dead` (Task 8): a formal dead-letter state, auto-parked once a job has

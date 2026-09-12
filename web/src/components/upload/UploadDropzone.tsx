@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { UploadCloudIcon } from "lucide-react";
 
-import { uploadFile } from "@/api/upload";
+import { DuplicateUploadError, uploadFile } from "@/api/upload";
 import { Button } from "@/components/ui/button";
 import { UploadQueueItem, type QueueItem } from "@/components/upload/UploadQueueItem";
 import { useEvents } from "@/hooks/useEvents";
@@ -101,6 +101,10 @@ export function UploadDropzone({
   // one lands first, instead of silently dropping an event that arrived for
   // a jobId no queue item had yet.
   const seenTerminal = useRef(new TerminalEventMap());
+  // The last-resolved upload target, remembered so a "Upload anyway" retry
+  // (fired well after `handleStartUpload`'s batch loop has moved on) still
+  // knows where to PUT the file (R11-C item 18).
+  const targetRef = useRef<UploadTarget | null>(null);
 
   useEffect(() => {
     return events.subscribe((event) => {
@@ -173,45 +177,72 @@ export function UploadDropzone({
 
   const pendingCount = queue.filter((item) => item.status === "pending").length;
 
+  /** Uploads a single queue item against `target`, updating its status as
+   * it goes. Shared by the batch loop below and the "Upload anyway" retry
+   * (which re-runs just this one item, outside the batch). */
+  async function uploadOne(item: QueueItem, target: UploadTarget, allowDuplicate = false) {
+    updateItem(item.id, { status: "uploading", progress: 0, duplicate: undefined });
+    try {
+      const result = await uploadFile(
+        {
+          modelId: target.modelId,
+          revisionId: target.revisionId,
+          relPath: item.relPath,
+          file: item.file,
+          ...(allowDuplicate ? { allowDuplicate: true } : {}),
+        },
+        {
+          onProgress: (loaded, total) =>
+            updateItem(item.id, { progress: total > 0 ? Math.round((loaded / total) * 100) : 0 }),
+        },
+      );
+      updateItem(item.id, { status: "processing", progress: 100, jobId: result.job_id });
+      const terminal = seenTerminal.current.get(result.job_id);
+      if (terminal) {
+        // Consumed -- evict so this record doesn't linger forever (M2-Minor 5).
+        seenTerminal.current.delete(result.job_id);
+        if (terminal === "done") {
+          updateItem(item.id, { status: "stored" });
+        } else {
+          updateItem(item.id, { status: "failed", error: "Processing failed" });
+        }
+      }
+    } catch (error) {
+      if (error instanceof DuplicateUploadError) {
+        updateItem(item.id, {
+          status: "duplicate",
+          duplicate: { existing: error.existing, suggestedName: error.suggestedName },
+        });
+        return;
+      }
+      updateItem(item.id, {
+        status: "failed",
+        error: error instanceof Error ? error.message : "Upload failed",
+      });
+    }
+  }
+
   async function handleStartUpload() {
     const target = await resolveTarget();
     if (!target) return;
+    targetRef.current = target;
     setIsUploading(true);
     onUploadingChange?.(true);
 
     for (const item of queue) {
       if (item.status !== "pending") continue;
-      updateItem(item.id, { status: "uploading", progress: 0 });
-      try {
-        const result = await uploadFile(
-          { modelId: target.modelId, revisionId: target.revisionId, relPath: item.relPath, file: item.file },
-          {
-            onProgress: (loaded, total) =>
-              updateItem(item.id, { progress: total > 0 ? Math.round((loaded / total) * 100) : 0 }),
-          },
-        );
-        updateItem(item.id, { status: "processing", progress: 100, jobId: result.job_id });
-        const terminal = seenTerminal.current.get(result.job_id);
-        if (terminal) {
-          // Consumed -- evict so this record doesn't linger forever (M2-Minor 5).
-          seenTerminal.current.delete(result.job_id);
-          if (terminal === "done") {
-            updateItem(item.id, { status: "stored" });
-          } else {
-            updateItem(item.id, { status: "failed", error: "Processing failed" });
-          }
-        }
-      } catch (error) {
-        updateItem(item.id, {
-          status: "failed",
-          error: error instanceof Error ? error.message : "Upload failed",
-        });
-      }
+      await uploadOne(item, target);
     }
 
     setIsUploading(false);
     onUploadingChange?.(false);
     onUploadComplete?.();
+  }
+
+  function handleUploadAnyway(item: QueueItem) {
+    const target = targetRef.current;
+    if (!target) return;
+    void uploadOne(item, target, true);
   }
 
   return (
@@ -254,6 +285,7 @@ export function UploadDropzone({
                 item={item}
                 onRelPathChange={(relPath) => updateItem(item.id, { relPath })}
                 onRemove={() => removeItem(item.id)}
+                onUploadAnyway={() => handleUploadAnyway(item)}
               />
             ))}
           </div>

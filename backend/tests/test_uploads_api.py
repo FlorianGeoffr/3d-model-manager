@@ -40,10 +40,13 @@ async def _upload(
     rel_path: str,
     content: bytes,
     replace: bool = False,
+    allow_duplicate: bool = False,
 ) -> httpx.Response:
     params = {"model_id": model_id, "revision_id": revision_id, "rel_path": rel_path}
     if replace:
         params["replace"] = "true"
+    if allow_duplicate:
+        params["allow_duplicate"] = "true"
     return await client.put("/api/uploads", params=params, content=content)
 
 
@@ -275,6 +278,63 @@ async def test_upload_duplicate_content_reuses_blob(
         select(func.count()).select_from(Blob).where(Blob.hash == first.json()["blob_hash"])
     )
     assert count == 1
+
+
+async def test_upload_duplicate_content_across_models_is_409_with_existing_and_suggestion(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    first_model = await _create_model(authenticated_client, "Original Owner")
+    content = b"content-already-in-the-library" * 10
+    first = await _upload(
+        authenticated_client,
+        model_id=first_model["id"],
+        revision_id=first_model["current_revision"]["id"],
+        rel_path="part.stl",
+        content=content,
+    )
+    assert first.status_code == 201, first.text
+
+    second_model = await _create_model(authenticated_client, "New Upload")
+    response = await _upload(
+        authenticated_client,
+        model_id=second_model["id"],
+        revision_id=second_model["current_revision"]["id"],
+        rel_path="part.stl",
+        content=content,
+    )
+
+    assert response.status_code == 409, response.text
+    body = response.json()
+    assert body["detail"] == "duplicate"
+    assert body["existing"]["slug"] == first_model["slug"]
+    assert body["existing"]["name"] == "Original Owner"
+    assert body["suggested_name"] == "New Upload (2)"
+
+
+async def test_upload_duplicate_content_with_allow_duplicate_succeeds(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    first_model = await _create_model(authenticated_client, "Original Owner 2")
+    content = b"content-already-in-the-library-2" * 10
+    await _upload(
+        authenticated_client,
+        model_id=first_model["id"],
+        revision_id=first_model["current_revision"]["id"],
+        rel_path="part.stl",
+        content=content,
+    )
+
+    second_model = await _create_model(authenticated_client, "New Upload 2")
+    response = await _upload(
+        authenticated_client,
+        model_id=second_model["id"],
+        revision_id=second_model["current_revision"]["id"],
+        rel_path="part.stl",
+        content=content,
+        allow_duplicate=True,
+    )
+
+    assert response.status_code == 201, response.text
 
 
 @pytest.mark.parametrize(

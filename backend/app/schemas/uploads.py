@@ -12,3 +12,20 @@ class UploadResult(BaseModel):
     blob_hash: str
     size: int
     job_id: uuid.UUID
+
+
+class ExistingUploadModel(BaseModel):
+    """The library model that already holds this content (R11-C item 18)."""
+
+    slug: str
+    name: str
+    url: str
+
+
+class DuplicateUploadOut(BaseModel):
+    """``PUT /uploads`` 409 body: the uploaded blob's hash already exists
+    elsewhere in the library. ``?allow_duplicate=true`` bypasses this."""
+
+    detail: str = "duplicate"
+    existing: ExistingUploadModel
+    suggested_name: str

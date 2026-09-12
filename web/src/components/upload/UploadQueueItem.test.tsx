@@ -1,6 +1,6 @@
 import { act, useEffect, useState } from "react";
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 
 import { UploadQueueItem, type QueueItem } from "@/components/upload/UploadQueueItem";
 import type { UploadFn } from "@/api/upload";
@@ -74,5 +74,32 @@ describe("UploadQueueItem", () => {
 
     expect(await screen.findByText("Failed")).toBeInTheDocument();
     expect(screen.getByText("network error during upload")).toBeInTheDocument();
+  });
+
+  it("shows the duplicate card with 'Open existing' and 'Upload anyway' buttons", () => {
+    const onUploadAnyway = vi.fn();
+    const item: QueueItem = {
+      id: "1",
+      file: new File(["hello"], "model.stl"),
+      relPath: "model.stl",
+      size: 5,
+      progress: 0,
+      status: "duplicate",
+      duplicate: {
+        existing: { slug: "dragon", name: "Dragon", url: "/models/dragon" },
+        suggestedName: "Dragon (2)",
+      },
+    };
+
+    render(
+      <UploadQueueItem item={item} onRelPathChange={() => {}} onRemove={() => {}} onUploadAnyway={onUploadAnyway} />,
+    );
+
+    expect(screen.getByText("Dragon")).toBeInTheDocument();
+    const openExisting = screen.getByRole("link", { name: "Open existing" });
+    expect(openExisting).toHaveAttribute("href", "/models/dragon");
+
+    fireEvent.click(screen.getByRole("button", { name: "Upload anyway" }));
+    expect(onUploadAnyway).toHaveBeenCalledOnce();
   });
 });

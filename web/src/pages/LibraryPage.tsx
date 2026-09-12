@@ -31,7 +31,7 @@ import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { chunkIntoRows, columnsForWidth } from "@/lib/grid";
+import { chunkIntoRows, columnsForWidth, estimateRowHeight } from "@/lib/grid";
 import { useDebouncedValue } from "@/lib/format";
 import { BLOB_FORMATS, type BlobFormat, type ModelSummary } from "@/api/types";
 import { FORMAT_LABELS } from "@/lib/formatMeta";
@@ -148,11 +148,13 @@ export function LibraryPage() {
 
   // R9-A item 2: virtualize the grid by row rather than by card, since
   // `useWindowVirtualizer` measures along a single axis and the grid wraps.
-  // Column count tracks the grid container's own width via ResizeObserver
-  // (mirroring the `grid-cols-*` breakpoints below) rather than the
-  // viewport, so it stays correct regardless of any surrounding chrome.
+  // Column count and container width both track the grid container's own
+  // ResizeObserver (mirroring the `grid-cols-*` breakpoints below) rather
+  // than the viewport, so both stay correct regardless of any surrounding
+  // chrome.
   const gridRef = useRef<HTMLDivElement | null>(null);
   const [columns, setColumns] = useState(() => columnsForWidth(0));
+  const [containerWidth, setContainerWidth] = useState(0);
 
   useEffect(() => {
     const el = gridRef.current;
@@ -160,6 +162,7 @@ export function LibraryPage() {
     const observer = new ResizeObserver((entries) => {
       const width = entries[0]?.contentRect.width ?? 0;
       setColumns(columnsForWidth(width));
+      setContainerWidth(width);
     });
     observer.observe(el);
     return () => observer.disconnect();
@@ -167,19 +170,40 @@ export function LibraryPage() {
 
   const rows = useMemo(() => chunkIntoRows(items, columns), [items, columns]);
 
-  // A fixed `estimateSize` (rather than dynamic per-row measurement) keeps
-  // this deterministic under jsdom, which reports 0 for every element's
-  // layout box -- dynamic measurement would collapse every row to zero
-  // height there and defeat virtualization in tests. ~340px approximates a
-  // card's image (aspect-square) plus its text content at a typical column
-  // width; a few pixels of slop between rows is an acceptable trade-off.
-  const ROW_HEIGHT_ESTIMATE = 340;
+  // Fix round 1: cards are aspect-square, so a row's height scales directly
+  // with column width -- a single fixed guess (e.g. one number for both a
+  // 2-column phone layout and a 5-column desktop one) overlaps or gaps rows
+  // in production. `estimateRowHeight` derives it from the container's own
+  // measured width instead; `measure()` below re-runs the virtualizer's
+  // layout whenever that estimate changes (width/column changes).
+  const rowHeightEstimate = useMemo(
+    () => estimateRowHeight(containerWidth, columns),
+    [containerWidth, columns],
+  );
   const rowVirtualizer = useWindowVirtualizer({
     count: rows.length,
-    estimateSize: () => ROW_HEIGHT_ESTIMATE,
+    estimateSize: () => rowHeightEstimate,
     overscan: 3,
     scrollMargin: gridRef.current?.offsetTop ?? 0,
+    // The default measures via ResizeObserver entries / getBoundingClientRect,
+    // which is exactly right in a real browser -- but jsdom (tests) reports
+    // 0 for every element's layout box, which would otherwise collapse every
+    // row to zero height and defeat virtualization. Falling back to the
+    // (now width-aware) estimate keeps behavior correct in both.
+    measureElement: (element) => {
+      const height = element.getBoundingClientRect().height;
+      return height > 0 ? height : rowHeightEstimate;
+    },
   });
+
+  useEffect(() => {
+    rowVirtualizer.measure();
+    // Only re-measure when the estimate itself changes -- `rowVirtualizer`
+    // is a new object identity every render and would otherwise re-run this
+    // on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rowHeightEstimate]);
+
   const virtualRows = rowVirtualizer.getVirtualItems();
 
   useEffect(() => {
@@ -373,6 +397,7 @@ export function LibraryPage() {
                 <div
                   key={virtualRow.key}
                   data-index={virtualRow.index}
+                  ref={rowVirtualizer.measureElement}
                   className="absolute top-0 left-0 grid w-full grid-cols-2 gap-4 pb-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6"
                   style={{ transform: `translateY(${virtualRow.start - rowVirtualizer.options.scrollMargin}px)` }}
                 >

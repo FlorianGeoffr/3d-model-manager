@@ -13,8 +13,10 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import Settings, get_settings
 from app.db import get_db
 from app.importers.makerworld import parse_collection_url
 from app.models.enums import ImportSite
@@ -30,6 +32,7 @@ from app.schemas.jobs import JobOut
 from app.services import collections as collections_svc
 from app.services import jobs as jobs_service
 from app.services import remote_collections as remote_collections_svc
+from app.services import zip_export
 from app.services.imports import start_import
 from app.tasks.sync_collections import sync_all
 
@@ -164,3 +167,25 @@ async def set_collection_mode(
 @router.delete("/{collection_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def unfollow_collection(collection_id: int, db: AsyncSession = Depends(get_db)) -> None:
     await collections_svc.unfollow(db, collection_id)
+
+
+@router.get("/{collection_id}/zip")
+async def download_collection_zip(
+    collection_id: int,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> StreamingResponse:
+    """Stream a zip nesting every model in this collection as
+    ``<collection-name>/<model-slug>/...`` (plan item 12). Models with zero
+    current-revision files are skipped; an empty collection still streams a
+    (valid, empty) zip rather than 409ing."""
+    collection = await collections_svc.get_followed(db, collection_id)
+    _chunk, body = await zip_export.first_chunk(
+        zip_export.iter_collection_zip(db, settings, collection)
+    )
+
+    return StreamingResponse(
+        body,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{collection.title}.zip"'},
+    )

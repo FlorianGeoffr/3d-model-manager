@@ -84,7 +84,17 @@ export function StudioSurface({
   if (selection.type === "assembly" && hasGlb) {
     return (
       <div className="flex min-w-0 flex-1 flex-col gap-4">
-        <ViewerStage {...stageProps} variant="inline" showWindowButtons showExpand={false} />
+        <ViewerStage
+          {...stageProps}
+          variant="inline"
+          showWindowButtons
+          showExpand={false}
+          // FileRail is the single source of truth for part visibility/color
+          // in the studio layout -- hide this panel's own (redundant) Parts
+          // checklist. Every other panel section (Appearance, View, Section,
+          // Explode, AMS sync) is unaffected.
+          showPartsList={false}
+        />
         {slicedFiles.length > 0 && (
           <div className="space-y-2">
             <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">

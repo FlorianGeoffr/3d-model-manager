@@ -428,6 +428,16 @@ export interface ViewerStageProps {
    * every other caller (the dialog itself, the pop-out window) only ever has
    * one stage mounted at a time. */
   active?: boolean;
+  /** Phase 4 studio follow-up: `StudioWorkspace` moved per-part visibility
+   * checkboxes AND the color swatch into `FileRail`, so it's the single
+   * source of truth for parts there -- this panel's own Parts checklist
+   * would just be a second, redundant control bound to the same
+   * `checkedIds`/`colors` state. Set `false` to hide just that checklist
+   * (the header's All/None/count row and the file list); every other
+   * section (Appearance, View, Section, Explode, AMS sync) is unaffected.
+   * Defaults to `true` so the `/viewer/$slug` pop-out window keeps its own
+   * full Parts checklist unchanged. */
+  showPartsList?: boolean;
 }
 
 /** Strip + canvas + collapsible parts panel -- the whole redesigned viewer
@@ -485,6 +495,7 @@ export function ViewerStage({
   viewerApiRef,
   coverUrl,
   active = true,
+  showPartsList = true,
 }: ViewerStageProps) {
   // The strip only exists to host actions. With the panel open and no
   // pop-out/expand actions to show (the window's steady state), it would be
@@ -774,34 +785,38 @@ export function ViewerStage({
         {panelOpen && (
           <div className="flex w-full shrink-0 flex-col gap-4 rounded-lg border border-border bg-card p-3 lg:w-72">
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-                  Parts
-                </span>
-                <span className="text-xs text-muted-foreground tabular-nums">
-                  {checkedList.length} of {files.length}
-                </span>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="xs"
-                  aria-label="Show all parts"
-                  disabled={checkedList.length === files.length}
-                  onClick={() => onSetAllChecked(true)}
-                >
-                  All
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="xs"
-                  aria-label="None — hide all parts"
-                  disabled={checkedList.length === 0}
-                  onClick={() => onSetAllChecked(false)}
-                >
-                  None
-                </Button>
-              </div>
+              {showPartsList ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+                    Parts
+                  </span>
+                  <span className="text-xs text-muted-foreground tabular-nums">
+                    {checkedList.length} of {files.length}
+                  </span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="xs"
+                    aria-label="Show all parts"
+                    disabled={checkedList.length === files.length}
+                    onClick={() => onSetAllChecked(true)}
+                  >
+                    All
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="xs"
+                    aria-label="None — hide all parts"
+                    disabled={checkedList.length === 0}
+                    onClick={() => onSetAllChecked(false)}
+                  >
+                    None
+                  </Button>
+                </div>
+              ) : (
+                <span />
+              )}
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
@@ -819,49 +834,51 @@ export function ViewerStage({
               </Tooltip>
             </div>
 
-            <div className="space-y-1">
-              {files.map((file) => {
-                const checked = checkedIds.has(file.id);
-                const partColor = colors[file.id];
-                return (
-                  <div key={file.id} className={cn("flex items-center gap-2", !checked && "opacity-60")}>
-                    <Checkbox
-                      checked={checked}
-                      onCheckedChange={(next) => onToggleFile(file.id, next === true)}
-                      aria-label={file.rel_path}
-                    />
-                    <label className="relative inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full focus-within:ring-2 focus-within:ring-ring/50">
-                      <FilamentChip color={partColor ?? "#cccccc"} />
-                      <input
-                        type="color"
-                        aria-label={`Color for ${file.rel_path}`}
-                        value={partColor ?? "#cccccc"}
-                        onChange={(event) => onSetPartColor(file.id, event.target.value)}
-                        className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+            {showPartsList && (
+              <div className="space-y-1">
+                {files.map((file) => {
+                  const checked = checkedIds.has(file.id);
+                  const partColor = colors[file.id];
+                  return (
+                    <div key={file.id} className={cn("flex items-center gap-2", !checked && "opacity-60")}>
+                      <Checkbox
+                        checked={checked}
+                        onCheckedChange={(next) => onToggleFile(file.id, next === true)}
+                        aria-label={file.rel_path}
                       />
-                    </label>
-                    <span className="min-w-0 flex-1 truncate text-sm" title={file.rel_path}>
-                      {file.rel_path}
-                    </span>
-                    {partColor && (
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <button
-                            type="button"
-                            aria-label={`Reset color for ${file.rel_path}`}
-                            onClick={() => onClearPartColor(file.id)}
-                            className="inline-flex size-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
-                          >
-                            <RotateCcwIcon className="size-3.5" />
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent>Reset color</TooltipContent>
-                      </Tooltip>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+                      <label className="relative inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full focus-within:ring-2 focus-within:ring-ring/50">
+                        <FilamentChip color={partColor ?? "#cccccc"} />
+                        <input
+                          type="color"
+                          aria-label={`Color for ${file.rel_path}`}
+                          value={partColor ?? "#cccccc"}
+                          onChange={(event) => onSetPartColor(file.id, event.target.value)}
+                          className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                        />
+                      </label>
+                      <span className="min-w-0 flex-1 truncate text-sm" title={file.rel_path}>
+                        {file.rel_path}
+                      </span>
+                      {partColor && (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <button
+                              type="button"
+                              aria-label={`Reset color for ${file.rel_path}`}
+                              onClick={() => onClearPartColor(file.id)}
+                              className="inline-flex size-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+                            >
+                              <RotateCcwIcon className="size-3.5" />
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent>Reset color</TooltipContent>
+                        </Tooltip>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
 
             <div className="flex flex-col gap-3">
               <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">

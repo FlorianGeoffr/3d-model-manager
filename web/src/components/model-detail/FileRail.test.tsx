@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { FileRail, isSameSelection, type StudioSelection } from "@/components/model-detail/FileRail";
+import type { PartColors } from "@/components/viewer/partColors";
 import type { FileOut } from "@/api/types";
 
 function fakeFile(overrides: Partial<FileOut> & { id: number }): FileOut {
@@ -23,6 +24,18 @@ function fakeFile(overrides: Partial<FileOut> & { id: number }): FileOut {
   };
 }
 
+/** Shared no-op defaults for the color-related props -- most tests here
+ * don't exercise recoloring, so only the tests that do override them. */
+function baseProps(colors: PartColors = {}) {
+  return {
+    checkedIds: new Set<number>(),
+    onToggleFile: vi.fn(),
+    colors,
+    onSetPartColor: vi.fn(),
+    onClearPartColor: vi.fn(),
+  };
+}
+
 describe("isSameSelection", () => {
   it("matches assembly to assembly and file ids to themselves", () => {
     expect(isSameSelection({ type: "assembly" }, { type: "assembly" })).toBe(true);
@@ -41,8 +54,7 @@ describe("FileRail", () => {
         otherFiles={[fakeFile({ id: 1, kind: "sliced" })]}
         selection={{ type: "file", id: 1 }}
         onSelect={vi.fn()}
-        checkedIds={new Set()}
-        onToggleFile={vi.fn()}
+        {...baseProps()}
       />,
     );
     expect(screen.queryByText(/Assembly/)).not.toBeInTheDocument();
@@ -56,14 +68,14 @@ describe("FileRail", () => {
         otherFiles={[]}
         selection={{ type: "assembly" }}
         onSelect={vi.fn()}
+        {...baseProps()}
         checkedIds={new Set([1])}
-        onToggleFile={vi.fn()}
       />,
     );
     expect(screen.getByText("Assembly (2 parts)")).toBeInTheDocument();
   });
 
-  it("expands per-part visibility checkboxes only when the Assembly entry is selected", () => {
+  it("expands per-part visibility checkboxes and color swatches only when the Assembly entry is selected", () => {
     const glbFiles = [
       fakeFile({ id: 1, rel_path: "a.stl", glb_status: "ok" }),
       fakeFile({ id: 2, rel_path: "b.stl", glb_status: "ok" }),
@@ -74,11 +86,12 @@ describe("FileRail", () => {
         otherFiles={[]}
         selection={{ type: "file", id: 999 }}
         onSelect={vi.fn()}
+        {...baseProps()}
         checkedIds={new Set([1])}
-        onToggleFile={vi.fn()}
       />,
     );
     expect(screen.queryByRole("checkbox", { name: "a.stl" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Color for a.stl")).not.toBeInTheDocument();
 
     rerender(
       <FileRail
@@ -86,12 +99,14 @@ describe("FileRail", () => {
         otherFiles={[]}
         selection={{ type: "assembly" }}
         onSelect={vi.fn()}
+        {...baseProps()}
         checkedIds={new Set([1])}
-        onToggleFile={vi.fn()}
       />,
     );
     expect(screen.getByRole("checkbox", { name: "a.stl" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "b.stl" })).not.toBeChecked();
+    expect(screen.getByLabelText("Color for a.stl")).toBeInTheDocument();
+    expect(screen.getByLabelText("Color for b.stl")).toBeInTheDocument();
   });
 
   it("toggling a part checkbox calls onToggleFile with the file id and next checked state", () => {
@@ -103,12 +118,50 @@ describe("FileRail", () => {
         otherFiles={[]}
         selection={{ type: "assembly" }}
         onSelect={vi.fn()}
+        {...baseProps()}
         checkedIds={new Set([1])}
         onToggleFile={onToggleFile}
       />,
     );
     fireEvent.click(screen.getByRole("checkbox", { name: "a.stl" }));
     expect(onToggleFile).toHaveBeenCalledWith(1, false);
+  });
+
+  it("recoloring a part's swatch calls onSetPartColor, and its reset button calls onClearPartColor", () => {
+    const onSetPartColor = vi.fn();
+    const onClearPartColor = vi.fn();
+    const glbFiles = [fakeFile({ id: 1, rel_path: "a.stl", glb_status: "ok" })];
+    const { rerender } = render(
+      <FileRail
+        glbFiles={glbFiles}
+        otherFiles={[]}
+        selection={{ type: "assembly" }}
+        onSelect={vi.fn()}
+        {...baseProps()}
+        onSetPartColor={onSetPartColor}
+        onClearPartColor={onClearPartColor}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Reset color for a.stl" })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Color for a.stl"), { target: { value: "#123456" } });
+    expect(onSetPartColor).toHaveBeenCalledWith(1, "#123456");
+
+    // Once a color is set, a reset button appears (mirrors the color back
+    // in via `colors`, since this component doesn't own that state itself).
+    rerender(
+      <FileRail
+        glbFiles={glbFiles}
+        otherFiles={[]}
+        selection={{ type: "assembly" }}
+        onSelect={vi.fn()}
+        {...baseProps({ 1: "#123456" })}
+        onSetPartColor={onSetPartColor}
+        onClearPartColor={onClearPartColor}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Reset color for a.stl" }));
+    expect(onClearPartColor).toHaveBeenCalledWith(1);
   });
 
   it("clicking the Assembly entry selects it", () => {
@@ -120,8 +173,7 @@ describe("FileRail", () => {
         otherFiles={[]}
         selection={undefined}
         onSelect={onSelect}
-        checkedIds={new Set()}
-        onToggleFile={vi.fn()}
+        {...baseProps()}
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: /Assembly/ }));
@@ -141,8 +193,7 @@ describe("FileRail", () => {
         otherFiles={[pending, failed, unsupported, sliced, gcode]}
         selection={{ type: "file", id: 1 }}
         onSelect={onSelect}
-        checkedIds={new Set()}
-        onToggleFile={vi.fn()}
+        {...baseProps()}
       />,
     );
 

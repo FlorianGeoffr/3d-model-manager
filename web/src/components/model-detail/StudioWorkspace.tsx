@@ -60,6 +60,9 @@ function StudioWorkspaceGeneration({
         onSelect={setSelection}
         checkedIds={stageProps.checkedIds}
         onToggleFile={stageProps.onToggleFile}
+        colors={stageProps.colors}
+        onSetPartColor={stageProps.onSetPartColor}
+        onClearPartColor={stageProps.onClearPartColor}
       />
       <StudioSurface
         selection={resolvedSelection}

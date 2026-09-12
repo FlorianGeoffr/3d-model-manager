@@ -1,9 +1,12 @@
-import { Boxes } from "lucide-react";
+import { Boxes, RotateCcwIcon } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { FilamentChip } from "@/components/ui/filament-chip";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { FORMAT_LABELS } from "@/lib/formatMeta";
+import type { PartColors } from "@/components/viewer/partColors";
 import type { FileOut } from "@/api/types";
 
 /** What the rail's selection points at -- the synthetic combined-assembly
@@ -63,10 +66,12 @@ function RailRow({
 /** Left-hand file rail for the model-detail studio (Phase 4): one entry per
  * viewable file, plus a synthetic "Assembly (N parts)" entry at top when the
  * model has any ready-GLB parts to combine. Selecting the assembly entry
- * expands it into a checklist of its parts with visibility checkboxes --
- * `ViewerTab`'s old `MeshSection` per-part toggle, moved here so switching
- * which part is visible doesn't require opening the (also still present)
- * parts panel inside `ViewerStage`. */
+ * expands it into a checklist of its parts with visibility checkboxes AND a
+ * per-part color swatch -- `ViewerTab`'s old `MeshSection` per-part toggle
+ * and recolor, moved here so this is the SINGLE source of truth for part
+ * visibility/color; `ViewerStage`'s own Parts checklist is hidden
+ * (`showPartsList={false}`) when rendered inside the studio to avoid a
+ * second, redundant control bound to the same state. */
 export function FileRail({
   glbFiles,
   otherFiles,
@@ -74,6 +79,9 @@ export function FileRail({
   onSelect,
   checkedIds,
   onToggleFile,
+  colors,
+  onSetPartColor,
+  onClearPartColor,
 }: {
   glbFiles: FileOut[];
   otherFiles: FileOut[];
@@ -81,11 +89,15 @@ export function FileRail({
   onSelect: (selection: StudioSelection) => void;
   checkedIds: ReadonlySet<number>;
   onToggleFile: (fileId: number, checked: boolean) => void;
+  colors: PartColors;
+  onSetPartColor: (fileId: number, hex: string) => void;
+  onClearPartColor: (fileId: number) => void;
 }) {
   const assemblySelected = isSameSelection(selection, { type: "assembly" });
 
   return (
-    <nav aria-label="Files" className="flex w-56 shrink-0 flex-col gap-1">
+    <TooltipProvider>
+      <nav aria-label="Files" className="flex w-56 shrink-0 flex-col gap-1">
       {glbFiles.length > 0 && (
         <div className="space-y-1">
           <RailRow selected={assemblySelected} onClick={() => onSelect({ type: "assembly" })}>
@@ -94,21 +106,49 @@ export function FileRail({
           </RailRow>
           {assemblySelected && (
             <div className="space-y-1 pl-2">
-              {glbFiles.map((file) => (
-                <label
-                  key={file.id}
-                  className="flex items-center gap-2 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
-                >
-                  <Checkbox
-                    checked={checkedIds.has(file.id)}
-                    onCheckedChange={(next) => onToggleFile(file.id, next === true)}
-                    aria-label={file.rel_path}
-                  />
-                  <span className="min-w-0 flex-1 truncate" title={file.rel_path}>
-                    {file.rel_path}
-                  </span>
-                </label>
-              ))}
+              {glbFiles.map((file) => {
+                const partColor = colors[file.id];
+                return (
+                  <div
+                    key={file.id}
+                    className="flex items-center gap-2 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
+                  >
+                    <Checkbox
+                      checked={checkedIds.has(file.id)}
+                      onCheckedChange={(next) => onToggleFile(file.id, next === true)}
+                      aria-label={file.rel_path}
+                    />
+                    <label className="relative inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full focus-within:ring-2 focus-within:ring-ring/50">
+                      <FilamentChip color={partColor ?? "#cccccc"} />
+                      <input
+                        type="color"
+                        aria-label={`Color for ${file.rel_path}`}
+                        value={partColor ?? "#cccccc"}
+                        onChange={(event) => onSetPartColor(file.id, event.target.value)}
+                        className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                      />
+                    </label>
+                    <span className="min-w-0 flex-1 truncate" title={file.rel_path}>
+                      {file.rel_path}
+                    </span>
+                    {partColor && (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            type="button"
+                            aria-label={`Reset color for ${file.rel_path}`}
+                            onClick={() => onClearPartColor(file.id)}
+                            className="inline-flex size-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+                          >
+                            <RotateCcwIcon className="size-3" />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent>Reset color</TooltipContent>
+                      </Tooltip>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
@@ -130,6 +170,7 @@ export function FileRail({
           </RailRow>
         );
       })}
-    </nav>
+      </nav>
+    </TooltipProvider>
   );
 }

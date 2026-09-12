@@ -19,6 +19,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { InlineEdit } from "@/components/InlineEdit";
 import { useHotkeys } from "@/hooks/useHotkeys";
 import { modelFilaments, revisionFormats } from "@/components/model-detail/modelSpec";
+import { isSlicerEligible, OpenInSlicerButton } from "@/components/model-detail/OpenInSlicerButton";
 import { ProvenanceBlock } from "@/components/model-detail/ProvenanceBlock";
 import { StorageLocationBar } from "@/components/model-detail/StorageLocationBar";
 import { TagEditor } from "@/components/model-detail/TagEditor";
@@ -149,6 +150,13 @@ export function ModelHeader({
   const filaments = modelFilaments(model);
   const formats = revisionFormats(model);
   const fileCount = model.current_revision?.files.length ?? 0;
+  // R10-C: the header's "Open in slicer" split button targets the first
+  // slicer-eligible (stl/3mf/step/obj) stored file on the current
+  // revision -- there's no broader "primary file" concept to hang this off
+  // of yet, and picking the first one deterministically beats guessing.
+  const slicerFile = model.current_revision?.files.find(
+    (file) => file.verified_at && isSlicerEligible(file),
+  );
   const specItems: Array<SpecItem | null> = [
     fileCount > 0
       ? { icon: <FileStackIcon />, label: `${fileCount} ${fileCount === 1 ? "file" : "files"}` }
@@ -208,6 +216,7 @@ export function ModelHeader({
           >
             <StarIcon className={model.favorite ? "fill-amber-400 text-amber-500" : ""} />
           </Button>
+          {slicerFile ? <OpenInSlicerButton file={slicerFile} size="default" /> : null}
           {/* Queueing a model to print is a normal action too, not an edit. */}
           <Button
             type="button"

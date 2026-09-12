@@ -5,6 +5,7 @@ import { DownloadIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import { modelQueryOptions, useDeleteFile } from "@/api/library";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CopyableHash } from "@/components/model-detail/CopyableHash";
+import { isSlicerEligible, OpenInSlicerButton } from "@/components/model-detail/OpenInSlicerButton";
 import { SendToPrinterButton } from "@/components/model-detail/SendToPrinterButton";
 import { UploadDropzone, type UploadTarget } from "@/components/upload/UploadDropzone";
 import { Badge } from "@/components/ui/badge";
@@ -154,6 +155,7 @@ export function FilesTab({ model }: { model: ModelDetail }) {
                   <TableCell>
                     <div className="flex justify-end gap-1">
                       <SendToPrinterButton file={file} />
+                      {file.verified_at && isSlicerEligible(file) ? <OpenInSlicerButton file={file} /> : null}
                       {file.verified_at ? (
                         <Button asChild variant="ghost" size="icon-sm" aria-label={`Download ${file.rel_path}`}>
                           <a href={`/api/files/${file.id}/download`}>

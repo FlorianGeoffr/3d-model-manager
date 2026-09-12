@@ -19,7 +19,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { InlineEdit } from "@/components/InlineEdit";
 import { useHotkeys } from "@/hooks/useHotkeys";
 import { modelFilaments, revisionFormats } from "@/components/model-detail/modelSpec";
-import { isSlicerEligible, OpenInSlicerButton } from "@/components/model-detail/OpenInSlicerButton";
+import { OpenInSlicerButton } from "@/components/model-detail/OpenInSlicerButton";
 import { ProvenanceBlock } from "@/components/model-detail/ProvenanceBlock";
 import { StorageLocationBar } from "@/components/model-detail/StorageLocationBar";
 import { TagEditor } from "@/components/model-detail/TagEditor";
@@ -46,6 +46,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { SpecRow, type SpecItem } from "@/components/ui/spec-row";
 import { formatDate, formatDateTime } from "@/lib/format";
 import { FORMAT_LABELS } from "@/lib/formatMeta";
+import { isSlicerEligible } from "@/lib/slicers";
 import type { ModelDetail } from "@/api/types";
 
 type RedownloadMode = "revision" | "replace";

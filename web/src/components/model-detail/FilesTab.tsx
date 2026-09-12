@@ -5,7 +5,7 @@ import { DownloadIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import { modelQueryOptions, useDeleteFile } from "@/api/library";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CopyableHash } from "@/components/model-detail/CopyableHash";
-import { isSlicerEligible, OpenInSlicerButton } from "@/components/model-detail/OpenInSlicerButton";
+import { OpenInSlicerButton } from "@/components/model-detail/OpenInSlicerButton";
 import { SendToPrinterButton } from "@/components/model-detail/SendToPrinterButton";
 import { UploadDropzone, type UploadTarget } from "@/components/upload/UploadDropzone";
 import { Badge } from "@/components/ui/badge";
@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatDateTime, humanizeBytes, humanizeDuration } from "@/lib/format";
 import { formatIcon } from "@/lib/formatMeta";
+import { isSlicerEligible } from "@/lib/slicers";
 import type { BlobMetaOut, FileOut, ModelDetail } from "@/api/types";
 
 /** `{triangle_count} tris · {dims_mm joined ×} mm · {volume_cm3} cm³`, skipping

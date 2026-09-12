@@ -2,11 +2,8 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { FileOut } from "@/api/types";
-import {
-  LAST_SLICER_STORAGE_KEY,
-  OpenInSlicerButton,
-  SLICER_OPTIONS,
-} from "@/components/model-detail/OpenInSlicerButton";
+import { OpenInSlicerButton } from "@/components/model-detail/OpenInSlicerButton";
+import { LAST_SLICER_STORAGE_KEY, SLICER_OPTIONS } from "@/lib/slicers";
 
 const { postMock, toastMock, assignMock } = vi.hoisted(() => ({
   postMock: vi.fn(),

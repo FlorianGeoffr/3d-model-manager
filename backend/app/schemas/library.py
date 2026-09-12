@@ -192,6 +192,9 @@ class BlobMetaOut(BaseModel):
     nozzle: float | None
     printer_model: str | None
     plate_count: int | None
+    layer_count: int | None
+    infill_pct: float | None
+    slicer: str | None
     plates: list[PlateOut] | None
 
     @classmethod
@@ -210,6 +213,9 @@ class BlobMetaOut(BaseModel):
             nozzle=meta.nozzle,
             printer_model=meta.printer_model,
             plate_count=meta.plate_count,
+            layer_count=meta.layer_count,
+            infill_pct=meta.infill_pct,
+            slicer=meta.slicer,
             plates=plates,
         )
 

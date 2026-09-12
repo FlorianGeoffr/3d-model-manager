@@ -16,6 +16,7 @@ from app.models.enums import BlobFormat, BlobKind
 from app.services import storage_backends as sb
 from app.storage.config import LocalConfig
 from app.storage.local import LocalStorageBackend
+from tests.corpus import CorpusPaths
 
 pytestmark = pytest.mark.usefixtures("library_root", "data_dir")
 
@@ -195,6 +196,53 @@ async def test_download_reads_from_the_files_own_non_default_backend(
 
     assert response.status_code == 200
     assert response.content == content
+
+
+async def test_download_member_gcode_extracts_embedded_plate(
+    authenticated_client: httpx.AsyncClient,
+    corpus: CorpusPaths,
+) -> None:
+    """``?member=gcode`` (R10-B) on a ``.gcode.3mf`` streams the embedded
+    plate 1 ``.gcode`` (see ``corpus.bambu_gcode``), not the raw zip.
+    """
+    created = await _create_model(authenticated_client, "Gcode Member Target")
+    revision_id = created["current_revision"]["id"]
+    content = corpus.sliced_gcode_3mf.read_bytes()
+
+    upload = await authenticated_client.put(
+        "/api/uploads",
+        params={"model_id": created["id"], "revision_id": revision_id, "rel_path": "print.gcode.3mf"},
+        content=content,
+    )
+    assert upload.status_code == 201, upload.text
+    file_id = upload.json()["file_id"]
+
+    response = await authenticated_client.get(
+        f"/api/files/{file_id}/download", params={"member": "gcode"}
+    )
+
+    assert response.status_code == 200
+    assert response.content == corpus.bambu_gcode.read_bytes()
+
+
+async def test_download_member_gcode_rejects_non_sliced_format(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    created = await _create_model(authenticated_client, "Non Sliced Target")
+    revision_id = created["current_revision"]["id"]
+
+    upload = await authenticated_client.put(
+        "/api/uploads",
+        params={"model_id": created["id"], "revision_id": revision_id, "rel_path": "part.stl"},
+        content=b"not-gcode",
+    )
+    file_id = upload.json()["file_id"]
+
+    response = await authenticated_client.get(
+        f"/api/files/{file_id}/download", params={"member": "gcode"}
+    )
+
+    assert response.status_code == 400
 
 
 async def test_upload_write_records_default_backend_and_file_location(

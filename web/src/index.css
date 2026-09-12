@@ -50,6 +50,13 @@
     --radius-2xl: calc(var(--radius) * 1.8);
     --radius-3xl: calc(var(--radius) * 2.2);
     --radius-4xl: calc(var(--radius) * 2.6);
+    /* Elevation scale (R12 studio shell): raised surfaces -- popovers, the
+       command palette, dropdown menus -- pick a tier instead of one-off
+       shadow values. Colors live in :root/.dark since a flat black shadow
+       needs far more opacity to read on a dark surface. */
+    --shadow-elevation-1: var(--elevation-1);
+    --shadow-elevation-2: var(--elevation-2);
+    --shadow-elevation-3: var(--elevation-3);
 }
 
 :root {
@@ -78,7 +85,7 @@
     --chart-3: oklch(0.439 0 0);
     --chart-4: oklch(0.371 0 0);
     --chart-5: oklch(0.269 0 0);
-    --radius: 0.625rem;
+    --radius: 0.5rem;
     --sidebar: oklch(0.985 0 0);
     --sidebar-foreground: oklch(0.145 0 0);
     --sidebar-primary: oklch(0.205 0 0);
@@ -87,6 +94,9 @@
     --sidebar-accent-foreground: oklch(0.205 0 0);
     --sidebar-border: oklch(0.922 0 0);
     --sidebar-ring: oklch(0.708 0 0);
+    --elevation-1: 0 1px 2px 0 rgb(0 0 0 / 6%);
+    --elevation-2: 0 2px 8px -2px rgb(0 0 0 / 12%), 0 1px 2px -1px rgb(0 0 0 / 8%);
+    --elevation-3: 0 12px 32px -6px rgb(0 0 0 / 18%), 0 4px 10px -4px rgb(0 0 0 / 10%);
 }
 
 .dark {
@@ -101,13 +111,18 @@
     --primary-foreground: oklch(0.985 0 0);
     --secondary: oklch(0.269 0 0);
     --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
+    /* Tightened vs. the shadcn default (was 0.269, same as --secondary/
+       --accent, so muted surfaces and borders were nearly invisible against
+       the sidebar/card): muted sits closer to the card so hover states read
+       as "lifted" rather than lost, and border/input are more opaque so
+       hairlines separate panels in the new grouped sidebar/topbar. */
+    --muted: oklch(0.235 0 0);
     --muted-foreground: oklch(0.708 0 0);
     --accent: oklch(0.269 0 0);
     --accent-foreground: oklch(0.985 0 0);
     --destructive: oklch(0.704 0.191 22.216);
-    --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
+    --border: oklch(1 0 0 / 14%);
+    --input: oklch(1 0 0 / 18%);
     --ring: oklch(0.646 0.176 41.1);
     --chart-1: oklch(0.87 0 0);
     --chart-2: oklch(0.556 0 0);
@@ -122,6 +137,9 @@
     --sidebar-accent-foreground: oklch(0.985 0 0);
     --sidebar-border: oklch(1 0 0 / 10%);
     --sidebar-ring: oklch(0.556 0 0);
+    --elevation-1: 0 1px 2px 0 rgb(0 0 0 / 40%);
+    --elevation-2: 0 2px 10px -2px rgb(0 0 0 / 55%), 0 1px 3px -1px rgb(0 0 0 / 45%);
+    --elevation-3: 0 16px 40px -8px rgb(0 0 0 / 65%), 0 4px 12px -4px rgb(0 0 0 / 50%);
 }
 
 @layer base {
@@ -134,4 +152,12 @@
   html {
     @apply font-sans;
     }
+}
+
+/* Numeric/tabular metadata (spec rows, print times, model counts, the
+   command palette's kbd hints) -- Geist Mono with tabular figures so digits
+   don't jiggle column width as they change. */
+@utility tabular-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }

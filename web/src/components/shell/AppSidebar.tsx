@@ -1,0 +1,279 @@
+import { useEffect, useState } from "react";
+import { Link, useNavigate } from "@tanstack/react-router";
+import {
+  ChevronsLeftIcon,
+  HelpCircle,
+  LoaderCircleIcon,
+  LogOut,
+  Plus,
+  TriangleAlertIcon,
+} from "lucide-react";
+
+import { useAuth, useLogout } from "@/api/auth";
+import { useFeatures } from "@/api/features";
+import { useFollowedCollections } from "@/api/collections";
+import { useFailedImportsCount } from "@/api/imports";
+import { useScanRuns } from "@/api/scan";
+import type { ScanRunOut } from "@/api/types";
+import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { ThemeToggle } from "@/components/ThemeToggle";
+import { SidebarPrinterWidget } from "@/components/shell/SidebarPrinterWidget";
+import { useSidebarCollapsed } from "@/components/shell/useSidebarCollapsed";
+import { NAV_GROUPS, SETTINGS_ITEM, type NavItem } from "@/components/shell/navItems";
+import { cn } from "@/lib/utils";
+
+const MAX_COLLECTION_LINKS = 8;
+
+// R9-D item 7: scan progress chip. `useScanRuns` (`@/api/scan`) already
+// fetches the latest run and gets invalidated live by `useEvents.tsx`'s
+// `job.updated` handler on every `scan_library` transition (queued/running/
+// done/failed/skipped) -- no polling needed here at all. The backend has no
+// dedicated progress-percent event; `files_hashed`/`files_seen` off the same
+// `ScanRunOut` row double as the N/M count (indeterminate until
+// `files_seen` is nonzero).
+const SCAN_DONE_VISIBLE_MS = 4000;
+
+type ScanChipState = { kind: "running"; run: ScanRunOut } | { kind: "done" } | { kind: "failed" };
+
+function useScanChipState(): ScanChipState | null {
+  const { data } = useScanRuns();
+  const latest = data?.[0];
+  const [expiredDoneId, setExpiredDoneId] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!latest || latest.state !== "done") return;
+    const id = window.setTimeout(() => setExpiredDoneId(latest.id), SCAN_DONE_VISIBLE_MS);
+    return () => window.clearTimeout(id);
+  }, [latest]);
+
+  if (!latest) return null;
+  if (latest.state === "queued" || latest.state === "running") return { kind: "running", run: latest };
+  if (latest.state === "failed") return { kind: "failed" };
+  if (latest.state === "done" && latest.id !== expiredDoneId) return { kind: "done" };
+  return null; // "skipped", or a "done" run past its 4s grace period
+}
+
+function ScanChip({ collapsed }: { collapsed: boolean }) {
+  const navigate = useNavigate();
+  const state = useScanChipState();
+  if (!state || collapsed) return null;
+
+  function goToJobs() {
+    void navigate({ to: "/jobs" });
+  }
+
+  if (state.kind === "failed") {
+    return (
+      <button
+        type="button"
+        onClick={goToJobs}
+        className="mx-2 mb-2 flex items-center gap-1.5 rounded-lg bg-destructive/10 px-2.5 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/20"
+      >
+        <TriangleAlertIcon className="size-3.5" />
+        Scan failed
+      </button>
+    );
+  }
+
+  if (state.kind === "done") {
+    return (
+      <button
+        type="button"
+        onClick={goToJobs}
+        className="mx-2 mb-2 flex items-center gap-1.5 rounded-lg bg-muted px-2.5 py-1.5 text-xs font-medium text-foreground"
+      >
+        Scan done
+      </button>
+    );
+  }
+
+  const { run } = state;
+  const label = run.files_seen > 0 ? `Scanning… ${run.files_hashed}/${run.files_seen}` : "Scanning…";
+
+  return (
+    <button
+      type="button"
+      onClick={goToJobs}
+      className="mx-2 mb-2 flex items-center gap-1.5 rounded-lg bg-muted px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
+    >
+      <LoaderCircleIcon className="size-3.5 animate-spin" />
+      {label}
+    </button>
+  );
+}
+
+function NavLink({ item, collapsed, badge }: { item: NavItem; collapsed: boolean; badge?: number }) {
+  const link = (
+    <Link
+      to={item.to}
+      activeOptions={{ exact: item.to === "/" }}
+      className={cn(
+        "flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
+        collapsed && "justify-center px-0",
+      )}
+      activeProps={{ className: "bg-muted font-medium text-foreground" }}
+    >
+      <item.icon className="size-4 shrink-0" />
+      {!collapsed && item.label}
+      {!collapsed && badge ? (
+        <span
+          className="ml-auto inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-medium text-destructive-foreground tabular-mono"
+          aria-label={`${badge} failed import${badge === 1 ? "" : "s"}`}
+        >
+          {badge}
+        </span>
+      ) : null}
+    </Link>
+  );
+
+  if (!collapsed) return link;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{link}</TooltipTrigger>
+      <TooltipContent side="right">{item.label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** Grouped sidebar nav (R12 studio shell): LIBRARY/OPERATIONS groups from
+ * `navItems.ts`, a dynamic Collections sublist, and a collapsible icon-rail
+ * mode. Owns its own data (auth, features, scan chip, followed collections)
+ * so `AppShell` stays a thin composition root. */
+export function AppSidebar({ onOpenShortcuts }: { onOpenShortcuts: () => void }) {
+  const { data: me } = useAuth();
+  const logout = useLogout();
+  const navigate = useNavigate();
+  const features = useFeatures();
+  const failedImports = useFailedImportsCount();
+  const followed = useFollowedCollections();
+  const [collapsed, setCollapsed] = useSidebarCollapsed();
+
+  const printerEnabled = !!features.data?.printer_enabled;
+  const visibleGroups = NAV_GROUPS.map((group) => ({
+    ...group,
+    items: group.items.filter((item) => !item.featureGated || printerEnabled),
+  }));
+  const collections = (followed.data ?? []).slice(0, MAX_COLLECTION_LINKS);
+  const hasMoreCollections = (followed.data?.length ?? 0) > MAX_COLLECTION_LINKS;
+
+  function handleLogout() {
+    logout.mutate(undefined, {
+      onSuccess: () => void navigate({ to: "/login" }),
+    });
+  }
+
+  return (
+    <aside
+      className={cn(
+        "flex shrink-0 flex-col border-r border-border bg-card transition-[width] duration-150",
+        collapsed ? "w-14" : "w-56",
+      )}
+    >
+      <div
+        className={cn(
+          "flex items-center justify-between gap-1 px-4 py-4",
+          collapsed && "justify-center px-2",
+        )}
+      >
+        {!collapsed && <span className="truncate text-base font-semibold tracking-tight">3D Model Manager</span>}
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          onClick={() => setCollapsed((prev) => !prev)}
+        >
+          <ChevronsLeftIcon className={cn("size-4 transition-transform", collapsed && "rotate-180")} />
+        </Button>
+      </div>
+      <div className={cn("px-2 pb-2", collapsed && "px-1.5")}>
+        <Button asChild className={cn("w-full gap-2", collapsed ? "justify-center px-0" : "justify-start")}>
+          <Link to="/add" title={collapsed ? "Add to library" : undefined}>
+            <Plus className="size-4" />
+            {!collapsed && "Add to library"}
+          </Link>
+        </Button>
+      </div>
+      <ScanChip collapsed={collapsed} />
+      <nav className="flex flex-1 flex-col gap-4 overflow-y-auto px-2 pb-2">
+        {visibleGroups.map((group) => (
+          <div key={group.label} className="flex flex-col gap-1">
+            {!collapsed && (
+              <div className="px-2.5 pb-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+                {group.label}
+              </div>
+            )}
+            {group.items.map((item) => (
+              <div key={item.to as string}>
+                <NavLink
+                  item={item}
+                  collapsed={collapsed}
+                  badge={item.to === "/collections" ? failedImports : undefined}
+                />
+                {item.to === "/collections" && !collapsed && collections.length > 0 && (
+                  <div className="mt-0.5 ml-5 flex flex-col gap-0.5 border-l border-border pl-2.5">
+                    {collections.map((c) => (
+                      <Link
+                        key={c.id}
+                        to="/"
+                        search={{ collection: c.id }}
+                        className="truncate rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+                        activeProps={{ className: "bg-muted text-foreground" }}
+                      >
+                        {c.title}
+                      </Link>
+                    ))}
+                    {hasMoreCollections && (
+                      <Link
+                        to="/collections"
+                        className="truncate rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+                      >
+                        All collections
+                      </Link>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        ))}
+      </nav>
+      <div className="flex flex-col gap-1 border-t border-border px-2 py-2">
+        <NavLink item={SETTINGS_ITEM} collapsed={collapsed} />
+      </div>
+      <SidebarPrinterWidget collapsed={collapsed} />
+      <div
+        className={cn(
+          "flex items-center justify-between gap-2 border-t border-border px-4 py-3",
+          collapsed && "flex-col gap-1.5 px-1.5",
+        )}
+      >
+        {!collapsed && <span className="truncate text-sm text-muted-foreground">{me?.username}</span>}
+        <div className={cn("flex items-center gap-1", collapsed && "flex-col")}>
+          <ThemeToggle />
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            aria-label="Keyboard shortcuts"
+            onClick={onOpenShortcuts}
+          >
+            <HelpCircle className="size-4" />
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            aria-label="Log out"
+            onClick={handleLogout}
+            disabled={logout.isPending}
+          >
+            <LogOut className="size-4" />
+          </Button>
+        </div>
+      </div>
+    </aside>
+  );
+}

@@ -1,0 +1,120 @@
+import { useEffect, useState } from "react";
+import { useNavigate } from "@tanstack/react-router";
+import { Bookmark } from "lucide-react";
+
+import { useFollowedCollections } from "@/api/collections";
+import { useModelSearchQuery } from "@/api/library";
+import {
+  CommandDialog,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandSeparator,
+} from "@/components/ui/command";
+import { ALL_NAV_ITEMS } from "@/components/shell/navItems";
+import { useHotkeys } from "@/hooks/useHotkeys";
+
+const SEARCH_DEBOUNCE_MS = 200;
+
+/** cmdk palette (R12): Mod+K anywhere opens it (registered here so any
+ * mount point works -- `AppShell` just owns the open/closed boolean).
+ * Three sections: static pages (`navItems.ts`), followed collections
+ * (`useFollowedCollections`), and a debounced model search
+ * (`useModelSearchQuery`, same hook the upload page's model picker uses). */
+export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+  const navigate = useNavigate();
+  const [query, setQuery] = useState("");
+  const [debounced, setDebounced] = useState("");
+  const followed = useFollowedCollections();
+
+  useHotkeys({ "mod+k": () => onOpenChange(!open) });
+
+  useEffect(() => {
+    const id = window.setTimeout(() => setDebounced(query), SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(id);
+  }, [query]);
+
+  // Clear stale input/results once the dialog closes so reopening it starts
+  // fresh instead of showing the last search.
+  useEffect(() => {
+    if (!open) {
+      setQuery("");
+      setDebounced("");
+    }
+  }, [open]);
+
+  const trimmed = debounced.trim();
+  const search = useModelSearchQuery(trimmed);
+  const models = trimmed.length > 0 ? (search.data?.items ?? []) : [];
+  const collections = followed.data ?? [];
+
+  function goTo(to: string) {
+    onOpenChange(false);
+    void navigate({ to });
+  }
+
+  function goToCollection(id: number) {
+    onOpenChange(false);
+    void navigate({ to: "/", search: { collection: id } });
+  }
+
+  function goToModel(slug: string) {
+    onOpenChange(false);
+    void navigate({ to: "/models/$slug", params: { slug } });
+  }
+
+  return (
+    <CommandDialog open={open} onOpenChange={onOpenChange}>
+      <CommandInput placeholder="Search pages, collections, models…" value={query} onValueChange={setQuery} />
+      <CommandList>
+        <CommandEmpty>No results.</CommandEmpty>
+        <CommandGroup heading="Pages">
+          {ALL_NAV_ITEMS.map((item) => (
+            <CommandItem key={item.to as string} value={item.label} onSelect={() => goTo(item.to as string)}>
+              <item.icon className="size-4" />
+              {item.label}
+            </CommandItem>
+          ))}
+        </CommandGroup>
+        {collections.length > 0 && (
+          <>
+            <CommandSeparator />
+            <CommandGroup heading="Collections">
+              {collections.map((c) => (
+                <CommandItem
+                  key={c.id}
+                  value={`collection-${c.title}`}
+                  onSelect={() => goToCollection(c.id)}
+                >
+                  <Bookmark className="size-4" />
+                  {c.title}
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </>
+        )}
+        {models.length > 0 && (
+          <>
+            <CommandSeparator />
+            <CommandGroup heading="Models">
+              {models.map((m) => (
+                <CommandItem key={m.id} value={`model-${m.name}-${m.slug}`} onSelect={() => goToModel(m.slug)}>
+                  <span className="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded bg-muted">
+                    {m.cover ? (
+                      <img src={m.cover} alt="" className="size-full object-cover" />
+                    ) : (
+                      <span className="size-full bg-muted" />
+                    )}
+                  </span>
+                  <span className="truncate">{m.name}</span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </>
+        )}
+      </CommandList>
+    </CommandDialog>
+  );
+}

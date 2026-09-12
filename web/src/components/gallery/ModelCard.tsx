@@ -29,6 +29,11 @@ export function ModelCard({
 }) {
   const [coverErrored, setCoverErrored] = useState(false);
   const [renderErrored, setRenderErrored] = useState(false);
+  // R9-A item 1: the hover-render `<img>` only gets a `src` once the card's
+  // actually been hovered -- until then it stays mounted (so the opacity
+  // crossfade still works once it does) but src-less, so the browser never
+  // fetches a render for a card the user hasn't shown any intent on.
+  const [hovered, setHovered] = useState(false);
   const patchModel = usePatchModel(model.slug);
   const visibleTags = model.tags.slice(0, VISIBLE_TAGS);
   const overflowCount = model.tags.length - visibleTags.length;
@@ -70,7 +75,12 @@ export function ModelCard({
   }
 
   return (
-    <Link to="/models/$slug" params={{ slug: model.slug }} className="group block">
+    <Link
+      to="/models/$slug"
+      params={{ slug: model.slug }}
+      className="group block"
+      onPointerEnter={() => setHovered(true)}
+    >
       <Card className="h-full gap-3 overflow-hidden py-0 pb-4 transition-shadow hover:shadow-md">
         <div className="relative aspect-square overflow-hidden bg-muted">
           {showCover ? (
@@ -78,15 +88,21 @@ export function ModelCard({
               <img
                 src={model.cover ?? undefined}
                 alt={model.name}
+                loading="lazy"
+                decoding="async"
+                fetchPriority="low"
                 className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.04] motion-reduce:transition-none motion-reduce:group-hover:scale-100"
                 onError={() => setCoverErrored(true)}
               />
               {showRenderHover && (
                 <img
-                  src={model.render_url ?? undefined}
+                  src={hovered ? (model.render_url ?? undefined) : undefined}
                   alt=""
                   aria-hidden="true"
                   data-testid="render-hover-img"
+                  loading="lazy"
+                  decoding="async"
+                  fetchPriority="low"
                   className="absolute inset-0 h-full w-full object-cover opacity-0 transition-opacity duration-300 group-hover:opacity-100 motion-reduce:transition-none"
                   onError={() => setRenderErrored(true)}
                 />

@@ -264,3 +264,29 @@ describe("ModelCard -- photo-first cover with a render-on-hover (feat/import-fid
     expect(screen.queryByTestId("render-hover-img")).not.toBeInTheDocument();
   });
 });
+
+describe("ModelCard -- lazy, non-shifting thumbnails (R9-A item 1)", () => {
+  it("renders the resting cover with lazy-loading attrs", async () => {
+    renderCard({ ...MODEL, cover: "/covers/1.jpg" });
+
+    const cover = await screen.findByAltText("Articulated Dragon");
+    expect(cover).toHaveAttribute("loading", "lazy");
+    expect(cover).toHaveAttribute("decoding", "async");
+    expect(cover).toHaveAttribute("fetchPriority", "low");
+  });
+
+  it("doesn't set the hover image's src until the card has been hovered once, then keeps it mounted", async () => {
+    renderCard({ ...MODEL, cover: "/covers/1.jpg", render_url: "/renders/1.png" });
+
+    await screen.findByText("Articulated Dragon");
+    const hoverImg = screen.getByTestId("render-hover-img");
+    expect(hoverImg).toHaveAttribute("loading", "lazy");
+    expect(hoverImg).toHaveAttribute("decoding", "async");
+    expect(hoverImg).toHaveAttribute("fetchPriority", "low");
+    expect(hoverImg).not.toHaveAttribute("src");
+
+    fireEvent.pointerEnter(screen.getByRole("link"));
+
+    expect(screen.getByTestId("render-hover-img")).toHaveAttribute("src", "/renders/1.png");
+  });
+});

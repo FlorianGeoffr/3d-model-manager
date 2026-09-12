@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.2.0](https://github.com/metril/3d-model-manager/compare/v0.1.0...v0.2.0) (2026-09-12)
+
+
+### Features
+
+* **api:** expose dims_mm, best_slicer_file, printable_file on ModelSummary ([5aeb17c](https://github.com/metril/3d-model-manager/commit/5aeb17c5b7c49edae25c947f8f5409622e064537))
+* R12 studio UI rework ([24c9cc7](https://github.com/metril/3d-model-manager/commit/24c9cc7e26355e2524ccec74ace3f310b94b0380))
+* **web:** grouped collapsible sidebar, top bar, and Ctrl+K command palette ([55cd100](https://github.com/metril/3d-model-manager/commit/55cd100ccf5eac82294bf82fba725c1911a44a83))
+* **web:** implicit multi-select, hover dims, and card quick actions in the library ([0f43f58](https://github.com/metril/3d-model-manager/commit/0f43f5814ee7ba96d49a04d206bd76cef6940f92))
+* **web:** model detail studio workspace with file rail and side panel ([6420455](https://github.com/metril/3d-model-manager/commit/64204557e0429898d64370ec88dbb5799a0e1c59))
+
+
+### Bug Fixes
+
+* **api:** card file picks carry blob meta; dims_mm falls back to mesh when slicer file has none ([0506a99](https://github.com/metril/3d-model-manager/commit/0506a99141f34c9b6b14e1eb65402d34a6e03655))
+* **api:** pass settings to gallery aggregates from collection previews ([a24d337](https://github.com/metril/3d-model-manager/commit/a24d33701824d75f2eb6b8245bbed7b9008f050b))
+* **web:** parts count + All/None in the file rail; modifier hotkeys work inside inputs ([eeff8ed](https://github.com/metril/3d-model-manager/commit/eeff8edda34d04308bd30999264a23a2265a8a9c))
+* **web:** rich-text descriptions, off-canvas mobile sidebar, studio overflow, printer poll guard ([59533b8](https://github.com/metril/3d-model-manager/commit/59533b89341f556cca0e8efbc04e3bccc5fd22de))
+* **web:** wrap sidebar in TooltipProvider so the collapsed rail doesn't crash ([9421ea2](https://github.com/metril/3d-model-manager/commit/9421ea2870c7d234245f38e54eb07b0286abf84a))
+
 ## 0.1.0 (2026-09-12)
 
 

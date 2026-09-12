@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 
+from app.api import files as files_api
 from app.config import get_settings
 from app.main import create_app
 from app.models import Blob, File, FileLocation, Model, Revision
@@ -234,6 +235,67 @@ async def test_download_member_gcode_extracts_embedded_plate(
 
     assert response.status_code == 200
     assert response.content == corpus.bambu_gcode.read_bytes()
+
+
+async def test_download_member_gcode_streams_without_buffering_whole_member(
+    corpus: CorpusPaths,
+    backend: LocalStorageBackend,
+) -> None:
+    """Review finding 1: ``?member=gcode`` must never ``.read()`` the whole
+    (decompressed) member into memory. Drives the module's own streaming
+    helpers directly -- ``_spool_to_temp_file`` (backend has no seekable
+    handle, so it spools to a temp file), ``_resolve_gcode_member`` (finds
+    the member + its uncompressed size without reading it), and
+    ``_stream_gcode_member`` (yields fixed-size chunks) -- and proves: (1)
+    the yielded chunks are all <= the fixed chunk size (never one giant
+    chunk), (2) their total equals the resolved ``Content-Length`` exactly,
+    and (3) the spooled temp file is removed once the stream is consumed.
+    """
+    storage_path = "gcode-member-stream/print.gcode.3mf"
+    backend.write(storage_path, [corpus.sliced_gcode_3mf.read_bytes()])
+
+    tmp_path = files_api._spool_to_temp_file(backend, storage_path)
+    assert tmp_path.exists()
+
+    member, file_size = files_api._resolve_gcode_member(tmp_path, plate=None)
+    assert file_size == len(corpus.bambu_gcode.read_bytes())
+
+    chunks = list(files_api._stream_gcode_member(tmp_path, member))
+
+    assert all(len(c) <= files_api._GCODE_STREAM_CHUNK_BYTES for c in chunks)
+    assert b"".join(chunks) == corpus.bambu_gcode.read_bytes()
+    assert sum(len(c) for c in chunks) == file_size
+    # The generator's `finally` removed the spooled temp copy once fully
+    # consumed -- no leaked temp files per preview request.
+    assert not tmp_path.exists()
+
+
+async def test_download_member_gcode_content_length_matches_body(
+    authenticated_client: httpx.AsyncClient,
+    corpus: CorpusPaths,
+) -> None:
+    created = await _create_model(authenticated_client, "Gcode Content Length Target")
+    revision_id = created["current_revision"]["id"]
+    content = corpus.sliced_gcode_3mf.read_bytes()
+
+    upload = await authenticated_client.put(
+        "/api/uploads",
+        params={
+            "model_id": created["id"],
+            "revision_id": revision_id,
+            "rel_path": "print.gcode.3mf",
+        },
+        content=content,
+    )
+    file_id = upload.json()["file_id"]
+
+    response = await authenticated_client.get(
+        f"/api/files/{file_id}/download", params={"member": "gcode"}
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-length"] == str(len(response.content))
+    assert response.headers["content-type"].split(";")[0] == "text/x.gcode"
 
 
 async def test_download_member_gcode_rejects_non_sliced_format(

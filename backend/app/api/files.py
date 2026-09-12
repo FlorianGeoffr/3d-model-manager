@@ -5,10 +5,12 @@ decisions).
 
 from __future__ import annotations
 
-import io
+import os
+import tempfile
 import zipfile
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from urllib.parse import quote
 
 import anyio
@@ -26,6 +28,7 @@ from app.models.enums import BlobFormat
 from app.pipeline import slicedmeta
 from app.services import library, signed_urls
 from app.services.storage_backends import resolve_backend_for_file
+from app.storage.base import StorageBackend
 from app.storage.errors import StorageKeyNotFound
 
 router = APIRouter(prefix="/files", tags=["files"])
@@ -66,26 +69,79 @@ def _media_type_for_filename(filename: str) -> str:
     return _MEDIA_TYPES_BY_SUFFIX.get(suffix, "application/octet-stream")
 
 
-def _extract_embedded_gcode(data: bytes, plate: int | None) -> bytes:
-    """Pull one plate's embedded ``.gcode`` member out of a ``.gcode.3mf``
-    zip (R10-B: ``?member=gcode`` download param for the frontend's
-    ``GcodePreview``), via the same ``model_settings.config`` plate->gcode
-    mapping the pipeline's own metadata extraction uses. Defaults to the
-    lowest-numbered plate when ``plate`` is omitted.
+# Chunk size for streaming a zip member out (review finding 1) -- matches
+# gcode_meta's own bounded-read chunk size, no particular reason they must
+# match beyond "both are a reasonable, small, fixed unit of I/O".
+_GCODE_STREAM_CHUNK_BYTES = 256 * 1024
+
+
+def _spool_to_temp_file(backend: StorageBackend, storage_path: str) -> Path:
+    """Copy ``storage_path``'s bytes to a private temp file and return its
+    path (review finding 1). ``StorageBackend.read`` only ever yields a
+    forward ``Iterator[bytes]`` -- never a seekable handle -- but
+    ``zipfile.ZipFile`` needs random access to read a ``.gcode.3mf``'s
+    central directory and open one member without buffering the rest.
+    Caller owns cleanup (``Path.unlink``) once done with the file.
     """
-    with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        model_settings = slicedmeta.read_zip_member(zf, slicedmeta.MODEL_SETTINGS_PATH)
-        plate_files = slicedmeta.parse_model_settings(model_settings)
-        if not plate_files:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "no embedded gcode in this file")
-        chosen = plate if plate is not None else min(plate_files)
-        gcode_member = (plate_files.get(chosen) or {}).get("gcode_file")
-        if gcode_member is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, f"no gcode for plate {chosen}")
-        try:
-            return zf.read(gcode_member)
-        except KeyError as exc:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "embedded gcode member missing") from exc
+    fd, tmp_name = tempfile.mkstemp(prefix="tdmm-gcode-member-", suffix=".3mf")
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as tmp_file:
+            for chunk in backend.read(storage_path):
+                tmp_file.write(chunk)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    return tmp_path
+
+
+def _resolve_gcode_member(tmp_path: Path, plate: int | None) -> tuple[str, int]:
+    """Resolve which zip member (name + uncompressed ``ZipInfo.file_size``,
+    for ``Content-Length``) holds the requested plate's embedded
+    ``.gcode``, via the same ``model_settings.config`` plate->gcode mapping
+    the pipeline's own metadata extraction uses. Defaults to the
+    lowest-numbered plate when ``plate`` is omitted. On ANY exception
+    (including the 404s raised here), removes ``tmp_path`` -- the caller
+    only reaches ownership of cleanup on success, via the streaming
+    generator below.
+    """
+    try:
+        with zipfile.ZipFile(tmp_path) as zf:
+            model_settings = slicedmeta.read_zip_member(zf, slicedmeta.MODEL_SETTINGS_PATH)
+            plate_files = slicedmeta.parse_model_settings(model_settings)
+            if not plate_files:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "no embedded gcode in this file")
+            chosen = plate if plate is not None else min(plate_files)
+            gcode_member = (plate_files.get(chosen) or {}).get("gcode_file")
+            if gcode_member is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, f"no gcode for plate {chosen}")
+            try:
+                info = zf.getinfo(gcode_member)
+            except KeyError as exc:
+                raise HTTPException(
+                    status.HTTP_404_NOT_FOUND, "embedded gcode member missing"
+                ) from exc
+            return gcode_member, info.file_size
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def _stream_gcode_member(tmp_path: Path, member: str) -> Iterator[bytes]:
+    """Stream one zip member's bytes in fixed-size chunks (review
+    finding 1) -- never ``.read()``s the whole (decompressed) member into
+    memory -- and removes the spooled temp copy of the whole zip once the
+    stream is consumed or abandoned.
+    """
+    try:
+        with zipfile.ZipFile(tmp_path) as zf, zf.open(member) as stream:
+            while True:
+                chunk = stream.read(_GCODE_STREAM_CHUNK_BYTES)
+                if not chunk:
+                    break
+                yield chunk
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 async def _download_file(
@@ -152,15 +208,18 @@ async def _download_file(
         if blob is None or blob.format is not BlobFormat.GCODE_3MF:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "member=gcode needs a gcode_3mf file")
         try:
-            chunks = await anyio.to_thread.run_sync(lambda: list(backend.read(file.storage_path)))
+            tmp_path = await anyio.to_thread.run_sync(
+                _spool_to_temp_file, backend, file.storage_path
+            )
         except StorageKeyNotFound as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "file missing from storage") from exc
-        data = b"".join(chunks)
-        gcode_bytes = await anyio.to_thread.run_sync(_extract_embedded_gcode, data, plate)
+        gcode_member, file_size = await anyio.to_thread.run_sync(
+            _resolve_gcode_member, tmp_path, plate
+        )
         return StreamingResponse(
-            iter((gcode_bytes,)),
+            iterate_in_threadpool(_stream_gcode_member(tmp_path, gcode_member)),
             media_type=_media_type_for_filename("plate.gcode"),
-            headers={"Content-Length": str(len(gcode_bytes))},
+            headers={"Content-Length": str(file_size)},
         )
 
     try:

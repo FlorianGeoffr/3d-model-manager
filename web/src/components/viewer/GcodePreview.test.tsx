@@ -24,7 +24,11 @@ describe("GcodePreview", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     global.fetch = vi.fn(() =>
-      Promise.resolve({ ok: true, text: () => Promise.resolve("G1 X0 Y0\n") } as Response),
+      Promise.resolve({
+        ok: true,
+        headers: { get: () => null },
+        text: () => Promise.resolve("G1 X0 Y0\n"),
+      } as unknown as Response),
     ) as unknown as typeof fetch;
   });
 
@@ -53,5 +57,23 @@ describe("GcodePreview", () => {
     await waitFor(() =>
       expect(screen.getByText(/couldn't load the g-code preview/i)).toBeInTheDocument(),
     );
+  });
+
+  it("shows a too-large message instead of loading a huge gcode body", async () => {
+    const text = vi.fn();
+    global.fetch = vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        headers: { get: (name: string) => (name === "content-length" ? String(200 * 1024 * 1024) : null) },
+        text,
+      } as unknown as Response),
+    ) as unknown as typeof fetch;
+
+    render(<GcodePreview fileId={42} />);
+
+    await waitFor(() =>
+      expect(screen.getByText(/too large to preview in the browser/i)).toBeInTheDocument(),
+    );
+    expect(text).not.toHaveBeenCalled();
   });
 });

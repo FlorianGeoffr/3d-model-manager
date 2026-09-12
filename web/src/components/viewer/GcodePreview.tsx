@@ -18,10 +18,16 @@ function gcodeDownloadUrl(fileId: number): string {
   return `/api/files/${fileId}/download?member=gcode`;
 }
 
+/** Above this, don't even try to load the gcode text into the browser
+ * (review finding 1): `gcode-preview` needs the whole body as one string,
+ * and a huge sliced-project plate can be hundreds of MB -- reading
+ * `response.text()` on that risks hanging/crashing the tab. */
+const TOO_LARGE_TO_PREVIEW_BYTES = 150 * 1024 * 1024;
+
 export function GcodePreview({ fileId }: { fileId: number }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const previewRef = useRef<WebGLPreview | null>(null);
-  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [status, setStatus] = useState<"loading" | "ready" | "error" | "too-large">("loading");
   const [layerCount, setLayerCount] = useState(0);
   const [layer, setLayer] = useState(1);
 
@@ -36,6 +42,13 @@ export function GcodePreview({ fileId }: { fileId: number }) {
           fetch(gcodeDownloadUrl(fileId), { credentials: "include" }),
         ]);
         if (!response.ok) throw new Error(`gcode download failed: ${response.status}`);
+
+        const contentLength = Number(response.headers.get("content-length"));
+        if (Number.isFinite(contentLength) && contentLength > TOO_LARGE_TO_PREVIEW_BYTES) {
+          if (!cancelled) setStatus("too-large");
+          return;
+        }
+
         const text = await response.text();
         if (cancelled || !canvasRef.current) return;
 
@@ -72,6 +85,14 @@ export function GcodePreview({ fileId }: { fileId: number }) {
 
   if (status === "error") {
     return <p className="py-8 text-center text-sm text-muted-foreground">Couldn't load the g-code preview.</p>;
+  }
+
+  if (status === "too-large") {
+    return (
+      <p className="py-8 text-center text-sm text-muted-foreground">
+        Too large to preview in the browser.
+      </p>
+    );
   }
 
   return (

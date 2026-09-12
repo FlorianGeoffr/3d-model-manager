@@ -44,6 +44,9 @@ function fakeModel(overrides: Partial<ModelSummary> = {}): ModelSummary {
     source_collection_id: null,
     source_collection_title: null,
     favorite: false,
+    dims_mm: null,
+    best_slicer_file: null,
+    printable_file: null,
     ...overrides,
   };
 }

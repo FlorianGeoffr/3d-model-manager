@@ -7,7 +7,6 @@ import {
   ListPlusIcon,
   PlusIcon,
   SearchIcon,
-  SquareCheckIcon,
   StarIcon,
   TagIcon,
   Trash2Icon,
@@ -85,9 +84,9 @@ export function LibraryPage() {
   const [activeCollection, setActiveCollection] = useState<number | undefined>(search.collection);
   const [sort, setSort] = useState<string>("-updated_at");
 
-  // Bulk select mode: per-visit UI state only, same as the facets above --
-  // never persisted, never written to the URL.
-  const [selectMode, setSelectMode] = useState(false);
+  // Selection is implicit (no select-mode toggle button): per-visit UI
+  // state only, same as the facets above -- never persisted, never written
+  // to the URL.
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   // R9-A item 6: the anchor for shift+click range selection -- the index of
   // the most recently (modified-)clicked card, cleared whenever selection is
@@ -98,8 +97,7 @@ export function LibraryPage() {
   // focus is inside the selection bar -- can open it.
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
 
-  function exitSelectMode() {
-    setSelectMode(false);
+  function clearSelection() {
     setSelectedIds(new Set());
     setLastSelectedIndex(null);
   }
@@ -115,10 +113,8 @@ export function LibraryPage() {
 
   /** Ctrl/Cmd toggles just this card; Shift selects the inclusive range from
    * `lastSelectedIndex` (or this index, if there isn't one yet) through this
-   * index, adding to the existing selection rather than replacing it. Either
-   * one auto-enters select mode. */
+   * index, adding to the existing selection rather than replacing it. */
   function handleModifiedClick(event: React.MouseEvent, index: number) {
-    setSelectMode(true);
     if (event.shiftKey) {
       const anchor = lastSelectedIndex ?? index;
       const [lo, hi] = anchor <= index ? [anchor, index] : [index, anchor];
@@ -158,17 +154,16 @@ export function LibraryPage() {
   const selectedItems = items.filter((model) => selectedIds.has(model.id));
 
   function selectAll() {
-    setSelectMode(true);
     setSelectedIds(new Set(items.map((model) => model.id)));
   }
 
   // R9-C item 5: `/` and `Escape` always make sense; `a` only selects
-  // everything while already in select mode (otherwise a bare "a" while
-  // typing in the search box would be indistinguishable from typing an "a"
-  // -- the hook already guards inputs, but scoping this one to select mode
-  // too keeps it from firing over any other future non-input surface).
-  // `mod+a` enters select mode itself, `Escape` leaves it, and `Delete`
-  // opens the existing bulk-delete confirm.
+  // everything while a selection is already active (otherwise a bare "a"
+  // while typing in the search box would be indistinguishable from typing
+  // an "a" -- the hook already guards inputs, but scoping this one to an
+  // active selection too keeps it from firing over any other future
+  // non-input surface). `mod+a` always selects all, `Escape` clears the
+  // selection, and `Delete` opens the existing bulk-delete confirm.
   useHotkeys({
     "/": () => searchInputRef.current?.focus(),
     // Fix wave finding 5: Radix dialogs/popovers (ConfirmDialog,
@@ -182,9 +177,9 @@ export function LibraryPage() {
     Escape: (event) => {
       if (document.querySelector('[role="dialog"][data-state="open"]')) return;
       if (event.target instanceof Element && event.target.closest('[role="dialog"]')) return;
-      exitSelectMode();
+      clearSelection();
     },
-    ...(selectMode ? { a: () => selectAll() } : {}),
+    ...(selectedIds.size > 0 ? { a: () => selectAll() } : {}),
     "mod+a": () => selectAll(),
     Delete: () => {
       if (selectedItems.length > 0) setDeleteConfirmOpen(true);
@@ -309,14 +304,6 @@ export function LibraryPage() {
             </SelectContent>
           </Select>
           <div className="flex-1" />
-          <Button
-            type="button"
-            variant={selectMode ? "default" : "outline"}
-            aria-pressed={selectMode}
-            onClick={() => (selectMode ? exitSelectMode() : setSelectMode(true))}
-          >
-            <SquareCheckIcon /> Select
-          </Button>
           <NewModelDialog
             trigger={
               <Button type="button">
@@ -487,7 +474,6 @@ export function LibraryPage() {
                       key={model.id}
                       model={model}
                       index={virtualRow.index * columns + columnIndex}
-                      selectable={selectMode}
                       selected={selectedIds.has(model.id)}
                       onSelectChange={toggleSelected}
                       onModifiedClick={handleModifiedClick}
@@ -503,10 +489,10 @@ export function LibraryPage() {
         </>
       )}
 
-      {selectMode && selectedItems.length > 0 && (
+      {selectedItems.length > 0 && (
         <SelectionActionBar
           selectedItems={selectedItems}
-          onDone={exitSelectMode}
+          onDone={clearSelection}
           deleteConfirmOpen={deleteConfirmOpen}
           onDeleteConfirmOpenChange={setDeleteConfirmOpen}
         />

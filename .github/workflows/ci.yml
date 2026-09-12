@@ -247,4 +247,4 @@ jobs:
             APP_VERSION=pr-${{ github.event.pull_request.number }}
           # Its own cache scope so PR builds can't evict the release scope.
           cache-from: type=gha,scope=tdmm-pr
-          cache-to: type=gha,mode=max,scope=tdmm-pr
+          cache-to: type=gha,mode=max,scope=tdmm-pr,ignore-error=true

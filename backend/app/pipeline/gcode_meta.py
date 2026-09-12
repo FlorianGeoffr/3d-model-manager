@@ -11,6 +11,7 @@ file -- never the (potentially huge) g-code body in between.
 from __future__ import annotations
 
 import re
+import zipfile
 from dataclasses import dataclass
 from typing import BinaryIO
 
@@ -66,21 +67,39 @@ def _parse_pct(value: str | None) -> float | None:
     return _parse_float(value) if value else None
 
 
-def _read_head_tail(stream: BinaryIO) -> bytes:
-    """Read only the first and last ``_CHUNK_BYTES`` of ``stream``.
+def _is_randomly_seekable(stream: BinaryIO) -> bool:
+    """Whether the seek(0, 2)+seek-to-tail fast path below is actually safe.
 
-    Falls back to a single head-only read when the stream can't seek (e.g. a
-    zip member's compressed stream) -- there's no cheap way to reach a tail
-    without decompressing the whole thing, and the head alone still carries
-    PrusaSlicer/OrcaSlicer/Bambu's opening comment block (slicer name,
-    layer_height, filament_type, infill, and Bambu's HEADER_BLOCK).
+    A ``zipfile.ZipExtFile``'s ``seekable()`` returns ``True`` -- it DOES
+    support ``.seek()`` -- but a backward seek re-decompresses the member
+    from byte 0, so "seekable" doesn't mean "cheap to seek" the way it does
+    for a real file. Exclude it explicitly rather than trusting
+    ``seekable()`` alone.
     """
-    head = stream.read(_CHUNK_BYTES)
+    if isinstance(stream, zipfile.ZipExtFile):
+        return False
     try:
-        stream.seek(0, 2)
-        size = stream.tell()
-    except (OSError, AttributeError, ValueError):
-        return head
+        return bool(stream.seekable())
+    except (AttributeError, ValueError):
+        return False
+
+
+def _read_head_tail(stream: BinaryIO) -> bytes:
+    """Read the first and last ``_CHUNK_BYTES`` of ``stream``.
+
+    Real, randomly-seekable files (see ``_is_randomly_seekable``) use a
+    cheap head-read + seek-to-tail. Everything else -- notably a
+    ``zipfile.ZipExtFile`` -- goes through ``_forward_scan_head_tail``: one
+    single forward pass that reads the whole stream exactly once (there's
+    no cheaper way to reach the tail of a compressed member) while only
+    ever holding ~2x ``_CHUNK_BYTES`` in memory.
+    """
+    if not _is_randomly_seekable(stream):
+        return _forward_scan_head_tail(stream)
+
+    head = stream.read(_CHUNK_BYTES)
+    stream.seek(0, 2)
+    size = stream.tell()
 
     if size <= _CHUNK_BYTES * 2:
         stream.seek(0)
@@ -89,6 +108,35 @@ def _read_head_tail(stream: BinaryIO) -> bytes:
     stream.seek(max(size - _CHUNK_BYTES, len(head)))
     tail = stream.read(_CHUNK_BYTES)
     return head + tail
+
+
+def _forward_scan_head_tail(stream: BinaryIO) -> bytes:
+    """Single forward pass over ``stream``, capturing the first
+    ``_CHUNK_BYTES`` once and a rolling ``_CHUNK_BYTES`` window of
+    whatever's been read so far as the tail -- bounded at ~2x
+    ``_CHUNK_BYTES`` of memory regardless of the stream's total size, and
+    the stream is read (decompressed, for a zip member) exactly once.
+    """
+    head = bytearray()
+    tail = bytearray()
+    total = 0
+    while True:
+        chunk = stream.read(_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if len(head) < _CHUNK_BYTES:
+            head.extend(chunk[: _CHUNK_BYTES - len(head)])
+        tail.extend(chunk)
+        if len(tail) > _CHUNK_BYTES:
+            del tail[: len(tail) - _CHUNK_BYTES]
+
+    if total <= _CHUNK_BYTES:
+        return bytes(head)
+    if total <= _CHUNK_BYTES * 2:
+        overlap = _CHUNK_BYTES * 2 - total
+        return bytes(head) + bytes(tail[overlap:])
+    return bytes(head) + bytes(tail)
 
 
 def _parse_comment_lines(text: str) -> dict[str, str]:

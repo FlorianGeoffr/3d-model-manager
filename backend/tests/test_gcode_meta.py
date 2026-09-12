@@ -6,6 +6,7 @@ counting-reader proof that a large file is never fully read.
 from __future__ import annotations
 
 import io
+import zipfile
 
 from app.pipeline.gcode_meta import _CHUNK_BYTES, parse_gcode_meta
 
@@ -99,6 +100,13 @@ class _CountingReader:
     def tell(self) -> int:
         return self._buf.tell()
 
+    def seekable(self) -> bool:
+        # Mimics a real file object opened `rb` (the fast head+seek+tail
+        # path's intended target) -- genuinely random-access, unlike a
+        # `zipfile.ZipExtFile` (see `test_zip_member_read_exactly_once`
+        # below), whose `seekable()` lies.
+        return True
+
 
 def test_large_file_reads_only_head_and_tail() -> None:
     body = b"G1 X0 Y0\n" * 2_000_000  # tens of MB
@@ -111,3 +119,45 @@ def test_large_file_reads_only_head_and_tail() -> None:
     # Bounded well under the multi-MB body -- at most head + tail chunks.
     assert reader.bytes_read <= _CHUNK_BYTES * 2 + 1024
     assert reader.bytes_read < reader.total_size
+
+
+def test_zip_member_read_exactly_once(tmp_path, monkeypatch) -> None:
+    """A real ``zipfile.ZipExtFile`` reports ``seekable() == True`` but
+    backward-seeking it re-decompresses from byte 0 -- the bug behind
+    review finding 2 (``seek(0, 2)`` to find the size, then a backward
+    seek to the tail, each a full decompression pass). The fix must
+    recognize a `ZipExtFile` specifically and read it forward exactly
+    once, never calling `.seek()` on it at all.
+    """
+    body = b"G1 X0 Y0\n" * 200_000
+    data = PRUSA_HEADER + body + b"; total filament used [g] = 12.34\n"
+
+    zpath = tmp_path / "plate.gcode.3mf"
+    with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("plate_1.gcode", data)
+
+    with zipfile.ZipFile(zpath) as zf, zf.open("plate_1.gcode") as stream:
+        assert stream.seekable()  # the misleading premise this test guards against
+
+        bytes_read = 0
+        orig_read = stream.read
+
+        def counting_read(size: int = -1) -> bytes:
+            nonlocal bytes_read
+            chunk = orig_read(size)
+            bytes_read += len(chunk)
+            return chunk
+
+        def forbidden_seek(*args: object, **kwargs: object) -> int:
+            raise AssertionError("zip member must never be seeked")
+
+        monkeypatch.setattr(stream, "read", counting_read)
+        monkeypatch.setattr(stream, "seek", forbidden_seek)
+
+        meta = parse_gcode_meta(stream)
+
+        assert meta.filament_type == "PLA"
+        assert meta.filament_g == 12.34
+        # Exactly one forward pass: total bytes read equals the member's
+        # exact decompressed size, never double it.
+        assert bytes_read == len(data)

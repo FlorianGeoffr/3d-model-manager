@@ -463,9 +463,10 @@ def _gcode_3mf_extra_meta(path: Path) -> gcode_meta.GcodeMeta | None:
     first resolvable plate's embedded ``.gcode`` member inside a
     ``.gcode.3mf`` -- reusing the same ``model_settings.config`` plate/gcode
     mapping ``parse_gcode_3mf`` already resolves, rather than a second zip
-    pass over slice_info. A zip member's compressed stream can't seek, so
-    only its head is read (see ``gcode_meta._read_head_tail``) -- still
-    enough to reach Prusa/Orca/Bambu's opening comment block.
+    pass over slice_info. A zip member's stream reports ``seekable()==True``
+    but a backward seek re-decompresses it from byte 0, so
+    ``gcode_meta._read_head_tail`` reads it forward exactly once instead,
+    capturing both head and tail comment blocks in a single pass.
     """
     with zipfile.ZipFile(path) as zf:
         model_settings = slicedmeta.read_zip_member(zf, slicedmeta.MODEL_SETTINGS_PATH)

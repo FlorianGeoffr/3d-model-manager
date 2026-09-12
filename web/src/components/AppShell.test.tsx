@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider, createMemoryHistory, createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AppShell } from "@/components/AppShell";
@@ -111,5 +111,31 @@ describe("AppShell nav", () => {
 
     const link = await screen.findByRole("link", { name: /Collections/ });
     expect(link.textContent).toBe("Collections");
+  });
+});
+
+describe("AppShell keyboard shortcuts dialog (R9-C item 5)", () => {
+  beforeEach(() => {
+    featuresBox.current = { printer_enabled: false };
+    failedImportsBox.current = 0;
+  });
+
+  it("`?` opens the keyboard shortcuts dialog", async () => {
+    renderShell();
+    await screen.findByText("Library");
+
+    fireEvent.keyDown(document.body, { key: "?" });
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByText("Keyboard shortcuts")).toBeInTheDocument();
+  });
+
+  it("the sidebar's Keyboard shortcuts button opens the same dialog", async () => {
+    renderShell();
+    await screen.findByText("Library");
+
+    fireEvent.click(screen.getByRole("button", { name: "Keyboard shortcuts" }));
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
   });
 });

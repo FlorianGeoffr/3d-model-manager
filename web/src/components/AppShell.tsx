@@ -1,12 +1,74 @@
+import { useState } from "react";
 import { Link, Outlet, useNavigate } from "@tanstack/react-router";
-import { Bookmark, CopyCheck, ListChecks, ListOrdered, LogOut, Plus, Printer, Settings, SquareLibrary } from "lucide-react";
+import {
+  Bookmark,
+  CopyCheck,
+  HelpCircle,
+  ListChecks,
+  ListOrdered,
+  LogOut,
+  Plus,
+  Printer,
+  Settings,
+  SquareLibrary,
+} from "lucide-react";
 
 import { useAuth, useLogout } from "@/api/auth";
 import { useFeatures } from "@/api/features";
 import { useFailedImportsCount } from "@/api/imports";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { EventsProvider } from "@/hooks/useEvents";
+import { useHotkeys } from "@/hooks/useHotkeys";
+
+// R9-C item 5: the full set of keyboard shortcuts across the app, kept here
+// as the single source of truth for the help dialog. Each binding is
+// registered independently, next to the state/mutation it acts on -- this
+// list is documentation, not the wiring.
+const SHORTCUTS: Array<{ keys: string; description: string }> = [
+  { keys: "/", description: "Focus the library search" },
+  { keys: "Esc", description: "Clear selection / leave select mode" },
+  { keys: "A", description: "Select all loaded models (in select mode)" },
+  { keys: "Ctrl/Cmd + A", description: "Select all loaded models" },
+  { keys: "Delete", description: "Delete the selected models" },
+  { keys: "F", description: "Toggle favorite (model page)" },
+  { keys: "Shift + F", description: "Toggle fullscreen (3D viewer)" },
+  { keys: "?", description: "Show this dialog" },
+];
+
+/** R9-C item 5: lists every keyboard shortcut in the app. Opened by the `?`
+ * hotkey or the sidebar's "Keyboard shortcuts" button. */
+function ShortcutsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Keyboard shortcuts</DialogTitle>
+          <DialogDescription>Available anywhere they apply.</DialogDescription>
+        </DialogHeader>
+        <dl className="space-y-1.5">
+          {SHORTCUTS.map((shortcut) => (
+            <div key={shortcut.keys} className="flex items-center justify-between gap-4 text-sm">
+              <dt className="text-muted-foreground">{shortcut.description}</dt>
+              <dd>
+                <kbd className="rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-xs">
+                  {shortcut.keys}
+                </kbd>
+              </dd>
+            </div>
+          ))}
+        </dl>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 // Upload + Import used to be separate nav items; they now live behind the
 // single global "Add to library" action (Workstream E consolidates them onto
@@ -39,6 +101,12 @@ export function AppShell() {
   // poll would run it app-wide forever (see `useFailedImportsCount`'s doc).
   const failedImports = useFailedImportsCount();
   const navItems = NAV_ITEMS.filter((item) => item.to !== "/printer" || features.data?.printer_enabled);
+
+  // R9-C item 5: `?` opens the shortcuts dialog from anywhere in the app --
+  // AppShell is mounted on every page, same reasoning as `useFailedImportsCount`
+  // above.
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  useHotkeys({ "?": () => setShortcutsOpen(true) });
 
   function handleLogout() {
     logout.mutate(undefined, {
@@ -90,6 +158,15 @@ export function AppShell() {
                 type="button"
                 variant="outline"
                 size="icon"
+                aria-label="Keyboard shortcuts"
+                onClick={() => setShortcutsOpen(true)}
+              >
+                <HelpCircle className="size-4" />
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
                 aria-label="Log out"
                 onClick={handleLogout}
                 disabled={logout.isPending}
@@ -103,6 +180,7 @@ export function AppShell() {
           <Outlet />
         </main>
       </div>
+      <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
     </EventsProvider>
   );
 }

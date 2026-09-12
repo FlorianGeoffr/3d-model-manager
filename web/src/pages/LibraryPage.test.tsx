@@ -554,3 +554,79 @@ describe("LibraryPage -- virtualized grid (R9-A item 2)", () => {
     ).toBe(callsMade);
   });
 });
+
+describe("LibraryPage -- keyboard shortcuts (R9-C item 5)", () => {
+  it("`/` focuses the search input", async () => {
+    mockGalleryOkWithModels([GALLERY_MODEL]);
+    renderLibraryPage();
+    await screen.findByText("Test Model");
+
+    const search = screen.getByLabelText("Search models");
+    expect(search).not.toHaveFocus();
+
+    fireEvent.keyDown(document.body, { key: "/" });
+    expect(search).toHaveFocus();
+  });
+
+  it("Escape exits select mode and clears the selection", async () => {
+    mockGalleryOkWithModels([GALLERY_MODEL]);
+    renderLibraryPage();
+    await screen.findByText("Test Model");
+
+    fireEvent.click(screen.getByRole("button", { name: "Select" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Select Test Model" }));
+    await screen.findByText("1 selected");
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+
+    await waitFor(() => expect(screen.queryByText(/selected/)).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Select" })).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("Delete opens the bulk-delete confirm when there is a selection", async () => {
+    mockGalleryOkWithModels([GALLERY_MODEL]);
+    renderLibraryPage();
+    await screen.findByText("Test Model");
+
+    fireEvent.click(screen.getByRole("button", { name: "Select" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Select Test Model" }));
+    await screen.findByText("1 selected");
+
+    fireEvent.keyDown(document.body, { key: "Delete" });
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Delete 1 model?")).toBeInTheDocument();
+  });
+
+  it("Delete does nothing when there is no selection", async () => {
+    mockGalleryOkWithModels([GALLERY_MODEL]);
+    renderLibraryPage();
+    await screen.findByText("Test Model");
+
+    fireEvent.keyDown(document.body, { key: "Delete" });
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("mod+a selects every loaded item and enters select mode", async () => {
+    mockGalleryOkWithModels([GALLERY_MODEL, GALLERY_MODEL_2]);
+    renderLibraryPage();
+    await screen.findByText("Test Model");
+
+    fireEvent.keyDown(document.body, { key: "a", ctrlKey: true });
+
+    expect(await screen.findByText("2 selected")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Select" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("a selects every loaded item once already in select mode", async () => {
+    mockGalleryOkWithModels([GALLERY_MODEL, GALLERY_MODEL_2]);
+    renderLibraryPage();
+    await screen.findByText("Test Model");
+
+    fireEvent.click(screen.getByRole("button", { name: "Select" }));
+    fireEvent.keyDown(document.body, { key: "a" });
+
+    expect(await screen.findByText("2 selected")).toBeInTheDocument();
+  });
+});

@@ -3,6 +3,7 @@ import {
   Suspense,
   lazy,
   useCallback,
+  useRef,
   useState,
   type KeyboardEvent,
   type ReactNode,
@@ -27,6 +28,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { useHotkeys } from "@/hooks/useHotkeys";
 import { cn } from "@/lib/utils";
 import { usePrinterStatus } from "@/api/printers";
 import { FilamentChip } from "@/components/ui/filament-chip";
@@ -476,22 +478,44 @@ export function ViewerStage({
 
   // `F`/`R`/`W`/`G` shortcuts on the canvas wrapper -- ignored while any
   // modifier is held (so `Ctrl+F`/`Cmd+R`/etc. keep their browser-native
-  // meaning instead of being hijacked).
+  // meaning instead of being hijacked). `stopPropagation` on a match keeps
+  // a plain "f" from also bubbling to the ModelHeader's document-level `f`
+  // favorite-toggle hotkey (R9-C item 5) -- without it, fitting the view
+  // here would also toggle the model's favorite.
   const handleCanvasKeyDown = useCallback(
     (event: KeyboardEvent<HTMLDivElement>) => {
       if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
       if (event.key === "f" || event.key === "F") {
+        event.stopPropagation();
         onFit();
       } else if (event.key === "r" || event.key === "R") {
+        event.stopPropagation();
         handleAutoRotateToggle();
       } else if (event.key === "w" || event.key === "W") {
+        event.stopPropagation();
         handleWireframeToggle();
       } else if (event.key === "g" || event.key === "G") {
+        event.stopPropagation();
         handleGridToggle();
       }
     },
     [onFit, handleAutoRotateToggle, handleWireframeToggle, handleGridToggle],
   );
+
+  // R9-C item 5: `Shift+F` fullscreens the stage container via the
+  // Fullscreen API. Document-level (via `useHotkeys`) rather than on the
+  // canvas wrapper's own `onKeyDown` like the shortcuts above, since the
+  // wrapper needing focus first would make this harder to discover than the
+  // other viewer controls. Bound only while this component is mounted.
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const toggleFullscreen = useCallback(() => {
+    if (document.fullscreenElement) {
+      void document.exitFullscreen();
+    } else {
+      void stageRef.current?.requestFullscreen();
+    }
+  }, []);
+  useHotkeys({ F: toggleFullscreen });
 
   return (
     <TooltipProvider>
@@ -549,6 +573,7 @@ export function ViewerStage({
 
       <div className={cn(BODY_BASE_CLASS, variant === "inline" && INLINE_BODY_HEIGHT_CLASS)}>
         <div
+          ref={stageRef}
           className="relative min-h-0 flex-1 overflow-hidden rounded-lg border border-border outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
           tabIndex={0}
           onKeyDown={handleCanvasKeyDown}

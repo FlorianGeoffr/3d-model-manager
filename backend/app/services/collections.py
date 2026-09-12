@@ -51,6 +51,7 @@ async def preview_thumbnails_by_collection(
     if not collection_ids:
         return {}
 
+    from app.config import get_settings
     from app.services.library import _gallery_aggregates, _gallery_cover_url
 
     rank = (
@@ -69,7 +70,7 @@ async def preview_thumbnails_by_collection(
     if not models:
         return {}
 
-    aggregates, cover_ok_hashes = await _gallery_aggregates(db, models)
+    aggregates, cover_ok_hashes = await _gallery_aggregates(db, get_settings(), models)
 
     out: dict[int, list[str]] = {}
     for model in models:

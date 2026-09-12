@@ -25,6 +25,14 @@ from app.services import stats as stats_service
 pytestmark = pytest.mark.usefixtures("library_root")
 
 
+@pytest.fixture(autouse=True)
+def _reset_stats_cache() -> None:
+    """The stats cache is a module-level singleton shared across every test
+    in the process; without a reset, `test_stats_sections` only passes when
+    it happens to run before something else has cached a response."""
+    stats_service.reset_stats_cache()
+
+
 async def _make_model(db: AsyncSession, name: str, **kwargs: object) -> Model:
     model = Model(slug=name.lower().replace(" ", "-"), name=name, **kwargs)
     db.add(model)
@@ -157,7 +165,6 @@ async def test_stats_cache_ttl(
     """A second request inside the 30s TTL reuses the cached result even
     though the underlying data changed; once the clock advances past the
     TTL, the next request recomputes."""
-    stats_service._cache = None
     fake_time = [1000.0]
     monkeypatch.setattr(stats_service.time, "monotonic", lambda: fake_time[0])
 

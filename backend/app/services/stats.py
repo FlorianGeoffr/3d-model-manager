@@ -36,6 +36,14 @@ CACHE_TTL_S = 30.0
 _cache: tuple[StatsOut, float] | None = None
 
 
+def reset_stats_cache() -> None:
+    """Clear the in-process cache. Production code never needs this (the
+    TTL handles staleness); it exists so tests can force a recompute
+    instead of silently depending on run order to see an empty cache."""
+    global _cache
+    _cache = None
+
+
 async def _models_stats(db: AsyncSession) -> ModelsStats:
     total, favorites, archived, drafts = (
         await db.execute(

@@ -102,7 +102,8 @@ async def list_followed_collections(
     db: AsyncSession = Depends(get_db),
 ) -> list[FollowedCollectionOut]:
     rows = await collections_svc.list_followed(db)
-    return [FollowedCollectionOut.from_model(row) for row in rows]
+    previews = await collections_svc.preview_thumbnails_by_collection(db, [row.id for row in rows])
+    return [FollowedCollectionOut.from_model(row, previews.get(row.id)) for row in rows]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=FollowedCollectionOut)

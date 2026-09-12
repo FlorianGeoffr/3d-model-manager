@@ -88,12 +88,38 @@ export function FollowedCard() {
   );
 }
 
+/** 2x2 collage of the collection's first (most-recently-imported) 4 member
+ * models, in place of a single cover (R11-C item 17). Fewer than 4 previews
+ * leaves the remaining cells as an empty placeholder tile rather than
+ * stretching what's there. */
+function CollectionCollage({ thumbnails }: { thumbnails: string[] }) {
+  return (
+    <div className="grid size-12 shrink-0 grid-cols-2 grid-rows-2 gap-0.5 overflow-hidden rounded-md bg-muted">
+      {Array.from({ length: 4 }, (_, i) => thumbnails[i]).map((url, i) =>
+        url ? (
+          <img
+            key={i}
+            src={url}
+            alt=""
+            data-testid="collage-thumb"
+            loading="lazy"
+            className="h-full w-full object-cover"
+          />
+        ) : (
+          <div key={i} className="bg-muted" />
+        ),
+      )}
+    </div>
+  );
+}
+
 function FollowedRow({ collection }: { collection: FollowedCollection }) {
   const setMode = useSetCollectionMode();
   const unfollow = useUnfollowCollection();
 
   return (
     <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border px-3 py-2">
+      <CollectionCollage thumbnails={collection.preview_thumbnails} />
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium text-foreground">{collection.title}</p>
         <p className="font-mono text-xs text-muted-foreground">

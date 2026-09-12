@@ -712,6 +712,8 @@ export interface FollowedCollection {
   last_synced_at: string | null;
   last_error: string | null;
   created_at: string;
+  /** Up to 4 member-model thumbnail URLs for the card's 2x2 collage. */
+  preview_thumbnails: string[];
 }
 
 /** An item a `review`-mode sync found but didn't import. */

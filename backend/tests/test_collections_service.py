@@ -7,7 +7,16 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from app.models.collections import FollowedCollection, PendingImport, RemoteCollectionItem
-from app.models.enums import CollectionSyncMode, ImportSite
+from app.models.enums import (
+    BlobFormat,
+    BlobKind,
+    CollectionSyncMode,
+    DerivativeKind,
+    DerivativeStatus,
+    ImportSite,
+)
+from app.models.library import Blob, Model, Revision
+from app.models.processing import Derivative
 from app.services import collections as svc
 
 
@@ -351,3 +360,65 @@ async def test_resolve_display_collections_batch_covers_every_pending(db_session
     assert set(result) == {with_membership.id, without_membership.id}
     assert result[with_membership.id] == (specific.id, "Specific2")
     assert result[without_membership.id] == (aggregate.id, "Aggregate2")
+
+
+async def _model_with_ready_cover(
+    db_session, *, source_collection_id: int, blob_hash: str
+) -> Model:
+    blob = Blob(hash=blob_hash, size=10, kind=BlobKind.MESH, format=BlobFormat.STL)
+    db_session.add(blob)
+    await db_session.flush()
+    db_session.add(
+        Derivative(blob_hash=blob_hash, kind=DerivativeKind.THUMB_256, status=DerivativeStatus.OK)
+    )
+    model = Model(
+        slug=f"model-{blob_hash[:8]}",
+        name=f"Model {blob_hash[:8]}",
+        tags=[],
+        source_collection_id=source_collection_id,
+        cover_blob_hash=blob_hash,
+    )
+    db_session.add(model)
+    await db_session.flush()
+    revision = Revision(model_id=model.id, number=1, name="imported", dir_name="r1")
+    db_session.add(revision)
+    await db_session.flush()
+    model.current_revision_id = revision.id
+    await db_session.flush()
+    return model
+
+
+@pytest.mark.asyncio
+async def test_preview_thumbnails_by_collection_returns_ready_covers(db_session) -> None:
+    followed = await _follow(db_session, list_id="preview1")
+    await _model_with_ready_cover(
+        db_session, source_collection_id=followed.id, blob_hash="a" * 64
+    )
+    await _model_with_ready_cover(
+        db_session, source_collection_id=followed.id, blob_hash="b" * 64
+    )
+    await db_session.commit()
+
+    previews = await svc.preview_thumbnails_by_collection(db_session, [followed.id])
+
+    assert len(previews[followed.id]) == 2
+    assert all(url.startswith("/api/blobs/") for url in previews[followed.id])
+
+
+@pytest.mark.asyncio
+async def test_preview_thumbnails_by_collection_caps_at_four(db_session) -> None:
+    followed = await _follow(db_session, list_id="preview2")
+    for i in range(6):
+        await _model_with_ready_cover(
+            db_session, source_collection_id=followed.id, blob_hash=f"{i}" * 64
+        )
+    await db_session.commit()
+
+    previews = await svc.preview_thumbnails_by_collection(db_session, [followed.id])
+
+    assert len(previews[followed.id]) <= 4
+
+
+@pytest.mark.asyncio
+async def test_preview_thumbnails_by_collection_empty_for_no_ids(db_session) -> None:
+    assert await svc.preview_thumbnails_by_collection(db_session, []) == {}

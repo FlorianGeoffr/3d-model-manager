@@ -5,10 +5,15 @@
  * lack of real layout.
  */
 
-// Mirrors the grid's own Tailwind breakpoint classes
-// (`grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6`)
-// -- kept in one place so the virtualizer's row math always matches what's
-// actually painted. Checked widest-first.
+// Fix wave finding 2: these breakpoints are evaluated against the grid
+// CONTAINER's measured width (the `LibraryPage` grid `<div>`'s own
+// `ResizeObserver`), not the viewport -- the container is narrower than the
+// viewport by the sidebar + page padding, so reusing Tailwind's viewport
+// breakpoint numbers here is deliberate (the numbers are the same; only the
+// measurement basis differs) rather than a coincidence to "fix" back to
+// viewport-based classes. `LibraryPage` renders `columns` as an inline
+// `gridTemplateColumns` from this same function's result, so the chunking
+// here and the painted columns can never disagree. Checked widest-first.
 const GRID_BREAKPOINTS: ReadonlyArray<readonly [minWidth: number, columns: number]> = [
   [1536, 6], // 2xl
   [1280, 5], // xl

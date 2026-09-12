@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearch } from "@tanstack/react-router";
 import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import {
@@ -166,7 +166,19 @@ export function LibraryPage() {
   // opens the existing bulk-delete confirm.
   useHotkeys({
     "/": () => searchInputRef.current?.focus(),
-    Escape: () => exitSelectMode(),
+    // Fix wave finding 5: Radix dialogs/popovers (ConfirmDialog,
+    // NewModelDialog, the Tags/Collection popovers) already handle their own
+    // Escape via `DismissableLayer` -- if one of those is open, this
+    // document-level handler must NOT also fire, or dismissing e.g. the
+    // bulk-delete confirm silently discards the whole selection underneath
+    // it. Radix content renders `role="dialog"` for both `Dialog` and
+    // `Popover` in this codebase (see `node_modules/@radix-ui/react-popover`)
+    // with `data-state="open"` while mounted/open.
+    Escape: (event) => {
+      if (document.querySelector('[role="dialog"][data-state="open"]')) return;
+      if (event.target instanceof Element && event.target.closest('[role="dialog"]')) return;
+      exitSelectMode();
+    },
     ...(selectMode ? { a: () => selectAll() } : {}),
     "mod+a": () => selectAll(),
     Delete: () => {
@@ -180,20 +192,39 @@ export function LibraryPage() {
   // ResizeObserver (mirroring the `grid-cols-*` breakpoints below) rather
   // than the viewport, so both stay correct regardless of any surrounding
   // chrome.
-  const gridRef = useRef<HTMLDivElement | null>(null);
+  //
+  // Fix wave finding 1: this used to be a plain `useRef` + a `[]`-deps
+  // `useEffect` that read `gridRef.current` -- on a normal page load the
+  // FIRST render is always the `modelsQuery.isLoading` skeleton branch (see
+  // below), which never mounts this grid `<div>` at all, so the effect ran
+  // once against `null`, bailed, and never got another chance to attach once
+  // the real grid mounted. A callback ref fixes it structurally: it fires
+  // exactly when React actually mounts/unmounts the node, in whichever
+  // branch that happens, and measures synchronously via
+  // `getBoundingClientRect()` the moment it attaches instead of waiting for
+  // the observer's first async callback.
+  const gridNodeRef = useRef<HTMLDivElement | null>(null);
+  const gridObserverRef = useRef<ResizeObserver | null>(null);
   const [columns, setColumns] = useState(() => columnsForWidth(0));
   const [containerWidth, setContainerWidth] = useState(0);
 
-  useEffect(() => {
-    const el = gridRef.current;
-    if (!el) return;
+  const gridRef = useCallback((node: HTMLDivElement | null) => {
+    gridObserverRef.current?.disconnect();
+    gridObserverRef.current = null;
+    gridNodeRef.current = node;
+    if (!node) return;
+
+    const rect = node.getBoundingClientRect();
+    setColumns(columnsForWidth(rect.width));
+    setContainerWidth(rect.width);
+
     const observer = new ResizeObserver((entries) => {
       const width = entries[0]?.contentRect.width ?? 0;
       setColumns(columnsForWidth(width));
       setContainerWidth(width);
     });
-    observer.observe(el);
-    return () => observer.disconnect();
+    observer.observe(node);
+    gridObserverRef.current = observer;
   }, []);
 
   const rows = useMemo(() => chunkIntoRows(items, columns), [items, columns]);
@@ -212,7 +243,7 @@ export function LibraryPage() {
     count: rows.length,
     estimateSize: () => rowHeightEstimate,
     overscan: 3,
-    scrollMargin: gridRef.current?.offsetTop ?? 0,
+    scrollMargin: gridNodeRef.current?.offsetTop ?? 0,
     // The default measures via ResizeObserver entries / getBoundingClientRect,
     // which is exactly right in a real browser -- but jsdom (tests) reports
     // 0 for every element's layout box, which would otherwise collapse every
@@ -427,8 +458,18 @@ export function LibraryPage() {
                   key={virtualRow.key}
                   data-index={virtualRow.index}
                   ref={rowVirtualizer.measureElement}
-                  className="absolute top-0 left-0 grid w-full grid-cols-2 gap-4 pb-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6"
-                  style={{ transform: `translateY(${virtualRow.start - rowVirtualizer.options.scrollMargin}px)` }}
+                  className="absolute top-0 left-0 grid w-full gap-4 pb-4"
+                  style={{
+                    transform: `translateY(${virtualRow.start - rowVirtualizer.options.scrollMargin}px)`,
+                    // Fix wave finding 2: this MUST be driven by the same
+                    // `columns` state that `chunkIntoRows` used to build
+                    // `row` below -- viewport-based Tailwind `grid-cols-*`
+                    // classes measure the *viewport*, while `columns` (and
+                    // `chunkIntoRows`) measure the grid *container*
+                    // (viewport minus the sidebar/padding chrome), so the two
+                    // disagreed at every width where that chrome mattered.
+                    gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+                  }}
                 >
                   {row.map((model, columnIndex) => (
                     <ModelCard

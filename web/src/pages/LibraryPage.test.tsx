@@ -6,7 +6,7 @@ import {
   createRoute,
   createRouter,
 } from "@tanstack/react-router";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -44,15 +44,40 @@ vi.mock("sonner", () => ({
 }));
 
 // jsdom doesn't implement `ResizeObserver` (the virtualized grid's column
-// count comes from observing the grid container's width, R9-A item 2) -- a
-// minimal stub that never fires is enough: it leaves the grid at its
-// smallest (2-column) layout, which every test here is fine with.
-class MockResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
+// count comes from observing the grid container's width, R9-A item 2). This
+// fake is controllable: it records every observed element and its
+// constructor's callback, so a test can fire a synthetic resize (`fireGridResize`)
+// and assert the resulting column count / painted `gridTemplateColumns` --
+// covering fix wave finding 6, which the old no-op stub could never reach
+// (it left the grid stuck at its 2-column fallback, which happened to match
+// the pre-fix bug).
+let resizeObserverCallbacks: ResizeObserverCallback[] = [];
+let resizeObserverTargets: Element[] = [];
+class FakeResizeObserver implements ResizeObserver {
+  constructor(callback: ResizeObserverCallback) {
+    resizeObserverCallbacks.push(callback);
+  }
+  observe(target: Element) {
+    resizeObserverTargets.push(target);
+  }
+  unobserve(target: Element) {
+    resizeObserverTargets = resizeObserverTargets.filter((el) => el !== target);
+  }
+  disconnect() {
+    resizeObserverTargets = [];
+  }
 }
-vi.stubGlobal("ResizeObserver", MockResizeObserver);
+vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+
+/** Fires every currently-registered ResizeObserver callback with `width` as
+ * the observed content-box width, as if the grid container had been
+ * resized to that width in a real browser. */
+function fireGridResize(width: number) {
+  const entries = resizeObserverTargets.map(
+    (target) => ({ target, contentRect: { width } }) as ResizeObserverEntry,
+  );
+  resizeObserverCallbacks.forEach((callback) => callback(entries, {} as ResizeObserver));
+}
 
 // Radix's Popover never reaches an interactive open state under jsdom (same
 // floating-ui/dismissable-layer limitation documented for `<Select>` in
@@ -205,6 +230,8 @@ beforeEach(() => {
   postMock.mockResolvedValue({ updated: 0 });
   toastSuccessMock.mockClear();
   toastErrorMock.mockClear();
+  resizeObserverCallbacks = [];
+  resizeObserverTargets = [];
 });
 
 describe("LibraryPage", () => {
@@ -541,6 +568,35 @@ describe("LibraryPage -- virtualized grid (R9-A item 2)", () => {
     await waitFor(() => expect(lastModelsCall()).toContain("cursor=page-2"));
   });
 
+  it("attaches its ResizeObserver on first render and grows past 2 columns once the container is measured wider (fix wave findings 1, 2, 6)", async () => {
+    const models: ModelSummary[] = Array.from({ length: 12 }, (_, i) => ({
+      ...GALLERY_MODEL,
+      id: i + 1,
+      slug: `model-${i + 1}`,
+      name: `Model ${i + 1}`,
+    }));
+    mockGalleryOkWithModels(models);
+    renderLibraryPage();
+
+    await screen.findByText("Model 1");
+
+    // Finding 1: the observer must be attached on the very first render that
+    // has a real grid, not stuck waiting on a skeleton-branch effect that
+    // never re-runs.
+    expect(resizeObserverTargets.length).toBeGreaterThan(0);
+
+    act(() => fireGridResize(1300));
+
+    // Finding 2: the row's painted `gridTemplateColumns` must come from the
+    // SAME `columns` state `chunkIntoRows` used to build the row, so the two
+    // can never disagree the way the old viewport-based Tailwind classes did.
+    await waitFor(() => {
+      const row = document.querySelector('[data-index="0"]') as HTMLElement | null;
+      expect(row).not.toBeNull();
+      expect(row!.style.gridTemplateColumns).toBe("repeat(5, minmax(0, 1fr))");
+    });
+  });
+
   it("does not fetch a next page once hasNextPage is false", async () => {
     mockGalleryOkWithModels([GALLERY_MODEL, GALLERY_MODEL_2]);
     renderLibraryPage();
@@ -581,6 +637,30 @@ describe("LibraryPage -- keyboard shortcuts (R9-C item 5)", () => {
 
     await waitFor(() => expect(screen.queryByText(/selected/)).not.toBeInTheDocument());
     expect(screen.getByRole("button", { name: "Select" })).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("Escape does nothing to the selection while the bulk-delete confirm dialog is open (fix wave finding 5)", async () => {
+    mockGalleryOkWithModels([GALLERY_MODEL]);
+    renderLibraryPage();
+    await screen.findByText("Test Model");
+
+    fireEvent.click(screen.getByRole("button", { name: "Select" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Select Test Model" }));
+    await screen.findByText("1 selected");
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await screen.findByRole("dialog");
+
+    // Escape while the ConfirmDialog is open must be left to Radix's own
+    // Escape handling (which closes just the dialog) -- the page-level
+    // Escape binding used to fire unconditionally and silently discard the
+    // whole selection underneath it. Radix's own handler may still close
+    // the dialog itself; what must NOT happen is the selection getting
+    // wiped along with it.
+    fireEvent.keyDown(document.body, { key: "Escape" });
+
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Select" })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("Delete opens the bulk-delete confirm when there is a selection", async () => {

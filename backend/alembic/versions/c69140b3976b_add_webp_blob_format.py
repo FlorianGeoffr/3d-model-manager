@@ -32,7 +32,9 @@ depends_on: str | Sequence[str] | None = None
 # string is passed, which would double-prefix an already-prefixed name into
 # "ck_blobs_ck_blobs_blob_format" (caught by the backend test suite: every
 # DB-touching test failed migrating with exactly that bogus constraint name).
-_CONSTRAINT_NAME = op.f("ck_blobs_blob_format")
+# `op.f` must be called inside upgrade()/downgrade(): at import time the
+# Alembic operations proxy is not established, so `alembic heads` would raise.
+_CONSTRAINT_NAME = "ck_blobs_blob_format"
 _OLD_FORMATS = ("stl", "3mf", "obj", "step", "iges", "gcode_3mf", "gcode", "png", "jpg", "other")
 _NEW_FORMATS = (*_OLD_FORMATS[:-1], "webp", "other")
 
@@ -43,11 +45,11 @@ def _in_clause(values: tuple[str, ...]) -> str:
 
 def upgrade() -> None:
     """Upgrade schema."""
-    op.drop_constraint(_CONSTRAINT_NAME, "blobs", type_="check")
-    op.create_check_constraint(_CONSTRAINT_NAME, "blobs", _in_clause(_NEW_FORMATS))
+    op.drop_constraint(op.f(_CONSTRAINT_NAME), "blobs", type_="check")
+    op.create_check_constraint(op.f(_CONSTRAINT_NAME), "blobs", _in_clause(_NEW_FORMATS))
 
 
 def downgrade() -> None:
     """Downgrade schema."""
-    op.drop_constraint(_CONSTRAINT_NAME, "blobs", type_="check")
-    op.create_check_constraint(_CONSTRAINT_NAME, "blobs", _in_clause(_OLD_FORMATS))
+    op.drop_constraint(op.f(_CONSTRAINT_NAME), "blobs", type_="check")
+    op.create_check_constraint(op.f(_CONSTRAINT_NAME), "blobs", _in_clause(_OLD_FORMATS))

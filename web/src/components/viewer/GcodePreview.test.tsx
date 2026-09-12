@@ -23,7 +23,7 @@ vi.mock("gcode-preview", () => ({
 describe("GcodePreview", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    global.fetch = vi.fn(() =>
+    globalThis.fetch = vi.fn(() =>
       Promise.resolve({
         ok: true,
         headers: { get: () => null },
@@ -37,7 +37,7 @@ describe("GcodePreview", () => {
 
     await waitFor(() => expect(processGCode).toHaveBeenCalledWith("G1 X0 Y0\n"));
 
-    expect(global.fetch).toHaveBeenCalledWith(
+    expect(globalThis.fetch).toHaveBeenCalledWith(
       "/api/files/42/download?member=gcode",
       expect.objectContaining({ credentials: "include" }),
     );
@@ -50,7 +50,7 @@ describe("GcodePreview", () => {
   });
 
   it("shows an error state when the fetch fails", async () => {
-    global.fetch = vi.fn(() => Promise.resolve({ ok: false, status: 404 } as Response)) as unknown as typeof fetch;
+    globalThis.fetch = vi.fn(() => Promise.resolve({ ok: false, status: 404 } as Response)) as unknown as typeof fetch;
 
     render(<GcodePreview fileId={42} />);
 
@@ -61,7 +61,7 @@ describe("GcodePreview", () => {
 
   it("shows a too-large message instead of loading a huge gcode body", async () => {
     const text = vi.fn();
-    global.fetch = vi.fn(() =>
+    globalThis.fetch = vi.fn(() =>
       Promise.resolve({
         ok: true,
         headers: { get: (name: string) => (name === "content-length" ? String(200 * 1024 * 1024) : null) },

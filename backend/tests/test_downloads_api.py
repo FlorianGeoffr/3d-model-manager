@@ -223,7 +223,11 @@ async def test_download_member_gcode_extracts_embedded_plate(
 
     upload = await authenticated_client.put(
         "/api/uploads",
-        params={"model_id": created["id"], "revision_id": revision_id, "rel_path": "print.gcode.3mf"},
+        params={
+            "model_id": created["id"],
+            "revision_id": revision_id,
+            "rel_path": "print.gcode.3mf",
+        },
         content=content,
     )
     assert upload.status_code == 201, upload.text

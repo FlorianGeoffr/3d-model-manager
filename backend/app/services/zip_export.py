@@ -179,7 +179,9 @@ def _safe_path_segment(name: str, *, fallback: str) -> str:
     cleaned = _UNSAFE_PATH_CHARS.sub("", name)
     cleaned = cleaned.replace("..", "")
     cleaned = _WHITESPACE_RUN.sub(" ", cleaned).strip()
-    return cleaned or fallback
+    if cleaned in ("", ".", ".."):
+        return fallback
+    return cleaned
 
 
 async def _collection_models(db: AsyncSession, collection: FollowedCollection) -> Sequence[Model]:

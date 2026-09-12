@@ -414,3 +414,9 @@ async def test_iter_model_zip_reads_files_one_at_a_time_not_all_upfront(
     # "read everything, then zip it".
     assert chunks_before_second_read is not None
     assert chunks_before_second_read > 0
+
+
+def test_safe_path_segment_falls_back_for_dot_only_results() -> None:
+    """A title that sanitizes down to just ``.`` (or ``..``) must not be
+    used as a zip path segment -- it falls back to the default instead."""
+    assert zip_export._safe_path_segment(".", fallback="collection-1") == "collection-1"

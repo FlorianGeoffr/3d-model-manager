@@ -21,7 +21,12 @@ import { useRef, type KeyboardEvent } from "react";
  */
 export function useRovingRadioGroup<T extends string>(
   options: readonly T[],
-  value: T,
+  /** `null` means "none of `options` is currently selected" (R10 camera
+   * presets: no preset is active until one is picked, and orbiting away
+   * clears it back to null) -- every option then reports `aria-checked=
+   * false`, and the first option becomes the roving tab stop so the group
+   * stays reachable by keyboard instead of losing focusability entirely. */
+  value: T | null,
   onChange: (next: T) => void,
 ): {
   itemProps: (option: T) => {
@@ -72,7 +77,7 @@ export function useRovingRadioGroup<T extends string>(
     return {
       role: "radio" as const,
       "aria-checked": selected,
-      tabIndex: selected ? 0 : -1,
+      tabIndex: selected || (value === null && index === 0) ? 0 : -1,
       ref: (el: HTMLElement | null) => {
         itemRefs.current[index] = el;
       },

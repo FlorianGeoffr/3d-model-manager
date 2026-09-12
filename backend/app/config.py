@@ -90,6 +90,17 @@ class Settings(BaseSettings):
     # set (e.g. to share one key across api/worker/printerd via env instead of
     # a shared volume). A urlsafe-base64 32-byte Fernet key.
     printer_key: SecretStr | None = None
+    # Externally-reachable origin (scheme + host, e.g.
+    # `https://models.example.com`) to use for absolute URLs this API mints
+    # for outside consumers -- currently just the signed slicer-deep-link
+    # URL from `POST /files/{id}/slicer-link` (`app.api.files
+    # ._absolute_origin`). Unset (the default) falls back to the request's
+    # own `request.base_url`, which does NOT read `X-Forwarded-*` headers
+    # (those are client-controllable and untrusted at this layer) -- a
+    # reverse proxy in front of the API should be handled by uvicorn's
+    # `--proxy-headers`/`--forwarded-allow-ips`, not by this app trusting
+    # forwarded headers itself. Env: `TDMM_PUBLIC_URL`.
+    public_url: str | None = Field(default=None, validation_alias=AliasChoices("TDMM_PUBLIC_URL"))
 
 
 @lru_cache

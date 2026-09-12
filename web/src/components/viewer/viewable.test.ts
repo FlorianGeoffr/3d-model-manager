@@ -18,6 +18,9 @@ function fakeMeta(overrides: Partial<BlobMetaOut> = {}): BlobMetaOut {
     nozzle: null,
     printer_model: null,
     plate_count: null,
+    layer_count: null,
+    infill_pct: null,
+    slicer: null,
     plates: null,
     ...overrides,
   };

@@ -1,0 +1,229 @@
+"""Slicer comment-header/footer metadata for bare ``.gcode`` (R10-B, plan
+item 10): PrusaSlicer/OrcaSlicer write per-line ``; key = value`` comments
+(estimate up front, actual totals in a footer block after the print body),
+Bambu Studio packs several ``key: value`` pairs onto one comment line
+(``app.pipeline.slicedmeta``'s ``parse_gcode_header`` already covers its
+HEADER_BLOCK). This module is convention-agnostic: it merges whatever
+comment lines it finds, in both styles, from just the head and tail of the
+file -- never the (potentially huge) g-code body in between.
+"""
+
+from __future__ import annotations
+
+import re
+import zipfile
+from dataclasses import dataclass
+from typing import BinaryIO
+
+from app.pipeline.slicedmeta import parse_duration_s
+
+# Bounded read: a multi-hundred-MB gcode body must never be pulled fully
+# into memory just to read a handful of header/footer comment lines.
+_CHUNK_BYTES = 256 * 1024
+
+_COMMENT_LINE_RE = re.compile(r"^;\s*(.*)$")
+
+_SLICER_MARKERS: tuple[tuple[str, str], ...] = (
+    ("prusaslicer", "PrusaSlicer"),
+    ("orcaslicer", "OrcaSlicer"),
+    ("bambustudio", "BambuStudio"),
+    ("bambu studio", "BambuStudio"),
+    ("superslicer", "SuperSlicer"),
+    ("cura", "Cura"),
+)
+
+# Cura-style bare directive, e.g. ";LAYER_COUNT:200" -- no "=" or ": " sep.
+_LAYER_COUNT_DIRECTIVE_RE = re.compile(r";\s*LAYER_COUNT\s*:\s*(\d+)", re.IGNORECASE)
+
+
+@dataclass(frozen=True, slots=True)
+class GcodeMeta:
+    """Merged slicer-agnostic metadata parsed from a gcode's comment
+    head/tail (R10-B)."""
+
+    duration_s: int | None
+    filament_g: float | None
+    filament_mm: float | None
+    layer_height_mm: float | None
+    infill_pct: float | None
+    filament_type: str | None
+    layer_count: int | None
+    slicer: str | None
+
+
+def _parse_float(value: str | None) -> float | None:
+    if value is None:
+        return None
+    match = re.search(r"-?\d+(?:\.\d+)?", value)
+    return float(match.group(0)) if match else None
+
+
+def _parse_int(value: str | None) -> int | None:
+    parsed = _parse_float(value)
+    return int(parsed) if parsed is not None else None
+
+
+def _parse_pct(value: str | None) -> float | None:
+    return _parse_float(value) if value else None
+
+
+def _is_randomly_seekable(stream: BinaryIO) -> bool:
+    """Whether the seek(0, 2)+seek-to-tail fast path below is actually safe.
+
+    A ``zipfile.ZipExtFile``'s ``seekable()`` returns ``True`` -- it DOES
+    support ``.seek()`` -- but a backward seek re-decompresses the member
+    from byte 0, so "seekable" doesn't mean "cheap to seek" the way it does
+    for a real file. Exclude it explicitly rather than trusting
+    ``seekable()`` alone.
+    """
+    if isinstance(stream, zipfile.ZipExtFile):
+        return False
+    try:
+        return bool(stream.seekable())
+    except (AttributeError, ValueError):
+        return False
+
+
+def _read_head_tail(stream: BinaryIO) -> bytes:
+    """Read the first and last ``_CHUNK_BYTES`` of ``stream``.
+
+    Real, randomly-seekable files (see ``_is_randomly_seekable``) use a
+    cheap head-read + seek-to-tail. Everything else -- notably a
+    ``zipfile.ZipExtFile`` -- goes through ``_forward_scan_head_tail``: one
+    single forward pass that reads the whole stream exactly once (there's
+    no cheaper way to reach the tail of a compressed member) while only
+    ever holding ~2x ``_CHUNK_BYTES`` in memory.
+    """
+    if not _is_randomly_seekable(stream):
+        return _forward_scan_head_tail(stream)
+
+    head = stream.read(_CHUNK_BYTES)
+    stream.seek(0, 2)
+    size = stream.tell()
+
+    if size <= _CHUNK_BYTES * 2:
+        stream.seek(0)
+        return stream.read(size)
+
+    stream.seek(max(size - _CHUNK_BYTES, len(head)))
+    tail = stream.read(_CHUNK_BYTES)
+    return head + tail
+
+
+def _forward_scan_head_tail(stream: BinaryIO) -> bytes:
+    """Single forward pass over ``stream``, capturing the first
+    ``_CHUNK_BYTES`` once and a rolling ``_CHUNK_BYTES`` window of
+    whatever's been read so far as the tail -- bounded at ~2x
+    ``_CHUNK_BYTES`` of memory regardless of the stream's total size, and
+    the stream is read (decompressed, for a zip member) exactly once.
+    """
+    head = bytearray()
+    tail = bytearray()
+    total = 0
+    while True:
+        chunk = stream.read(_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if len(head) < _CHUNK_BYTES:
+            head.extend(chunk[: _CHUNK_BYTES - len(head)])
+        tail.extend(chunk)
+        if len(tail) > _CHUNK_BYTES:
+            del tail[: len(tail) - _CHUNK_BYTES]
+
+    if total <= _CHUNK_BYTES:
+        return bytes(head)
+    if total <= _CHUNK_BYTES * 2:
+        overlap = _CHUNK_BYTES * 2 - total
+        return bytes(head) + bytes(tail[overlap:])
+    return bytes(head) + bytes(tail)
+
+
+def _parse_comment_lines(text: str) -> dict[str, str]:
+    """Merge ``; key = value`` (Prusa/Orca, one pair per line) and packed
+    ``; key: value; key two: value two`` (Bambu) comment conventions into one
+    dict -- a later duplicate key (e.g. a footer "total filament used [g]"
+    after a header estimate) overwrites the earlier one, since footer/total
+    stats are the actual measured values.
+    """
+    merged: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        match = _COMMENT_LINE_RE.match(raw_line.strip())
+        if match is None:
+            continue
+        body = match.group(1)
+        if not body:
+            continue
+        if "=" in body:
+            key, _, value = body.partition("=")
+            key = key.strip()
+            value = value.strip()
+            if key:
+                merged[key.lower()] = value
+            continue
+        for segment in body.split(";"):
+            key, sep, value = segment.partition(":")
+            if not sep:
+                continue
+            key = key.strip()
+            value = value.strip()
+            if key:
+                merged[key.lower()] = value
+    return merged
+
+
+def _detect_slicer(text: str) -> str | None:
+    lowered = text.lower()
+    for marker, name in _SLICER_MARKERS:
+        if marker in lowered:
+            return name
+    generated_by = re.search(r";\s*generated by\s+(\S+)", text, re.IGNORECASE)
+    return generated_by.group(1) if generated_by else None
+
+
+def _first(raw: dict[str, str], *keys: str) -> str | None:
+    for key in keys:
+        value = raw.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def parse_gcode_meta(stream: BinaryIO) -> GcodeMeta:
+    """Parse PrusaSlicer/OrcaSlicer/Bambu Studio comment metadata from
+    ``stream`` (R10-B), reading only its head and tail (see
+    ``_read_head_tail``).
+    """
+    data = _read_head_tail(stream)
+    text = data.decode("utf-8", errors="replace")
+    raw = _parse_comment_lines(text)
+
+    duration_s = parse_duration_s(
+        _first(
+            raw,
+            "estimated printing time (normal mode)",
+            "estimated printing time (silent mode)",
+            "total estimated time",
+            "model printing time",
+        )
+    )
+    filament_g = _parse_float(_first(raw, "total filament used [g]", "filament used [g]"))
+    filament_mm = _parse_float(_first(raw, "total filament used [mm]", "filament used [mm]"))
+    layer_height_mm = _parse_float(_first(raw, "layer_height", "layer height"))
+    infill_pct = _parse_pct(_first(raw, "sparse_infill_density", "fill_density"))
+    filament_type = _first(raw, "filament_type", "filament type")
+    layer_count = _parse_int(_first(raw, "total layer number", "layer count"))
+    if layer_count is None:
+        directive = _LAYER_COUNT_DIRECTIVE_RE.search(text)
+        layer_count = int(directive.group(1)) if directive else None
+
+    return GcodeMeta(
+        duration_s=duration_s,
+        filament_g=filament_g,
+        filament_mm=filament_mm,
+        layer_height_mm=layer_height_mm,
+        infill_pct=infill_pct,
+        filament_type=filament_type.split(";")[0].strip() if filament_type else None,
+        layer_count=layer_count,
+        slicer=_detect_slicer(text),
+    )

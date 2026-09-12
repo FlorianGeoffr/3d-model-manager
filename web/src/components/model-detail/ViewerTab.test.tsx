@@ -35,9 +35,10 @@ type ViewerToolsStub = {
   grid: boolean;
   autoRotate: boolean;
   ortho: boolean;
-  wireframe: boolean;
+  shading: string;
   section: { enabled: boolean; axis: string; t: number };
   explode: number;
+  cameraPreset: string | null;
 };
 type ViewerApiStub = { screenshot: () => Promise<Blob | null> };
 const { modelViewerMock, platePanelMock, defaultModelViewerImpl, screenshotSpy } = vi.hoisted(() => {
@@ -68,11 +69,12 @@ const { modelViewerMock, platePanelMock, defaultModelViewerImpl, screenshotSpy }
         data-grid={tools ? String(tools.grid) : undefined}
         data-auto-rotate={tools ? String(tools.autoRotate) : undefined}
         data-ortho={tools ? String(tools.ortho) : undefined}
-        data-wireframe={tools ? String(tools.wireframe) : undefined}
+        data-shading={tools ? tools.shading : undefined}
         data-section={
           tools ? `${tools.section.enabled}:${tools.section.axis}:${tools.section.t}` : undefined
         }
         data-explode={tools ? String(tools.explode) : undefined}
+        data-camera-preset={tools ? (tools.cameraPreset ?? "") : undefined}
         data-fit={fitSignal}
       >
         {parts.map((part) => part.url).join(",")}
@@ -329,19 +331,19 @@ describe("ViewerTab", () => {
     expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-fit", "1");
   });
 
-  it("Wireframe flips aria-pressed and the tools.wireframe flag ModelViewer receives", async () => {
+  it("Wireframe flips aria-pressed and the tools.shading flag ModelViewer receives", async () => {
     const file = fakeFile({ glb_status: "ok" });
     render(<ViewerTab model={fakeModel([file])} />);
     await screen.findByTestId("model-viewer");
 
     const button = screen.getByRole("button", { name: "Wireframe" });
     expect(button).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-wireframe", "false");
+    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-shading", "solid");
 
     fireEvent.click(button);
 
     await waitFor(() => expect(button).toHaveAttribute("aria-pressed", "true"));
-    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-wireframe", "true");
+    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-shading", "wireframe");
   });
 
   it("the W key on the canvas wrapper toggles wireframe", async () => {
@@ -354,7 +356,69 @@ describe("ViewerTab", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Wireframe" })).toHaveAttribute("aria-pressed", "true"),
     );
-    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-wireframe", "true");
+    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-shading", "wireframe");
+  });
+
+  it("X-ray flips aria-pressed and the tools.shading flag, exclusive of Wireframe", async () => {
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file])} />);
+    await screen.findByTestId("model-viewer");
+
+    const xray = screen.getByRole("button", { name: "X-ray" });
+    const wireframe = screen.getByRole("button", { name: "Wireframe" });
+    expect(xray).toHaveAttribute("aria-pressed", "false");
+
+    fireEvent.click(xray);
+    await waitFor(() => expect(xray).toHaveAttribute("aria-pressed", "true"));
+    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-shading", "xray");
+
+    // Turning on Wireframe while X-ray is active switches straight over --
+    // `shading` is a single enum, not two independent booleans.
+    fireEvent.click(wireframe);
+    await waitFor(() => expect(wireframe).toHaveAttribute("aria-pressed", "true"));
+    expect(xray).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-shading", "wireframe");
+  });
+
+  it("clicking a camera preset selects it, and orbiting (ModelViewer's onCameraPresetClear) clears it back to null", async () => {
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file])} />);
+    await screen.findByTestId("model-viewer");
+
+    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-camera-preset", "");
+
+    fireEvent.click(screen.getByRole("radio", { name: "Top" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-camera-preset", "top"),
+    );
+    expect(screen.getByRole("radio", { name: "Top" })).toHaveAttribute("aria-checked", "true");
+
+    // Simulate `ModelViewer`'s `OrbitPresetGuard` reporting a real user
+    // orbit via the `onCameraPresetClear` prop the mock was last called with.
+    const { onCameraPresetClear } = modelViewerMock.mock.calls.at(-1)![0] as unknown as {
+      onCameraPresetClear: () => void;
+    };
+    act(() => onCameraPresetClear());
+
+    await waitFor(() =>
+      expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-camera-preset", ""),
+    );
+    expect(screen.getByRole("radio", { name: "Top" })).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("the Fullscreen toolbar button toggles the same fullscreen request as Shift+F", async () => {
+    const requestFullscreenSpy = vi.fn().mockResolvedValue(undefined);
+    HTMLElement.prototype.requestFullscreen = requestFullscreenSpy;
+
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file])} />);
+    await screen.findByTestId("model-viewer");
+
+    const button = screen.getByRole("button", { name: "Fullscreen" });
+    expect(button).toHaveAttribute("aria-pressed", "false");
+
+    fireEvent.click(button);
+    expect(requestFullscreenSpy).toHaveBeenCalledTimes(1);
   });
 
   it("Grid flips aria-pressed and the tools.grid flag ModelViewer receives", async () => {
@@ -483,7 +547,7 @@ describe("ViewerTab", () => {
     // `onPartLoaded` identity -- explode must stay where the slider put it.
     fireEvent.click(screen.getByRole("button", { name: "Wireframe" }));
     await waitFor(() =>
-      expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-wireframe", "true"),
+      expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-shading", "wireframe"),
     );
     expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-explode", "0.6");
 

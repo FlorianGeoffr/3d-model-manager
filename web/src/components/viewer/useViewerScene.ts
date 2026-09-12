@@ -191,7 +191,8 @@ export function useViewerScene({
     if (encoded) params.set("colors", encoded);
 
     params.set("grid", tools.grid ? "1" : "0");
-    if (tools.wireframe) params.set("wf", "1");
+    if (tools.shading === "wireframe") params.set("wf", "1");
+    if (tools.shading === "xray") params.set("xr", "1");
     if (tools.autoRotate) params.set("rot", "1");
     if (tools.ortho) params.set("cam", "o");
     if (tools.section.enabled) {

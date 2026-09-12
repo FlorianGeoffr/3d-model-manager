@@ -78,7 +78,8 @@ function decodeSection(sec: string | undefined): SectionState | undefined {
 function decodeTools(search: WindowSearch): Partial<ViewerToolsState> {
   const tools: Partial<ViewerToolsState> = {};
   if (search.grid !== undefined) tools.grid = search.grid !== "0";
-  if (search.wf === "1") tools.wireframe = true;
+  if (search.wf === "1") tools.shading = "wireframe";
+  else if (search.xr === "1") tools.shading = "xray";
   if (search.rot === "1") tools.autoRotate = true;
   if (search.cam === "o") tools.ortho = true;
 

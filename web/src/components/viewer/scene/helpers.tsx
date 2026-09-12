@@ -129,3 +129,38 @@ export function DoubleClickTarget() {
 
   return null;
 }
+
+/** Minimal shape this module needs from a controls' `EventDispatcher` --
+ * `addEventListener`/`removeEventListener` for the `"start"` event, which
+ * `three-stdlib`'s `OrbitControls` dispatches on the pointer-down that
+ * begins a real drag (see its `handlePointerDown`), never from a
+ * programmatic camera move. drei's `Bounds` relies on exactly this same
+ * fact for its own drag-hijack guard (`Bounds.js`'s `controls.addEventListener
+ * ('start', ...)`. */
+interface StartDispatcher {
+  addEventListener: (type: "start", listener: () => void) => void;
+  removeEventListener: (type: "start", listener: () => void) => void;
+}
+
+/**
+ * R10 camera presets: "any user orbit clears the preset back to null" (so
+ * the segmented control never keeps showing a preset as selected once the
+ * camera has actually moved off it). `OrbitControls`' `"start"` event fires
+ * only on a genuine pointer-driven drag -- `GizmoHelper`'s `tweenCamera`
+ * (what the preset picker itself drives, see `ModelViewer.tsx`'s
+ * `CameraPresetTween`) repositions the camera directly frame-by-frame and
+ * calls `controls.update()`, neither of which dispatches `"start"` -- so
+ * this only ever fires for a real user drag, never for the preset's own
+ * tween. Re-binds whenever `controls` changes (the ortho toggle swaps it).
+ */
+export function OrbitPresetGuard({ onUserOrbit }: { onUserOrbit: () => void }) {
+  const controls = useThree((state) => state.controls) as StartDispatcher | null;
+
+  useEffect(() => {
+    if (!controls) return;
+    controls.addEventListener("start", onUserOrbit);
+    return () => controls.removeEventListener("start", onUserOrbit);
+  }, [controls, onUserOrbit]);
+
+  return null;
+}

@@ -78,6 +78,7 @@ import {
   OrthographicCamera,
   Resize,
   useBounds,
+  useGizmoContext,
   useGLTF,
 } from "@react-three/drei";
 import { explodeLayout } from "@/components/viewer/explode";
@@ -85,14 +86,21 @@ import type { ExplodeMode, PartExtent } from "@/components/viewer/explode";
 import type { LightingRig } from "@/components/viewer/lighting";
 import {
   sectionPlaneParams,
+  type CameraPreset,
   type SceneStats,
+  type Shading,
   type ViewerApi,
   type ViewerToolsState,
 } from "@/components/viewer/tools";
 import type { ViewerPart } from "@/components/viewer/viewable";
 import { ViewerEffects } from "@/components/viewer/scene/Effects";
 import { CameraLayers, PlateGrid } from "@/components/viewer/scene/PlateGrid";
-import { AutoRotate, CaptureBridge, DoubleClickTarget } from "@/components/viewer/scene/helpers";
+import {
+  AutoRotate,
+  CaptureBridge,
+  DoubleClickTarget,
+  OrbitPresetGuard,
+} from "@/components/viewer/scene/helpers";
 
 // A 1-unit box, used as `Resize`'s `box3` while nothing has finished loading
 // yet (`allBox` is `null`) -- `Resize` divides by the box's largest
@@ -162,7 +170,7 @@ function GltfPart({
   url,
   color,
   visible,
-  wireframe,
+  shading,
   plane,
   offset,
   onLoaded,
@@ -172,9 +180,9 @@ function GltfPart({
   url: string;
   color: string | undefined;
   visible: boolean;
-  /** Task 5 "inspection tools": renders every owned material's edges only,
-   * no fill -- see the owned-materials effect below. */
-  wireframe: boolean;
+  /** Task 5 "inspection tools" + R10 X-ray -- see the owned-materials effect
+   * below for what each mode actually sets. */
+  shading: Shading;
   /** Task 5 cross-section: a world-space (normalized-scene) clipping plane,
    * or `null` when sectioning is off. Constructed by `ModelViewer` from
    * `tools.section` via `tools.ts`'s `sectionPlaneParams` -- this component
@@ -244,30 +252,49 @@ function GltfPart({
   const invalidate = useThree((state) => state.invalidate);
 
   // A single imperative traversal over the owned materials for every Task 5
-  // inspection toggle (recolor/wireframe/section), so none of them ever
+  // inspection toggle (recolor/shading/section), so none of them ever
   // re-clones the scene. Clearing `color` restores each material's `.color`
-  // from the `__source` stashed above. `wireframe`/`clippingPlanes` apply
+  // from the `__source` stashed above. `shading`/`clippingPlanes` apply
   // unconditionally to every owned material (not gated on `std.color` the
   // way recolor is) -- both are meaningful even on a material with no
   // `.color` property.
+  //
+  // R10 X-ray reuses the same `__source` clone `color` restore already
+  // relies on: entering xray sets `transparent`/`opacity`/`depthWrite`/
+  // `side` for a see-through double-sided look, and leaving it (back to
+  // "solid" OR "wireframe" -- wireframe wants the material's normal opaque
+  // properties too, just with edges drawn) restores all four straight from
+  // the untouched source material rather than hand-tracking what they used
+  // to be.
   useEffect(() => {
     forEachMesh(object, (mesh) => {
       ownedMaterialsOf(mesh).forEach((material) => {
         const std = material as THREE.MeshStandardMaterial;
+        const source = material.userData.__source as THREE.MeshStandardMaterial | undefined;
         if (std.color) {
           if (color) {
             std.color.set(color);
-          } else {
-            const source = material.userData.__source as THREE.MeshStandardMaterial | undefined;
-            if (source?.color) std.color.copy(source.color);
+          } else if (source?.color) {
+            std.color.copy(source.color);
           }
         }
-        std.wireframe = wireframe;
+        std.wireframe = shading === "wireframe";
+        if (shading === "xray") {
+          material.transparent = true;
+          material.opacity = 0.35;
+          material.depthWrite = false;
+          material.side = THREE.DoubleSide;
+        } else if (source) {
+          material.transparent = source.transparent;
+          material.opacity = source.opacity;
+          material.depthWrite = source.depthWrite;
+          material.side = source.side;
+        }
         material.clippingPlanes = plane ? [plane] : null;
       });
     });
     invalidate();
-  }, [object, color, wireframe, plane, invalidate]);
+  }, [object, color, shading, plane, invalidate]);
 
   return (
     <group ref={handleGroupRef} visible={visible} position={offset ?? ZERO_OFFSET}>
@@ -395,6 +422,68 @@ function BoundsRefitter({
   return null;
 }
 
+// World-space direction FROM the model TOWARD the camera for each preset --
+// `tweenCamera(direction)` (drei's `GizmoHelper`, see below) reorients the
+// camera to sit along `direction` at its current distance from the target,
+// exactly like a `GizmoViewcube` face click. Y-up (see `PlateGrid.tsx` /
+// `Center top`'s grounding convention), Z the "front" axis -- matching
+// `GizmoViewcube`'s own box-geometry face order (+x Right, +y Top, +z
+// Front). `iso` normalizes to the same evenly-weighted corner direction the
+// default `OrthographicCamera` position (`[1.2, 1.2, 1.2]`) already sits on,
+// so picking it lands on the familiar default three-quarter framing.
+const CAMERA_PRESET_DIRECTIONS: Record<Exclude<CameraPreset, null>, THREE.Vector3> = {
+  iso: new THREE.Vector3(1, 1, 1).normalize(),
+  top: new THREE.Vector3(0, 1, 0),
+  front: new THREE.Vector3(0, 0, 1),
+  side: new THREE.Vector3(1, 0, 0),
+};
+
+// How long after starting a preset's orientation tween (drei's `GizmoHelper`
+// animates at `turnRate = 2*PI rad/s`, so even a 180° turn finishes well
+// inside this) to also refit distance to the current bounds -- see
+// `CameraPresetTween`'s doc comment for why this can't just fire both at
+// once.
+const CAMERA_PRESET_REFIT_DELAY_MS = 550;
+
+/**
+ * R10 camera presets: reorients the camera along `preset`'s direction using
+ * the SAME `tweenCamera` the `GizmoViewcube`'s face/edge/corner clicks
+ * already use (`useGizmoContext`, only available from inside `<GizmoHelper>`
+ * -- this must be mounted as its child, alongside `GizmoViewcube` below).
+ * That tween preserves the camera's CURRENT distance from the target and
+ * only changes orientation, so it's paired with a follow-up bump of
+ * `onSettled` (wired to `BoundsRefitter`'s `fitSignal` by the caller) that
+ * refits the distance for the new orientation via the exact same
+ * refit machinery every other "Fit view" trigger uses -- reusing rather
+ * than re-deriving that fit math.
+ *
+ * The two can't run concurrently: `GizmoHelper`'s tween writes
+ * `camera.position` every frame from its own quaternion slerp, and
+ * `Bounds`'s `fit()` animation writes it every frame too, from a SEPARATE
+ * origin/goal interpolation captured from wherever the camera was when
+ * `fit()` was called -- running both at once would have them fight over
+ * the same property every frame. `onSettled` fires on a delay instead of a
+ * real "tween finished" callback (`GizmoHelper` doesn't expose one), long
+ * enough for the largest possible reorientation (up to 180°) to finish.
+ */
+function CameraPresetTween({ preset, onSettled }: { preset: CameraPreset; onSettled: () => void }) {
+  const context = useGizmoContext() as { tweenCamera?: (direction: THREE.Vector3) => void };
+  const lastPreset = useRef<CameraPreset>(null);
+
+  useEffect(() => {
+    if (preset && preset !== lastPreset.current) {
+      context.tweenCamera?.(CAMERA_PRESET_DIRECTIONS[preset]);
+      const id = window.setTimeout(onSettled, CAMERA_PRESET_REFIT_DELAY_MS);
+      lastPreset.current = preset;
+      return () => window.clearTimeout(id);
+    }
+    lastPreset.current = preset;
+    return undefined;
+  }, [preset, context, onSettled]);
+
+  return null;
+}
+
 /**
  * `parts` renders one GLB per entry inside a single shared `<Bounds>` /
  * `<Resize>` / `<Center>` stack so multiple mesh parts (Workstream A
@@ -432,6 +521,7 @@ export default function ModelViewer({
   apiRef,
   onPartLoaded,
   onExplodeModeChange,
+  onCameraPresetClear,
 }: {
   parts: ViewerPart[];
   background: string;
@@ -462,6 +552,11 @@ export default function ModelViewer({
    * `ViewerStage`, which gates + labels the slider from it. Deduped: fires
    * only when the mode string changes. */
   onExplodeModeChange?: (mode: ExplodeMode) => void;
+  /** R10 camera presets: fired by `OrbitPresetGuard` on a real user orbit --
+   * `ViewerStage` wires this to `onToolsChange({ cameraPreset: null })` so
+   * the segmented control stops showing a preset as selected the moment the
+   * camera actually moves off it. */
+  onCameraPresetClear?: () => void;
 }) {
   const [loadedParts, setLoadedParts] = useState<Map<number, { box: THREE.Box3; triangles: number }>>(
     () => new Map(),
@@ -636,6 +731,15 @@ export default function ModelViewer({
     onExplodeModeChange(explodeMode);
   }, [explodeMode, onExplodeModeChange]);
 
+  // R10 camera presets: bumped by `CameraPresetTween.onSettled` once a
+  // preset's reorientation has had time to finish, so `BoundsRefitter` runs
+  // an extra refit for the new orientation without needing its own copy of
+  // the fit machinery -- see `CameraPresetTween`'s doc comment for why the
+  // two can't just fire together. Folded into `fitSignal` below (added, not
+  // replacing it) so either trigger still registers as a distinct change.
+  const [presetFitBump, setPresetFitBump] = useState(0);
+  const handlePresetSettled = useCallback(() => setPresetFitBump((prev) => prev + 1), []);
+
   // Reports the combined mm-scale bounding box + triangle count of every
   // currently VISIBLE, loaded part -- "how big is this print?" for
   // `ViewerStage`'s stats overlay chip. Native GLB units are mm (see
@@ -721,6 +825,7 @@ export default function ModelViewer({
       <AutoRotate enabled={tools.autoRotate} />
       <CaptureBridge apiRef={apiRef} />
       <DoubleClickTarget />
+      {onCameraPresetClear && <OrbitPresetGuard onUserOrbit={onCameraPresetClear} />}
 
       <ambientLight intensity={lighting.ambient} />
       <directionalLight position={[2.5, 4, 2.5]} intensity={lighting.key} />
@@ -771,7 +876,7 @@ export default function ModelViewer({
                     url={part.url}
                     color={part.color}
                     visible={part.visible}
-                    wireframe={tools.wireframe}
+                    shading={tools.shading}
                     plane={plane}
                     offset={offsets.get(part.id)}
                     onLoaded={onLoaded}
@@ -782,7 +887,11 @@ export default function ModelViewer({
             ))}
           </Center>
         </Resize>
-        <BoundsRefitter loadedCount={loadedCount} fitSignal={fitSignal} getVisibleBox={getVisibleBox} />
+        <BoundsRefitter
+          loadedCount={loadedCount}
+          fitSignal={fitSignal + presetFitBump}
+          getVisibleBox={getVisibleBox}
+        />
       </Bounds>
 
       {/* OUTSIDE `<Bounds>` deliberately -- `BoundsRefitter`'s no-visible
@@ -853,6 +962,7 @@ export default function ModelViewer({
           step, so this works under `frameloop="demand"` unmodified. */}
       <GizmoHelper alignment="bottom-left" margin={[64, 64]} renderPriority={2}>
         <GizmoViewcube />
+        <CameraPresetTween preset={tools.cameraPreset} onSettled={handlePresetSettled} />
       </GizmoHelper>
 
       {/* Task 5 cross-section: N8AO off while sectioning -- ambient

@@ -55,7 +55,7 @@ from sqlalchemy.orm import Session as SyncSession
 from app.config import Settings, get_settings
 from app.models import Blob, BlobMeta, Derivative, File, Job
 from app.models.enums import BlobFormat, DerivativeKind, DerivativeStatus
-from app.pipeline import convert, meshload, render, slicedmeta, thumbs
+from app.pipeline import convert, gcode_meta, meshload, render, slicedmeta, thumbs
 from app.services import derivatives, jobs
 from app.services.storage_config import resolve_backend_sync
 from app.storage.base import StorageBackend
@@ -458,27 +458,69 @@ def _mesh_blob_meta(blob_hash: str, mesh: trimesh.Trimesh, tool: str) -> BlobMet
     )
 
 
-def _sliced_blob_meta(blob_hash: str, sliced: slicedmeta.SlicedMeta) -> BlobMeta:
+def _gcode_3mf_extra_meta(path: Path) -> gcode_meta.GcodeMeta | None:
+    """Parse layer-count/infill/slicer comment metadata (R10-B) out of the
+    first resolvable plate's embedded ``.gcode`` member inside a
+    ``.gcode.3mf`` -- reusing the same ``model_settings.config`` plate/gcode
+    mapping ``parse_gcode_3mf`` already resolves, rather than a second zip
+    pass over slice_info. A zip member's stream reports ``seekable()==True``
+    but a backward seek re-decompresses it from byte 0, so
+    ``gcode_meta._read_head_tail`` reads it forward exactly once instead,
+    capturing both head and tail comment blocks in a single pass.
+    """
+    with zipfile.ZipFile(path) as zf:
+        model_settings = slicedmeta.read_zip_member(zf, slicedmeta.MODEL_SETTINGS_PATH)
+        plate_files = slicedmeta.parse_model_settings(model_settings)
+        gcode_member = next(
+            (files["gcode_file"] for files in plate_files.values() if files.get("gcode_file")),
+            None,
+        )
+        if gcode_member is None:
+            return None
+        try:
+            with zf.open(gcode_member) as member_stream:
+                return gcode_meta.parse_gcode_meta(member_stream)
+        except KeyError:
+            return None
+
+
+def _sliced_blob_meta(
+    blob_hash: str, sliced: slicedmeta.SlicedMeta, extra: gcode_meta.GcodeMeta | None
+) -> BlobMeta:
+    filament_types = list(sliced.filament_types)
+    if extra is not None and extra.filament_type and extra.filament_type not in filament_types:
+        filament_types.append(extra.filament_type)
     return BlobMeta(
         blob_hash=blob_hash,
         print_time_s=sliced.print_time_s,
         filament_g=sliced.filament_g,
         filament_m=sliced.filament_m,
-        filament_types=sliced.filament_types,
-        layer_height=sliced.layer_height,
+        filament_types=filament_types,
+        layer_height=sliced.layer_height or (extra.layer_height_mm if extra else None),
         nozzle=sliced.nozzle,
         printer_model=sliced.printer_model,
         plate_count=sliced.plate_count,
+        layer_count=extra.layer_count if extra else None,
+        infill_pct=extra.infill_pct if extra else None,
+        slicer=extra.slicer if extra else None,
         raw={"plates": sliced.plates, "tool": "zipfile"},
     )
 
 
-def _gcode_blob_meta(blob_hash: str, header: slicedmeta.GcodeMeta) -> BlobMeta:
+def _gcode_blob_meta(
+    blob_hash: str, header: slicedmeta.GcodeMeta, extra: gcode_meta.GcodeMeta
+) -> BlobMeta:
     return BlobMeta(
         blob_hash=blob_hash,
-        print_time_s=header.print_time_s,
-        filament_g=header.filament_g,
-        filament_m=header.filament_m,
+        print_time_s=header.print_time_s or extra.duration_s,
+        filament_g=header.filament_g or extra.filament_g,
+        filament_m=header.filament_m
+        or (extra.filament_mm / 1000 if extra.filament_mm is not None else None),
+        filament_types=[extra.filament_type] if extra.filament_type else [],
+        layer_height=extra.layer_height_mm,
+        layer_count=header.layer_count or extra.layer_count,
+        infill_pct=extra.infill_pct,
+        slicer=extra.slicer,
         raw={"header": header.raw, "tool": "gcode-header"},
     )
 
@@ -559,11 +601,15 @@ def _extract_metadata_step(
     elif fmt is BlobFormat.GCODE_3MF:
         with tempfile.TemporaryDirectory(prefix="tdmm-pipe-") as tmp:
             path = derivatives.fetch_blob_to_temp(session, settings, blob.hash, Path(tmp), ".3mf")
-            meta = _sliced_blob_meta(blob.hash, slicedmeta.parse_gcode_3mf(path))
+            meta = _sliced_blob_meta(
+                blob.hash, slicedmeta.parse_gcode_3mf(path), _gcode_3mf_extra_meta(path)
+            )
     elif fmt is BlobFormat.GCODE:
         with tempfile.TemporaryDirectory(prefix="tdmm-pipe-") as tmp:
             path = derivatives.fetch_blob_to_temp(session, settings, blob.hash, Path(tmp), ".gcode")
-            meta = _gcode_blob_meta(blob.hash, slicedmeta.parse_gcode_header(path))
+            with path.open("rb") as fh:
+                extra = gcode_meta.parse_gcode_meta(fh)
+            meta = _gcode_blob_meta(blob.hash, slicedmeta.parse_gcode_header(path), extra)
     elif fmt in _CAD_FORMATS:
         meta = _cad_blob_meta(session, settings, blob)
     else:

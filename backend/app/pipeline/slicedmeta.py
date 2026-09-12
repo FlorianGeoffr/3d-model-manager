@@ -81,7 +81,13 @@ def _parse_int(value: str | None) -> int | None:
     return int(parsed) if parsed is not None else None
 
 
-def _parse_duration_s(text: str | None) -> int | None:
+def parse_duration_s(text: str | None) -> int | None:
+    """``"1h 23m 4s"``-style duration -> seconds, or ``None`` if unparseable.
+
+    Public so ``app.pipeline.gcode_meta`` (R10-B: Prusa/Orca/Bambu comment
+    metadata) can reuse the exact same ``XdXhXmXs`` grammar rather than
+    duplicating the regex.
+    """
     if not text:
         return None
     match = _DURATION_RE.search(text)
@@ -89,6 +95,9 @@ def _parse_duration_s(text: str | None) -> int | None:
         return None
     days, hours, minutes, seconds = (int(g) if g else 0 for g in match.groups())
     return days * 86400 + hours * 3600 + minutes * 60 + seconds
+
+
+_parse_duration_s = parse_duration_s
 
 
 def read_zip_member(zf: zipfile.ZipFile, name: str) -> bytes | None:

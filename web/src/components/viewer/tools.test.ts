@@ -9,11 +9,12 @@ describe("DEFAULT_TOOLS", () => {
   it("defaults the grid on and every other tool off/neutral", () => {
     expect(DEFAULT_TOOLS).toEqual({
       grid: true,
-      wireframe: false,
+      shading: "solid",
       autoRotate: false,
       ortho: false,
       section: { enabled: false, axis: "x", t: 0.5 },
       explode: 0,
+      cameraPreset: null,
     });
   });
 });
@@ -111,7 +112,7 @@ describe("useViewerTools", () => {
     const { result } = renderHook(() => useViewerTools());
     expect(result.current.tools.grid).toBe(false);
     // Everything else still comes from the default -- only grid is stored.
-    expect(result.current.tools.wireframe).toBe(false);
+    expect(result.current.tools.shading).toBe("solid");
     expect(result.current.tools.explode).toBe(0);
   });
 
@@ -128,19 +129,60 @@ describe("useViewerTools", () => {
   it("setTools merges a patch instead of replacing the whole state", () => {
     const { result } = renderHook(() => useViewerTools());
 
-    act(() => result.current.setTools({ wireframe: true }));
+    act(() => result.current.setTools({ shading: "wireframe" }));
 
-    expect(result.current.tools.wireframe).toBe(true);
+    expect(result.current.tools.shading).toBe("wireframe");
     expect(result.current.tools.grid).toBe(true);
     expect(result.current.tools.autoRotate).toBe(false);
   });
 
-  it("persists only `grid`: patching wireframe leaves localStorage untouched", () => {
+  it("persists only `grid`: patching shading leaves localStorage untouched", () => {
     const { result } = renderHook(() => useViewerTools());
 
-    act(() => result.current.setTools({ wireframe: true, autoRotate: true, explode: 0.5 }));
+    act(() => result.current.setTools({ shading: "wireframe", autoRotate: true, explode: 0.5 }));
 
     expect(localStorage.getItem("viewer-tools")).toBeNull();
+  });
+
+  describe("shading transitions", () => {
+    it("cycles solid -> wireframe -> xray -> solid, one mode active at a time", () => {
+      const { result } = renderHook(() => useViewerTools());
+      expect(result.current.tools.shading).toBe("solid");
+
+      act(() => result.current.setTools({ shading: "wireframe" }));
+      expect(result.current.tools.shading).toBe("wireframe");
+
+      act(() => result.current.setTools({ shading: "xray" }));
+      expect(result.current.tools.shading).toBe("xray");
+
+      act(() => result.current.setTools({ shading: "solid" }));
+      expect(result.current.tools.shading).toBe("solid");
+    });
+  });
+
+  describe("cameraPreset transitions", () => {
+    it("selects a preset and a later selection replaces it", () => {
+      const { result } = renderHook(() => useViewerTools());
+      expect(result.current.tools.cameraPreset).toBeNull();
+
+      act(() => result.current.setTools({ cameraPreset: "top" }));
+      expect(result.current.tools.cameraPreset).toBe("top");
+
+      act(() => result.current.setTools({ cameraPreset: "front" }));
+      expect(result.current.tools.cameraPreset).toBe("front");
+    });
+
+    it("a user orbit clears the preset back to null", () => {
+      const { result } = renderHook(() => useViewerTools());
+      act(() => result.current.setTools({ cameraPreset: "side" }));
+      expect(result.current.tools.cameraPreset).toBe("side");
+
+      // `ModelViewer`'s `OrbitPresetGuard` reports a real user orbit as
+      // exactly this patch -- the segmented control must not keep showing a
+      // preset as selected once the camera has actually moved off it.
+      act(() => result.current.setTools({ cameraPreset: null }));
+      expect(result.current.tools.cameraPreset).toBeNull();
+    });
   });
 
   it("persists a grid change to localStorage", () => {
@@ -169,9 +211,9 @@ describe("useViewerTools", () => {
 
   it("falls back to the stored grid value when `initial` doesn't specify grid", () => {
     localStorage.setItem("viewer-tools", JSON.stringify({ grid: false }));
-    const { result } = renderHook(() => useViewerTools({ wireframe: true }));
+    const { result } = renderHook(() => useViewerTools({ shading: "wireframe" }));
 
     expect(result.current.tools.grid).toBe(false);
-    expect(result.current.tools.wireframe).toBe(true);
+    expect(result.current.tools.shading).toBe("wireframe");
   });
 });

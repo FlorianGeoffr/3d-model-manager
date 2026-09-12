@@ -511,6 +511,10 @@ async def test_extract_metadata_gcode_3mf(
     assert meta.raw["tool"] == "zipfile"
     assert len(meta.raw["plates"]) == 2
     assert meta.raw["plates"][0]["gcode_file"] == "Metadata/plate_1.gcode"
+    # R10-B: plate 1's embedded gcode (see `bambu_gcode`) enriches the zip's
+    # own project_settings with layer_count/slicer -- head-only zip read.
+    assert meta.layer_count == 175
+    assert meta.slicer == "BambuStudio"
 
 
 async def test_extract_metadata_gcode(
@@ -539,6 +543,9 @@ async def test_extract_metadata_gcode(
     assert meta.filament_m == pytest.approx(4.8205)
     assert meta.raw["tool"] == "gcode-header"
     assert meta.raw["header"]["total layer number"] == "175"
+    # R10-B: same bare-gcode bytes, now also merged through gcode_meta.
+    assert meta.layer_count == 175
+    assert meta.slicer == "BambuStudio"
 
 
 async def test_extract_metadata_unsupported_format_raises(

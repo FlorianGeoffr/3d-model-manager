@@ -60,6 +60,9 @@ class BlobMeta(Base):
     nozzle: Mapped[float | None] = mapped_column(Float)
     printer_model: Mapped[str | None] = mapped_column(Text)
     plate_count: Mapped[int | None] = mapped_column(Integer)
+    layer_count: Mapped[int | None] = mapped_column(Integer)
+    infill_pct: Mapped[float | None] = mapped_column(Float)
+    slicer: Mapped[str | None] = mapped_column(Text)
     raw: Mapped[dict | None] = mapped_column(JSONB)
 
 

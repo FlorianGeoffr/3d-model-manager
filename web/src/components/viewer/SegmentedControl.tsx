@@ -24,7 +24,9 @@ export function SegmentedControl<T extends string>({
   label: string;
   options: readonly T[];
   labels: Record<T, string>;
-  value: T;
+  /** `null` when none of `options` is currently selected -- see
+   * `useRovingRadioGroup`'s doc comment. */
+  value: T | null;
   onChange: (next: T) => void;
   className?: string;
 }) {

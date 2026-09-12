@@ -4,6 +4,7 @@ import {
   ArchiveIcon,
   DownloadIcon,
   EllipsisIcon,
+  FileArchiveIcon,
   FileStackIcon,
   FolderInputIcon,
   ListPlusIcon,
@@ -253,6 +254,14 @@ export function ModelHeader({
               <DropdownMenuItem disabled={!canRedownload} onSelect={() => setRedownloadOpen(true)}>
                 <DownloadIcon />
                 Re-download…
+              </DropdownMenuItem>
+              {/* Plain anchor with `download` -- the session cookie carries
+                  auth, so no fetch-and-blob dance is needed (R11-A). */}
+              <DropdownMenuItem asChild>
+                <a href={`/api/models/${model.slug}/zip`} download>
+                  <FileArchiveIcon />
+                  Download ZIP
+                </a>
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => setRelocateOpen(true)}>
                 <FolderInputIcon />

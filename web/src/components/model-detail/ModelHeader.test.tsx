@@ -249,7 +249,7 @@ async function openMoreActions() {
 }
 
 describe("ModelHeader -- More actions overflow menu", () => {
-  it("opens from 'More actions' and lists all four items in order, with a separator before Archive", async () => {
+  it("opens from 'More actions' and lists all five items in order, with a separator before Archive", async () => {
     renderHeader(false, vi.fn(), MODEL_WITH_SOURCE);
 
     const menu = await openMoreActions();
@@ -258,17 +258,30 @@ describe("ModelHeader -- More actions overflow menu", () => {
     expect(nodes.map((node) => node.getAttribute("role"))).toEqual([
       "menuitem",
       "menuitem",
+      "menuitem",
       "separator",
       "menuitem",
       "menuitem",
     ]);
     expect(nodes.map((node) => node.textContent)).toEqual([
       "Re-download…",
+      "Download ZIP",
       "Move / copy…",
       "",
       "Archive…",
       "Delete…",
     ]);
+  });
+
+  it("'Download ZIP' links straight at the model's zip endpoint with `download`", async () => {
+    renderHeader(false);
+
+    const menu = await openMoreActions();
+
+    const link = within(menu).getByRole("menuitem", { name: "Download ZIP" });
+    expect(link.tagName).toBe("A");
+    expect(link).toHaveAttribute("href", "/api/models/articulated-dragon/zip");
+    expect(link).toHaveAttribute("download");
   });
 
   it("styles the Delete item destructive", async () => {

@@ -118,6 +118,13 @@ function FollowedRow({ collection }: { collection: FollowedCollection }) {
           <SelectItem value="review">Review</SelectItem>
         </SelectContent>
       </Select>
+      {/* Plain anchor with `download` -- the session cookie carries auth, so
+          no fetch-and-blob dance is needed (R11-A). */}
+      <Button type="button" variant="outline" size="sm" asChild>
+        <a href={`/api/collections/${collection.id}/zip`} download aria-label={`Download ${collection.title} as zip`}>
+          Download ZIP
+        </a>
+      </Button>
       <Button
         type="button"
         variant="outline"

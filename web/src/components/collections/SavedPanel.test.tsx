@@ -175,6 +175,15 @@ describe("FollowedCard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Unfollow" }));
     expect(unfollowMock).toHaveBeenCalledWith(1);
   });
+
+  it("links 'Download ZIP' straight at the collection's zip endpoint with `download`", async () => {
+    followedBox.current = { data: [fakeFollowed()], isLoading: false };
+    renderCard(FollowedCard);
+
+    const link = await screen.findByRole("link", { name: /Download Desk stuff as zip/i });
+    expect(link).toHaveAttribute("href", "/api/collections/1/zip");
+    expect(link).toHaveAttribute("download");
+  });
 });
 
 describe("ReviewQueueCard", () => {

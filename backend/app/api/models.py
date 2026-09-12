@@ -27,6 +27,7 @@ from app.schemas.library import (
 from app.services import jobs as jobs_service
 from app.services import library, zip_export
 from app.services import storage_backends as storage_backends_service
+from app.services.http_names import content_disposition_attachment
 from app.storage.base import StorageBackend
 from app.tasks.importing import redownload_model as redownload_model_task
 from app.tasks.relocate import relocate_model_storage
@@ -214,7 +215,7 @@ async def download_model_zip(
     return StreamingResponse(
         body,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{model.slug}.zip"'},
+        headers={"Content-Disposition": content_disposition_attachment(f"{model.slug}.zip")},
     )
 
 

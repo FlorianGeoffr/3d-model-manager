@@ -27,6 +27,7 @@ from app.models import Blob, File
 from app.models.enums import BlobFormat
 from app.pipeline import slicedmeta
 from app.services import library, signed_urls
+from app.services.http_names import content_disposition_attachment
 from app.services.storage_backends import resolve_backend_for_file
 from app.storage.base import StorageBackend
 from app.storage.errors import StorageKeyNotFound
@@ -234,7 +235,7 @@ async def _download_file(
         iterate_in_threadpool(iterator),
         media_type=_media_type_for_filename(filename),
         headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Disposition": content_disposition_attachment(filename),
             "Content-Length": str(blob.size),
         },
     )

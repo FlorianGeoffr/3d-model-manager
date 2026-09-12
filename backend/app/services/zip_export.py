@@ -12,6 +12,7 @@ incremental, not "buffer it all, then zip it".
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator, Sequence
 from pathlib import PurePosixPath
 from zipfile import ZIP_DEFLATED, ZIP_STORED
@@ -165,6 +166,22 @@ async def first_chunk(gen: AsyncIterator[bytes]) -> tuple[bytes, AsyncIterator[b
     return chunk, _rest()
 
 
+_UNSAFE_PATH_CHARS = re.compile(r"[\x00-\x1f\x7f/\\]")
+_WHITESPACE_RUN = re.compile(r"\s+")
+
+
+def _safe_path_segment(name: str, *, fallback: str) -> str:
+    """Sanitize ``name`` into a single safe zip path segment: strip path
+    separators (``/``, ``\\``), control characters, and ``..`` (so it can
+    never zip-slip out of the archive root or the collection's own
+    subtree), and collapse whitespace. Falls back to ``fallback`` if
+    nothing usable remains."""
+    cleaned = _UNSAFE_PATH_CHARS.sub("", name)
+    cleaned = cleaned.replace("..", "")
+    cleaned = _WHITESPACE_RUN.sub(" ", cleaned).strip()
+    return cleaned or fallback
+
+
 async def _collection_models(db: AsyncSession, collection: FollowedCollection) -> Sequence[Model]:
     stmt = (
         select(Model)
@@ -183,6 +200,9 @@ async def iter_collection_zip(
     silently skipped rather than failing the whole export.
     """
     models = await _collection_models(db, collection)
+    collection_prefix = _safe_path_segment(
+        collection.title, fallback=f"collection-{collection.id}"
+    )
 
     zs = ZipStream()
     for model in models:
@@ -196,7 +216,7 @@ async def iter_collection_zip(
             settings,
             model,
             files,
-            prefix=f"{collection.title}/{model.slug}",
+            prefix=f"{collection_prefix}/{model.slug}",
             used_names=used_names,
         ):
             yield chunk

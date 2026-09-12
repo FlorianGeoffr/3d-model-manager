@@ -33,6 +33,7 @@ from app.services import collections as collections_svc
 from app.services import jobs as jobs_service
 from app.services import remote_collections as remote_collections_svc
 from app.services import zip_export
+from app.services.http_names import content_disposition_attachment
 from app.services.imports import start_import
 from app.tasks.sync_collections import sync_all
 
@@ -188,5 +189,5 @@ async def download_collection_zip(
     return StreamingResponse(
         body,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{collection.title}.zip"'},
+        headers={"Content-Disposition": content_disposition_attachment(f"{collection.title}.zip")},
     )

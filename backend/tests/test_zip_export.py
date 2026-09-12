@@ -167,6 +167,43 @@ async def test_collection_zip_nests_per_model(
     }
 
 
+async def test_collection_zip_sanitizes_traversal_title(
+    authenticated_client: httpx.AsyncClient, db_session, seed_file
+) -> None:
+    """A collection title of ``"../evil/"`` must not let entries escape the
+    archive root or nest bogusly (review finding 3)."""
+    collection = FollowedCollection(
+        site=ImportSite.THINGIVERSE,
+        list_id="evil-list",
+        kind="likes",
+        title="../evil/",
+        mode=CollectionSyncMode.REVIEW,
+    )
+    db_session.add(collection)
+    await db_session.commit()
+    await db_session.refresh(collection)
+
+    created = await _create_model(authenticated_client, "Safe Model")
+    model = await library.get_model_by_slug(db_session, created["slug"])
+    model.source_collection_id = collection.id
+    await db_session.commit()
+    revision = await db_session.get(Revision, model.current_revision_id)
+    await seed_file(model, revision, "part.stl", b"data")
+
+    response = await authenticated_client.get(f"/api/collections/{collection.id}/zip")
+
+    assert response.status_code == 200
+    zf = zipfile.ZipFile(BytesIO(response.content))
+    names = set(zf.namelist())
+    assert names == {
+        f"evil/{created['slug']}/README.txt",
+        f"evil/{created['slug']}/part.stl",
+    }
+    for name in names:
+        assert ".." not in name
+        assert not name.startswith("/")
+
+
 async def test_current_revision_files_fetched_once_per_model(
     authenticated_client: httpx.AsyncClient,
     db_session,

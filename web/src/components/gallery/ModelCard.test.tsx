@@ -11,7 +11,7 @@ import type { ModelSummary } from "@/api/types";
 // card renders under a real QueryClient (the mutation hook needs one).
 const { patchMock, getMock } = vi.hoisted(() => ({
   patchMock: vi.fn().mockResolvedValue({}),
-  getMock: vi.fn().mockResolvedValue({}),
+  getMock: vi.fn((path: string) => Promise.resolve(path === "/tags" ? [] : {})),
 }));
 
 vi.mock("@/api/client", async (importOriginal) => {
@@ -311,7 +311,7 @@ describe("ModelCard -- prefetch on intent (R9-A item 4)", () => {
     fireEvent.pointerEnter(link);
 
     await waitFor(() => expect(getMock).toHaveBeenCalledWith(`/models/${MODEL.slug}`));
-    expect(getMock).toHaveBeenCalledTimes(1);
+    expect(getMock.mock.calls.filter(([path]) => path === `/models/${MODEL.slug}`)).toHaveLength(1);
     expect(queryClient.getQueryData(["models", "detail", MODEL.slug])).toBeDefined();
   });
 

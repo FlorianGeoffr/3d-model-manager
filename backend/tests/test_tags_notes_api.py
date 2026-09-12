@@ -55,6 +55,55 @@ async def test_add_tag_is_get_or_create_across_models(
     assert [t["name"] for t in tags.json()] == ["shared"]
 
 
+async def test_add_tag_with_valid_color(authenticated_client: httpx.AsyncClient) -> None:
+    model = await _create_model(authenticated_client, "Colored Tag")
+
+    response = await authenticated_client.post(
+        f"/api/models/{model['id']}/tags", json={"name": "urgent", "color": "red"}
+    )
+
+    assert response.status_code == 201
+    assert response.json()["color"] == "red"
+
+
+async def test_add_tag_with_invalid_color_is_422(authenticated_client: httpx.AsyncClient) -> None:
+    model = await _create_model(authenticated_client, "Bad Color Tag")
+
+    response = await authenticated_client.post(
+        f"/api/models/{model['id']}/tags", json={"name": "urgent", "color": "not-a-color"}
+    )
+
+    assert response.status_code == 422
+
+
+async def test_update_tag_color(authenticated_client: httpx.AsyncClient) -> None:
+    model = await _create_model(authenticated_client, "Recolor Tag")
+    created = await authenticated_client.post(
+        f"/api/models/{model['id']}/tags", json={"name": "recolor"}
+    )
+    tag_id = created.json()["id"]
+
+    response = await authenticated_client.patch(f"/api/tags/{tag_id}", json={"color": "teal"})
+
+    assert response.status_code == 200
+    assert response.json()["color"] == "teal"
+
+    tags = await authenticated_client.get("/api/tags")
+    assert tags.json()[0]["color"] == "teal"
+
+
+async def test_update_tag_color_invalid_is_422(authenticated_client: httpx.AsyncClient) -> None:
+    model = await _create_model(authenticated_client, "Recolor Bad Tag")
+    created = await authenticated_client.post(
+        f"/api/models/{model['id']}/tags", json={"name": "recolorbad"}
+    )
+    tag_id = created.json()["id"]
+
+    response = await authenticated_client.patch(f"/api/tags/{tag_id}", json={"color": "nope"})
+
+    assert response.status_code == 422
+
+
 async def test_remove_tag_detaches_but_keeps_tag_row_for_other_models(
     authenticated_client: httpx.AsyncClient,
 ) -> None:

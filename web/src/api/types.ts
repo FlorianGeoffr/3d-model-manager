@@ -275,13 +275,27 @@ export interface DiffResponse {
 
 // -- tags ----------------------------------------------------------
 
+export type TagColor =
+  | "slate"
+  | "red"
+  | "orange"
+  | "amber"
+  | "green"
+  | "teal"
+  | "blue"
+  | "indigo"
+  | "violet"
+  | "pink";
+
 export interface TagCreate {
   name: string;
+  color?: TagColor | null;
 }
 
 export interface TagOut {
   id: number;
   name: string;
+  color?: TagColor | null;
 }
 
 // -- uploads (backend/app/schemas/uploads.py) --------------------------------

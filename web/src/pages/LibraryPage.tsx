@@ -36,6 +36,8 @@ import { chunkIntoRows, columnsForWidth, estimateRowHeight } from "@/lib/grid";
 import { useDebouncedValue } from "@/lib/format";
 import { BLOB_FORMATS, type BlobFormat, type ModelSummary } from "@/api/types";
 import { FORMAT_LABELS } from "@/lib/formatMeta";
+import { tagColorClass } from "@/lib/tagColors";
+import { cn } from "@/lib/utils";
 import type { LibrarySearch } from "@/pages/librarySearch";
 
 const SORT_OPTIONS = [
@@ -374,7 +376,13 @@ export function LibraryPage() {
                     type="button"
                     onClick={() => setActiveTag(activeTag === tag.name ? undefined : tag.name)}
                   >
-                    <Badge variant={activeTag === tag.name ? "default" : "outline"} className="cursor-pointer">
+                    <Badge
+                      variant={activeTag === tag.name ? "default" : "outline"}
+                      className={cn(
+                        "cursor-pointer",
+                        activeTag !== tag.name && tagColorClass(tag.color),
+                      )}
+                    >
                       {tag.name}
                     </Badge>
                   </button>

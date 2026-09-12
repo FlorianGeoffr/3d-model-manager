@@ -1,12 +1,14 @@
 import { useState } from "react";
 import { PlusIcon, XIcon } from "lucide-react";
 
-import { useAddTag, useRemoveTag, useTags } from "@/api/library";
+import { useAddTag, useRemoveTag, useSetTagColor, useTags } from "@/api/library";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import type { ModelDetail } from "@/api/types";
+import { TAG_COLORS, tagColorClass, tagSwatchClass } from "@/lib/tagColors";
+import { cn } from "@/lib/utils";
+import type { ModelDetail, TagOut } from "@/api/types";
 
 /** Tag chip display, plus add (combobox from `/api/tags` + free text) /
  * remove (Task 8 decision). The add/remove controls only render in edit
@@ -18,8 +20,11 @@ export function TagEditor({ model, editMode }: { model: ModelDetail; editMode: b
   const tagsQuery = useTags();
   const addTag = useAddTag(model.slug, model.id);
   const removeTag = useRemoveTag(model.slug, model.id);
+  const setTagColor = useSetTagColor();
 
-  const suggestions = (tagsQuery.data ?? [])
+  const allTags = tagsQuery.data ?? [];
+  const tagsByName = new Map(allTags.map((tag) => [tag.name, tag]));
+  const suggestions = allTags
     .map((tag) => tag.name)
     .filter((name) => !model.tags.includes(name) && name.toLowerCase().includes(value.trim().toLowerCase()));
 
@@ -36,21 +41,28 @@ export function TagEditor({ model, editMode }: { model: ModelDetail; editMode: b
 
   return (
     <div className="flex flex-wrap items-center gap-1.5">
-      {model.tags.map((tag) => (
-        <Badge key={tag} variant="secondary" className="gap-1">
-          {tag}
-          {editMode && (
-            <button
-              type="button"
-              aria-label={`Remove tag ${tag}`}
-              onClick={() => removeTag.mutate(tag)}
-              className="rounded-full hover:text-destructive"
-            >
-              <XIcon className="size-3" />
-            </button>
-          )}
-        </Badge>
-      ))}
+      {model.tags.map((tag) => {
+        const tagRow = tagsByName.get(tag);
+        return (
+          <Badge key={tag} variant="secondary" className={cn("gap-1", tagColorClass(tagRow?.color))}>
+            {editMode && tagRow ? (
+              <TagColorPicker tag={tagRow} onPick={(color) => setTagColor.mutate({ id: tagRow.id, color })} />
+            ) : (
+              tag
+            )}
+            {editMode && (
+              <button
+                type="button"
+                aria-label={`Remove tag ${tag}`}
+                onClick={() => removeTag.mutate(tag)}
+                className="rounded-full hover:text-destructive"
+              >
+                <XIcon className="size-3" />
+              </button>
+            )}
+          </Badge>
+        );
+      })}
       {editMode && (
         <Popover open={open} onOpenChange={setOpen}>
           <PopoverTrigger asChild>
@@ -90,5 +102,42 @@ export function TagEditor({ model, editMode }: { model: ModelDetail; editMode: b
         </Popover>
       )}
     </div>
+  );
+}
+
+/** Click-the-tag-name-to-recolor control, edit-mode only (R11-C item 16).
+ * A 10-swatch grid from the fixed palette -- picking one PATCHes the tag
+ * globally (color is a tag-level property, not per-model). */
+function TagColorPicker({ tag, onPick }: { tag: TagOut; onPick: (color: TagOut["color"]) => void }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button type="button" aria-label={`Set color for tag ${tag.name}`}>
+          {tag.name}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-auto p-2" align="start">
+        <div className="grid grid-cols-5 gap-1.5">
+          {TAG_COLORS.map((color) => (
+            <button
+              key={color}
+              type="button"
+              aria-label={`Color ${color}`}
+              aria-pressed={tag.color === color}
+              className={cn(
+                "size-5 rounded-full ring-offset-2 ring-offset-background",
+                tagSwatchClass(color),
+                tag.color === color && "ring-2 ring-foreground",
+              )}
+              onClick={() => {
+                onPick(color);
+                setOpen(false);
+              }}
+            />
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }

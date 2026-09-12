@@ -3,7 +3,7 @@ import { Link } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { ClockIcon, FileStackIcon, StarIcon, XIcon } from "lucide-react";
 
-import { modelQueryOptions, usePatchModel } from "@/api/library";
+import { modelQueryOptions, usePatchModel, useTagColorMap } from "@/api/library";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
@@ -11,6 +11,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { SpecRow, type SpecItem } from "@/components/ui/spec-row";
 import { FORMAT_LABELS, formatIcon } from "@/lib/formatMeta";
 import { formatDate, humanizeDuration } from "@/lib/format";
+import { tagColorClass } from "@/lib/tagColors";
 import type { ModelSummary } from "@/api/types";
 
 const VISIBLE_TAGS = 3;
@@ -46,6 +47,7 @@ export function ModelCard({
   const [hovered, setHovered] = useState(false);
   const patchModel = usePatchModel(model.slug);
   const queryClient = useQueryClient();
+  const tagColors = useTagColorMap();
 
   // R9-A item 4: warm the model detail query on hover/focus intent so the
   // click-through navigation renders instantly. A `staleTime` keeps it from
@@ -230,7 +232,7 @@ export function ModelCard({
           {visibleTags.length > 0 && (
             <div className="flex min-h-5 flex-wrap gap-1">
               {visibleTags.map((tag) => (
-                <Badge key={tag} variant="secondary">
+                <Badge key={tag} variant="secondary" className={tagColorClass(tagColors[tag])}>
                   {tag}
                 </Badge>
               ))}

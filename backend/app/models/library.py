@@ -138,6 +138,10 @@ class Tag(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
     name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    # Palette key (see app.schemas.library.TAG_COLORS), not a free-form
+    # value -- enforced by a Literal at the API layer and a CHECK
+    # constraint in the DB (some paths write model_tags/tags directly).
+    color: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class Note(Base):

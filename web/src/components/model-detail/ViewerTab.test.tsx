@@ -38,6 +38,7 @@ type ViewerToolsStub = {
   wireframe: boolean;
   section: { enabled: boolean; axis: string; t: number };
   explode: number;
+  cameraPreset: string | null;
 };
 type ViewerApiStub = { screenshot: () => Promise<Blob | null> };
 const { modelViewerMock, platePanelMock, defaultModelViewerImpl, screenshotSpy } = vi.hoisted(() => {
@@ -73,6 +74,7 @@ const { modelViewerMock, platePanelMock, defaultModelViewerImpl, screenshotSpy }
           tools ? `${tools.section.enabled}:${tools.section.axis}:${tools.section.t}` : undefined
         }
         data-explode={tools ? String(tools.explode) : undefined}
+        data-camera-preset={tools ? (tools.cameraPreset ?? "") : undefined}
         data-fit={fitSignal}
       >
         {parts.map((part) => part.url).join(",")}
@@ -355,6 +357,32 @@ describe("ViewerTab", () => {
       expect(screen.getByRole("button", { name: "Wireframe" })).toHaveAttribute("aria-pressed", "true"),
     );
     expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-wireframe", "true");
+  });
+
+  it("clicking a camera preset selects it, and orbiting (ModelViewer's onCameraPresetClear) clears it back to null", async () => {
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file])} />);
+    await screen.findByTestId("model-viewer");
+
+    expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-camera-preset", "");
+
+    fireEvent.click(screen.getByRole("radio", { name: "Top" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-camera-preset", "top"),
+    );
+    expect(screen.getByRole("radio", { name: "Top" })).toHaveAttribute("aria-checked", "true");
+
+    // Simulate `ModelViewer`'s `OrbitPresetGuard` reporting a real user
+    // orbit via the `onCameraPresetClear` prop the mock was last called with.
+    const { onCameraPresetClear } = modelViewerMock.mock.calls.at(-1)![0] as {
+      onCameraPresetClear: () => void;
+    };
+    act(() => onCameraPresetClear());
+
+    await waitFor(() =>
+      expect(screen.getByTestId("model-viewer")).toHaveAttribute("data-camera-preset", ""),
+    );
+    expect(screen.getByRole("radio", { name: "Top" })).toHaveAttribute("aria-checked", "false");
   });
 
   it("Grid flips aria-pressed and the tools.grid flag ModelViewer receives", async () => {

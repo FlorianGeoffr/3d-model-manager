@@ -14,6 +14,7 @@ describe("DEFAULT_TOOLS", () => {
       ortho: false,
       section: { enabled: false, axis: "x", t: 0.5 },
       explode: 0,
+      cameraPreset: null,
     });
   });
 });
@@ -141,6 +142,31 @@ describe("useViewerTools", () => {
     act(() => result.current.setTools({ wireframe: true, autoRotate: true, explode: 0.5 }));
 
     expect(localStorage.getItem("viewer-tools")).toBeNull();
+  });
+
+  describe("cameraPreset transitions", () => {
+    it("selects a preset and a later selection replaces it", () => {
+      const { result } = renderHook(() => useViewerTools());
+      expect(result.current.tools.cameraPreset).toBeNull();
+
+      act(() => result.current.setTools({ cameraPreset: "top" }));
+      expect(result.current.tools.cameraPreset).toBe("top");
+
+      act(() => result.current.setTools({ cameraPreset: "front" }));
+      expect(result.current.tools.cameraPreset).toBe("front");
+    });
+
+    it("a user orbit clears the preset back to null", () => {
+      const { result } = renderHook(() => useViewerTools());
+      act(() => result.current.setTools({ cameraPreset: "side" }));
+      expect(result.current.tools.cameraPreset).toBe("side");
+
+      // `ModelViewer`'s `OrbitPresetGuard` reports a real user orbit as
+      // exactly this patch -- the segmented control must not keep showing a
+      // preset as selected once the camera has actually moved off it.
+      act(() => result.current.setTools({ cameraPreset: null }));
+      expect(result.current.tools.cameraPreset).toBeNull();
+    });
   });
 
   it("persists a grid change to localStorage", () => {

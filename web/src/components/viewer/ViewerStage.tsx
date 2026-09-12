@@ -48,6 +48,7 @@ import {
 import { traysToPartColors, type PartColors } from "@/components/viewer/partColors";
 import {
   formatStats,
+  type CameraPreset,
   type SceneStats,
   type SectionAxis,
   type ViewerApi,
@@ -65,6 +66,19 @@ const ModelViewer = lazy(() => import("@/components/viewer/ModelViewer"));
 // Background/Lighting `SegmentedControl` usages below.
 const SECTION_AXIS_OPTIONS: readonly SectionAxis[] = ["x", "y", "z"];
 const SECTION_AXIS_LABELS: Record<SectionAxis, string> = { x: "X", y: "Y", z: "Z" };
+
+// R10 camera presets -- mirrors the Section axis picker above. `Exclude<...,
+// null>` since the segmented control's OPTIONS are always the four concrete
+// presets; `null` ("no preset active") is only ever the current `value`, see
+// `SegmentedControl`'s nullable-value support.
+type CameraPresetOption = Exclude<CameraPreset, null>;
+const CAMERA_PRESET_OPTIONS: readonly CameraPresetOption[] = ["iso", "top", "front", "side"];
+const CAMERA_PRESET_LABELS: Record<CameraPresetOption, string> = {
+  iso: "Iso",
+  top: "Top",
+  front: "Front",
+  side: "Side",
+};
 
 /** A centered card used for every "nothing to render here" state -- shared by
  * this stage's empty-selection case and `ViewerTab`'s file-status cards
@@ -186,6 +200,7 @@ function MeshCanvas({
   apiRef,
   onPartLoaded,
   onExplodeModeChange,
+  onCameraPresetClear,
   hasCoverThumbnail,
   onError,
 }: {
@@ -202,6 +217,10 @@ function MeshCanvas({
    * `ViewerStage`'s `handlePartLoaded` for what it does. */
   onPartLoaded: () => void;
   onExplodeModeChange: (mode: ExplodeMode) => void;
+  /** R10 camera presets: forwarded to `ModelViewer`'s `OrbitPresetGuard` --
+   * fires on a real user orbit so `ViewerStage` can clear `tools.
+   * cameraPreset` back to `null`. */
+  onCameraPresetClear: () => void;
   /** Fix wave finding 3: forwarded to `ViewerErrorBoundary` so a canvas-level
    * crash can clear the thumbnail crossfade cover in `ViewerStage`. */
   onError?: () => void;
@@ -243,6 +262,7 @@ function MeshCanvas({
             apiRef={apiRef}
             onPartLoaded={onPartLoaded}
             onExplodeModeChange={onExplodeModeChange}
+            onCameraPresetClear={onCameraPresetClear}
           />
         </Suspense>
       </ViewerErrorBoundary>
@@ -487,6 +507,19 @@ export function ViewerStage({
     onToolsChange({ wireframe: !tools.wireframe });
   }, [onToolsChange, tools.wireframe]);
 
+  // R10 camera presets: `ModelViewer`'s `CameraPresetTween` does the actual
+  // tween/refit; this just records which preset is active so the segmented
+  // control reflects it. `OrbitPresetGuard` (wired below) clears it back to
+  // `null` the moment the user actually orbits.
+  const handleCameraPreset = useCallback(
+    (preset: CameraPreset) => onToolsChange({ cameraPreset: preset }),
+    [onToolsChange],
+  );
+  const handleCameraPresetClear = useCallback(
+    () => onToolsChange({ cameraPreset: null }),
+    [onToolsChange],
+  );
+
   const handleGridToggle = useCallback(() => {
     onToolsChange({ grid: !tools.grid });
   }, [onToolsChange, tools.grid]);
@@ -688,6 +721,7 @@ export function ViewerStage({
             apiRef={viewerApiRef}
             onPartLoaded={handlePartLoaded}
             onExplodeModeChange={setExplodeMode}
+            onCameraPresetClear={handleCameraPresetClear}
             hasCoverThumbnail={Boolean(coverUrl) && parts.length > 0}
             onError={handleLoadError}
           />
@@ -931,6 +965,16 @@ export function ViewerStage({
                   </TooltipTrigger>
                   <TooltipContent>Screenshot</TooltipContent>
                 </Tooltip>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <span className="text-xs text-muted-foreground">Camera</span>
+                <SegmentedControl
+                  label="Camera preset"
+                  options={CAMERA_PRESET_OPTIONS}
+                  labels={CAMERA_PRESET_LABELS}
+                  value={tools.cameraPreset}
+                  onChange={handleCameraPreset}
+                />
               </div>
             </div>
 

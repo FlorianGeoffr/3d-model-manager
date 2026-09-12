@@ -14,6 +14,25 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 export type SectionAxis = "x" | "y" | "z";
 
+/** Task 5 inspection shading, mutually exclusive by construction (an enum,
+ * not independent booleans): `"wireframe"` renders every owned material's
+ * edges only (the pre-R10 `wireframe: boolean`), `"xray"` (R10) makes them
+ * translucent double-sided instead (`transparent`/`opacity: 0.35`/
+ * `depthWrite: false`/`side: DoubleSide` -- see `ModelViewer.tsx`'s
+ * `GltfPart` owned-materials effect for where these apply and restore). */
+export type Shading = "solid" | "wireframe" | "xray";
+
+/** R10 camera presets: tweens the camera to look down a fixed world-space
+ * direction (`ModelViewer.tsx`'s `CameraPresetTween`, reusing drei
+ * `GizmoHelper`'s `tweenCamera` -- the same machinery the view-cube's face
+ * clicks use) and refits to the current bounds. `null` means "no preset is
+ * active" -- the default (an untouched load happens to frame roughly like
+ * `"iso"`, but nobody chose that, so the segmented control shows nothing
+ * selected rather than lying about it), and it goes back to `null` the
+ * moment the user manually orbits (see `ModelViewer.tsx`'s
+ * `OrbitPresetGuard`). */
+export type CameraPreset = "iso" | "top" | "front" | "side" | null;
+
 /** Cross-section clip state (Task 5 wires the actual clipping plane). `t` is
  * the sweep position along `axis`, 0..1 across the model's bounding box. */
 export interface SectionState {
@@ -76,6 +95,7 @@ export interface ViewerToolsState {
   ortho: boolean; // Task 4 wires
   section: SectionState; // Task 5 wires
   explode: number; // 0..1, Task 5 wires
+  cameraPreset: CameraPreset; // R10 camera presets
 }
 
 /** The imperative surface `ModelViewer` publishes into `ViewerStage`'s
@@ -95,6 +115,7 @@ export const DEFAULT_TOOLS: ViewerToolsState = {
   ortho: false,
   section: { enabled: false, axis: "x", t: 0.5 },
   explode: 0,
+  cameraPreset: null,
 };
 
 const STORAGE_KEY = "viewer-tools";

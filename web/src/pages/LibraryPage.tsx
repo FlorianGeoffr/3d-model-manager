@@ -83,10 +83,15 @@ export function LibraryPage() {
   // never persisted, never written to the URL.
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  // R9-A item 6: the anchor for shift+click range selection -- the index of
+  // the most recently (modified-)clicked card, cleared whenever selection is
+  // exited so a later range doesn't reach back into a previous selection.
+  const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null);
 
   function exitSelectMode() {
     setSelectMode(false);
     setSelectedIds(new Set());
+    setLastSelectedIndex(null);
   }
 
   function toggleSelected(id: number, next: boolean) {
@@ -96,6 +101,24 @@ export function LibraryPage() {
       else updated.delete(id);
       return updated;
     });
+  }
+
+  /** Ctrl/Cmd toggles just this card; Shift selects the inclusive range from
+   * `lastSelectedIndex` (or this index, if there isn't one yet) through this
+   * index, adding to the existing selection rather than replacing it. Either
+   * one auto-enters select mode. */
+  function handleModifiedClick(event: React.MouseEvent, index: number) {
+    setSelectMode(true);
+    if (event.shiftKey) {
+      const anchor = lastSelectedIndex ?? index;
+      const [lo, hi] = anchor <= index ? [anchor, index] : [index, anchor];
+      const rangeIds = items.slice(lo, hi + 1).map((model) => model.id);
+      setSelectedIds((prev) => new Set([...prev, ...rangeIds]));
+    } else {
+      const model = items[index];
+      if (model) toggleSelected(model.id, !selectedIds.has(model.id));
+    }
+    setLastSelectedIndex(index);
   }
 
   const tagsQuery = useTags();
@@ -312,13 +335,15 @@ export function LibraryPage() {
       ) : (
         <>
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
-            {items.map((model) => (
+            {items.map((model, index) => (
               <ModelCard
                 key={model.id}
                 model={model}
+                index={index}
                 selectable={selectMode}
                 selected={selectedIds.has(model.id)}
                 onSelectChange={toggleSelected}
+                onModifiedClick={handleModifiedClick}
               />
             ))}
           </div>

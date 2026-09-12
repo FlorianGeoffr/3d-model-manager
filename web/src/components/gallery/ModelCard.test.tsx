@@ -44,7 +44,13 @@ const MODEL: ModelSummary = {
 
 function renderCard(
   model: ModelSummary,
-  cardProps: { selectable?: boolean; selected?: boolean; onSelectChange?: (id: number, next: boolean) => void } = {},
+  cardProps: {
+    selectable?: boolean;
+    selected?: boolean;
+    onSelectChange?: (id: number, next: boolean) => void;
+    index?: number;
+    onModifiedClick?: (event: React.MouseEvent, index: number) => void;
+  } = {},
 ) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const rootRoute = createRootRoute();
@@ -316,5 +322,51 @@ describe("ModelCard -- prefetch on intent (R9-A item 4)", () => {
     fireEvent.focus(link);
 
     await waitFor(() => expect(getMock).toHaveBeenCalledWith(`/models/${MODEL.slug}`));
+  });
+});
+
+describe("ModelCard -- ctrl/cmd/shift+click range select (R9-A item 6)", () => {
+  it("calls onModifiedClick with the index and prevents navigation on a shift-click", async () => {
+    const onModifiedClick = vi.fn();
+    const { router } = renderCard(MODEL, { index: 3, onModifiedClick });
+    const link = await screen.findByRole("link");
+
+    fireEvent.click(link, { shiftKey: true });
+
+    expect(onModifiedClick).toHaveBeenCalledTimes(1);
+    expect(onModifiedClick.mock.calls[0][1]).toBe(3);
+    expect(router.state.location.pathname).toBe("/");
+  });
+
+  it("calls onModifiedClick and prevents navigation on a ctrl-click", async () => {
+    const onModifiedClick = vi.fn();
+    const { router } = renderCard(MODEL, { index: 1, onModifiedClick });
+    const link = await screen.findByRole("link");
+
+    fireEvent.click(link, { ctrlKey: true });
+
+    expect(onModifiedClick).toHaveBeenCalledTimes(1);
+    expect(router.state.location.pathname).toBe("/");
+  });
+
+  it("calls onModifiedClick and prevents navigation on a cmd (meta) click", async () => {
+    const onModifiedClick = vi.fn();
+    const { router } = renderCard(MODEL, { index: 2, onModifiedClick });
+    const link = await screen.findByRole("link");
+
+    fireEvent.click(link, { metaKey: true });
+
+    expect(onModifiedClick).toHaveBeenCalledTimes(1);
+    expect(router.state.location.pathname).toBe("/");
+  });
+
+  it("plain clicks navigate normally and don't call onModifiedClick", async () => {
+    const onModifiedClick = vi.fn();
+    renderCard(MODEL, { index: 0, onModifiedClick });
+    const link = await screen.findByRole("link");
+
+    fireEvent.click(link);
+
+    expect(onModifiedClick).not.toHaveBeenCalled();
   });
 });

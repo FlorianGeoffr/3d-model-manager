@@ -17,16 +17,25 @@ const VISIBLE_TAGS = 3;
 
 export function ModelCard({
   model,
+  index,
   selectable = false,
   selected = false,
   onSelectChange,
+  onModifiedClick,
 }: {
   model: ModelSummary;
+  /** This card's position in the gallery's flat item list -- used only for
+   * ctrl/cmd/shift+click range selection; optional so the card still works
+   * standalone (e.g. in tests) without select support. */
+  index?: number;
   /** Bulk-select mode (LibraryPage): shows a checkbox overlay instead of
    * (or alongside) the favorite star, none of which navigate the card. */
   selectable?: boolean;
   selected?: boolean;
   onSelectChange?: (id: number, next: boolean) => void;
+  /** Ctrl/Cmd/Shift+click range/toggle select (R9-A item 6): fired instead
+   * of navigating when the card's `<Link>` is clicked with a modifier held. */
+  onModifiedClick?: (event: React.MouseEvent, index: number) => void;
 }) {
   const [coverErrored, setCoverErrored] = useState(false);
   const [renderErrored, setRenderErrored] = useState(false);
@@ -84,12 +93,22 @@ export function ModelCard({
     event.stopPropagation();
   }
 
+  // R9-A item 6: a modified click selects instead of navigating. Any
+  // modified click auto-enters select mode via the parent's handler.
+  function onLinkClick(event: React.MouseEvent) {
+    if (onModifiedClick && (event.shiftKey || event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      onModifiedClick(event, index ?? 0);
+    }
+  }
+
   return (
     <Link
       to="/models/$slug"
       params={{ slug: model.slug }}
       className="group block"
       preload="intent"
+      onClick={onLinkClick}
       onPointerEnter={onIntent}
       onFocus={onIntent}
     >

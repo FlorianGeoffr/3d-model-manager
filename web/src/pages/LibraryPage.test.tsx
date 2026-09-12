@@ -70,8 +70,15 @@ function renderLibraryPage(initialEntries: string[] = ["/"]) {
   const rootRoute = createRootRoute();
   const libraryRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", component: LibraryPage });
   const uploadRoute = createRoute({ getParentRoute: () => rootRoute, path: "/upload", component: () => null });
+  // A modified click on a card must NOT navigate here -- so a matching
+  // detail route exists to prove it (same shape as ModelCard.test.tsx).
+  const detailRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: "/models/$slug",
+    component: () => null,
+  });
   const router = createRouter({
-    routeTree: rootRoute.addChildren([libraryRoute, uploadRoute]),
+    routeTree: rootRoute.addChildren([libraryRoute, uploadRoute, detailRoute]),
     history: createMemoryHistory({ initialEntries }),
   });
   // Mirrors the app's real global MutationCache error toast
@@ -88,11 +95,14 @@ function renderLibraryPage(initialEntries: string[] = ["/"]) {
     }),
     defaultOptions: { queries: { retry: false } },
   });
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
-    </QueryClientProvider>,
-  );
+  return {
+    router,
+    ...render(
+      <QueryClientProvider client={queryClient}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    ),
+  };
 }
 
 function mockGalleryOk() {
@@ -147,6 +157,20 @@ const GALLERY_MODEL_2: ModelSummary = {
   id: 2,
   slug: "test-model-2",
   name: "Test Model 2",
+};
+
+const GALLERY_MODEL_3: ModelSummary = {
+  ...GALLERY_MODEL,
+  id: 3,
+  slug: "test-model-3",
+  name: "Test Model 3",
+};
+
+const GALLERY_MODEL_4: ModelSummary = {
+  ...GALLERY_MODEL,
+  id: 4,
+  slug: "test-model-4",
+  name: "Test Model 4",
 };
 
 function mockGalleryOkWithModels(models: ModelSummary[]) {
@@ -442,5 +466,39 @@ describe("LibraryPage", () => {
     expect(toastSuccessMock).not.toHaveBeenCalled();
     // Action bar still present with the selection intact.
     expect(screen.getByText("1 selected")).toBeInTheDocument();
+  });
+
+  function cardLink(name: string): HTMLElement {
+    const link = screen.getByText(name).closest("a");
+    if (!link) throw new Error(`no card link found for "${name}"`);
+    return link;
+  }
+
+  it("shift-clicking two cards selects the inclusive range between them, auto-entering select mode", async () => {
+    mockGalleryOkWithModels([GALLERY_MODEL, GALLERY_MODEL_2, GALLERY_MODEL_3, GALLERY_MODEL_4]);
+    const { router } = renderLibraryPage();
+    await screen.findByText("Test Model");
+
+    fireEvent.click(cardLink("Test Model"), { shiftKey: true });
+    await screen.findByText("1 selected");
+
+    fireEvent.click(cardLink("Test Model 4"), { shiftKey: true });
+
+    expect(await screen.findByText("4 selected")).toBeInTheDocument();
+    // No navigation happened on either modified click.
+    expect(router.state.location.pathname).toBe("/");
+  });
+
+  it("ctrl-clicking a card toggles just that card's selection", async () => {
+    mockGalleryOkWithModels([GALLERY_MODEL, GALLERY_MODEL_2]);
+    const { router } = renderLibraryPage();
+    await screen.findByText("Test Model");
+
+    fireEvent.click(cardLink("Test Model"), { ctrlKey: true });
+    expect(await screen.findByText("1 selected")).toBeInTheDocument();
+
+    fireEvent.click(cardLink("Test Model"), { ctrlKey: true });
+    await waitFor(() => expect(screen.queryByText(/selected/)).not.toBeInTheDocument());
+    expect(router.state.location.pathname).toBe("/");
   });
 });

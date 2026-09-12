@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Children, isValidElement, useEffect, type ReactNode } from "react";
 
 import { ViewerTab } from "@/components/model-detail/ViewerTab";
@@ -161,7 +161,7 @@ function fakeFile(overrides: Partial<FileOut> = {}): FileOut {
   };
 }
 
-function fakeModel(files: FileOut[]): ModelDetail {
+function fakeModel(files: FileOut[], coverBlobHash: string | null = null): ModelDetail {
   return {
     id: 1,
     slug: "test-model",
@@ -174,7 +174,7 @@ function fakeModel(files: FileOut[]): ModelDetail {
     source_collection_id: null,
     source_collection_title: null,
     imported_at: null,
-    cover_blob_hash: null,
+    cover_blob_hash: coverBlobHash,
     is_archived: false,
     created_at: "2026-06-01T12:00:00Z",
     updated_at: "2026-06-01T12:00:00Z",
@@ -1051,5 +1051,60 @@ describe("ViewerTab", () => {
     expect(await screen.findByTestId("model-viewer")).toHaveTextContent("/api/blobs/goodhash/glb");
     modelViewerMock.mockImplementation(defaultModelViewerImpl);
     consoleSpy.mockRestore();
+  });
+});
+
+describe("ViewerTab thumbnail load crossfade (R9-D item 8)", () => {
+  beforeEach(() => {
+    modelViewerMock.mockClear();
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const firePartLoaded = () => {
+    const { onPartLoaded } = modelViewerMock.mock.calls.at(-1)![0] as unknown as {
+      onPartLoaded: () => void;
+    };
+    act(() => onPartLoaded());
+  };
+
+  it("renders no thumbnail layer when the model has no cover", async () => {
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file], null)} />);
+
+    await screen.findByTestId("model-viewer");
+    expect(screen.queryByTestId("viewer-thumbnail")).not.toBeInTheDocument();
+  });
+
+  it("shows the cover thumbnail over the canvas before the first part loads", async () => {
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file], "coverhash")} />);
+
+    await screen.findByTestId("model-viewer");
+    const thumbnail = screen.getByTestId("viewer-thumbnail");
+    expect(thumbnail).toHaveAttribute("src", "/api/blobs/coverhash/thumb?size=512");
+    expect(thumbnail.className).toContain("opacity-100");
+    expect(screen.getByTestId("viewer-loading-indicator")).toBeInTheDocument();
+  });
+
+  it("fades the thumbnail out and unmounts it once the model has loaded", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file], "coverhash")} />);
+    await screen.findByTestId("model-viewer");
+
+    firePartLoaded();
+
+    expect(screen.getByTestId("viewer-thumbnail").className).toContain("opacity-0");
+    expect(screen.queryByTestId("viewer-loading-indicator")).not.toBeInTheDocument();
+
+    await act(async () => {
+      vi.advanceTimersByTime(250);
+    });
+
+    expect(screen.queryByTestId("viewer-thumbnail")).not.toBeInTheDocument();
   });
 });

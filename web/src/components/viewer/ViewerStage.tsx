@@ -3,6 +3,7 @@ import {
   Suspense,
   lazy,
   useCallback,
+  useEffect,
   useRef,
   useState,
   type KeyboardEvent,
@@ -13,6 +14,7 @@ import {
   CameraIcon,
   ExternalLinkIcon,
   Grid3x3Icon,
+  LoaderCircleIcon,
   Maximize2Icon,
   PanelRightCloseIcon,
   PanelRightOpenIcon,
@@ -174,6 +176,7 @@ function MeshCanvas({
   apiRef,
   onPartLoaded,
   onExplodeModeChange,
+  hasCoverThumbnail,
 }: {
   parts: ViewerPart[];
   background: string;
@@ -188,6 +191,17 @@ function MeshCanvas({
    * `ViewerStage`'s `handlePartLoaded` for what it does. */
   onPartLoaded: () => void;
   onExplodeModeChange: (mode: ExplodeMode) => void;
+  /** R9-D item 8: when the model has a cover thumbnail, `ViewerStage`
+   * already shows it as a full-stage overlay while the GLB loads (see
+   * `ViewerStage`'s thumbnail layer), so this component's own Suspense
+   * fallback (the lazy-chunk import only -- GLB loads happen inside
+   * `ModelViewer`'s own internal Canvas suspense and never reach here) can
+   * skip the full-stage `Skeleton` and render nothing; a small corner
+   * spinner in `ViewerStage` covers the "still loading" affordance instead.
+   * Falls back to the old full-stage `Skeleton` when there's no thumbnail to
+   * cover the gap (e.g. the pop-out window, or a model with no cover
+   * image). */
+  hasCoverThumbnail: boolean;
 }) {
   if (parts.length === 0) {
     return (
@@ -203,7 +217,7 @@ function MeshCanvas({
   return (
     <>
       <ViewerErrorBoundary resetKey={visibleParts.map((part) => part.id).join("|")}>
-        <Suspense fallback={<Skeleton className="h-full w-full" />}>
+        <Suspense fallback={hasCoverThumbnail ? null : <Skeleton className="h-full w-full" />}>
           <ModelViewer
             parts={parts}
             background={background}
@@ -359,6 +373,14 @@ export interface ViewerStageProps {
    * prop path from the Screenshot button's click handler into a `<Canvas>`
    * child otherwise. */
   viewerApiRef: React.MutableRefObject<ViewerApi | null>;
+  /** R9-D item 8: the model's cover/thumbnail image URL (`null`/`undefined`
+   * when the model has none, e.g. the pop-out window today), rendered as a
+   * full-stage overlay over the canvas until the first part has loaded, then
+   * faded out over ~250ms (`prefers-reduced-motion` swaps instantly via
+   * Tailwind's `motion-reduce:` variant -- no JS branching needed). Replaces
+   * the old "blank canvas until the GLB pops in" gap with something to look
+   * at. */
+  coverUrl?: string | null;
 }
 
 /** Strip + canvas + collapsible parts panel -- the whole redesigned viewer
@@ -414,6 +436,7 @@ export function ViewerStage({
   fitSignal,
   onFit,
   viewerApiRef,
+  coverUrl,
 }: ViewerStageProps) {
   // The strip only exists to host actions. With the panel open and no
   // pop-out/expand actions to show (the window's steady state), it would be
@@ -452,9 +475,31 @@ export function ViewerStage({
   // present when the slider last moved. A no-op during the initial eager
   // load, since `tools.explode` starts at 0 -- see `ModelViewer`'s
   // `onPartLoaded` doc comment.
+  // R9-D item 8: the "GLB has loaded" half of the thumbnail crossfade --
+  // `firstLoadRef` guards against `handlePartLoaded` firing again on a LATER
+  // part (multi-part scenes) re-triggering the fade, since only the FIRST
+  // part to load ends the "still loading" state the thumbnail covers.
+  const firstLoadRef = useRef(false);
+  const [modelReady, setModelReady] = useState(false);
   const handlePartLoaded = useCallback(() => {
+    if (!firstLoadRef.current) {
+      firstLoadRef.current = true;
+      setModelReady(true);
+    }
     if (tools.explode !== 0) onToolsChange({ explode: 0 });
   }, [tools.explode, onToolsChange]);
+
+  // R9-D item 8: keeps the thumbnail `<img>` mounted for the ~250ms fade
+  // (Tailwind `transition-opacity`) after `modelReady` flips, then unmounts
+  // it -- a plain timer rather than an `onTransitionEnd` handler because
+  // `prefers-reduced-motion` (via `motion-reduce:transition-none`) removes
+  // the CSS transition entirely, which would never fire that event.
+  const [thumbnailMounted, setThumbnailMounted] = useState(true);
+  useEffect(() => {
+    if (!modelReady) return;
+    const id = window.setTimeout(() => setThumbnailMounted(false), 250);
+    return () => window.clearTimeout(id);
+  }, [modelReady]);
 
   // Explode classification reported by `ModelViewer` once parts load --
   // "none" until then (and for single-part / degenerate scenes), which keeps
@@ -590,7 +635,28 @@ export function ViewerStage({
             apiRef={viewerApiRef}
             onPartLoaded={handlePartLoaded}
             onExplodeModeChange={setExplodeMode}
+            hasCoverThumbnail={Boolean(coverUrl) && parts.length > 0}
           />
+          {coverUrl && parts.length > 0 && thumbnailMounted && (
+            <img
+              src={coverUrl}
+              alt=""
+              aria-hidden="true"
+              data-testid="viewer-thumbnail"
+              className={cn(
+                "pointer-events-none absolute inset-0 h-full w-full object-cover transition-opacity duration-[250ms] motion-reduce:transition-none",
+                modelReady ? "opacity-0" : "opacity-100",
+              )}
+            />
+          )}
+          {coverUrl && parts.length > 0 && !modelReady && (
+            <div
+              data-testid="viewer-loading-indicator"
+              className="pointer-events-none absolute top-2 right-2 rounded-full bg-background/70 p-1.5 backdrop-blur-sm"
+            >
+              <LoaderCircleIcon className="size-4 animate-spin text-muted-foreground" />
+            </div>
+          )}
         </div>
 
         {panelOpen && (

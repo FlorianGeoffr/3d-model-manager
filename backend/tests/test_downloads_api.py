@@ -256,6 +256,92 @@ async def test_download_member_gcode_rejects_non_sliced_format(
     assert response.status_code == 400
 
 
+async def test_download_content_type_by_extension(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    """Review finding 4: the raw download's Content-Type is derived from
+    the file's own extension, not a blanket octet-stream -- desktop
+    slicers refuse an open whose Content-Type they don't recognize.
+    """
+    cases = [
+        ("part.stl", "model/stl"),
+        ("part.3mf", "model/3mf"),
+        ("part.step", "model/step"),
+        ("part.stp", "model/step"),
+        ("part.obj", "model/obj"),
+        ("part.gcode", "text/x.gcode"),
+        ("part.unknownext", "application/octet-stream"),
+    ]
+    created = await _create_model(authenticated_client, "Content Type Target")
+    revision_id = created["current_revision"]["id"]
+
+    for rel_path, expected_media_type in cases:
+        upload = await authenticated_client.put(
+            "/api/uploads",
+            params={"model_id": created["id"], "revision_id": revision_id, "rel_path": rel_path},
+            content=b"bytes",
+        )
+        assert upload.status_code == 201, upload.text
+        file_id = upload.json()["file_id"]
+
+        response = await authenticated_client.get(f"/api/files/{file_id}/download")
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].split(";")[0] == expected_media_type, rel_path
+
+
+async def test_download_filename_path_requires_matching_name(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    """Review finding 4: ``GET .../download/{filename}`` 404s if
+    ``{filename}`` doesn't equal the file's own stored name."""
+    created = await _create_model(authenticated_client, "Filename Path Target")
+    revision_id = created["current_revision"]["id"]
+    content = b"filename-path-bytes"
+
+    upload = await authenticated_client.put(
+        "/api/uploads",
+        params={"model_id": created["id"], "revision_id": revision_id, "rel_path": "part.stl"},
+        content=content,
+    )
+    file_id = upload.json()["file_id"]
+
+    ok = await authenticated_client.get(f"/api/files/{file_id}/download/part.stl")
+    assert ok.status_code == 200
+    assert ok.content == content
+    assert ok.headers["content-type"].split(";")[0] == "model/stl"
+
+    wrong = await authenticated_client.get(f"/api/files/{file_id}/download/wrong.stl")
+    assert wrong.status_code == 404
+
+
+async def test_slicer_link_url_includes_filename(
+    authenticated_client: httpx.AsyncClient,
+    seed_file,
+    db_session,
+) -> None:
+    """Review finding 4: the minted URL carries the file's own extension
+    in its path so a slicer opening the deep link can tell what it is."""
+    created = await _create_model(authenticated_client, "Slicer Filename Target")
+    model = await db_session.get(Model, created["id"])
+    revision_id = created["current_revision"]["id"]
+    revision = await db_session.get(Revision, revision_id)
+    file = await seed_file(model, revision, "sliced.3mf", b"slicer-bytes")
+
+    link = await authenticated_client.post(f"/api/files/{file.id}/slicer-link")
+    assert link.status_code == 200, link.text
+    url = link.json()["url"]
+    assert f"/api/files/{file.id}/download/sliced.3mf?token=" in url
+
+    path_and_query = url.split("/api", 1)[1]
+    async with _anon_client() as anon:
+        response = await anon.get(f"/api{path_and_query}")
+
+    assert response.status_code == 200
+    assert response.content == b"slicer-bytes"
+    assert response.headers["content-type"].split(";")[0] == "model/3mf"
+
+
 async def test_upload_write_records_default_backend_and_file_location(
     authenticated_client: httpx.AsyncClient,
     db_session,

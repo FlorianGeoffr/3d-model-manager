@@ -48,6 +48,24 @@ async def delete_file(
     await library.delete_file(db, settings, file_id)
 
 
+# Extension -> media type (review finding 4): a desktop slicer opening a
+# deep-linked download decides whether to accept the file partly off
+# Content-Type -- a blanket application/octet-stream got silently refused.
+_MEDIA_TYPES_BY_SUFFIX: dict[str, str] = {
+    ".stl": "model/stl",
+    ".3mf": "model/3mf",
+    ".step": "model/step",
+    ".stp": "model/step",
+    ".obj": "model/obj",
+    ".gcode": "text/x.gcode",
+}
+
+
+def _media_type_for_filename(filename: str) -> str:
+    suffix = PurePosixPath(filename).suffix.lower()
+    return _MEDIA_TYPES_BY_SUFFIX.get(suffix, "application/octet-stream")
+
+
 def _extract_embedded_gcode(data: bytes, plate: int | None) -> bytes:
     """Pull one plate's embedded ``.gcode`` member out of a ``.gcode.3mf``
     zip (R10-B: ``?member=gcode`` download param for the frontend's
@@ -70,25 +88,23 @@ def _extract_embedded_gcode(data: bytes, plate: int | None) -> bytes:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "embedded gcode member missing") from exc
 
 
-@public_router.get("/{file_id}/download")
-async def download_file(
+async def _download_file(
     file_id: int,
-    member: str | None = Query(None, description="'gcode' extracts a .gcode.3mf's embedded gcode"),
-    plate: int | None = Query(None, description="Plate index for member=gcode; default lowest"),
-    token: str | None = Query(
-        None,
-        description="Signed slicer-deep-link token (POST .../slicer-link); bypasses the cookie",
-    ),
-    tdmm_session: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
-    db: AsyncSession = Depends(get_db),
-    settings: Settings = Depends(get_settings),
+    *,
+    url_filename: str | None,
+    member: str | None,
+    plate: int | None,
+    token: str | None,
+    tdmm_session: str | None,
+    db: AsyncSession,
+    settings: Settings,
 ) -> StreamingResponse:
-    """Stream a file's bytes from the storage backend (Task 6 interface
-    decision). Resolves THIS file's own primary backend (Workstream C task
-    C2), not a shared default -- a file relocated onto a non-default backend
-    is still downloadable from wherever its bytes actually are. 409 if the
-    file hasn't finished being stored yet (NULL ``verified_at`` and the
-    backend object genuinely doesn't exist -- a NULL ``verified_at`` with an
+    """Shared implementation for both download routes below. Resolves
+    THIS file's own primary backend (Workstream C task C2), not a shared
+    default -- a file relocated onto a non-default backend is still
+    downloadable from wherever its bytes actually are. 409 if the file
+    hasn't finished being stored yet (NULL ``verified_at`` and the backend
+    object genuinely doesn't exist -- a NULL ``verified_at`` with an
     already-present object, e.g. a race with a scanner, is not treated as
     "processing").
 
@@ -104,6 +120,11 @@ async def download_file(
     THIS ``file_id`` or the request is rejected; the existing cookie-auth
     path (below, ``require_session`` called directly since this route is
     mounted unauthenticated) is otherwise unchanged.
+
+    ``url_filename`` (review finding 4, filename-bearing route): when given,
+    must equal the file's own stored name (else 404) -- a slicer opening a
+    signed deep link sees a real extension in the URL itself, not just the
+    Content-Type header.
     """
     if token is not None:
         if signed_urls.verify(settings, token) != file_id:
@@ -114,6 +135,10 @@ async def download_file(
     file = await db.get(File, file_id)
     if file is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"file {file_id} not found")
+
+    filename = PurePosixPath(file.rel_path).name
+    if url_filename is not None and url_filename != filename:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "filename does not match this file")
 
     backend = await resolve_backend_for_file(db, settings, file)
     if file.verified_at is None:
@@ -134,11 +159,10 @@ async def download_file(
         gcode_bytes = await anyio.to_thread.run_sync(_extract_embedded_gcode, data, plate)
         return StreamingResponse(
             iter((gcode_bytes,)),
-            media_type="text/plain",
+            media_type=_media_type_for_filename("plate.gcode"),
             headers={"Content-Length": str(len(gcode_bytes))},
         )
 
-    filename = PurePosixPath(file.rel_path).name
     try:
         iterator = await anyio.to_thread.run_sync(backend.read, file.storage_path)
     except StorageKeyNotFound as exc:
@@ -149,11 +173,73 @@ async def download_file(
 
     return StreamingResponse(
         iterate_in_threadpool(iterator),
-        media_type="application/octet-stream",
+        media_type=_media_type_for_filename(filename),
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
             "Content-Length": str(blob.size),
         },
+    )
+
+
+@public_router.get("/{file_id}/download")
+async def download_file(
+    file_id: int,
+    member: str | None = Query(None, description="'gcode' extracts a .gcode.3mf's embedded gcode"),
+    plate: int | None = Query(None, description="Plate index for member=gcode; default lowest"),
+    token: str | None = Query(
+        None,
+        description="Signed slicer-deep-link token (POST .../slicer-link); bypasses the cookie",
+    ),
+    tdmm_session: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> StreamingResponse:
+    """Stream a file's bytes from the storage backend (Task 6 interface
+    decision). See ``_download_file`` for the shared behavior; kept
+    filename-less for existing (cookie-auth, member=gcode) callers -- new
+    signed slicer-link URLs use ``/{file_id}/download/{filename}`` below.
+    """
+    return await _download_file(
+        file_id,
+        url_filename=None,
+        member=member,
+        plate=plate,
+        token=token,
+        tdmm_session=tdmm_session,
+        db=db,
+        settings=settings,
+    )
+
+
+@public_router.get("/{file_id}/download/{filename}")
+async def download_file_with_filename(
+    file_id: int,
+    filename: str,
+    member: str | None = Query(None, description="'gcode' extracts a .gcode.3mf's embedded gcode"),
+    plate: int | None = Query(None, description="Plate index for member=gcode; default lowest"),
+    token: str | None = Query(
+        None,
+        description="Signed slicer-deep-link token (POST .../slicer-link); bypasses the cookie",
+    ),
+    tdmm_session: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> StreamingResponse:
+    """Filename-bearing variant (review finding 4) of ``download_file``
+    above -- this is what ``POST /{file_id}/slicer-link`` now mints, so a
+    desktop slicer opening the deep link sees the file's real extension in
+    the URL path itself. ``{filename}`` must equal the file's own stored
+    name or this 404s (see ``_download_file``'s ``url_filename`` check).
+    """
+    return await _download_file(
+        file_id,
+        url_filename=filename,
+        member=member,
+        plate=plate,
+        token=token,
+        tdmm_session=tdmm_session,
+        db=db,
+        settings=settings,
     )
 
 
@@ -207,5 +293,6 @@ async def create_slicer_link(
     token = signed_urls.sign_file_download(settings, file_id)
     expires_at = datetime.now(UTC) + timedelta(seconds=signed_urls.DEFAULT_TTL_S)
     origin = _absolute_origin(request, settings)
-    url = f"{origin}/api/files/{file_id}/download?token={quote(token, safe='')}"
+    filename = quote(PurePosixPath(file.rel_path).name, safe="")
+    url = f"{origin}/api/files/{file_id}/download/{filename}?token={quote(token, safe='')}"
     return SlicerLinkResponse(url=url, expires_at=expires_at)

@@ -13,6 +13,7 @@ import {
   BoxIcon,
   CameraIcon,
   ExternalLinkIcon,
+  GhostIcon,
   Grid3x3Icon,
   LoaderCircleIcon,
   Maximize2Icon,
@@ -503,9 +504,18 @@ export function ViewerStage({
     onToolsChange({ autoRotate: !tools.autoRotate });
   }, [onToolsChange, tools.autoRotate]);
 
+  // `shading` is an enum, not an independent boolean per mode -- toggling
+  // Wireframe just switches straight to/from "wireframe" regardless of
+  // whichever mode (including "xray") was active, same as clicking a radio
+  // option. Keeps the pre-R10 Wireframe button/`W` key behavior unchanged.
   const handleWireframeToggle = useCallback(() => {
-    onToolsChange({ wireframe: !tools.wireframe });
-  }, [onToolsChange, tools.wireframe]);
+    onToolsChange({ shading: tools.shading === "wireframe" ? "solid" : "wireframe" });
+  }, [onToolsChange, tools.shading]);
+
+  // R10 X-ray: same toggle shape as Wireframe above, just the other mode.
+  const handleXrayToggle = useCallback(() => {
+    onToolsChange({ shading: tools.shading === "xray" ? "solid" : "xray" });
+  }, [onToolsChange, tools.shading]);
 
   // R10 camera presets: `ModelViewer`'s `CameraPresetTween` does the actual
   // tween/refit; this just records which preset is active so the segmented
@@ -896,9 +906,9 @@ export function ViewerStage({
                   <TooltipTrigger asChild>
                     <Button
                       type="button"
-                      variant={tools.wireframe ? "secondary" : "outline"}
+                      variant={tools.shading === "wireframe" ? "secondary" : "outline"}
                       size="icon-sm"
-                      aria-pressed={tools.wireframe}
+                      aria-pressed={tools.shading === "wireframe"}
                       aria-label="Wireframe"
                       onClick={handleWireframeToggle}
                     >
@@ -906,6 +916,21 @@ export function ViewerStage({
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent>Wireframe (W)</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant={tools.shading === "xray" ? "secondary" : "outline"}
+                      size="icon-sm"
+                      aria-pressed={tools.shading === "xray"}
+                      aria-label="X-ray"
+                      onClick={handleXrayToggle}
+                    >
+                      <GhostIcon />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>X-ray</TooltipContent>
                 </Tooltip>
                 <Tooltip>
                   <TooltipTrigger asChild>

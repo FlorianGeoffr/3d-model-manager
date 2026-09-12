@@ -88,6 +88,7 @@ import {
   sectionPlaneParams,
   type CameraPreset,
   type SceneStats,
+  type Shading,
   type ViewerApi,
   type ViewerToolsState,
 } from "@/components/viewer/tools";
@@ -169,7 +170,7 @@ function GltfPart({
   url,
   color,
   visible,
-  wireframe,
+  shading,
   plane,
   offset,
   onLoaded,
@@ -179,9 +180,9 @@ function GltfPart({
   url: string;
   color: string | undefined;
   visible: boolean;
-  /** Task 5 "inspection tools": renders every owned material's edges only,
-   * no fill -- see the owned-materials effect below. */
-  wireframe: boolean;
+  /** Task 5 "inspection tools" + R10 X-ray -- see the owned-materials effect
+   * below for what each mode actually sets. */
+  shading: Shading;
   /** Task 5 cross-section: a world-space (normalized-scene) clipping plane,
    * or `null` when sectioning is off. Constructed by `ModelViewer` from
    * `tools.section` via `tools.ts`'s `sectionPlaneParams` -- this component
@@ -251,30 +252,49 @@ function GltfPart({
   const invalidate = useThree((state) => state.invalidate);
 
   // A single imperative traversal over the owned materials for every Task 5
-  // inspection toggle (recolor/wireframe/section), so none of them ever
+  // inspection toggle (recolor/shading/section), so none of them ever
   // re-clones the scene. Clearing `color` restores each material's `.color`
-  // from the `__source` stashed above. `wireframe`/`clippingPlanes` apply
+  // from the `__source` stashed above. `shading`/`clippingPlanes` apply
   // unconditionally to every owned material (not gated on `std.color` the
   // way recolor is) -- both are meaningful even on a material with no
   // `.color` property.
+  //
+  // R10 X-ray reuses the same `__source` clone `color` restore already
+  // relies on: entering xray sets `transparent`/`opacity`/`depthWrite`/
+  // `side` for a see-through double-sided look, and leaving it (back to
+  // "solid" OR "wireframe" -- wireframe wants the material's normal opaque
+  // properties too, just with edges drawn) restores all four straight from
+  // the untouched source material rather than hand-tracking what they used
+  // to be.
   useEffect(() => {
     forEachMesh(object, (mesh) => {
       ownedMaterialsOf(mesh).forEach((material) => {
         const std = material as THREE.MeshStandardMaterial;
+        const source = material.userData.__source as THREE.MeshStandardMaterial | undefined;
         if (std.color) {
           if (color) {
             std.color.set(color);
-          } else {
-            const source = material.userData.__source as THREE.MeshStandardMaterial | undefined;
-            if (source?.color) std.color.copy(source.color);
+          } else if (source?.color) {
+            std.color.copy(source.color);
           }
         }
-        std.wireframe = wireframe;
+        std.wireframe = shading === "wireframe";
+        if (shading === "xray") {
+          material.transparent = true;
+          material.opacity = 0.35;
+          material.depthWrite = false;
+          material.side = THREE.DoubleSide;
+        } else if (source) {
+          material.transparent = source.transparent;
+          material.opacity = source.opacity;
+          material.depthWrite = source.depthWrite;
+          material.side = source.side;
+        }
         material.clippingPlanes = plane ? [plane] : null;
       });
     });
     invalidate();
-  }, [object, color, wireframe, plane, invalidate]);
+  }, [object, color, shading, plane, invalidate]);
 
   return (
     <group ref={handleGroupRef} visible={visible} position={offset ?? ZERO_OFFSET}>
@@ -856,7 +876,7 @@ export default function ModelViewer({
                     url={part.url}
                     color={part.color}
                     visible={part.visible}
-                    wireframe={tools.wireframe}
+                    shading={tools.shading}
                     plane={plane}
                     offset={offsets.get(part.id)}
                     onLoaded={onLoaded}

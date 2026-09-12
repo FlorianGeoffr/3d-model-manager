@@ -90,7 +90,7 @@ export function sectionPlaneParams(
 
 export interface ViewerToolsState {
   grid: boolean; // build-plate grid (persisted)
-  wireframe: boolean; // Task 5 wires
+  shading: Shading; // Task 5 wireframe + R10 xray
   autoRotate: boolean; // Task 4 wires
   ortho: boolean; // Task 4 wires
   section: SectionState; // Task 5 wires
@@ -110,7 +110,7 @@ export interface ViewerApi {
 
 export const DEFAULT_TOOLS: ViewerToolsState = {
   grid: true,
-  wireframe: false,
+  shading: "solid",
   autoRotate: false,
   ortho: false,
   section: { enabled: false, axis: "x", t: 0.5 },

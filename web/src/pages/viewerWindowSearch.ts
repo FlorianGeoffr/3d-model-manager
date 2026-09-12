@@ -13,8 +13,13 @@ export interface WindowSearch {
   /** `"1"`/`"0"` -> `tools.grid` (Task 6; always present in links minted by
    * `openInWindow`, see that function's comment). */
   grid?: string;
-  /** `"1"` -> `tools.wireframe` (Task 6; omitted at the `false` default). */
+  /** `"1"` -> `tools.shading = "wireframe"` (Task 6; omitted at the
+   * `"solid"` default). */
   wf?: string;
+  /** `"1"` -> `tools.shading = "xray"` (R10; omitted at the `"solid"`
+   * default). Mutually exclusive with `wf` by construction -- `openInWindow`
+   * never sets both. */
+  xr?: string;
   /** `"1"` -> `tools.autoRotate` (Task 6; omitted at the `false` default). */
   rot?: string;
   /** `"o"` -> `tools.ortho` (Task 6; omitted at the `false` default). */
@@ -48,6 +53,7 @@ export function parseViewerWindowSearch(search: Record<string, unknown>): Window
     colors: asString(search.colors),
     grid: asString(search.grid),
     wf: asString(search.wf),
+    xr: asString(search.xr),
     rot: asString(search.rot),
     cam: asString(search.cam),
     sec: asString(search.sec),

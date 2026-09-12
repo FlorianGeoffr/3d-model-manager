@@ -30,6 +30,7 @@ describe("parseViewerWindowSearch", () => {
       colors: undefined,
       grid: undefined,
       wf: undefined,
+      xr: undefined,
       rot: undefined,
       cam: undefined,
       sec: undefined,
@@ -41,10 +42,11 @@ describe("parseViewerWindowSearch", () => {
   // `ex=0.40` are all valid JSON, so TanStack's default parser hands them to
   // `parseViewerWindowSearch` as NUMBERS (0.4, not "0.40") -- same regression
   // class as the numeric `ids` case above.
-  it("coerces the grid/wf/rot/ex numeric-looking params back to strings", () => {
-    expect(parseViewerWindowSearch({ grid: 0, wf: 1, rot: 1, ex: 0.4 })).toMatchObject({
+  it("coerces the grid/wf/xr/rot/ex numeric-looking params back to strings", () => {
+    expect(parseViewerWindowSearch({ grid: 0, wf: 1, xr: 1, rot: 1, ex: 0.4 })).toMatchObject({
       grid: "0",
       wf: "1",
+      xr: "1",
       rot: "1",
       ex: "0.4",
     });

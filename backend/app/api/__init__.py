@@ -19,6 +19,14 @@ narrowly-scoped bearer-token auth plane, deliberately kept independent of
 mounted the same way, for the same reason -- a Bambu Studio post-processing
 script can't present the httponly session cookie either, so it authenticates
 with the SAME bearer-token plane ``ext.router`` uses.
+
+``files.public_router`` (R10-C: slicer deep links) is mounted the same way
+too, but for the opposite reason: it exposes signed-token download auth as
+an ALTERNATIVE to the session cookie on ``GET .../download``, so it can't
+sit under ``protected_router``'s blanket ``require_session`` -- see
+``app.api.files``'s module docstring. It stays a 3-line stub next to
+``files.router`` (which keeps the session-gated delete + slicer-link
+endpoints) rather than a whole separate module.
 """
 
 from fastapi import APIRouter, Depends
@@ -55,6 +63,7 @@ api_router.include_router(health_router)
 api_router.include_router(auth.public_router)
 api_router.include_router(ext.router)
 api_router.include_router(slicer.router)
+api_router.include_router(files.public_router)
 
 protected_router = APIRouter(dependencies=[Depends(require_session)])
 protected_router.include_router(auth.protected_router)

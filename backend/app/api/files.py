@@ -7,24 +7,36 @@ from __future__ import annotations
 
 import io
 import zipfile
+from datetime import UTC, datetime, timedelta
 from pathlib import PurePosixPath
+from urllib.parse import quote
 
 import anyio
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import iterate_in_threadpool
 
+from app.api.deps import SESSION_COOKIE_NAME, require_session
 from app.config import Settings, get_settings
 from app.db import get_db
 from app.models import Blob, File
 from app.models.enums import BlobFormat
 from app.pipeline import slicedmeta
-from app.services import library
+from app.services import library, signed_urls
 from app.services.storage_backends import resolve_backend_for_file
 from app.storage.errors import StorageKeyNotFound
 
 router = APIRouter(prefix="/files", tags=["files"])
+
+# Unauthenticated at the router level (mounted directly on ``api_router``,
+# like ``ext.router`` -- see ``app.api``'s module docstring): the download
+# route below does its OWN auth, branching on whether a signed ``?token=``
+# is present, so it can't sit under ``protected_router``'s blanket
+# ``require_session`` dependency, which would run unconditionally before the
+# endpoint ever gets a look at the query string.
+public_router = APIRouter(prefix="/files", tags=["files"])
 
 
 @router.delete("/{file_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -58,11 +70,16 @@ def _extract_embedded_gcode(data: bytes, plate: int | None) -> bytes:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "embedded gcode member missing") from exc
 
 
-@router.get("/{file_id}/download")
+@public_router.get("/{file_id}/download")
 async def download_file(
     file_id: int,
     member: str | None = Query(None, description="'gcode' extracts a .gcode.3mf's embedded gcode"),
     plate: int | None = Query(None, description="Plate index for member=gcode; default lowest"),
+    token: str | None = Query(
+        None,
+        description="Signed slicer-deep-link token (POST .../slicer-link); bypasses the cookie",
+    ),
+    tdmm_session: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> StreamingResponse:
@@ -80,7 +97,20 @@ async def download_file(
     frontend's ``GcodePreview`` needs a bare gcode stream, and re-deriving it
     at extraction time (rather than a new derivative/table) keeps the
     already-stored zip as the single source of truth.
+
+    ``?token=`` (R10-C): a short-lived signed token minted by
+    ``POST /files/{id}/slicer-link`` lets a desktop slicer fetch this URL
+    itself with no session cookie. When present it must verify against
+    THIS ``file_id`` or the request is rejected; the existing cookie-auth
+    path (below, ``require_session`` called directly since this route is
+    mounted unauthenticated) is otherwise unchanged.
     """
+    if token is not None:
+        if signed_urls.verify(settings, token) != file_id:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid or expired token")
+    else:
+        await require_session(tdmm_session=tdmm_session, db=db)
+
     file = await db.get(File, file_id)
     if file is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"file {file_id} not found")
@@ -125,3 +155,48 @@ async def download_file(
             "Content-Length": str(blob.size),
         },
     )
+
+
+class SlicerLinkResponse(BaseModel):
+    url: str
+    expires_at: datetime
+
+
+def _absolute_origin(request: Request) -> str:
+    """Build ``scheme://host`` for this request, honoring
+    ``X-Forwarded-Proto``/``X-Forwarded-Host`` (set by a reverse proxy in
+    front of the API) over the request's own scheme/host -- the signed URL
+    handed to a desktop slicer must be reachable from outside the proxy.
+    """
+    scheme = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = (
+        request.headers.get("x-forwarded-host")
+        or request.headers.get("host")
+        or request.url.netloc
+    )
+    return f"{scheme}://{host}"
+
+
+@router.post("/{file_id}/slicer-link", response_model=SlicerLinkResponse)
+async def create_slicer_link(
+    file_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> SlicerLinkResponse:
+    """Mint a short-lived signed download URL (R10-C, plan item 11) so a
+    desktop slicer (OrcaSlicer, Bambu Studio, PrusaSlicer, Elegoo Slicer)
+    opened via a ``<scheme>://open?file=<url>`` deep link can fetch the file
+    itself with no session cookie. This route stays on the protected router
+    (``require_session``) -- only an already-authenticated browser tab can
+    mint a link; the link itself is what carries the delegated, unauthenticated
+    access to ``GET .../download``.
+    """
+    file = await db.get(File, file_id)
+    if file is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"file {file_id} not found")
+
+    token = signed_urls.sign_file_download(settings, file_id)
+    expires_at = datetime.now(UTC) + timedelta(seconds=signed_urls.DEFAULT_TTL_S)
+    url = f"{_absolute_origin(request)}/api/files/{file_id}/download?token={quote(token, safe='')}"
+    return SlicerLinkResponse(url=url, expires_at=expires_at)

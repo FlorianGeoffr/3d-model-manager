@@ -11,14 +11,25 @@ import httpx
 import pytest
 
 from app.config import get_settings
+from app.main import create_app
 from app.models import Blob, File, FileLocation, Model, Revision
 from app.models.enums import BlobFormat, BlobKind
+from app.services import signed_urls
 from app.services import storage_backends as sb
 from app.storage.config import LocalConfig
 from app.storage.local import LocalStorageBackend
 from tests.corpus import CorpusPaths
 
 pytestmark = pytest.mark.usefixtures("library_root", "data_dir")
+
+
+def _anon_client() -> httpx.AsyncClient:
+    """A fresh, cookie-less ASGI client against the same app/DB -- distinct
+    from ``authenticated_client``'s underlying ``client``, which already
+    carries a session cookie once logged in, so it can't be reused to prove
+    an endpoint works with NO cookie."""
+    transport = httpx.ASGITransport(app=create_app())
+    return httpx.AsyncClient(transport=transport, base_url="http://test")
 
 
 async def _create_model(client: httpx.AsyncClient, name: str) -> dict:
@@ -273,3 +284,110 @@ async def test_upload_write_records_default_backend_and_file_location(
     location = await db_session.get(FileLocation, (file_id, default_row.id))
     assert location is not None
     assert location.verified_at is not None
+
+
+# ---------------------------------------------------------------------------
+# R10-C: signed download tokens for desktop slicer deep links.
+# ---------------------------------------------------------------------------
+
+
+async def test_slicer_link_token_allows_download_without_cookie(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    created = await _create_model(authenticated_client, "Slicer Link Target")
+    revision_id = created["current_revision"]["id"]
+    content = b"slicer-deep-link-bytes"
+
+    upload = await authenticated_client.put(
+        "/api/uploads",
+        params={"model_id": created["id"], "revision_id": revision_id, "rel_path": "part.stl"},
+        content=content,
+    )
+    file_id = upload.json()["file_id"]
+
+    link = await authenticated_client.post(f"/api/files/{file_id}/slicer-link")
+    assert link.status_code == 200, link.text
+    body = link.json()
+    assert "url" in body and "expires_at" in body
+    assert f"/api/files/{file_id}/download" in body["url"]
+    assert "token=" in body["url"]
+
+    path_and_query = body["url"].split("/api", 1)[1]
+    async with _anon_client() as anon:
+        response = await anon.get(f"/api{path_and_query}")
+
+    assert response.status_code == 200
+    assert response.content == content
+
+
+async def test_slicer_link_requires_auth(client: httpx.AsyncClient) -> None:
+    response = await client.post("/api/files/1/slicer-link")
+
+    assert response.status_code == 401
+
+
+async def test_download_without_token_still_requires_cookie(
+    client: httpx.AsyncClient,
+) -> None:
+    response = await client.get("/api/files/1/download")
+
+    assert response.status_code == 401
+
+
+async def test_download_rejects_expired_token(
+    authenticated_client: httpx.AsyncClient,
+    seed_file,
+    db_session,
+) -> None:
+    created = await _create_model(authenticated_client, "Expired Token Target")
+    model = await db_session.get(Model, created["id"])
+    revision_id = created["current_revision"]["id"]
+    revision = await db_session.get(Revision, revision_id)
+    file = await seed_file(model, revision, "expiring.stl", b"bytes")
+
+    token = signed_urls.sign_file_download(get_settings(), file.id, ttl_s=-1)
+
+    async with _anon_client() as anon:
+        response = await anon.get(f"/api/files/{file.id}/download", params={"token": token})
+
+    assert response.status_code == 401
+
+
+async def test_download_rejects_tampered_token(
+    authenticated_client: httpx.AsyncClient,
+    seed_file,
+    db_session,
+) -> None:
+    created = await _create_model(authenticated_client, "Tampered Token Target")
+    model = await db_session.get(Model, created["id"])
+    revision_id = created["current_revision"]["id"]
+    revision = await db_session.get(Revision, revision_id)
+    file = await seed_file(model, revision, "tampered.stl", b"bytes")
+
+    token = signed_urls.sign_file_download(get_settings(), file.id)
+    tampered = token[:-1] + ("A" if token[-1] != "A" else "B")
+
+    async with _anon_client() as anon:
+        response = await anon.get(f"/api/files/{file.id}/download", params={"token": tampered})
+
+    assert response.status_code == 401
+
+
+async def test_download_token_for_one_file_does_not_open_another(
+    authenticated_client: httpx.AsyncClient,
+    seed_file,
+    db_session,
+) -> None:
+    created = await _create_model(authenticated_client, "Cross File Token Target")
+    model = await db_session.get(Model, created["id"])
+    revision_id = created["current_revision"]["id"]
+    revision = await db_session.get(Revision, revision_id)
+    file_a = await seed_file(model, revision, "a.stl", b"aaa")
+    file_b = await seed_file(model, revision, "b.stl", b"bbb")
+
+    token_for_a = signed_urls.sign_file_download(get_settings(), file_a.id)
+
+    async with _anon_client() as anon:
+        response = await anon.get(f"/api/files/{file_b.id}/download", params={"token": token_for_a})
+
+    assert response.status_code == 401

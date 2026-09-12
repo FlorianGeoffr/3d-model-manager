@@ -129,6 +129,12 @@ class ModelSummary(BaseModel):
     source_collection_id: int | None = None
     source_collection_title: str | None = None
     favorite: bool = False
+    # Phase 6: card-level dims + file picks, computed per current revision by
+    # `library._gallery_aggregates` (same fixed-query-count batch as the
+    # other gallery fields above).
+    dims_mm: list[float] | None = None
+    best_slicer_file: FileOut | None = None
+    printable_file: FileOut | None = None
 
 
 class GalleryPage(BaseModel):

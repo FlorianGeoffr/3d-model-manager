@@ -109,6 +109,11 @@ export interface ModelSummary {
   source_collection_id: number | null;
   source_collection_title: string | null;
   favorite: boolean;
+  // Phase 6: card-level dims + file picks, computed per current revision
+  // (backend/app/services/library.py `_gallery_aggregates`).
+  dims_mm: number[] | null;
+  best_slicer_file: FileOut | null;
+  printable_file: FileOut | null;
 }
 
 export interface GalleryPage {

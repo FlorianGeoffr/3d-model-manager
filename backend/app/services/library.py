@@ -737,6 +737,17 @@ def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+# Phase 6: `best_slicer_file` priority -- lower wins; ties broken by
+# `rel_path` (see `_gallery_aggregates`).
+_SLICER_FORMAT_PRIORITY = {
+    BlobFormat.THREEMF: 0,
+    BlobFormat.STEP: 1,
+    BlobFormat.OBJ: 2,
+    BlobFormat.STL: 3,
+    BlobFormat.IGES: 4,
+}
+
+
 @dataclass(slots=True)
 class _GalleryAggregate:
     """Per-(current-revision) batch of gallery fields, computed for a whole
@@ -750,6 +761,10 @@ class _GalleryAggregate:
     print_time_s: int | None
     assembly_ok: bool
     first_ok_thumb_blob_hash: str | None
+    # Phase 6: card-level dims + file picks.
+    dims_mm: list[float] | None
+    best_slicer_file: FileOut | None
+    printable_file: FileOut | None
 
 
 async def _gallery_aggregates(
@@ -770,9 +785,16 @@ async def _gallery_aggregates(
                 File.revision_id,
                 File.id,
                 File.rel_path,
+                File.storage_path,
                 File.blob_hash,
+                File.mtime,
+                File.verified_at,
                 Blob.format,
+                Blob.kind,
+                Blob.size,
                 BlobMeta.print_time_s,
+                BlobMeta.dims_mm,
+                BlobMeta.volume_cm3,
                 Derivative.id,
             )
             .join(Blob, Blob.hash == File.blob_hash)
@@ -788,16 +810,59 @@ async def _gallery_aggregates(
     ).all()
 
     buckets: dict[int, dict] = {}
-    for revision_id, file_id, rel_path, blob_hash, fmt, print_time_s, thumb_ok_id in rows:
+    for (
+        revision_id,
+        file_id,
+        rel_path,
+        storage_path,
+        blob_hash,
+        mtime,
+        verified_at,
+        fmt,
+        kind,
+        size,
+        print_time_s,
+        dims_mm,
+        volume_cm3,
+        thumb_ok_id,
+    ) in rows:
         bucket = buckets.setdefault(
             revision_id,
-            {"file_ids": set(), "formats": set(), "print_times": [], "thumb_files": []},
+            {
+                "file_ids": set(),
+                "formats": set(),
+                "print_times": [],
+                "thumb_files": [],
+                "slicer_candidates": [],
+                "printable_candidates": [],
+                "mesh_candidates": [],
+            },
         )
         bucket["file_ids"].add(file_id)
         bucket["formats"].add(fmt)
         if print_time_s is not None:
             bucket["print_times"].append(print_time_s)
         bucket["thumb_files"].append((rel_path, blob_hash, thumb_ok_id is not None))
+
+        file_row = {
+            "id": file_id,
+            "revision_id": revision_id,
+            "rel_path": rel_path,
+            "storage_path": storage_path,
+            "blob_hash": blob_hash,
+            "mtime": mtime,
+            "verified_at": verified_at,
+            "format": fmt,
+            "kind": kind,
+            "size": size,
+            "dims_mm": dims_mm,
+        }
+        if verified_at is not None and fmt in _SLICER_FORMAT_PRIORITY:
+            bucket["slicer_candidates"].append(file_row)
+        if fmt == BlobFormat.GCODE_3MF:
+            bucket["printable_candidates"].append(file_row)
+        if kind == BlobKind.MESH and dims_mm is not None:
+            bucket["mesh_candidates"].append((volume_cm3 or 0.0, file_row))
 
     assembly_ok_revision_ids = set(
         (
@@ -835,6 +900,27 @@ async def _gallery_aggregates(
             ),
             None,
         )
+
+        best_slicer_row = None
+        if bucket["slicer_candidates"]:
+            best_slicer_row = min(
+                bucket["slicer_candidates"],
+                key=lambda r: (_SLICER_FORMAT_PRIORITY[r["format"]], r["rel_path"]),
+            )
+        best_slicer_file = _gallery_file_out(best_slicer_row) if best_slicer_row else None
+
+        printable_row = None
+        if bucket["printable_candidates"]:
+            printable_row = max(bucket["printable_candidates"], key=lambda r: r["id"])
+        printable_file = _gallery_file_out(printable_row) if printable_row else None
+
+        if best_slicer_row is not None:
+            dims_mm = best_slicer_row["dims_mm"]
+        elif bucket["mesh_candidates"]:
+            dims_mm = max(bucket["mesh_candidates"], key=lambda t: t[0])[1]["dims_mm"]
+        else:
+            dims_mm = None
+
         aggregates[revision_id] = _GalleryAggregate(
             file_count=len(bucket["file_ids"]),
             formats=sorted(bucket["formats"]),
@@ -842,8 +928,32 @@ async def _gallery_aggregates(
             print_time_s=min(bucket["print_times"]) if bucket["print_times"] else None,
             assembly_ok=revision_id in assembly_ok_revision_ids,
             first_ok_thumb_blob_hash=first_ok_thumb,
+            dims_mm=dims_mm,
+            best_slicer_file=best_slicer_file,
+            printable_file=printable_file,
         )
     return aggregates, cover_ok_hashes
+
+
+def _gallery_file_out(row: dict) -> FileOut:
+    """Build a ``FileOut`` for ``ModelSummary.best_slicer_file``/
+    ``printable_file`` straight from the ``_gallery_aggregates`` batch query
+    row -- no per-file enrichment query (``meta``/``thumb_ready``/
+    ``glb_status`` stay at their defaults), keeping the gallery page's query
+    count fixed.
+    """
+    return FileOut(
+        id=row["id"],
+        revision_id=row["revision_id"],
+        rel_path=row["rel_path"],
+        storage_path=row["storage_path"],
+        blob_hash=row["blob_hash"],
+        size=row["size"],
+        format=row["format"],
+        kind=row["kind"],
+        mtime=row["mtime"],
+        verified_at=row["verified_at"],
+    )
 
 
 def _gallery_cover_url(
@@ -911,6 +1021,9 @@ async def build_model_summaries(db: AsyncSession, models: list[Model]) -> list[M
                 source_collection_id=m.source_collection_id,
                 source_collection_title=m.source_collection_title,
                 favorite=m.favorite,
+                dims_mm=agg.dims_mm if agg else None,
+                best_slicer_file=agg.best_slicer_file if agg else None,
+                printable_file=agg.printable_file if agg else None,
             )
         )
     return items

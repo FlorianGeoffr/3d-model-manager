@@ -1484,3 +1484,105 @@ async def test_model_detail_backends_empty_without_current_revision(
 
     detail = await authenticated_client.get(f"/api/models/{created['slug']}")
     assert detail.json()["backends"] == []
+
+
+# ---------------------------------------------------------------------------
+# gallery: dims_mm / best_slicer_file / printable_file (Phase 6)
+# ---------------------------------------------------------------------------
+
+
+async def test_gallery_best_slicer_file_prefers_3mf_over_stl_and_carries_dims(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    created = await _create_model(authenticated_client, "Mixed Format Model")
+    model = await db_session.get(Model, created["id"])
+    revision = await db_session.get(Revision, model.current_revision_id)
+
+    stl_file = await seed_file(model, revision, "part.stl", b"stl-bytes")
+    db_session.add(BlobMeta(blob_hash=stl_file.blob_hash, dims_mm=[10.0, 10.0, 10.0]))
+    threemf_file = await seed_file(
+        model, revision, "part.3mf", b"3mf-bytes", blob_format=BlobFormat.THREEMF
+    )
+    db_session.add(BlobMeta(blob_hash=threemf_file.blob_hash, dims_mm=[20.0, 20.0, 20.0]))
+    await db_session.commit()
+
+    item = await _gallery_item(authenticated_client, created["slug"])
+
+    assert item["best_slicer_file"]["id"] == threemf_file.id
+    assert item["best_slicer_file"]["format"] == "3mf"
+    assert item["dims_mm"] == [20.0, 20.0, 20.0]
+
+
+async def test_gallery_best_slicer_file_skips_unverified_files(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    created = await _create_model(authenticated_client, "Unverified 3mf Model")
+    model = await db_session.get(Model, created["id"])
+    revision = await db_session.get(Revision, model.current_revision_id)
+
+    stl_file = await seed_file(model, revision, "part.stl", b"stl-bytes")
+    db_session.add(BlobMeta(blob_hash=stl_file.blob_hash, dims_mm=[5.0, 5.0, 5.0]))
+    threemf_file = await seed_file(
+        model, revision, "part.3mf", b"3mf-bytes", blob_format=BlobFormat.THREEMF
+    )
+    db_session.add(BlobMeta(blob_hash=threemf_file.blob_hash, dims_mm=[20.0, 20.0, 20.0]))
+    await db_session.commit()
+
+    threemf_row = await db_session.get(File, threemf_file.id)
+    threemf_row.verified_at = None
+    await db_session.commit()
+
+    item = await _gallery_item(authenticated_client, created["slug"])
+
+    # The unverified 3mf is skipped -- the verified stl wins by default, and
+    # `dims_mm` falls back to its own (smaller) mesh dims, not the 3mf's.
+    assert item["best_slicer_file"]["id"] == stl_file.id
+    assert item["dims_mm"] == [5.0, 5.0, 5.0]
+
+
+async def test_gallery_printable_file_is_newest_sliced_gcode_3mf(
+    authenticated_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    seed_file: Callable[..., Awaitable[File]],
+) -> None:
+    created = await _create_model(authenticated_client, "Printable Model")
+    model = await db_session.get(Model, created["id"])
+    revision = await db_session.get(Revision, model.current_revision_id)
+
+    await seed_file(
+        model,
+        revision,
+        "old.gcode.3mf",
+        b"old-bytes",
+        blob_format=BlobFormat.GCODE_3MF,
+        blob_kind=BlobKind.SLICED,
+    )
+    newest = await seed_file(
+        model,
+        revision,
+        "new.gcode.3mf",
+        b"new-bytes",
+        blob_format=BlobFormat.GCODE_3MF,
+        blob_kind=BlobKind.SLICED,
+    )
+    await db_session.commit()
+
+    item = await _gallery_item(authenticated_client, created["slug"])
+
+    assert item["printable_file"]["id"] == newest.id
+
+
+async def test_gallery_dims_and_file_picks_are_null_without_files(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    created = await _create_model(authenticated_client, "Empty Model")
+
+    item = await _gallery_item(authenticated_client, created["slug"])
+
+    assert item["dims_mm"] is None
+    assert item["best_slicer_file"] is None
+    assert item["printable_file"] is None

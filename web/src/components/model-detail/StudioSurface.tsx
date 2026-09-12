@@ -3,7 +3,7 @@ import { LoaderCircleIcon } from "lucide-react";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { PlatePanel } from "@/components/model-detail/PlatePanel";
 import { PlaceholderCard, ViewerStage, type ViewerStageProps } from "@/components/viewer/ViewerStage";
-import type { StudioSelection } from "@/components/model-detail/FileRail";
+import type { StudioSelection } from "@/components/model-detail/studioSelection";
 import type { FileOut } from "@/api/types";
 
 type StageProps = Omit<ViewerStageProps, "variant" | "showExpand" | "onExpand" | "showWindowButtons">;

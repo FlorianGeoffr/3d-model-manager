@@ -3,7 +3,8 @@ import { useMemo, useState } from "react";
 import { useViewerScene } from "@/components/viewer/useViewerScene";
 import { glbFiles, pickViewerFiles } from "@/components/viewer/viewable";
 import { PlaceholderCard } from "@/components/viewer/ViewerStage";
-import { FileRail, type StudioSelection } from "@/components/model-detail/FileRail";
+import { FileRail } from "@/components/model-detail/FileRail";
+import type { StudioSelection } from "@/components/model-detail/studioSelection";
 import { StudioSurface } from "@/components/model-detail/StudioSurface";
 import type { FileOut, ModelDetail } from "@/api/types";
 

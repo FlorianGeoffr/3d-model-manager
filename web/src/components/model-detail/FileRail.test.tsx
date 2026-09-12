@@ -1,7 +1,8 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-import { FileRail, isSameSelection, type StudioSelection } from "@/components/model-detail/FileRail";
+import { FileRail } from "@/components/model-detail/FileRail";
+import { isSameSelection, type StudioSelection } from "@/components/model-detail/studioSelection";
 import type { PartColors } from "@/components/viewer/partColors";
 import type { FileOut } from "@/api/types";
 

@@ -150,9 +150,17 @@ async def first_chunk(gen: AsyncIterator[bytes]) -> tuple[bytes, AsyncIterator[b
     chunk = await gen.__anext__()
 
     async def _rest() -> AsyncIterator[bytes]:
-        yield chunk
-        async for c in gen:
-            yield c
+        try:
+            yield chunk
+            async for c in gen:
+                yield c
+        finally:
+            # A client that disconnects mid-stream (or any other early
+            # exit) throws `GeneratorExit` into this generator -- without
+            # explicitly closing `gen` too, its open backend read handles
+            # (file descriptors / S3 response bodies) would only get
+            # released whenever the GC eventually collects it.
+            await gen.aclose()
 
     return chunk, _rest()
 

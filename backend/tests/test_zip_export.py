@@ -6,6 +6,7 @@ item 12): ``GET /api/models/{slug}/zip`` and
 from __future__ import annotations
 
 import zipfile
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from io import BytesIO
 
@@ -212,6 +213,30 @@ async def test_current_revision_files_fetched_once_per_model(
 
     assert response.status_code == 200
     assert calls == [model_a.id, model_b.id]
+
+
+async def test_rest_closes_inner_generator_on_early_disconnect() -> None:
+    """When a consumer stops draining ``first_chunk``'s replay generator
+    partway through (mirroring a client disconnect), the wrapped generator's
+    own ``finally`` must still run -- proving open backend read handles get
+    released deterministically instead of waiting on GC (review finding 4).
+    """
+    closed: list[str] = []
+
+    async def inner() -> AsyncIterator[bytes]:
+        try:
+            yield b"first"
+            yield b"second"
+        finally:
+            closed.append("inner-closed")
+
+    _chunk, rest = await zip_export.first_chunk(inner())
+    agen = rest.__aiter__()
+    await agen.__anext__()  # only the first (replayed) chunk
+
+    await agen.aclose()  # simulates the client going away mid-stream
+
+    assert closed == ["inner-closed"]
 
 
 async def test_collection_zip_skips_models_with_no_files(

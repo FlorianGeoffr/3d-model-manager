@@ -17,6 +17,8 @@ import {
   Grid3x3Icon,
   LoaderCircleIcon,
   Maximize2Icon,
+  MaximizeIcon,
+  MinimizeIcon,
   PanelRightCloseIcon,
   PanelRightOpenIcon,
   RotateCcwIcon,
@@ -658,6 +660,18 @@ export function ViewerStage({
   }, []);
   useHotkeys({ F: toggleFullscreen }, { enabled: active });
 
+  // R10 studio item 9: the toolbar's Fullscreen button reflects whichever
+  // element is actually fullscreen right now via the Fullscreen API's own
+  // change event -- `document.fullscreenElement` is the only source of
+  // truth (the request is async, and ESC/browser chrome can also exit it
+  // without ever going through `toggleFullscreen` above).
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  useEffect(() => {
+    const handleChange = () => setIsFullscreen(document.fullscreenElement === stageRef.current);
+    document.addEventListener("fullscreenchange", handleChange);
+    return () => document.removeEventListener("fullscreenchange", handleChange);
+  }, []);
+
   return (
     <TooltipProvider>
       {stripHasContent && (
@@ -989,6 +1003,21 @@ export function ViewerStage({
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent>Screenshot</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon-sm"
+                      aria-pressed={isFullscreen}
+                      aria-label="Fullscreen"
+                      onClick={toggleFullscreen}
+                    >
+                      {isFullscreen ? <MinimizeIcon /> : <MaximizeIcon />}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Fullscreen (Shift+F)</TooltipContent>
                 </Tooltip>
               </div>
               <div className="flex flex-col gap-1.5">

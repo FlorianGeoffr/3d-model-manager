@@ -406,6 +406,21 @@ describe("ViewerTab", () => {
     expect(screen.getByRole("radio", { name: "Top" })).toHaveAttribute("aria-checked", "false");
   });
 
+  it("the Fullscreen toolbar button toggles the same fullscreen request as Shift+F", async () => {
+    const requestFullscreenSpy = vi.fn().mockResolvedValue(undefined);
+    HTMLElement.prototype.requestFullscreen = requestFullscreenSpy;
+
+    const file = fakeFile({ glb_status: "ok" });
+    render(<ViewerTab model={fakeModel([file])} />);
+    await screen.findByTestId("model-viewer");
+
+    const button = screen.getByRole("button", { name: "Fullscreen" });
+    expect(button).toHaveAttribute("aria-pressed", "false");
+
+    fireEvent.click(button);
+    expect(requestFullscreenSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("Grid flips aria-pressed and the tools.grid flag ModelViewer receives", async () => {
     const file = fakeFile({ glb_status: "ok" });
     render(<ViewerTab model={fakeModel([file])} />);

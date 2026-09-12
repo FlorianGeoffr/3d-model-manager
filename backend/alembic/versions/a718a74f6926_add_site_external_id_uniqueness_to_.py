@@ -37,8 +37,10 @@ depends_on: str | Sequence[str] | None = None
 
 # `op.f(...)` marks this as an ALREADY-final name -- see c69140b3976b's
 # module docstring for why omitting it would double-prefix into something
-# like "uq_pending_imports_uq_pending_imports_site_external_id".
-_CONSTRAINT_NAME = op.f("uq_pending_imports_site_external_id")
+# like "uq_pending_imports_uq_pending_imports_site_external_id". It must be
+# called inside upgrade()/downgrade(): at import time the Alembic operations
+# proxy is not established yet, so `alembic heads`/`history` would raise.
+_CONSTRAINT_NAME = "uq_pending_imports_site_external_id"
 
 
 def upgrade() -> None:
@@ -51,9 +53,9 @@ def upgrade() -> None:
         "DELETE FROM pending_imports a USING pending_imports b "
         "WHERE a.site = b.site AND a.external_id = b.external_id AND a.id > b.id"
     )
-    op.create_unique_constraint(_CONSTRAINT_NAME, "pending_imports", ["site", "external_id"])
+    op.create_unique_constraint(op.f(_CONSTRAINT_NAME), "pending_imports", ["site", "external_id"])
 
 
 def downgrade() -> None:
     """Downgrade schema."""
-    op.drop_constraint(_CONSTRAINT_NAME, "pending_imports", type_="unique")
+    op.drop_constraint(op.f(_CONSTRAINT_NAME), "pending_imports", type_="unique")

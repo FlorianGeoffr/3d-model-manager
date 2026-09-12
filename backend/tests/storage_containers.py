@@ -38,6 +38,8 @@ from testcontainers.minio import MinioContainer
 
 from app.storage.config import S3Config, SmbConfig
 
+MINIO_IMAGE = "quay.io/minio/minio:latest"
+
 SMB_USER, SMB_PASS, SMB_SHARE = "tdmm", "tdmm-pass", "library"
 
 
@@ -74,7 +76,9 @@ def minio_container() -> Iterator[MinioContainer]:
     transitively once Task 4 wires ``storage_backend``'s ``s3`` param to
     it).
     """
-    with MinioContainer() as container:
+    # Docker Hub stopped serving ``minio/minio`` (testcontainers' default);
+    # the image now lives on Quay only. Keep CI's pre-pull step in sync.
+    with MinioContainer(image=MINIO_IMAGE) as container:
         yield container
 
 

@@ -281,7 +281,7 @@ function DashboardContent({ stats }: { stats: NonNullable<ReturnType<typeof useS
           ) : (
             stats.material_usage.map((entry) => (
               <Bar
-                key={entry.material_id}
+                key={entry.material_id ?? `free:${entry.name}`}
                 label={`${entry.name} — ${Math.round(entry.grams)} g · ${entry.prints} print(s)`}
                 value={entry.grams}
                 max={maxMaterialGrams}

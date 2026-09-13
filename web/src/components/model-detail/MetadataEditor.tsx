@@ -17,6 +17,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { PlusIcon, Trash2Icon } from "lucide-react";
+import { toast } from "sonner";
 
 import { usePatchModel } from "@/api/library";
 import { Button } from "@/components/ui/button";
@@ -67,7 +68,10 @@ export function MetadataEditor({ model }: { model: ModelDetail }) {
   }, [model.id, model.metadata]);
 
   function patch(nextRows: Row[]) {
-    patchModel.mutate({ metadata: objectFromRows(nextRows) });
+    patchModel.mutate(
+      { metadata: objectFromRows(nextRows) },
+      { onError: () => toast.error("Couldn't save custom fields") },
+    );
   }
 
   function updateRow(id: number, field: "key" | "value", value: string) {
@@ -102,6 +106,7 @@ export function MetadataEditor({ model }: { model: ModelDetail }) {
                   id={`metadata-key-${row.id}`}
                   value={row.key}
                   placeholder="Field name"
+                  maxLength={64}
                   onChange={(event) => updateRow(row.id, "key", event.target.value)}
                   onBlur={() => patch(rows)}
                 />
@@ -112,6 +117,7 @@ export function MetadataEditor({ model }: { model: ModelDetail }) {
                   id={`metadata-value-${row.id}`}
                   value={row.value}
                   placeholder="Value"
+                  maxLength={2000}
                   onChange={(event) => updateRow(row.id, "value", event.target.value)}
                   onBlur={() => patch(rows)}
                 />

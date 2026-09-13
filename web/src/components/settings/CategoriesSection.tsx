@@ -228,9 +228,17 @@ export function CategoriesSection() {
         {categoriesQuery.isLoading ? (
           <Skeleton className="h-24 w-full rounded-lg" />
         ) : categoriesQuery.isError ? (
-          <p role="alert" className="text-sm text-destructive">
-            {categoriesQuery.error instanceof ApiError ? categoriesQuery.error.detail : "Could not load categories"}
-          </p>
+          <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed py-8 text-center">
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-foreground">Couldn&apos;t load categories</p>
+              <p role="alert" className="text-sm text-muted-foreground">
+                {categoriesQuery.error instanceof ApiError ? categoriesQuery.error.detail : "Something went wrong."}
+              </p>
+            </div>
+            <Button type="button" size="sm" onClick={() => void categoriesQuery.refetch()}>
+              Retry
+            </Button>
+          </div>
         ) : categories.length === 0 ? (
           <p className="text-sm text-muted-foreground">No categories yet.</p>
         ) : (

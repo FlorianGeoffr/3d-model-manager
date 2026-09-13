@@ -154,6 +154,28 @@ describe("MaterialsSection -- edit", () => {
   });
 });
 
+describe("MaterialsSection -- error state", () => {
+  it("shows a styled error card with Retry when the list query fails, and refetches on click", async () => {
+    getMock.mockReset();
+    getMock.mockImplementation((path: string) => {
+      if (path === "/materials") return Promise.reject(new Error("boom"));
+      return Promise.resolve([]);
+    });
+    renderSection();
+
+    expect(await screen.findByText("Couldn't load materials")).toBeInTheDocument();
+    expect(screen.queryByText("not found")).not.toBeInTheDocument();
+
+    getMock.mockImplementation((path: string) => {
+      if (path === "/materials") return Promise.resolve([material()]);
+      return Promise.resolve([]);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(await screen.findByText("Galaxy Black")).toBeInTheDocument();
+  });
+});
+
 describe("MaterialsSection -- delete", () => {
   it("requires confirmation and warns about prints losing their material reference", async () => {
     setupGet([material({ print_count: 3 })]);

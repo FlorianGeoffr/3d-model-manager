@@ -568,7 +568,7 @@ export interface StatsOut {
   jobs: { running: number; queued: number; failed_24h: number };
   recent_models: ModelSummary[];
   recent_prints: PrintEntry[];
-  material_usage: { material_id: number; name: string; grams: number; prints: number }[];
+  material_usage: { material_id: number | null; name: string; grams: number; prints: number }[];
 }
 
 export type PrinterKind = "bambu_lan";

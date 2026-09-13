@@ -193,6 +193,20 @@ describe("DashboardPage", () => {
     expect(await screen.findByText("Silk Blue PLA — 420 g · 3 print(s)")).toBeInTheDocument();
   });
 
+  it("renders two free-text material usage rows with distinct keys (no material_id)", async () => {
+    mockGet({
+      ...STATS,
+      material_usage: [
+        { material_id: null, name: "Generic Grey PLA", grams: 100, prints: 1 },
+        { material_id: null, name: "Generic White PLA", grams: 200, prints: 2 },
+      ],
+    });
+    renderDashboard();
+
+    expect(await screen.findByText("Generic Grey PLA — 100 g · 1 print(s)")).toBeInTheDocument();
+    expect(screen.getByText("Generic White PLA — 200 g · 2 print(s)")).toBeInTheDocument();
+  });
+
   it("shows empty-state copy when recent models/prints/material usage are empty", async () => {
     mockGet(EMPTY_STATS);
     renderDashboard();

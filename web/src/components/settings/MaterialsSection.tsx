@@ -255,9 +255,17 @@ export function MaterialsSection() {
         {materialsQuery.isLoading ? (
           <Skeleton className="h-24 w-full rounded-lg" />
         ) : materialsQuery.isError ? (
-          <p role="alert" className="text-sm text-destructive">
-            {materialsQuery.error instanceof ApiError ? materialsQuery.error.detail : "Could not load materials"}
-          </p>
+          <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed py-8 text-center">
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-foreground">Couldn&apos;t load materials</p>
+              <p role="alert" className="text-sm text-muted-foreground">
+                {materialsQuery.error instanceof ApiError ? materialsQuery.error.detail : "Something went wrong."}
+              </p>
+            </div>
+            <Button type="button" size="sm" onClick={() => void materialsQuery.refetch()}>
+              Retry
+            </Button>
+          </div>
         ) : materials.length === 0 ? (
           <p className="text-sm text-muted-foreground">No materials yet.</p>
         ) : (

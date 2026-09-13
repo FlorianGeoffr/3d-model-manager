@@ -5,8 +5,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MetadataEditor } from "@/components/model-detail/MetadataEditor";
 import type { ModelDetail } from "@/api/types";
 
-const { patchMock } = vi.hoisted(() => ({
+const { patchMock, toastErrorMock } = vi.hoisted(() => ({
   patchMock: vi.fn().mockResolvedValue({}),
+  toastErrorMock: vi.fn(),
 }));
 
 vi.mock("@/api/client", async (importOriginal) => {
@@ -16,6 +17,8 @@ vi.mock("@/api/client", async (importOriginal) => {
     api: { ...actual.api, patch: patchMock },
   };
 });
+
+vi.mock("sonner", () => ({ toast: { error: toastErrorMock } }));
 
 function baseModel(overrides: Partial<ModelDetail> = {}): ModelDetail {
   return {
@@ -58,6 +61,8 @@ function renderEditor(model: ModelDetail) {
 
 beforeEach(() => {
   patchMock.mockClear();
+  patchMock.mockResolvedValue({});
+  toastErrorMock.mockClear();
 });
 
 describe("MetadataEditor", () => {
@@ -124,6 +129,24 @@ describe("MetadataEditor", () => {
     await waitFor(() =>
       expect(patchMock).toHaveBeenCalledWith("/models/articulated-dragon", { metadata: { Material: "PLA" } }),
     );
+  });
+
+  it("caps the key input at 64 characters and the value input at 2000", () => {
+    renderEditor(baseModel({ metadata: { Scale: "1:8" } }));
+
+    expect(screen.getByDisplayValue("Scale")).toHaveAttribute("maxLength", "64");
+    expect(screen.getByDisplayValue("1:8")).toHaveAttribute("maxLength", "2000");
+  });
+
+  it("shows a toast error when saving custom fields fails", async () => {
+    patchMock.mockRejectedValueOnce(new Error("boom"));
+    renderEditor(baseModel({ metadata: { Scale: "1:8" } }));
+
+    const valueInput = screen.getByDisplayValue("1:8");
+    fireEvent.change(valueInput, { target: { value: "1:6" } });
+    fireEvent.blur(valueInput);
+
+    await waitFor(() => expect(toastErrorMock).toHaveBeenCalledWith("Couldn't save custom fields"));
   });
 
   it("disables Add field at the 50-row cap", () => {

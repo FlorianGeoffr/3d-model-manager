@@ -160,7 +160,7 @@ def _scan_once(settings: Settings, watch_dir: Path) -> None:
             continue  # still being written -- reconsidered on a later tick
 
         kind, format_ = infer_blob_kind_format(entry.name)
-        if kind is BlobKind.OTHER and format_ is BlobFormat.OTHER:
+        if (kind is BlobKind.OTHER and format_ is BlobFormat.OTHER) or kind is BlobKind.DOC:
             logger.info(
                 "slicer watch: unsupported file %r, moving to %s", entry.name, FAILED_DIRNAME
             )

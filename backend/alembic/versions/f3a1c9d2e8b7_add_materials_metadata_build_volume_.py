@@ -27,6 +27,7 @@ Create Date: 2026-09-12 00:00:00.000000
 
 """
 
+import json
 from collections.abc import Sequence
 
 import sqlalchemy as sa
@@ -58,6 +59,17 @@ _OLD_FORMATS = (
     "other",
 )
 _NEW_FORMATS = (*_OLD_FORMATS[:-1], "pdf", "md", "txt", "docx", "other")
+
+# Inlined copy of `app.schemas.printers._KNOWN_BUILD_VOLUMES_MM` (migrations
+# must not import app code -- see module docstring). Keep in sync by hand;
+# longest/most specific key matched first so "a1 mini" wins over "a1".
+_KNOWN_BUILD_VOLUMES_MM: dict[str, dict[str, float]] = {
+    "a1 mini": {"x": 180, "y": 180, "z": 180},
+    "a1": {"x": 256, "y": 256, "z": 256},
+    "p1s": {"x": 256, "y": 256, "z": 256},
+    "x1c": {"x": 256, "y": 256, "z": 256},
+    "mk4": {"x": 250, "y": 210, "z": 220},
+}
 
 
 def _in_clause(column: str, values: tuple[str, ...]) -> str:
@@ -100,6 +112,25 @@ def upgrade() -> None:
 
     op.add_column("printers", sa.Column("build_volume_mm", postgresql.JSONB(), nullable=True))
 
+    # Backfill existing printers' build_volume_mm from their `model` text,
+    # same best-effort substring match as `seed_build_volume_mm` (longest
+    # key first so "a1 mini" wins over "a1"). New rows get this at create
+    # time via the API; this is only for rows that predate the column.
+    bind = op.get_bind()
+    rows = bind.execute(
+        sa.text("SELECT id, model FROM printers WHERE model IS NOT NULL")
+    ).fetchall()
+    sorted_keys = sorted(_KNOWN_BUILD_VOLUMES_MM, key=len, reverse=True)
+    for row_id, model in rows:
+        lowered = model.strip().lower()
+        for key in sorted_keys:
+            if key in lowered:
+                bind.execute(
+                    sa.text("UPDATE printers SET build_volume_mm = :bv WHERE id = :id"),
+                    {"bv": json.dumps(_KNOWN_BUILD_VOLUMES_MM[key]), "id": row_id},
+                )
+                break
+
     op.drop_constraint(op.f(_KIND_CONSTRAINT), "blobs", type_="check")
     op.create_check_constraint(op.f(_KIND_CONSTRAINT), "blobs", _in_clause("kind", _NEW_KINDS))
     op.drop_constraint(op.f(_FORMAT_CONSTRAINT), "blobs", type_="check")
@@ -110,6 +141,16 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Downgrade schema."""
+    # Narrowing the CHECK constraints below would otherwise fail (or worse,
+    # succeed while leaving rows that violate it) against any blob already
+    # widened into the R13c-only `doc` kind / pdf|md|txt|docx formats --
+    # collapse those back to `other` first.
+    bind = op.get_bind()
+    bind.execute(sa.text("UPDATE blobs SET kind = 'other' WHERE kind = 'doc'"))
+    bind.execute(
+        sa.text("UPDATE blobs SET format = 'other' WHERE format IN ('pdf', 'md', 'txt', 'docx')")
+    )
+
     op.drop_constraint(op.f(_FORMAT_CONSTRAINT), "blobs", type_="check")
     op.create_check_constraint(
         op.f(_FORMAT_CONSTRAINT), "blobs", _in_clause("format", _OLD_FORMATS)

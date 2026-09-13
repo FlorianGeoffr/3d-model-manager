@@ -310,6 +310,14 @@ describe("FilesTab", () => {
     expect(screen.queryByRole("menuitem", { name: `View ${notViewable.rel_path} in 3D` })).not.toBeInTheDocument();
   });
 
+  it("excludes doc-kind files -- they only appear in the Docs tab", () => {
+    const docFile: FileOut = { ...VERIFIED_FILE, id: 5, rel_path: "README.md", format: "md", kind: "doc" };
+    renderFilesTab([VERIFIED_FILE, docFile]);
+
+    expect(screen.getByText(VERIFIED_FILE.rel_path)).toBeInTheDocument();
+    expect(screen.queryByText(docFile.rel_path)).not.toBeInTheDocument();
+  });
+
   it("hides the Print button for a sliced file when the printer feature is off (default mock)", async () => {
     const slicedFile: FileOut = { ...VERIFIED_FILE, format: "gcode_3mf", kind: "sliced" };
     renderFilesTab([slicedFile]);

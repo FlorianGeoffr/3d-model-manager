@@ -81,7 +81,9 @@ export function FilesTab({
 }) {
   const queryClient = useQueryClient();
   const [showAddFiles, setShowAddFiles] = useState(false);
-  const files = model.current_revision?.files ?? [];
+  // Doc-kind files (README, license, etc.) surface only in the Docs tab --
+  // exclude them here so they don't also clutter the Files table.
+  const files = (model.current_revision?.files ?? []).filter((file) => file.kind !== "doc");
   const currentRevision = model.current_revision;
 
   // Uploads (Task 10, correctness map §B4) always target the model's

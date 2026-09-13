@@ -155,6 +155,14 @@ async def update_printer(
         # blank, or sentinel-with-a-stored-code -> keep the existing ciphertext
     for key, value in data.items():
         setattr(printer, key, value)
+    # R13c: a `model` change that leaves `build_volume_mm` NULL (and the
+    # patch itself didn't set one) re-runs the create-time seed -- otherwise
+    # an unset build volume would stay stuck at the OLD model's seed-or-null
+    # forever, since PATCH never re-seeds on its own.
+    if "model" in data and "build_volume_mm" not in data and printer.build_volume_mm is None:
+        seeded = seed_build_volume_mm(printer.model)
+        if seeded is not None:
+            printer.build_volume_mm = seeded
     await db.commit()
     await db.refresh(printer)
     return PrinterOut.from_model(printer)

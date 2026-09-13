@@ -20,4 +20,20 @@ describe("parseLibrarySearch", () => {
     expect(parseLibrarySearch({ collection: { nope: 1 } })).toEqual({ collection: undefined });
     expect(parseLibrarySearch({ collection: null })).toEqual({ collection: undefined });
   });
+
+  it("passes a numeric category id through", () => {
+    expect(parseLibrarySearch({ category: 3 })).toEqual({ category: 3 });
+  });
+
+  it("drops a non-numeric category value to undefined", () => {
+    expect(parseLibrarySearch({ category: "abc" })).toEqual({ category: undefined });
+  });
+
+  it("passes a string path through", () => {
+    expect(parseLibrarySearch({ path: "figures/dnd" })).toEqual({ path: "figures/dnd" });
+  });
+
+  it("drops a non-string path value to undefined", () => {
+    expect(parseLibrarySearch({ path: 5 })).toEqual({ path: undefined });
+  });
 });

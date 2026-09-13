@@ -40,6 +40,8 @@ export interface ModelPatch {
   // /models/{slug}` is now a real hard delete, so archiving/unarchiving a
   // model is reversible PATCH traffic instead (both directions).
   is_archived?: boolean;
+  // R13b: single category assignment -- `null` clears it.
+  category_id?: number | null;
 }
 
 // `POST /models/{slug}/redownload` payload (feat/import-fidelity T3):
@@ -114,6 +116,11 @@ export interface ModelSummary {
   dims_mm: number[] | null;
   best_slicer_file: FileOut | null;
   printable_file: FileOut | null;
+  // R13b (categories): a model's single category, or `null` for uncategorized.
+  // `category_id` mirrors it for cache-patching convenience; both come from
+  // the same backend join and always agree.
+  category_id?: number | null;
+  category?: CategoryOut | null;
 }
 
 export interface GalleryPage {
@@ -256,6 +263,9 @@ export interface ModelDetail {
   // `print_count: 0, last_printed_at: null` for a model with no logged prints.
   print_count: number;
   last_printed_at: string | null;
+  // R13b (categories): mirrors `ModelSummary.category`/`category_id` above.
+  category_id?: number | null;
+  category?: CategoryOut | null;
 }
 
 // -- diff ----------------------------------------------------------
@@ -300,6 +310,30 @@ export interface TagCreate {
 export interface TagOut {
   id: number;
   name: string;
+  color?: TagColor | null;
+}
+
+// -- categories (R13b, backend/app/schemas/categories.py) ------------------
+// Unlike tags (many-per-model), a model has AT MOST ONE category -- a
+// coarser, exclusive grouping (mirrors GyroidVault's shelves). `color` is a
+// `TagColor` palette name, same fixed 10-key palette tags use -- rendered
+// through `tagColorClass`/the same swatch picker pattern as `TagEditor`, not
+// a free-form hex string.
+
+export interface CategoryOut {
+  id: number;
+  name: string;
+  color: TagColor | null;
+  model_count: number;
+}
+
+export interface CategoryCreate {
+  name: string;
+  color?: TagColor | null;
+}
+
+export interface CategoryPatch {
+  name?: string;
   color?: TagColor | null;
 }
 
@@ -956,4 +990,37 @@ export interface DuplicatesResolveOut {
   deleted: number;
   reclaimed_bytes: number;
   skipped: SkippedCopy[];
+}
+
+// -- storage tree browser (R13b, `GET /storage/tree?path=`) ----------------
+// Plain-file-browser navigation over the raw storage layout: `dirs` are the
+// immediate subdirectories of `path` (each with its own file/model counts),
+// `files` are the raw files that live directly under `path`, and `model` is
+// non-null when `path` is itself a single model's own directory (its
+// summary, for the header strip above the file list).
+
+export interface StorageTreeDir {
+  name: string;
+  path: string;
+  file_count: number;
+  model_count: number;
+}
+
+export interface StorageTreeFile {
+  id: number;
+  name: string;
+  rel_path: string;
+  size: number;
+  kind: BlobKind;
+  format: BlobFormat;
+  model_slug: string;
+  blob_hash: string;
+  revision_id: number;
+}
+
+export interface StorageTreeOut {
+  path: string;
+  dirs: StorageTreeDir[];
+  files: StorageTreeFile[];
+  model: ModelSummary | null;
 }

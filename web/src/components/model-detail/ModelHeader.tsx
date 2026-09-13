@@ -16,6 +16,7 @@ import { toast } from "sonner";
 
 import { useArchiveModel, useDeleteModel, usePatchModel, useRedownloadModel } from "@/api/library";
 import { useEnqueueModel } from "@/api/queue";
+import { CategoryPicker } from "@/components/gallery/CategoryPicker";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { InlineEdit } from "@/components/InlineEdit";
 import { useHotkeys } from "@/hooks/useHotkeys";
@@ -173,6 +174,21 @@ export function ModelHeader({
             )}
           </h1>
           <div className="flex flex-wrap items-center gap-2">
+            {editMode ? (
+              <CategoryPicker
+                value={model.category_id ?? null}
+                onChange={(categoryId) => patchModel.mutate({ category_id: categoryId })}
+              />
+            ) : model.category ? (
+              <Badge variant="outline" className="gap-1">
+                <span
+                  aria-hidden="true"
+                  className="size-1.5 rounded-full"
+                  style={{ backgroundColor: model.category.color ?? undefined }}
+                />
+                {model.category.name}
+              </Badge>
+            ) : null}
             {model.is_archived ? <Badge variant="outline">Archived</Badge> : null}
             {needsReview ? (
               <Badge variant="secondary" className="gap-1 pr-1" data-testid="review-badge">

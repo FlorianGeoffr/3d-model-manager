@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useSearch } from "@tanstack/react-router";
+import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import {
   ArchiveIcon,
   BookmarkIcon,
+  FolderTreeIcon,
+  LayoutGridIcon,
+  ListIcon,
   ListPlusIcon,
   PlusIcon,
+  RefreshCwIcon,
   SearchIcon,
   StarIcon,
   TagIcon,
@@ -14,12 +18,16 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { useCategories } from "@/api/categories";
 import { useFollowedCollections } from "@/api/collections";
 import { useBulkDeleteModels, useBulkUpdateModels, useModelsQuery, useTags } from "@/api/library";
 import { useEnqueueModel } from "@/api/queue";
+import { useTriggerScan } from "@/api/scan";
 import { ApiError } from "@/api/client";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { FolderBrowser } from "@/components/gallery/FolderBrowser";
 import { ModelCard } from "@/components/gallery/ModelCard";
+import { ModelRow } from "@/components/gallery/ModelRow";
 import { NewModelDialog } from "@/components/gallery/NewModelDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -31,7 +39,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useHotkeys } from "@/hooks/useHotkeys";
-import { chunkIntoRows, columnsForWidth, estimateRowHeight } from "@/lib/grid";
+import { chunkIntoRows, columnsForWidth, estimateListRowHeight, estimateRowHeight } from "@/lib/grid";
 import { useDebouncedValue } from "@/lib/format";
 import { BLOB_FORMATS, type BlobFormat, type ModelSummary } from "@/api/types";
 import { FORMAT_LABELS } from "@/lib/formatMeta";
@@ -41,8 +49,58 @@ import type { LibrarySearch } from "@/pages/librarySearch";
 
 const SORT_OPTIONS = [
   { value: "-updated_at", label: "Recently updated" },
+  { value: "-created_at", label: "Recently added" },
+  { value: "-print_count", label: "Most printed" },
   { value: "name", label: "Name" },
 ] as const;
+
+type ViewMode = "grid" | "list" | "folders";
+const VIEW_MODE_KEY = "library-view";
+
+function loadViewMode(): ViewMode {
+  try {
+    const stored = window.localStorage.getItem(VIEW_MODE_KEY);
+    if (stored === "grid" || stored === "list" || stored === "folders") return stored;
+  } catch {
+    // Private browsing / disabled storage -- fall back to the default below.
+  }
+  return "grid";
+}
+
+function saveViewMode(mode: ViewMode): void {
+  try {
+    window.localStorage.setItem(VIEW_MODE_KEY, mode);
+  } catch {
+    // Nothing to persist to -- the toggle still works for this session.
+  }
+}
+
+/** Grid / list / folders segmented control (R13b), persisted to
+ * localStorage so the choice survives a reload. */
+function ViewModeToggle({ value, onChange }: { value: ViewMode; onChange: (mode: ViewMode) => void }) {
+  const options: Array<{ mode: ViewMode; label: string; icon: typeof LayoutGridIcon }> = [
+    { mode: "grid", label: "Grid view", icon: LayoutGridIcon },
+    { mode: "list", label: "List view", icon: ListIcon },
+    { mode: "folders", label: "Folder view", icon: FolderTreeIcon },
+  ];
+  return (
+    <div role="group" aria-label="View mode" className="flex items-center gap-0.5 rounded-lg border border-border p-0.5">
+      {options.map((option) => (
+        <Button
+          key={option.mode}
+          type="button"
+          variant={value === option.mode ? "secondary" : "ghost"}
+          size="icon-sm"
+          aria-label={option.label}
+          aria-pressed={value === option.mode}
+          onClick={() => onChange(option.mode)}
+        >
+          <option.icon />
+        </Button>
+      ))}
+    </div>
+  );
+}
 
 /** A single-select filter chip (used for the format facet). Rendered as a
  * button wrapping a Badge so it keeps an accessible name + `aria-pressed`. */
@@ -70,6 +128,7 @@ export function LibraryPage() {
   // facet's own selections never write back to the URL -- same as every
   // other filter on this page.
   const search = useSearch({ strict: false }) as LibrarySearch;
+  const navigate = useNavigate();
 
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const [searchInput, setSearchInput] = useState("");
@@ -82,7 +141,44 @@ export function LibraryPage() {
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [archivedOnly, setArchivedOnly] = useState(false);
   const [activeCollection, setActiveCollection] = useState<number | undefined>(search.collection);
+  // R13b: unlike `activeCollection` above (one-way-seed-only, local state),
+  // this facet is derived LIVE from `search.category` every render -- a
+  // sidebar category link clicked while already on `/` only changes the
+  // search params (same route), so a one-shot `useState` seed would never
+  // see the update. Setting it writes back to the URL (`goToCategory`
+  // below) rather than local state, which is what makes the sidebar's own
+  // links (and the browser back button) agree with these chips.
+  const activeCategory = search.category;
+
+  function goToCategory(next: number | undefined) {
+    void navigate({ to: "/", search: (prev: LibrarySearch) => ({ ...prev, category: next }) });
+  }
   const [sort, setSort] = useState<string>("-updated_at");
+  const [viewMode, setViewMode] = useState<ViewMode>(loadViewMode);
+  // Folder view's current directory DOES live in the URL bidirectionally
+  // (unlike the one-way-seed facets above) -- breadcrumbs and deep links
+  // need it round-tripped, so it's read straight from `search` rather than
+  // mirrored into local state.
+  const path = search.path ?? "";
+
+  function handleViewModeChange(mode: ViewMode) {
+    setViewMode(mode);
+    saveViewMode(mode);
+  }
+
+  function goToPath(nextPath: string) {
+    void navigate({ to: "/", search: (prev: LibrarySearch) => ({ ...prev, path: nextPath || undefined }) });
+  }
+
+  const triggerScan = useTriggerScan();
+  function startScan() {
+    triggerScan.mutate(undefined, {
+      onSuccess: () =>
+        toast.success("Scan started", {
+          action: { label: "View jobs", onClick: () => void navigate({ to: "/jobs" }) },
+        }),
+    });
+  }
 
   // Selection is implicit (no select-mode toggle button): per-visit UI
   // state only, same as the facets above -- never persisted, never written
@@ -131,6 +227,8 @@ export function LibraryPage() {
   const collectionsQuery = useFollowedCollections();
   const collections = collectionsQuery.data ?? [];
   const activeCollectionTitle = collections.find((collection) => collection.id === activeCollection)?.title;
+  const categoriesQuery = useCategories();
+  const categories = categoriesQuery.data ?? [];
 
   const filters = useMemo(
     () => ({
@@ -139,11 +237,22 @@ export function LibraryPage() {
       format: activeFormat,
       has_sliced: slicedOnly || undefined,
       collection: activeCollection,
+      category: activeCategory,
       favorite: favoritesOnly || undefined,
       archived: archivedOnly || undefined,
       sort,
     }),
-    [debouncedSearch, activeTag, activeFormat, slicedOnly, favoritesOnly, archivedOnly, activeCollection, sort],
+    [
+      debouncedSearch,
+      activeTag,
+      activeFormat,
+      slicedOnly,
+      favoritesOnly,
+      archivedOnly,
+      activeCollection,
+      activeCategory,
+      sort,
+    ],
   );
 
   const modelsQuery = useModelsQuery(filters);
@@ -227,17 +336,23 @@ export function LibraryPage() {
     gridObserverRef.current = observer;
   }, []);
 
-  const rows = useMemo(() => chunkIntoRows(items, columns), [items, columns]);
+  // List view is always one item per row -- `chunkIntoRows(items, 1)`
+  // already degenerates to that, so the grid's own column count just isn't
+  // consulted for row-chunking or the painted `gridTemplateColumns` in that
+  // mode (see the render branch below).
+  const effectiveColumns = viewMode === "list" ? 1 : columns;
+  const rows = useMemo(() => chunkIntoRows(items, effectiveColumns), [items, effectiveColumns]);
 
   // Fix round 1: cards are aspect-square, so a row's height scales directly
   // with column width -- a single fixed guess (e.g. one number for both a
   // 2-column phone layout and a 5-column desktop one) overlaps or gaps rows
   // in production. `estimateRowHeight` derives it from the container's own
   // measured width instead; `measure()` below re-runs the virtualizer's
-  // layout whenever that estimate changes (width/column changes).
+  // layout whenever that estimate changes (width/column changes). List rows
+  // are a fixed height regardless of width (`estimateListRowHeight`).
   const rowHeightEstimate = useMemo(
-    () => estimateRowHeight(containerWidth, columns),
-    [containerWidth, columns],
+    () => (viewMode === "list" ? estimateListRowHeight() : estimateRowHeight(containerWidth, columns)),
+    [viewMode, containerWidth, columns],
   );
   const rowVirtualizer = useWindowVirtualizer({
     count: rows.length,
@@ -304,6 +419,11 @@ export function LibraryPage() {
             </SelectContent>
           </Select>
           <div className="flex-1" />
+          <ViewModeToggle value={viewMode} onChange={handleViewModeChange} />
+          <Button type="button" variant="outline" disabled={triggerScan.isPending} onClick={startScan}>
+            <RefreshCwIcon className={triggerScan.isPending ? "animate-spin" : undefined} />
+            Scan library
+          </Button>
           <NewModelDialog
             trigger={
               <Button type="button">
@@ -313,6 +433,28 @@ export function LibraryPage() {
           />
         </div>
 
+        {categories.length > 0 && viewMode !== "folders" && (
+          <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter by category">
+            <FilterChip active={!activeCategory} onClick={() => goToCategory(undefined)}>
+              All categories
+            </FilterChip>
+            {categories.map((category) => (
+              <FilterChip
+                key={category.id}
+                active={activeCategory === category.id}
+                onClick={() => goToCategory(activeCategory === category.id ? undefined : category.id)}
+              >
+                <span
+                  aria-hidden="true"
+                  className={cn("size-1.5 rounded-full", tagColorClass(category.color) ?? "bg-muted-foreground")}
+                />
+                {category.name}
+              </FilterChip>
+            ))}
+          </div>
+        )}
+
+        {viewMode !== "folders" && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter by format">
             <FilterChip active={!activeFormat} onClick={() => setActiveFormat(undefined)}>
@@ -410,9 +552,12 @@ export function LibraryPage() {
             </PopoverContent>
           </Popover>
         </div>
+        )}
       </div>
 
-      {modelsQuery.isLoading ? (
+      {viewMode === "folders" ? (
+        <FolderBrowser path={path} onNavigate={goToPath} />
+      ) : modelsQuery.isLoading ? (
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
           {Array.from({ length: 12 }).map((_, index) => (
             <Skeleton key={index} className="aspect-[3/4] w-full rounded-xl" />
@@ -451,6 +596,27 @@ export function LibraryPage() {
           <div ref={gridRef} className="relative w-full" style={{ height: rowVirtualizer.getTotalSize() }}>
             {virtualRows.map((virtualRow) => {
               const row = rows[virtualRow.index] ?? [];
+              if (viewMode === "list") {
+                const model = row[0];
+                if (!model) return null;
+                return (
+                  <div
+                    key={virtualRow.key}
+                    data-index={virtualRow.index}
+                    ref={rowVirtualizer.measureElement}
+                    className="absolute top-0 left-0 w-full"
+                    style={{ transform: `translateY(${virtualRow.start - rowVirtualizer.options.scrollMargin}px)` }}
+                  >
+                    <ModelRow
+                      model={model}
+                      index={virtualRow.index}
+                      selected={selectedIds.has(model.id)}
+                      onSelectChange={toggleSelected}
+                      onModifiedClick={handleModifiedClick}
+                    />
+                  </div>
+                );
+              }
               return (
                 <div
                   key={virtualRow.key}

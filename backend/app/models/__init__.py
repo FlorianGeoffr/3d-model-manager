@@ -15,6 +15,7 @@ from app.models.collections import (
 )
 from app.models.library import (
     Blob,
+    Category,
     File,
     Model,
     Note,
@@ -35,6 +36,7 @@ __all__ = [
     "Base",
     "Blob",
     "BlobMeta",
+    "Category",
     "Derivative",
     "File",
     "FileLocation",

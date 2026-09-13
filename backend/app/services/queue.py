@@ -36,7 +36,11 @@ async def _to_out(
     if not entries:
         return []
     model_ids = [e.model_id for e in entries]
-    stmt = select(Model).where(Model.id.in_(model_ids)).options(selectinload(Model.tags))
+    stmt = (
+        select(Model)
+        .where(Model.id.in_(model_ids))
+        .options(selectinload(Model.tags), selectinload(Model.category))
+    )
     models_by_id = {m.id: m for m in (await db.execute(stmt)).scalars().unique().all()}
     summaries = await library.build_model_summaries(
         db, settings, [models_by_id[e.model_id] for e in entries]

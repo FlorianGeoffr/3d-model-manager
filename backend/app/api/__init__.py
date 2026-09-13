@@ -34,6 +34,7 @@ from fastapi import APIRouter, Depends
 from app.api import (
     auth,
     blobs,
+    categories,
     collections,
     events,
     ext,
@@ -53,6 +54,7 @@ from app.api import (
     settings,
     slicer,
     stats,
+    storage_tree,
     tags,
     uploads,
 )
@@ -88,5 +90,7 @@ protected_router.include_router(collections.router)
 protected_router.include_router(queue.router)
 protected_router.include_router(reports.router)
 protected_router.include_router(stats.router)
+protected_router.include_router(categories.router)
+protected_router.include_router(storage_tree.router)
 
 api_router.include_router(protected_router)

@@ -1,8 +1,11 @@
 import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 
 import { useCreateModel } from "@/api/library";
-import { ApiError } from "@/api/client";
+import { api, ApiError } from "@/api/client";
+import { CategoryPicker } from "@/components/gallery/CategoryPicker";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -21,12 +24,15 @@ export function NewModelDialog({ trigger }: { trigger: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [categoryId, setCategoryId] = useState<number | null>(null);
   const navigate = useNavigate();
   const createModel = useCreateModel();
+  const queryClient = useQueryClient();
 
   function reset() {
     setName("");
     setDescription("");
+    setCategoryId(null);
     createModel.reset();
   }
 
@@ -35,7 +41,26 @@ export function NewModelDialog({ trigger }: { trigger: React.ReactNode }) {
     createModel.mutate(
       { name, description: description || undefined },
       {
-        onSuccess: (model) => {
+        onSuccess: async (model) => {
+          // `ModelCreate` has no `category_id` field (the backend only
+          // accepts it via `PATCH` on an existing model) -- so an initial
+          // category assignment is a follow-up patch, not part of the
+          // create call itself. Best-effort: a failed patch here shouldn't
+          // block navigating to the freshly-created model.
+          if (categoryId !== null) {
+            try {
+              await api.patch(`/models/${model.slug}`, { category_id: categoryId });
+              void queryClient.invalidateQueries({ queryKey: ["models"] });
+              void queryClient.invalidateQueries({ queryKey: ["storage"] });
+            } catch {
+              // The model itself was created fine; only the follow-up
+              // category assignment failed. Surface that specifically
+              // rather than swallowing it -- the user can still set the
+              // category from the detail page, but shouldn't be left
+              // thinking it was already applied.
+              toast.warning("Model created, but the category couldn't be set");
+            }
+          }
           setOpen(false);
           reset();
           void navigate({ to: "/models/$slug", params: { slug: model.slug } });
@@ -85,6 +110,10 @@ export function NewModelDialog({ trigger }: { trigger: React.ReactNode }) {
                 onChange={(event) => setDescription(event.target.value)}
                 rows={3}
               />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label>Category</Label>
+              <CategoryPicker value={categoryId} onChange={setCategoryId} />
             </div>
             {errorMessage ? (
               <p role="alert" className="text-sm text-destructive">

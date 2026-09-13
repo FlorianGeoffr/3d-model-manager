@@ -73,9 +73,13 @@ class Model(Base):
         # Gallery keyset-pagination indexes (Task 7 brief D1): back the
         # `sort=name` and default `-updated_at` keyset predicates
         # (`WHERE (sort_col, id) > (cursor_val, cursor_id) ORDER BY sort_col,
-        # id`) with a composite index instead of a full sort.
+        # id`) with a composite index instead of a full sort. R13b adds
+        # `created_at`/`print_count` twins for the "Recently added"/"Most
+        # printed" sorts.
         Index("ix_models_name_id", "name", "id"),
         Index("ix_models_updated_at_id", "updated_at", "id"),
+        Index("ix_models_created_at_id", "created_at", "id"),
+        Index("ix_models_print_count_id", "print_count", "id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
@@ -118,6 +122,20 @@ class Model(Base):
     favorite: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=false(), index=True
     )
+    # Single-valued, exclusive grouping (R13b) -- distinct from `tags`
+    # (many-to-many): a model has AT MOST ONE category. ON DELETE SET NULL so
+    # deleting a category un-categorizes its models instead of blocking or
+    # cascading.
+    category_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("categories.id", ondelete="SET NULL"), index=True
+    )
+    # Denormalized count of `prints` rows for this model (R13b Risk
+    # resolution 4): the single writer is `app.services.prints`
+    # create_print/delete_print (+1/-1); `recount_print_counts` self-heals
+    # any drift from the scan job. Backs the "Most printed" gallery sort via
+    # the SAME keyset-cursor path as `updated_at`/`name`, which a live
+    # `COUNT(*)` subquery couldn't.
+    print_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         server_default=func.now(), onupdate=func.now(), nullable=False
@@ -129,6 +147,24 @@ class Model(Base):
     revisions: Mapped[list["Revision"]] = relationship(foreign_keys="Revision.model_id")
     tags: Mapped[list["Tag"]] = relationship(secondary=model_tags)
     notes: Mapped[list["Note"]] = relationship()
+    category: Mapped["Category | None"] = relationship()
+
+
+class Category(Base):
+    """A user-defined, single-valued category for grouping models (R13b) --
+    distinct from ``tags`` (many-to-many join table): a model has at most one
+    category, stored as a plain FK column (``Model.category_id``).
+    """
+
+    __tablename__ = "categories"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    # Palette key, same convention as `Tag.color` (see
+    # app.schemas.library.TagColor) -- enforced by a Literal at the API layer
+    # and a CHECK constraint in the DB.
+    color: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
 
 
 class Tag(Base):

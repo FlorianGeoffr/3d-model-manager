@@ -12,7 +12,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "@/api/client";
 import { LibraryPage } from "@/pages/LibraryPage";
-import type { FollowedCollection, ModelSummary } from "@/api/types";
+import type { CategoryOut, FollowedCollection, ModelSummary } from "@/api/types";
 
 // `vi.mock` factories are hoisted above the module's own top-level
 // bindings, so the mock function has to be created through `vi.hoisted`.
@@ -88,6 +88,31 @@ vi.mock("@/components/ui/popover", () => ({
   Popover: ({ children }: { children?: ReactNode }) => <>{children}</>,
   PopoverTrigger: ({ children }: { children?: ReactNode }) => <>{children}</>,
   PopoverContent: ({ children }: { children?: ReactNode }) => <>{children}</>,
+}));
+
+// Radix's Select never reaches an interactive open state under jsdom (same
+// limitation documented in SettingsPage.test.tsx) -- swap it for a plain
+// native <select> so the sort dropdown's options are inspectable/drivable.
+vi.mock("@/components/ui/select", () => ({
+  Select: ({
+    value,
+    onValueChange,
+    children,
+  }: {
+    value?: string;
+    onValueChange: (value: string) => void;
+    children?: ReactNode;
+  }) => (
+    <select aria-label="Sort by" value={value} onChange={(event) => onValueChange(event.target.value)}>
+      {children}
+    </select>
+  ),
+  SelectTrigger: () => null,
+  SelectValue: () => null,
+  SelectContent: ({ children }: { children?: ReactNode }) => <>{children}</>,
+  SelectItem: ({ value, children }: { value: string; children?: ReactNode }) => (
+    <option value={value}>{children}</option>
+  ),
 }));
 
 function renderLibraryPage(initialEntries: string[] = ["/"]) {
@@ -208,6 +233,16 @@ function mockGalleryOkWithModels(models: ModelSummary[]) {
   });
 }
 
+const CATEGORY: CategoryOut = { id: 3, name: "Miniatures", color: "red", model_count: 2 };
+
+function mockGalleryOkWithCategories(categories: CategoryOut[]) {
+  getMock.mockImplementation((path: string) => {
+    if (path.startsWith("/models")) return Promise.resolve({ items: [], next_cursor: null });
+    if (path.startsWith("/categories")) return Promise.resolve(categories);
+    return Promise.resolve([]);
+  });
+}
+
 function lastModelsCall(): string {
   const calls = getMock.mock.calls.filter((call: unknown[]) => (call[0] as string).startsWith("/models"));
   const last = calls.at(-1);
@@ -236,6 +271,7 @@ beforeEach(() => {
   toastErrorMock.mockClear();
   resizeObserverCallbacks = [];
   resizeObserverTargets = [];
+  window.localStorage.clear();
 });
 
 describe("LibraryPage", () => {
@@ -701,5 +737,96 @@ describe("LibraryPage -- keyboard shortcuts (R9-C item 5)", () => {
     fireEvent.keyDown(document.body, { key: "a" });
 
     expect(screen.queryByText(/selected/)).not.toBeInTheDocument();
+  });
+});
+
+describe("LibraryPage -- view mode toggle (R13b)", () => {
+  it("defaults to grid view and switches to list view on click", async () => {
+    mockGalleryOkWithModels([GALLERY_MODEL]);
+    renderLibraryPage();
+    await screen.findByText("Test Model");
+
+    expect(screen.getByRole("button", { name: "Grid view" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "List view" })).toHaveAttribute("aria-pressed", "false");
+
+    fireEvent.click(screen.getByRole("button", { name: "List view" }));
+
+    expect(screen.getByRole("button", { name: "List view" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Grid view" })).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("persists the chosen view mode across a remount via localStorage", async () => {
+    mockGalleryOkWithModels([GALLERY_MODEL]);
+    const { unmount } = renderLibraryPage();
+    await screen.findByText("Test Model");
+
+    fireEvent.click(screen.getByRole("button", { name: "List view" }));
+    expect(window.localStorage.getItem("library-view")).toBe("list");
+    unmount();
+
+    renderLibraryPage();
+    await screen.findByText("Test Model");
+    expect(screen.getByRole("button", { name: "List view" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("switches to folder view, hiding the format/tag facets", async () => {
+    mockGalleryOkWithModels([GALLERY_MODEL]);
+    renderLibraryPage();
+    await screen.findByText("Test Model");
+
+    fireEvent.click(screen.getByRole("button", { name: "Folder view" }));
+
+    expect(screen.queryByRole("group", { name: "Filter by format" })).not.toBeInTheDocument();
+  });
+});
+
+describe("LibraryPage -- sort options (R13b)", () => {
+  it("includes Recently added and Most printed alongside the existing sorts", async () => {
+    mockGalleryOk();
+    renderLibraryPage();
+    await screen.findByText("No models yet");
+
+    const sortSelect = screen.getByLabelText("Sort by");
+    const optionLabels = within(sortSelect).getAllByRole("option").map((option) => option.textContent);
+    expect(optionLabels).toEqual(["Recently updated", "Recently added", "Most printed", "Name"]);
+  });
+});
+
+describe("LibraryPage -- category facet (R13b)", () => {
+  it("renders categories as chips and filters the gallery query by category=<id>", async () => {
+    mockGalleryOkWithCategories([CATEGORY]);
+    renderLibraryPage();
+    await screen.findByText("No models yet");
+
+    const chip = await screen.findByRole("button", { name: /Miniatures/ });
+    fireEvent.click(chip);
+
+    await waitFor(() => expect(lastModelsCall()).toContain("category=3"));
+  });
+
+  it("seeds the category filter from a ?category= URL search param on mount", async () => {
+    mockGalleryOkWithCategories([CATEGORY]);
+    renderLibraryPage(["/?category=3"]);
+
+    await waitFor(() => expect(lastModelsCall()).toContain("category=3"));
+  });
+
+  // Fix-review finding 3: `activeCategory` used to be a one-shot `useState`
+  // seed from `search.category`, so a sidebar category link -- which only
+  // changes `?category=` on the ALREADY-mounted `/` route (no remount) --
+  // never took effect. It's derived straight from `search.category` now, so
+  // a search-only navigation (simulating that sidebar link) must update the
+  // filter live, and preserve whatever else was already in the URL.
+  it("updates the category filter live when ?category= changes without remounting, preserving other search params", async () => {
+    mockGalleryOkWithCategories([CATEGORY]);
+    const { router } = renderLibraryPage(["/?collection=5"]);
+    await screen.findByText("No models yet");
+
+    await act(async () => {
+      await router.navigate({ to: "/", search: (prev: Record<string, unknown>) => ({ ...prev, category: 3 }) });
+    });
+
+    await waitFor(() => expect(lastModelsCall()).toContain("category=3"));
+    expect(router.state.location.search).toMatchObject({ collection: 5, category: 3 });
   });
 });

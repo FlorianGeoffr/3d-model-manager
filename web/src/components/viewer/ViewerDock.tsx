@@ -52,7 +52,7 @@ export function ViewerDock({
     // harmless, the nearest one just wins for this subtree.
     <TooltipProvider>
     <div
-      className="pointer-events-auto flex flex-wrap items-center gap-2 rounded-full border border-border bg-card/95 px-3 py-1.5 shadow-lg backdrop-blur-sm"
+      className="pointer-events-auto flex max-w-[calc(100%-1rem)] flex-nowrap items-center gap-1 overflow-x-auto rounded-full border border-border bg-card/95 px-2 py-1.5 shadow-lg backdrop-blur-sm [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       onKeyDown={(event) => event.stopPropagation()}
     >
       <SegmentedControl
@@ -69,7 +69,7 @@ export function ViewerDock({
         value={tools.shading}
         onChange={(shading) => onToolsChange({ shading })}
       />
-      <div role="group" aria-label="Quick colors" className="flex items-center gap-1 px-1">
+      <div role="group" aria-label="Quick colors" className="flex shrink-0 items-center gap-1 px-1">
         {QUICK_COLORS.map((hex) => (
           <button
             key={hex}
@@ -78,7 +78,7 @@ export function ViewerDock({
             disabled={checkedList.length === 0}
             onClick={() => onQuickColor(hex)}
             style={{ background: hex }}
-            className="size-5 shrink-0 cursor-pointer rounded-full border border-black/25 shadow-sm outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/30"
+            className="size-4 shrink-0 cursor-pointer rounded-full border border-black/25 shadow-sm outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/30"
           />
         ))}
       </div>

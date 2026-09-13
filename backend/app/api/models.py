@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 import uuid
 from pathlib import Path
 
@@ -30,7 +29,7 @@ from app.schemas.library import (
     ModelRelocateIn,
 )
 from app.services import jobs as jobs_service
-from app.services import library, spool, zip_export
+from app.services import layout, library, spool, zip_export
 from app.services import storage_backends as storage_backends_service
 from app.services.http_names import content_disposition_attachment
 from app.storage.base import StorageBackend
@@ -146,14 +145,22 @@ async def set_model_cover(
     """Raw-body PNG upload (R13a): reuses the same tee-to-spool ingest path
     as ``PUT /api/uploads`` (``app.services.spool.stream_to_spool`` ->
     ``library.finalize_upload`` -> ``store_to_backend``/pipeline dispatch),
-    landing the bytes at ``_snapshots/cover-<epoch ns>.png`` on the model's
-    current revision and pointing ``model.cover_blob_hash`` at the new blob
-    in the same transaction as the ``File`` row. A repost always lands as a
-    NEW file (the epoch-based rel_path never collides) and simply repoints
-    ``cover_blob_hash`` -- the old cover file is left in place, same as any
-    other superseded revision file.
+    landing the bytes at the FIXED ``_snapshots/cover.png`` rel_path on the
+    model's current revision and pointing ``model.cover_blob_hash`` at the
+    new blob in the same transaction as the ``File`` row. A repost reuses
+    the same rel_path with ``replace=True`` (review fix) so the revision
+    only ever carries ONE snapshot ``File`` row -- an epoch-suffixed
+    rel_path would otherwise accumulate a permanent new row per click,
+    leaking into file listings/zip export/storage totals and potentially
+    winning the "first ok thumb by rel_path" gallery fallback.
     """
     model = await library.get_model_by_slug(db, slug)
+    if model.current_revision_id is None:
+        # Mirror `zip_export`'s "nothing to operate on yet" 409 -- a model
+        # with no revision yet has nowhere to land the snapshot file, and
+        # `db.get(Revision, None)` below would otherwise return `None` and
+        # 500 deep inside `finalize_upload`.
+        raise HTTPException(status.HTTP_409_CONFLICT, "model has no current revision")
     revision = await db.get(Revision, model.current_revision_id)
 
     token, path, blob_hash, size = await spool.stream_to_spool(
@@ -167,7 +174,7 @@ async def set_model_cover(
         if magic != _PNG_MAGIC:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "not a PNG file")
 
-        rel_path = f"_snapshots/cover-{time.time_ns()}.png"
+        rel_path = f"{layout.SNAPSHOT_PREFIX}cover.png"
 
         def _set_cover_hash() -> None:
             model.cover_blob_hash = blob_hash
@@ -181,7 +188,7 @@ async def set_model_cover(
             size=size,
             kind=BlobKind.IMAGE,
             format_=BlobFormat.PNG,
-            replace=False,
+            replace=True,
             after_blob_flush=_set_cover_hash,
         )
 

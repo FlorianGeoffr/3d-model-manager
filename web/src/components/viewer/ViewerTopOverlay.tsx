@@ -56,7 +56,7 @@ export function ViewerTopOverlay({
     // `ViewerTopOverlay.test.tsx`.
     <TooltipProvider>
     <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between gap-2 p-2">
-      <div className="pointer-events-auto rounded-full bg-background/80 px-3 py-1 text-xs whitespace-nowrap text-muted-foreground backdrop-blur-sm">
+      <div className="pointer-events-none rounded-full bg-background/80 px-3 py-1 text-xs whitespace-nowrap text-muted-foreground backdrop-blur-sm">
         {stats ? formatStats(stats) : "No parts selected"}
       </div>
       <div
@@ -71,7 +71,12 @@ export function ViewerTopOverlay({
                 <ChevronDownIcon />
               </Button>
             </PopoverTrigger>
-            <PopoverContent container={container} align="end" className="max-h-[70vh] w-80 overflow-y-auto">
+            <PopoverContent
+              container={container}
+              align="end"
+              className="max-h-[70vh] w-80 overflow-y-auto"
+              onKeyDown={(event) => event.stopPropagation()}
+            >
               <PartsChecklist
                 glbFiles={files}
                 checkedIds={checkedIds}
@@ -99,21 +104,23 @@ export function ViewerTopOverlay({
           </TooltipTrigger>
           <TooltipContent>Spin (R)</TooltipContent>
         </Tooltip>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="outline"
-              size="icon-sm"
-              aria-label="Cover"
-              disabled={!canCaptureCover || capturingCover}
-              onClick={onCaptureCover}
-            >
-              <CameraIcon />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Set as cover</TooltipContent>
-        </Tooltip>
+        {canCaptureCover && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon-sm"
+                aria-label="Cover"
+                disabled={capturingCover}
+                onClick={onCaptureCover}
+              >
+                <CameraIcon />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Set as cover</TooltipContent>
+          </Tooltip>
+        )}
         <Tooltip>
           <TooltipTrigger asChild>
             <Button

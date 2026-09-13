@@ -1,24 +1,13 @@
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Textarea } from "@/components/ui/textarea";
-
-/** Right-column placeholder card (R13a) -- print tips (freeform per-model
- * notes on how to best print the thing) don't have a data model yet; that
- * lands in R13c's `models.print_tips` column + `MetadataEditor`. Disabled
- * so it reads as "not yet wired up" rather than a broken text field. */
+/** Right-column placeholder (R13a) -- print tips (freeform per-model notes
+ * on how to best print the thing) don't have a data model yet; that lands in
+ * a future revision's `models.print_tips` column + `MetadataEditor`. Renders
+ * nothing for now (per the "no dead controls" rule -- a disabled textarea is
+ * still a control) rather than a permanently-disabled field; `ModelDetailPage`
+ * has stopped rendering this card too, but the component stays so wiring it
+ * back in is a one-line change once the data model lands.
+ *
+ * TODO(R13c): replace with a real `models.print_tips` editor and re-add to
+ * `ModelDetailPage`'s right column. */
 export function PrintTipsCard() {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Print tips</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <Textarea
-          disabled
-          placeholder="Print tips are coming in R13c."
-          rows={3}
-          aria-label="Print tips"
-        />
-      </CardContent>
-    </Card>
-  );
+  return null;
 }

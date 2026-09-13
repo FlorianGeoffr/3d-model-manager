@@ -6,6 +6,7 @@
  * delete gated behind `ConfirmDialog`).
  */
 import { useId, useState, type FormEvent } from "react";
+import { PlusIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { useAppSettings } from "@/api/appSettings";
@@ -368,6 +369,10 @@ export function PrintsTab({ model }: { model: ModelDetail }) {
   const patchPrint = usePatchPrint(model.id, model.slug);
   const deletePrint = useDeletePrint(model.id, model.slug);
   const removeQueueEntry = useRemoveQueueEntry();
+  // R13a wireframe: history shows first -- the composer is a collapsed
+  // header toggle rather than always-expanded, closing itself again once a
+  // print actually logs.
+  const [composerOpen, setComposerOpen] = useState(false);
 
   const prints = printsQuery.data ?? [];
   const printers = printersQuery.data ?? [];
@@ -395,7 +400,24 @@ export function PrintsTab({ model }: { model: ModelDetail }) {
 
   return (
     <div className="space-y-4">
-      <PrintComposer modelId={model.id} slug={model.slug} printers={printers} onLogged={handleLogged} />
+      <div className="flex justify-end">
+        <Button type="button" variant="outline" size="sm" onClick={() => setComposerOpen((prev) => !prev)}>
+          <PlusIcon className="size-4" />
+          Log a print
+        </Button>
+      </div>
+
+      {composerOpen && (
+        <PrintComposer
+          modelId={model.id}
+          slug={model.slug}
+          printers={printers}
+          onLogged={(result) => {
+            handleLogged(result);
+            setComposerOpen(false);
+          }}
+        />
+      )}
 
       {prints.length === 0 ? (
         <p className="text-sm text-muted-foreground">No prints logged yet. Log your first print above.</p>

@@ -1,23 +1,27 @@
-import { useMemo, useState } from "react";
-
 import { useViewerScene } from "@/components/viewer/useViewerScene";
-import { glbFiles, pickViewerFiles } from "@/components/viewer/viewable";
 import { PlaceholderCard } from "@/components/viewer/ViewerStage";
 import type { StudioSelection } from "@/components/model-detail/studioSelection";
 import { StudioSurface } from "@/components/model-detail/StudioSurface";
 import type { FileOut, ModelDetail } from "@/api/types";
 
-/** Owns `useViewerScene` (called exactly once, here) plus the rail's current
- * selection, for one fixed glb-id-set "generation" of the model -- see
- * `StudioWorkspace` below for why it's split out like this. */
+/** Owns `useViewerScene` (called exactly once, here) for one fixed
+ * glb-id-set "generation" of the model -- see `StudioWorkspace` below for
+ * why it's split out like this. The rail's current selection now lives in
+ * `ModelDetailPage` (via `useStudioSelection`, R13c "View in 3D" hand-off)
+ * so a Files-card row action can reach it too -- this component just
+ * receives it as a prop. */
 function StudioWorkspaceGeneration({
   model,
   glbable,
   others,
+  selection,
+  onSelectAssembly,
 }: {
   model: ModelDetail;
   glbable: FileOut[];
   others: FileOut[];
+  selection: StudioSelection | undefined;
+  onSelectAssembly: () => void;
 }) {
   const coverUrl = model.cover_blob_hash ? `/api/blobs/${model.cover_blob_hash}/thumb?size=512` : null;
   const { stageProps } = useViewerScene({
@@ -26,15 +30,6 @@ function StudioWorkspaceGeneration({
     coverUrl,
     defaultAllChecked: true,
   });
-
-  // R13a re-chrome: no more `FileRail` left column to drive this
-  // interactively -- `selection` still lives here (unchanged shape, not yet
-  // wired to a setter) so `StudioSurface`'s file-status switch keeps
-  // working, and so a future "View in 3D" row action (Files card, R13c) has
-  // somewhere to reintroduce a setter.
-  const [selection] = useState<StudioSelection | undefined>(() =>
-    glbable.length > 0 ? { type: "assembly" } : others[0] ? { type: "file", id: others[0].id } : undefined,
-  );
 
   if (glbable.length === 0 && others.length === 0) {
     return (
@@ -45,27 +40,14 @@ function StudioWorkspaceGeneration({
     );
   }
 
-  // A file that no longer exists on this generation (shouldn't normally
-  // happen -- `others` only changes when the key below remounts this whole
-  // component -- but resolve defensively the same way the old `?? others[0]`
-  // fallback did) falls back to the first available entry instead of a blank
-  // surface.
-  const resolvedSelection: StudioSelection | undefined =
-    selection && (selection.type === "assembly" ? glbable.length > 0 : others.some((f) => f.id === selection.id))
-      ? selection
-      : glbable.length > 0
-        ? { type: "assembly" }
-        : others[0]
-          ? { type: "file", id: others[0].id }
-          : undefined;
-
   return (
-    <div className="flex min-w-0 flex-1 flex-col gap-4">
+    <div className="flex min-w-0 flex-col gap-4">
       <StudioSurface
-        selection={resolvedSelection}
+        selection={selection}
         hasGlb={glbable.length > 0}
         otherFiles={others}
         stageProps={stageProps}
+        onSelectAssembly={onSelectAssembly}
       />
     </div>
   );
@@ -74,9 +56,9 @@ function StudioWorkspaceGeneration({
 /** Left rail + right viewing surface for the model-detail studio (Phase 4),
  * replacing the old `ViewerTab`. `useViewerScene` is owned by
  * `StudioWorkspaceGeneration` below, called exactly once for a given set of
- * ready-GLB parts -- switching which rail entry is selected only changes
- * local `selection` state, it never remounts (and so never re-fetches/
- * re-decodes) the canvas.
+ * ready-GLB parts -- switching the selection only changes state in
+ * `ModelDetailPage`'s `useStudioSelection`, it never remounts (and so never
+ * re-fetches/re-decodes) the canvas.
  *
  * Keyed on the ready-GLB id set (same trick `ViewerTab`'s `MeshSection` used)
  * because TanStack Router reuses this component instance across `$slug`
@@ -84,19 +66,27 @@ function StudioWorkspaceGeneration({
  * state (seeded once from `glbable[0]`) would carry model A's defaults over
  * to model B. Keying here forces a fresh mount -- and a fresh default
  * selection -- whenever the combinable file set actually changes. */
-export function StudioWorkspace({ model }: { model: ModelDetail }) {
-  const glbable = useMemo(() => glbFiles(model), [model]);
-  const others = useMemo(
-    () => pickViewerFiles(model).filter((file) => !glbable.some((glb) => glb.id === file.id)),
-    [model, glbable],
-  );
-
+export function StudioWorkspace({
+  model,
+  glbable,
+  others,
+  selection,
+  onSelectAssembly,
+}: {
+  model: ModelDetail;
+  glbable: FileOut[];
+  others: FileOut[];
+  selection: StudioSelection | undefined;
+  onSelectAssembly: () => void;
+}) {
   return (
     <StudioWorkspaceGeneration
       key={glbable.map((file) => file.id).join(",")}
       model={model}
       glbable={glbable}
       others={others}
+      selection={selection}
+      onSelectAssembly={onSelectAssembly}
     />
   );
 }

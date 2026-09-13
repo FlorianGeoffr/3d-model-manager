@@ -12,12 +12,21 @@ import { DEFAULT_TOOLS } from "@/components/viewer/tools";
 vi.mock("@/components/ui/popover", () => ({
   Popover: ({ children }: { children?: ReactNode }) => <div data-testid="popover-shell">{children}</div>,
   PopoverTrigger: ({ children }: { children?: ReactNode }) => <>{children}</>,
-  PopoverContent: ({ children }: { children?: ReactNode }) => <>{children}</>,
+  PopoverContent: ({ children, onKeyDown }: { children?: ReactNode; onKeyDown?: (e: unknown) => void }) => (
+    <div data-testid="popover-content" onKeyDown={onKeyDown}>
+      {children}
+    </div>
+  ),
 }));
 vi.mock("@/components/ui/sheet", () => ({
   Sheet: ({ children }: { children?: ReactNode }) => <div data-testid="sheet-shell">{children}</div>,
   SheetTrigger: ({ children }: { children?: ReactNode }) => <>{children}</>,
-  SheetContent: ({ children }: { children?: ReactNode }) => <>{children}</>,
+  SheetContent: ({ children, onKeyDown }: { children?: ReactNode; onKeyDown?: (e: unknown) => void }) => (
+    <div data-testid="sheet-content" onKeyDown={onKeyDown}>
+      {children}
+    </div>
+  ),
+  SheetTitle: ({ children }: { children?: ReactNode }) => <h2>{children}</h2>,
 }));
 
 vi.mock("@/api/printers", () => ({
@@ -120,5 +129,39 @@ describe("ViewerMorePanel", () => {
   it("does not show New window/Parts in windows when showWindowButtons is false", () => {
     render(<ViewerMorePanel {...baseProps()} showWindowButtons={false} />);
     expect(screen.queryByRole("button", { name: /New window/ })).not.toBeInTheDocument();
+  });
+
+  // The real stage hotkey handler (`ViewerStage`'s `onKeyDown`) is a REACT
+  // handler on an ancestor DOM node, not a native `addEventListener` --
+  // React's synthetic event system dispatches to ancestor React handlers
+  // during its own (JS-land) bubble simulation, which `stopPropagation`
+  // short-circuits, independent of the real DOM's bubble order relative to
+  // any native listener in between. So the bubbling ancestor here has to be
+  // a React `onKeyDown`, matching that real path, for this test to mean
+  // anything.
+  it("stops keydown from bubbling out of the popover content (>=900px), so it never reaches the stage hotkey handler", () => {
+    setViewportWidth(1024);
+    const bubbled = vi.fn();
+    render(
+      <div onKeyDown={bubbled}>
+        <ViewerMorePanel {...baseProps()} />
+      </div>,
+    );
+    fireEvent.keyDown(screen.getByTestId("popover-content"), { key: "f" });
+    expect(bubbled).not.toHaveBeenCalled();
+  });
+
+  it("stops keydown from bubbling out of the sheet content (<900px) and labels it for screen readers", () => {
+    setViewportWidth(500);
+    const bubbled = vi.fn();
+    render(
+      <div onKeyDown={bubbled}>
+        <ViewerMorePanel {...baseProps()} />
+      </div>,
+    );
+    expect(screen.getByRole("heading", { name: "Viewer options" })).toBeInTheDocument();
+
+    fireEvent.keyDown(screen.getByTestId("sheet-content"), { key: "f" });
+    expect(bubbled).not.toHaveBeenCalled();
   });
 });

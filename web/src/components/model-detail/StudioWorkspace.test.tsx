@@ -4,6 +4,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { StudioWorkspace } from "@/components/model-detail/StudioWorkspace";
+import { useStudioSelection } from "@/components/model-detail/studioSelection";
 import type { FileOut, ModelDetail } from "@/api/types";
 
 // Same stubbing approach as the old `ViewerTab.test.tsx`: `ModelViewer` is a
@@ -104,6 +105,23 @@ function fakeModel(files: FileOut[], overrides: Partial<ModelDetail> = {}): Mode
   };
 }
 
+/** `StudioWorkspace`'s selection now lives in `ModelDetailPage` via
+ * `useStudioSelection` (R13c "View in 3D" hand-off) -- this harness plays
+ * that role for these tests so they still exercise the real
+ * default-selection/fallback logic instead of a stub. */
+function Harness({ model }: { model: ModelDetail }) {
+  const studio = useStudioSelection(model);
+  return (
+    <StudioWorkspace
+      model={model}
+      glbable={studio.glbable}
+      others={studio.others}
+      selection={studio.selection}
+      onSelectAssembly={studio.onSelectAssembly}
+    />
+  );
+}
+
 /** `useViewerScene` calls `useQueryClient()` unconditionally (R13a's Cover
  * action needs it to invalidate the model/gallery caches on capture) -- a
  * `QueryClientProvider` ancestor is required even though these tests never
@@ -112,7 +130,7 @@ function renderWorkspace(model: ModelDetail) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <StudioWorkspace model={model} />
+      <Harness model={model} />
     </QueryClientProvider>,
   );
 }
@@ -183,7 +201,7 @@ describe("StudioWorkspace", () => {
     const modelA = fakeModel([fakeFile({ id: 1, rel_path: "a.stl", blob_hash: "hashA", glb_status: "ok" })]);
     const { rerender } = render(
       <QueryClientProvider client={queryClient}>
-        <StudioWorkspace model={modelA} />
+        <Harness model={modelA} />
       </QueryClientProvider>,
     );
     expect(await screen.findByTestId("model-viewer")).toHaveTextContent("/api/blobs/hashA/glb");
@@ -191,7 +209,7 @@ describe("StudioWorkspace", () => {
     const modelB = fakeModel([fakeFile({ id: 5, rel_path: "z.stl", blob_hash: "hashZ", glb_status: "ok" })]);
     rerender(
       <QueryClientProvider client={queryClient}>
-        <StudioWorkspace model={modelB} />
+        <Harness model={modelB} />
       </QueryClientProvider>,
     );
 
@@ -204,8 +222,59 @@ describe("StudioWorkspace", () => {
     renderWorkspace(fakeModel([pending, gcode]));
 
     // No glb parts exist, so the default selection falls back to the first
-    // "other" file (pending) -- switching this via UI is now a Files-card
-    // "View in 3D" action (R13c), out of scope for this re-chrome.
+    // "other" file (pending). Switching this via UI is the Files-card
+    // "View in 3D" action -- see the `useStudioSelection` describe block
+    // below.
     expect(screen.getByText("Preparing preview…")).toBeInTheDocument();
+  });
+
+  it("does not stretch the studio surface to fill the DetailLayout grid row (no flex-1/h-full)", async () => {
+    const file = fakeFile({ id: 1, glb_status: "ok", blob_hash: "readyhash" });
+    const { container } = renderWorkspace(fakeModel([file]));
+    await screen.findByTestId("model-viewer");
+
+    const surfaceWrapper = container.firstElementChild;
+    expect(surfaceWrapper).not.toHaveClass("flex-1");
+    expect(surfaceWrapper).not.toHaveClass("h-full");
+  });
+});
+
+describe("useStudioSelection", () => {
+  it("View in 3D on a non-glb file switches away from the assembly, and Back to assembly returns to it", async () => {
+    const glbFile = fakeFile({ id: 1, rel_path: "a.stl", glb_status: "ok" });
+    const pending = fakeFile({ id: 2, rel_path: "pending.stl", glb_status: "pending" });
+    const model = fakeModel([glbFile, pending]);
+
+    function Page() {
+      const studio = useStudioSelection(model);
+      return (
+        <>
+          <StudioWorkspace
+            model={model}
+            glbable={studio.glbable}
+            others={studio.others}
+            selection={studio.selection}
+            onSelectAssembly={studio.onSelectAssembly}
+          />
+          <button type="button" onClick={() => studio.onViewIn3D(pending)}>
+            View pending in 3D
+          </button>
+        </>
+      );
+    }
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <Page />
+      </QueryClientProvider>,
+    );
+    await screen.findByTestId("model-viewer");
+
+    fireEvent.click(screen.getByRole("button", { name: "View pending in 3D" }));
+    expect(await screen.findByText("Preparing preview…")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to assembly" }));
+    expect(await screen.findByTestId("model-viewer")).toBeInTheDocument();
   });
 });

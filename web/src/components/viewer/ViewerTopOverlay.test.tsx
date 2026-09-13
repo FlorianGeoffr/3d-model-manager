@@ -85,16 +85,27 @@ describe("ViewerTopOverlay", () => {
     expect(onToggleAutoRotate).toHaveBeenCalled();
   });
 
-  it("Cover is disabled when canCaptureCover is false, else calls onCaptureCover", () => {
+  it("Cover is hidden (not disabled) when canCaptureCover is false, else calls onCaptureCover", () => {
     const onCaptureCover = vi.fn();
     const { rerender } = render(
       <ViewerTopOverlay {...baseProps()} canCaptureCover={false} onCaptureCover={onCaptureCover} />,
     );
-    expect(screen.getByRole("button", { name: "Cover" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Cover" })).not.toBeInTheDocument();
 
     rerender(<ViewerTopOverlay {...baseProps()} canCaptureCover onCaptureCover={onCaptureCover} />);
     fireEvent.click(screen.getByRole("button", { name: "Cover" }));
     expect(onCaptureCover).toHaveBeenCalled();
+  });
+
+  it("root is pointer-events-none, the read-only dims pill stays pointer-events-none, and the interactive button group opts back in", () => {
+    const { container } = render(<ViewerTopOverlay {...baseProps()} stats={{ x: 10, y: 20, z: 5, triangles: 1234 }} />);
+
+    const root = container.firstElementChild;
+    expect(root).toHaveClass("pointer-events-none");
+
+    const [dimsPill, buttonGroup] = Array.from(root?.children ?? []);
+    expect(dimsPill).toHaveClass("pointer-events-none");
+    expect(buttonGroup).toHaveClass("pointer-events-auto");
   });
 
   it("Fullscreen calls onToggleFullscreen and reflects isFullscreen", () => {

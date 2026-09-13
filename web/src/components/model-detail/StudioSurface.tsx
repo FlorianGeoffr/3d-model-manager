@@ -1,4 +1,4 @@
-import { LoaderCircleIcon } from "lucide-react";
+import { ArrowLeftIcon, LoaderCircleIcon } from "lucide-react";
 
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { PlatePanel } from "@/components/model-detail/PlatePanel";
@@ -64,11 +64,16 @@ export function StudioSurface({
   hasGlb,
   otherFiles,
   stageProps,
+  onSelectAssembly,
 }: {
   selection: StudioSelection | undefined;
   hasGlb: boolean;
   otherFiles: FileOut[];
   stageProps: StageProps;
+  /** R13c "View in 3D" hand-off: returns the surface to the combined
+   * assembly view. Only rendered as a chip when a single file is selected
+   * AND the model actually has an assembly to go back to. */
+  onSelectAssembly: () => void;
 }) {
   if (!selection) {
     return (
@@ -81,7 +86,7 @@ export function StudioSurface({
 
   if (selection.type === "assembly" && hasGlb) {
     return (
-      <div className="flex min-w-0 flex-1 flex-col gap-4">
+      <div className="flex min-w-0 flex-col gap-4">
         <ViewerStage {...stageProps} variant="inline" showWindowButtons />
       </div>
     );
@@ -98,7 +103,17 @@ export function StudioSurface({
   }
 
   return (
-    <div className="min-w-0 flex-1">
+    <div className="flex min-w-0 flex-col gap-2">
+      {hasGlb && (
+        <button
+          type="button"
+          onClick={onSelectAssembly}
+          className="inline-flex w-fit items-center gap-1 rounded-full border border-border bg-card px-3 py-1 text-xs text-muted-foreground outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50"
+        >
+          <ArrowLeftIcon className="size-3.5" />
+          Back to assembly
+        </button>
+      )}
       <FileState file={file} />
     </div>
   );

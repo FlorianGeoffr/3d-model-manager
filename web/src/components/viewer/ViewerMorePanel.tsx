@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { FilamentChip } from "@/components/ui/filament-chip";
 import { usePrinterStatus } from "@/api/printers";
 import { BackgroundSwatches } from "@/components/viewer/BackgroundSwatches";
@@ -283,7 +283,12 @@ export function ViewerMorePanel(props: ViewerMorePanelProps): ReactNode {
             <MoreHorizontalIcon />
           </Button>
         </PopoverTrigger>
-        <PopoverContent container={container} align="end" className="max-h-[70vh] w-80 overflow-y-auto">
+        <PopoverContent
+          container={container}
+          align="end"
+          className="max-h-[70vh] w-80 overflow-y-auto"
+          onKeyDown={(event) => event.stopPropagation()}
+        >
           <MorePanelBody {...bodyProps} />
         </PopoverContent>
       </Popover>
@@ -297,7 +302,13 @@ export function ViewerMorePanel(props: ViewerMorePanelProps): ReactNode {
           <MoreHorizontalIcon />
         </Button>
       </SheetTrigger>
-      <SheetContent container={container} side="bottom" className="max-h-[80vh] overflow-y-auto">
+      <SheetContent
+        container={container}
+        side="bottom"
+        className="max-h-[80vh] overflow-y-auto"
+        onKeyDown={(event) => event.stopPropagation()}
+      >
+        <SheetTitle className="sr-only">Viewer options</SheetTitle>
         <MorePanelBody {...bodyProps} />
       </SheetContent>
     </Sheet>

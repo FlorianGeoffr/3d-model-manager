@@ -96,11 +96,11 @@ function buildModel(files: FileOut[]): ModelDetail {
   };
 }
 
-function renderFilesTab(files: FileOut[]) {
+function renderFilesTab(files: FileOut[], onViewIn3D?: (file: FileOut) => void) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <FilesTab model={buildModel(files)} />
+      <FilesTab model={buildModel(files)} onViewIn3D={onViewIn3D} />
     </QueryClientProvider>,
   );
 }
@@ -250,6 +250,30 @@ describe("FilesTab", () => {
     renderFilesTab([{ ...VERIFIED_FILE, meta: null }]);
 
     expect(screen.queryByTitle(/tris|plates/)).not.toBeInTheDocument();
+  });
+
+  it("shows a View in 3D action only for studio-viewable files, and only when onViewIn3D is passed", () => {
+    const glbFile: FileOut = { ...VERIFIED_FILE, glb_status: "ok" };
+    const cadPending: FileOut = { ...VERIFIED_FILE, id: 3, rel_path: "part.step", format: "step", kind: "cad", glb_status: "pending" };
+    const notViewable: FileOut = { ...VERIFIED_FILE, id: 4, rel_path: "readme.txt", format: "step", kind: "cad", glb_status: null };
+
+    const { rerender } = renderFilesTab([glbFile, cadPending, notViewable]);
+    expect(screen.queryByRole("button", { name: /View .* in 3D/ })).not.toBeInTheDocument();
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const onViewIn3D = vi.fn();
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <FilesTab model={buildModel([glbFile, cadPending, notViewable])} onViewIn3D={onViewIn3D} />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByRole("button", { name: `View ${glbFile.rel_path} in 3D` })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: `View ${cadPending.rel_path} in 3D` })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: `View ${notViewable.rel_path} in 3D` })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: `View ${cadPending.rel_path} in 3D` }));
+    expect(onViewIn3D).toHaveBeenCalledWith(cadPending);
   });
 
   it("hides the Print button for a sliced file when the printer feature is off (default mock)", async () => {

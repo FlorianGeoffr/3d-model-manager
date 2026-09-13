@@ -846,7 +846,12 @@ async def _gallery_aggregates(
         bucket["formats"].add(fmt)
         if print_time_s is not None:
             bucket["print_times"].append(print_time_s)
-        bucket["thumb_files"].append((rel_path, blob_hash, thumb_ok_id is not None))
+        # Internal snapshot files (the cover-image snapshot -- R13a review
+        # fix) must never win the "first ok thumb by rel_path" gallery
+        # fallback below -- `_snapshots/` sorts first, which would make a
+        # user-set cover eclipse every uploaded model file's own thumb.
+        if not layout.is_snapshot_path(rel_path):
+            bucket["thumb_files"].append((rel_path, blob_hash, thumb_ok_id is not None))
 
         file_row = {
             "id": file_id,
@@ -1225,7 +1230,10 @@ async def build_revision_detail(
     db: AsyncSession, revision: Revision, settings: Settings
 ) -> RevisionDetail:
     notes = await _list_notes(db, model_id=None, revision_id=revision.id)
-    sorted_files = sorted(revision.files, key=lambda f: f.rel_path)
+    sorted_files = sorted(
+        (f for f in revision.files if not layout.is_snapshot_path(f.rel_path)),
+        key=lambda f: f.rel_path,
+    )
     enrichments = await _build_file_enrichments(settings, (f.blob for f in sorted_files))
     files = [FileOut.from_model(f, enrichments.get(f.blob_hash)) for f in sorted_files]
     return RevisionDetail(

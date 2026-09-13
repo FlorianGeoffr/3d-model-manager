@@ -7,12 +7,12 @@ import { DetailLayout } from "@/components/model-detail/DetailLayout";
 import { ModelHeader } from "@/components/model-detail/ModelHeader";
 import { RelatedModels } from "@/components/model-detail/RelatedModels";
 import { StudioWorkspace } from "@/components/model-detail/StudioWorkspace";
+import { useStudioSelection } from "@/components/model-detail/studioSelection";
 import { DescriptionCard } from "@/components/model-detail/cards/DescriptionCard";
 import { FilesDocsCard } from "@/components/model-detail/cards/FilesDocsCard";
 import { GcodeProfilesCard } from "@/components/model-detail/cards/GcodeProfilesCard";
 import { NotesCard } from "@/components/model-detail/cards/NotesCard";
 import { PrintHistoryCard } from "@/components/model-detail/cards/PrintHistoryCard";
-import { PrintTipsCard } from "@/components/model-detail/cards/PrintTipsCard";
 import { RevisionsCard } from "@/components/model-detail/cards/RevisionsCard";
 import { SpecsCard } from "@/components/model-detail/cards/SpecsCard";
 import { TagsLinksCard } from "@/components/model-detail/cards/TagsLinksCard";
@@ -46,6 +46,11 @@ export function ModelDetailPage() {
     setEditMode(false);
     setRelocateOpen(false);
   }
+  // Called unconditionally (rules of hooks) ahead of the loading/error early
+  // returns below -- guards `model` being absent internally instead. Owns
+  // the studio surface's selection here (not inside `StudioWorkspace`) so
+  // `FilesDocsCard`'s per-row "View in 3D" action can reach it too.
+  const studio = useStudioSelection(modelQuery.data);
 
   if (modelQuery.isLoading) {
     return (
@@ -78,7 +83,13 @@ export function ModelDetailPage() {
       <DetailLayout
         left={
           <>
-            <StudioWorkspace model={model} />
+            <StudioWorkspace
+              model={model}
+              glbable={studio.glbable}
+              others={studio.others}
+              selection={studio.selection}
+              onSelectAssembly={studio.onSelectAssembly}
+            />
             <DescriptionCard model={model} editMode={editMode} />
             <TagsLinksCard
               model={model}
@@ -93,10 +104,9 @@ export function ModelDetailPage() {
           <>
             <GcodeProfilesCard model={model} />
             <PrintHistoryCard model={model} />
-            <FilesDocsCard model={model} />
+            <FilesDocsCard model={model} onViewIn3D={studio.onViewIn3D} />
             <RevisionsCard model={model} />
             <NotesCard model={model} />
-            <PrintTipsCard />
             <SpecsCard model={model} />
           </>
         }

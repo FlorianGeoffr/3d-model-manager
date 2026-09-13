@@ -37,16 +37,23 @@ export function glbUrl(file: FileOut): string {
   return `/api/blobs/${file.blob_hash}/glb${query}`;
 }
 
+/** Whether the studio surface has SOMETHING to show for this file: anything
+ * the pipeline produces (or could produce) a GLB for (`glb_status !==
+ * null`), a sliced file (Task 9's plate panel), or plain `.gcode` (no 3D
+ * preview, but still selectable — SPEC's "no preview" card). Shared by
+ * `pickViewerFiles` below and the Files card's per-row "View in 3D" action
+ * (R13c hand-off), so both agree on exactly which rows the studio can
+ * reach. */
+export function isStudioViewable(file: FileOut): boolean {
+  return file.glb_status !== null || file.kind === "sliced" || file.format === "gcode";
+}
+
 /** Files on the model's current revision that the viewer tab can offer in
- * its file picker: anything the pipeline produces (or could produce) a GLB
- * for (`glb_status !== null`), plus sliced files (Task 9's plate panel) and
- * plain `.gcode` (no 3D preview, but still selectable — SPEC's "no preview"
- * card). Returned in `rel_path` order. */
+ * its file picker -- see `isStudioViewable` above. Returned in `rel_path`
+ * order. */
 export function pickViewerFiles(model: ModelDetail): FileOut[] {
   const files = model.current_revision?.files ?? [];
-  return files
-    .filter((file) => file.glb_status !== null || file.kind === "sliced" || file.format === "gcode")
-    .sort((a, b) => a.rel_path.localeCompare(b.rel_path));
+  return files.filter(isStudioViewable).sort((a, b) => a.rel_path.localeCompare(b.rel_path));
 }
 
 /** The subset of `pickViewerFiles` with a ready-to-render GLB -- the only

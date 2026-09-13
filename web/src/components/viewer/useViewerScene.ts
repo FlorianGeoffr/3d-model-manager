@@ -124,34 +124,13 @@ export function useViewerScene({
     savePartColors(slug, colors);
   }, [slug, colors, persist]);
 
-  // R13a Cover action (risk resolution 6): captures the canvas, uploads it
-  // through the normal ingest pipeline, then shows an OPTIMISTIC local
-  // object URL in the crossfade immediately -- the real thumbnail derivative
-  // (`render_thumb`) only exists after the async PNG pipeline step runs, so
-  // waiting for the refetch to show *something* would leave a stale/blank
-  // cover for a beat. `pendingCoverUrl` is cleared as soon as the caller's
-  // `coverUrl` prop itself changes (the `["models","detail",slug]` refetch
-  // landing with the new `cover_blob_hash`), so the optimistic image never
-  // outlives the real one.
-  const [pendingCoverUrl, setPendingCoverUrl] = useState<string | null>(null);
+  // R13a Cover action (risk resolution 6): captures the canvas and uploads
+  // it through the normal ingest pipeline. The new thumbnail derivative
+  // (`render_thumb`) only exists once the async PNG pipeline step finishes,
+  // so this relies on the model-detail query invalidation below to pick up
+  // the new `cover_blob_hash` plus the success toast to confirm the action
+  // -- no optimistic local preview.
   const [capturingCover, setCapturingCover] = useState(false);
-  const pendingCoverUrlRef = useRef<string | null>(null);
-  const initialCoverUrlRef = useRef(coverUrl);
-  useEffect(() => {
-    if (coverUrl === initialCoverUrlRef.current) return;
-    initialCoverUrlRef.current = coverUrl;
-    if (pendingCoverUrlRef.current) {
-      URL.revokeObjectURL(pendingCoverUrlRef.current);
-      pendingCoverUrlRef.current = null;
-    }
-    setPendingCoverUrl(null);
-  }, [coverUrl]);
-  useEffect(
-    () => () => {
-      if (pendingCoverUrlRef.current) URL.revokeObjectURL(pendingCoverUrlRef.current);
-    },
-    [],
-  );
 
   // Disabled entirely when `persist` is false (the pop-out window, see this
   // hook's `persist` doc comment) -- there's no model-detail card to reflect
@@ -166,10 +145,6 @@ export function useViewerScene({
         toast.error("Couldn't capture a screenshot");
         return;
       }
-      const objectUrl = URL.createObjectURL(blob);
-      if (pendingCoverUrlRef.current) URL.revokeObjectURL(pendingCoverUrlRef.current);
-      pendingCoverUrlRef.current = objectUrl;
-      setPendingCoverUrl(objectUrl);
 
       await uploadModelCover(slug, blob);
       await Promise.all([
@@ -178,11 +153,6 @@ export function useViewerScene({
       ]);
       toast.success("Cover updated");
     } catch {
-      if (pendingCoverUrlRef.current) {
-        URL.revokeObjectURL(pendingCoverUrlRef.current);
-        pendingCoverUrlRef.current = null;
-      }
-      setPendingCoverUrl(null);
       toast.error("Couldn't update cover");
     } finally {
       setCapturingCover(false);
@@ -323,7 +293,7 @@ export function useViewerScene({
     fitSignal,
     onFit: () => setFitSignal((prev) => prev + 1),
     viewerApiRef,
-    coverUrl: pendingCoverUrl ?? coverUrl,
+    coverUrl,
     onCaptureCover: captureCover,
     capturingCover,
     canCaptureCover: persist,

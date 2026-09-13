@@ -234,11 +234,16 @@ describe("PrintsTab -- list", () => {
   });
 });
 
+async function openComposer() {
+  fireEvent.click(await screen.findByRole("button", { name: "Log a print" }));
+}
+
 describe("PrintsTab -- log form", () => {
   it("logs a print without touching printed_at -- omits it, defaults result to success", async () => {
     setupGet({ prints: [] });
     renderPrintsTab();
 
+    await openComposer();
     fireEvent.click(await screen.findByRole("button", { name: "Log print" }));
 
     await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
@@ -259,6 +264,7 @@ describe("PrintsTab -- log form", () => {
     setupGet({ prints: [] });
     renderPrintsTab();
 
+    await openComposer();
     fireEvent.change(await screen.findByLabelText("Printed at"), {
       target: { value: "2026-07-04T09:30" },
     });
@@ -269,15 +275,19 @@ describe("PrintsTab -- log form", () => {
     expect(body).toHaveProperty("printed_at", new Date("2026-07-04T09:30").toISOString());
   });
 
-  it("resets the composer after a successful log", async () => {
+  it("resets the draft and collapses the composer after a successful log", async () => {
     setupGet({ prints: [] });
     renderPrintsTab();
 
+    await openComposer();
     fireEvent.change(await screen.findByLabelText("Filament"), { target: { value: "PETG" } });
     fireEvent.click(screen.getByRole("button", { name: "Log print" }));
 
     await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(screen.getByLabelText("Filament")).toHaveValue(""));
+    await waitFor(() => expect(screen.queryByLabelText("Filament")).not.toBeInTheDocument());
+
+    await openComposer();
+    expect(screen.getByLabelText("Filament")).toHaveValue("");
   });
 });
 
@@ -335,6 +345,7 @@ describe("PrintsTab -- queue-removal offer", () => {
     // the offer's "is this model queued" check would see stale (empty) data.
     await waitFor(() => expect(queryClient.getQueryData(["queue"])).toEqual([QUEUE_ENTRY]));
 
+    await openComposer();
     fireEvent.click(await screen.findByRole("button", { name: "Log print" }));
 
     await waitFor(() => expect(toastSuccessMock).toHaveBeenCalledWith("Print logged.", expect.anything()));
@@ -352,6 +363,7 @@ describe("PrintsTab -- queue-removal offer", () => {
     setupGet({ prints: [], queue: [] });
     renderPrintsTab();
 
+    await openComposer();
     fireEvent.click(await screen.findByRole("button", { name: "Log print" }));
 
     await waitFor(() => expect(toastSuccessMock).toHaveBeenCalledWith("Print logged."));
@@ -367,6 +379,7 @@ describe("PrintsTab -- queue-removal offer", () => {
     // *result* reason this test targets.
     await waitFor(() => expect(queryClient.getQueryData(["queue"])).toEqual([QUEUE_ENTRY]));
 
+    await openComposer();
     fireEvent.change(await screen.findByRole("combobox", { name: "Result" }), { target: { value: "fail" } });
     fireEvent.click(screen.getByRole("button", { name: "Log print" }));
 

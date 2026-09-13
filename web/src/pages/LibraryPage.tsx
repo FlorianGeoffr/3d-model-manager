@@ -141,11 +141,18 @@ export function LibraryPage() {
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [archivedOnly, setArchivedOnly] = useState(false);
   const [activeCollection, setActiveCollection] = useState<number | undefined>(search.collection);
-  // R13b: same one-way-seed-only contract as `activeCollection` above (the
-  // sidebar's Categories list and a model's category badge both deep-link
-  // via `?category=<id>`), except this facet has its own single-select chip
-  // row further down instead of a popover.
-  const [activeCategory, setActiveCategory] = useState<number | undefined>(search.category);
+  // R13b: unlike `activeCollection` above (one-way-seed-only, local state),
+  // this facet is derived LIVE from `search.category` every render -- a
+  // sidebar category link clicked while already on `/` only changes the
+  // search params (same route), so a one-shot `useState` seed would never
+  // see the update. Setting it writes back to the URL (`goToCategory`
+  // below) rather than local state, which is what makes the sidebar's own
+  // links (and the browser back button) agree with these chips.
+  const activeCategory = search.category;
+
+  function goToCategory(next: number | undefined) {
+    void navigate({ to: "/", search: (prev: LibrarySearch) => ({ ...prev, category: next }) });
+  }
   const [sort, setSort] = useState<string>("-updated_at");
   const [viewMode, setViewMode] = useState<ViewMode>(loadViewMode);
   // Folder view's current directory DOES live in the URL bidirectionally
@@ -428,19 +435,18 @@ export function LibraryPage() {
 
         {categories.length > 0 && viewMode !== "folders" && (
           <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter by category">
-            <FilterChip active={!activeCategory} onClick={() => setActiveCategory(undefined)}>
+            <FilterChip active={!activeCategory} onClick={() => goToCategory(undefined)}>
               All categories
             </FilterChip>
             {categories.map((category) => (
               <FilterChip
                 key={category.id}
                 active={activeCategory === category.id}
-                onClick={() => setActiveCategory(activeCategory === category.id ? undefined : category.id)}
+                onClick={() => goToCategory(activeCategory === category.id ? undefined : category.id)}
               >
                 <span
                   aria-hidden="true"
-                  className="size-1.5 rounded-full"
-                  style={{ backgroundColor: category.color ?? undefined }}
+                  className={cn("size-1.5 rounded-full", tagColorClass(category.color) ?? "bg-muted-foreground")}
                 />
                 {category.name}
               </FilterChip>
@@ -550,12 +556,7 @@ export function LibraryPage() {
       </div>
 
       {viewMode === "folders" ? (
-        <FolderBrowser
-          path={path}
-          onNavigate={goToPath}
-          selectedIds={selectedIds}
-          onSelectChange={toggleSelected}
-        />
+        <FolderBrowser path={path} onNavigate={goToPath} />
       ) : modelsQuery.isLoading ? (
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
           {Array.from({ length: 12 }).map((_, index) => (

@@ -1,5 +1,7 @@
 import { useCategories } from "@/api/categories";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { tagColorClass } from "@/lib/tagColors";
+import { cn } from "@/lib/utils";
 
 const NONE_VALUE = "__none__";
 
@@ -35,8 +37,7 @@ export function CategoryPicker({
             <span className="flex items-center gap-1.5">
               <span
                 aria-hidden="true"
-                className="size-2 shrink-0 rounded-full"
-                style={{ backgroundColor: category.color ?? "var(--color-muted-foreground)" }}
+                className={cn("size-2 shrink-0 rounded-full", tagColorClass(category.color) ?? "bg-muted-foreground")}
               />
               {category.name}
             </span>

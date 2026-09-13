@@ -7,8 +7,8 @@ import { CategoryPicker } from "@/components/gallery/CategoryPicker";
 const { categoriesBox } = vi.hoisted(() => ({
   categoriesBox: {
     current: [
-      { id: 1, name: "Miniatures", color: "#ff0000", model_count: 3 },
-      { id: 2, name: "Vases", color: "#00ff00", model_count: 1 },
+      { id: 1, name: "Miniatures", color: "red", model_count: 3 },
+      { id: 2, name: "Vases", color: "green", model_count: 1 },
     ],
   },
 }));

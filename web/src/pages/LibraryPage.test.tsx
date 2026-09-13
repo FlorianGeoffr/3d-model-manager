@@ -233,7 +233,7 @@ function mockGalleryOkWithModels(models: ModelSummary[]) {
   });
 }
 
-const CATEGORY: CategoryOut = { id: 3, name: "Miniatures", color: "#ff0000", model_count: 2 };
+const CATEGORY: CategoryOut = { id: 3, name: "Miniatures", color: "red", model_count: 2 };
 
 function mockGalleryOkWithCategories(categories: CategoryOut[]) {
   getMock.mockImplementation((path: string) => {
@@ -809,5 +809,24 @@ describe("LibraryPage -- category facet (R13b)", () => {
     renderLibraryPage(["/?category=3"]);
 
     await waitFor(() => expect(lastModelsCall()).toContain("category=3"));
+  });
+
+  // Fix-review finding 3: `activeCategory` used to be a one-shot `useState`
+  // seed from `search.category`, so a sidebar category link -- which only
+  // changes `?category=` on the ALREADY-mounted `/` route (no remount) --
+  // never took effect. It's derived straight from `search.category` now, so
+  // a search-only navigation (simulating that sidebar link) must update the
+  // filter live, and preserve whatever else was already in the URL.
+  it("updates the category filter live when ?category= changes without remounting, preserving other search params", async () => {
+    mockGalleryOkWithCategories([CATEGORY]);
+    const { router } = renderLibraryPage(["/?collection=5"]);
+    await screen.findByText("No models yet");
+
+    await act(async () => {
+      await router.navigate({ to: "/", search: (prev: Record<string, unknown>) => ({ ...prev, category: 3 }) });
+    });
+
+    await waitFor(() => expect(lastModelsCall()).toContain("category=3"));
+    expect(router.state.location.search).toMatchObject({ collection: 5, category: 3 });
   });
 });

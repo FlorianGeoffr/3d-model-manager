@@ -271,8 +271,7 @@ export function ModelCard({
               <Badge variant="outline" className="shrink-0 gap-1">
                 <span
                   aria-hidden="true"
-                  className="size-1.5 rounded-full"
-                  style={{ backgroundColor: model.category.color ?? undefined }}
+                  className={cn("size-1.5 rounded-full", tagColorClass(model.category.color) ?? "bg-muted-foreground")}
                 />
                 {model.category.name}
               </Badge>

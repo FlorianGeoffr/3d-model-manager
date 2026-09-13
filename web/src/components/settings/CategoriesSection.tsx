@@ -1,16 +1,16 @@
 /**
- * Categories CRUD (R13b, Settings -> General): name + a free-form color
- * swatch, mirroring `StorageBackendsCard`'s add/edit-dialog + table-row
- * conventions. Unlike tags (`TagEditor`'s fixed 10-key `TAG_COLORS`
- * palette), a category's `color` is a plain string the backend doesn't
- * constrain -- edited here as a native `<input type="color">` swatch, same
- * "pick a color" affordance without inventing a second fixed palette.
+ * Categories CRUD (R13b, Settings -> General): name + a color swatch,
+ * mirroring `StorageBackendsCard`'s add/edit-dialog + table-row conventions.
+ * A category's `color` is a `TagColor` palette name -- the SAME fixed
+ * 10-key palette tags use, edited with the identical swatch-grid picker
+ * pattern as `TagEditor`'s `TagColorPicker` (below), not a free-form hex
+ * input.
  */
 import { useState, type FormEvent } from "react";
 
 import { useCategories, useCreateCategory, useDeleteCategory, useUpdateCategory } from "@/api/categories";
 import { ApiError } from "@/api/client";
-import type { CategoryOut } from "@/api/types";
+import type { CategoryOut, TagColor } from "@/api/types";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -25,16 +25,59 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { TAG_COLORS, tagColorClass, tagSwatchClass } from "@/lib/tagColors";
+import { cn } from "@/lib/utils";
 
-const DEFAULT_COLOR = "#64748b"; // slate-500 -- a neutral starting swatch
+const DEFAULT_COLOR: TagColor = "slate";
+
+/** Swatch-grid color picker, same pattern as `TagEditor`'s `TagColorPicker`
+ * -- a 10-key palette grid in a popover, triggered by a small solid swatch
+ * button rather than the tag name itself (categories aren't inline-editable
+ * text the way a tag chip is). */
+function CategoryColorPicker({ color, onPick }: { color: TagColor; onPick: (color: TagColor) => void }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label="Category color"
+          className={cn("size-6 shrink-0 rounded-full ring-offset-2 ring-offset-background", tagSwatchClass(color))}
+        />
+      </PopoverTrigger>
+      <PopoverContent className="w-auto p-2" align="start">
+        <div className="grid grid-cols-5 gap-1.5">
+          {TAG_COLORS.map((option) => (
+            <button
+              key={option}
+              type="button"
+              aria-label={`Color ${option}`}
+              aria-pressed={color === option}
+              className={cn(
+                "size-5 rounded-full ring-offset-2 ring-offset-background",
+                tagSwatchClass(option),
+                color === option && "ring-2 ring-foreground",
+              )}
+              onClick={() => {
+                onPick(option);
+                setOpen(false);
+              }}
+            />
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
 
 function CategoryFormDialog({ trigger, category }: { trigger: React.ReactNode; category?: CategoryOut }) {
   const isEdit = category !== undefined;
   const [open, setOpen] = useState(false);
   const [name, setName] = useState(category?.name ?? "");
-  const [color, setColor] = useState(category?.color ?? DEFAULT_COLOR);
+  const [color, setColor] = useState<TagColor>(category?.color ?? DEFAULT_COLOR);
 
   const createCategory = useCreateCategory();
   const updateCategory = useUpdateCategory();
@@ -88,15 +131,8 @@ function CategoryFormDialog({ trigger, category }: { trigger: React.ReactNode; c
               />
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="category-color">Color</Label>
-              <input
-                id="category-color"
-                type="color"
-                value={color}
-                onChange={(event) => setColor(event.target.value)}
-                disabled={mutation.isPending}
-                className="h-9 w-16 cursor-pointer rounded border border-input bg-transparent p-1"
-              />
+              <Label>Color</Label>
+              <CategoryColorPicker color={color} onPick={setColor} />
             </div>
             {mutation.isError ? (
               <p role="alert" className="text-sm text-destructive">
@@ -125,8 +161,7 @@ function CategoryRow({ category }: { category: CategoryOut }) {
       <TableCell>
         <span
           aria-hidden="true"
-          className="inline-block size-3 rounded-full align-middle"
-          style={{ backgroundColor: category.color ?? undefined }}
+          className={cn("inline-block size-3 rounded-full align-middle", tagColorClass(category.color) ?? "bg-muted-foreground")}
         />
       </TableCell>
       <TableCell className="font-medium text-foreground">{category.name}</TableCell>

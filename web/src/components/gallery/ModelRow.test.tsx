@@ -90,7 +90,7 @@ describe("ModelRow", () => {
   });
 
   it("shows a category badge when the model has one", async () => {
-    renderRow({ ...MODEL, category: { id: 1, name: "Miniatures", color: "#ff0000", model_count: 1 } });
+    renderRow({ ...MODEL, category: { id: 1, name: "Miniatures", color: "red", model_count: 1 } });
 
     expect(await screen.findByText("Miniatures")).toBeInTheDocument();
   });

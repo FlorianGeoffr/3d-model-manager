@@ -30,6 +30,21 @@ const { categoriesBox } = vi.hoisted(() => ({
   categoriesBox: { current: [] as Array<{ id: number; name: string; color: string | null; model_count: number }> },
 }));
 
+function renderSidebarAt(initialEntries: string[]) {
+  const rootRoute = createRootRoute({ component: () => <AppSidebar onOpenShortcuts={vi.fn()} mobileOpen={false} onCloseMobile={vi.fn()} /> });
+  const homeRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", component: () => null });
+  const router = createRouter({
+    routeTree: rootRoute.addChildren([homeRoute]),
+    history: createMemoryHistory({ initialEntries }),
+  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
+  );
+}
+
 vi.mock("@/api/categories", () => ({
   useCategories: () => ({ data: categoriesBox.current }),
 }));
@@ -61,7 +76,7 @@ describe("AppSidebar -- Categories (R13b)", () => {
 
   it("lists each category with its color dot and model count, linking to ?category=<id>", async () => {
     categoriesBox.current = [
-      { id: 1, name: "Miniatures", color: "#ff0000", model_count: 5 },
+      { id: 1, name: "Miniatures", color: "red", model_count: 5 },
       { id: 2, name: "Vases", color: null, model_count: 0 },
     ];
     renderSidebar();
@@ -73,5 +88,19 @@ describe("AppSidebar -- Categories (R13b)", () => {
 
     const vasesLink = screen.getByRole("link", { name: /Vases/ });
     expect(vasesLink).toHaveAttribute("href", "/?category=2");
+  });
+
+  // Fix-review finding 3: the category link used to write a brand-new
+  // search object (`search={{ category: id }}`), dropping every other
+  // param (e.g. `?path=` from the folder view) instead of merging into it.
+  it("preserves other search params (e.g. path) when building a category link", async () => {
+    categoriesBox.current = [{ id: 1, name: "Miniatures", color: "red", model_count: 5 }];
+    renderSidebarAt(["/?path=figures"]);
+
+    const miniLink = await screen.findByRole("link", { name: /Miniatures/ });
+    const href = miniLink.getAttribute("href") ?? "";
+    const params = new URLSearchParams(href.split("?")[1]);
+    expect(params.get("path")).toBe("figures");
+    expect(params.get("category")).toBe("1");
   });
 });

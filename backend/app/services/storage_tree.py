@@ -1,19 +1,23 @@
-"""`GET /storage/tree` (R13b): one level of the canonical storage layout,
-derived from `File.storage_path` prefixes (`<slug>/<rev-dir>/<rel_path>`,
-see `app.services.layout.file_key`) -- no filesystem walk, so the tree's
-depth is exactly what the layout is (root = model slugs, one level down =
-revision directories, and so on).
+"""`GET /storage/tree` (R13b): a real drillable file browser over the
+canonical storage layout, derived from `File.storage_path` prefixes (no
+filesystem walk) -- so the tree's depth is exactly what the layout is:
 
-At any given `path`, each immediate child segment is either:
-- a **model**, when the child's full path exactly matches a `Model.slug`
-  (only possible at the root, since slugs never contain `/`) -- surfaced as
-  a `ModelSummary` instead of a plain directory, since descending further
-  (into revisions/files) isn't a useful library-browsing unit; or
-- a plain **dir** otherwise (e.g. a revision directory), with `count` = the
-  number of files nested under it.
+- at the root, immediate children are model slug directories;
+- inside a model dir, immediate children are revision directories;
+- inside a revision dir (or deeper), immediate children are `rel_path`
+  subdirectories (e.g. `images/`).
+
+For a given `path`, `dirs` lists those immediate child directories (each
+with `file_count`/`model_count` aggregated over everything nested beneath
+it), `files` lists the files whose parent directory is `path` exactly, and
+`model` is the `ModelSummary` for the model when `path`'s first segment is
+a model slug (so the UI can offer an "Open model" action), else `None`.
 
 Internal snapshot files (`_snapshots/...`) are excluded everywhere, same as
 every other user-facing file listing (`app.services.layout.is_snapshot_path`).
+A path is normalized by stripping leading/trailing slashes; a path-traversal
+or unknown path simply matches nothing and comes back empty -- no special
+casing needed, since no real `storage_path` ever contains a `..` segment.
 """
 
 from __future__ import annotations
@@ -23,54 +27,85 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import Settings
-from app.models.library import File, Model
-from app.schemas.storage_tree import StorageTreeDirOut, StorageTreeOut
+from app.models.library import Blob, File, Model
+from app.schemas.storage_tree import StorageTreeDirOut, StorageTreeFileOut, StorageTreeOut
+from app.services.layout import is_snapshot_path
 from app.services.library import _escape_like, build_model_summaries
 
 
 async def get_storage_tree(db: AsyncSession, settings: Settings, path: str) -> StorageTreeOut:
-    prefix = "" if not path else path.rstrip("/") + "/"
+    path = path.strip("/")
+    prefix = "" if not path else path + "/"
 
-    stmt = select(File.storage_path)
+    stmt = select(
+        File.id,
+        File.storage_path,
+        File.rel_path,
+        File.blob_hash,
+        File.revision_id,
+        Blob.size,
+        Blob.kind,
+        Blob.format,
+    ).join(Blob, Blob.hash == File.blob_hash)
     if prefix:
         stmt = stmt.where(File.storage_path.like(f"{_escape_like(prefix)}%", escape="\\"))
-    storage_paths = (await db.execute(stmt)).scalars().all()
+    rows = (await db.execute(stmt)).all()
 
-    child_counts: dict[str, int] = {}
-    for storage_path in storage_paths:
-        if "/_snapshots/" in storage_path:
+    files: list[StorageTreeFileOut] = []
+    dir_file_counts: dict[str, int] = {}
+    dir_model_slugs: dict[str, set[str]] = {}
+
+    for row in rows:
+        if is_snapshot_path(row.rel_path):
             continue
-        rest = storage_path[len(prefix) :]
+        rest = row.storage_path[len(prefix) :]
         if not rest:
             continue
-        name = rest.split("/", 1)[0]
-        child_counts[name] = child_counts.get(name, 0) + 1
+        segments = rest.split("/")
+        model_slug = row.storage_path.split("/", 1)[0]
 
-    full_paths = {name: f"{prefix}{name}" for name in child_counts}
-    models_by_slug: dict[str, Model] = {}
-    if full_paths:
-        models_by_slug = {
-            m.slug: m
-            for m in (
-                await db.execute(
-                    select(Model)
-                    .where(Model.slug.in_(full_paths.values()))
-                    .options(selectinload(Model.tags), selectinload(Model.category))
+        if len(segments) == 1:
+            files.append(
+                StorageTreeFileOut(
+                    id=row.id,
+                    name=segments[0],
+                    rel_path=row.rel_path,
+                    size=row.size,
+                    kind=row.kind,
+                    format=row.format,
+                    model_slug=model_slug,
+                    blob_hash=row.blob_hash,
+                    revision_id=row.revision_id,
                 )
-            ).scalars()
-        }
-
-    dirs: list[StorageTreeDirOut] = []
-    model_rows: list[Model] = []
-    for name, count in child_counts.items():
-        model = models_by_slug.get(full_paths[name])
-        if model is not None:
-            model_rows.append(model)
+            )
         else:
-            dirs.append(StorageTreeDirOut(name=name, count=count))
+            child = segments[0]
+            dir_file_counts[child] = dir_file_counts.get(child, 0) + 1
+            dir_model_slugs.setdefault(child, set()).add(model_slug)
 
-    dirs.sort(key=lambda d: d.name)
-    model_rows.sort(key=lambda m: m.slug)
-    models = await build_model_summaries(db, settings, model_rows)
+    dirs = [
+        StorageTreeDirOut(
+            name=name,
+            path=f"{prefix}{name}",
+            file_count=dir_file_counts[name],
+            model_count=len(dir_model_slugs[name]),
+        )
+        for name in sorted(dir_file_counts)
+    ]
+    files.sort(key=lambda f: f.name)
 
-    return StorageTreeOut(path=path, dirs=dirs, models=models)
+    model = None
+    first_segment = path.split("/", 1)[0] if path else ""
+    if first_segment:
+        model_row = (
+            await db.execute(
+                select(Model)
+                .where(Model.slug == first_segment)
+                .options(selectinload(Model.tags), selectinload(Model.category))
+            )
+        ).scalar_one_or_none()
+        if model_row is not None:
+            summaries = await build_model_summaries(db, settings, [model_row])
+            model = summaries[0] if summaries else None
+
+    return StorageTreeOut(path=path, dirs=dirs, files=files, model=model)

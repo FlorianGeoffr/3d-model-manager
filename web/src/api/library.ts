@@ -233,7 +233,10 @@ export function useCreateModel() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (payload: ModelCreate) => api.post<ModelDetail>("/models", payload),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["models", "list"] }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["models", "list"] });
+      void queryClient.invalidateQueries({ queryKey: ["storage"] });
+    },
   });
 }
 
@@ -266,7 +269,12 @@ export function usePatchModel(slug: string) {
     // query -- `onSuccess` above already folded the server response into
     // every cached list page, so a full list invalidation would just cost a
     // refetch (and re-render every card) for no new information.
-    onSettled: () => void queryClient.invalidateQueries({ queryKey: detailKey }),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: detailKey });
+      // A patch can change fields the folder browser's tree strip shows
+      // (name, category, tags) -- keep it from going stale too.
+      void queryClient.invalidateQueries({ queryKey: ["storage"] });
+    },
   });
 }
 
@@ -316,6 +324,7 @@ export function useBulkUpdateModels() {
     onSettled: (_data, _err, _payload, context) => {
       void queryClient.invalidateQueries({ queryKey: LIST_QUERY_KEY });
       for (const [key] of context?.detailSnapshots ?? []) void queryClient.invalidateQueries({ queryKey: key });
+      void queryClient.invalidateQueries({ queryKey: ["storage"] });
     },
   });
 }
@@ -352,7 +361,10 @@ export function useBulkDeleteModels() {
         queryClient.removeQueries({ queryKey: modelQueryOptions(slug).queryKey });
       }
     },
-    onSettled: () => void queryClient.invalidateQueries({ queryKey: LIST_QUERY_KEY }),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: LIST_QUERY_KEY });
+      void queryClient.invalidateQueries({ queryKey: ["storage"] });
+    },
   });
 }
 
@@ -390,6 +402,7 @@ export function useArchiveModel(slug: string) {
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: detailKey });
       void queryClient.invalidateQueries({ queryKey: LIST_QUERY_KEY });
+      void queryClient.invalidateQueries({ queryKey: ["storage"] });
     },
   });
 }
@@ -404,6 +417,7 @@ export function useDeleteModel(slug: string) {
     onSuccess: () => {
       queryClient.removeQueries({ queryKey: modelQueryOptions(slug).queryKey });
       void queryClient.invalidateQueries({ queryKey: ["models", "list"] });
+      void queryClient.invalidateQueries({ queryKey: ["storage"] });
     },
   });
 }
@@ -425,13 +439,19 @@ export function useRedownloadModel(slug: string) {
 /** Dispatches `POST /models/{slug}/relocate` (Workstream C task C3/C4) to
  * move or replicate every file of this model, across all its revisions,
  * onto another configured backend. Returns the tracked `JobOut` -- no
- * explicit invalidation here: `useEvents.tsx`'s `job.updated` handler
- * already invalidates `["models"]` on every job's terminal state, which is
- * how `model.backends` (Part 1) picks up a completed "move". */
+ * explicit `["models"]`/detail invalidation here: `useEvents.tsx`'s
+ * `job.updated` handler already invalidates `["models"]` on every job's
+ * terminal state, which is how `model.backends` (Part 1) picks up a
+ * completed "move". The storage tree isn't covered by that event handler
+ * though (it's not a `["models"]` query), so it's invalidated directly here
+ * once the relocate job is dispatched -- a `["storage"]` refetch is cheap
+ * and the job's terminal state isn't tracked client-side to gate it on. */
 export function useRelocateModel(slug: string) {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (payload: ModelRelocateIn) =>
       api.post<JobOut>(`/models/${encodeURIComponent(slug)}/relocate`, payload),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["storage"] }),
   });
 }
 

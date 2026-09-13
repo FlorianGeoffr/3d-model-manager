@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 
 import { useCreateModel } from "@/api/library";
 import { api, ApiError } from "@/api/client";
@@ -50,9 +51,14 @@ export function NewModelDialog({ trigger }: { trigger: React.ReactNode }) {
             try {
               await api.patch(`/models/${model.slug}`, { category_id: categoryId });
               void queryClient.invalidateQueries({ queryKey: ["models"] });
+              void queryClient.invalidateQueries({ queryKey: ["storage"] });
             } catch {
-              // Swallowed -- the model still exists; the user can set its
-              // category from the detail page instead.
+              // The model itself was created fine; only the follow-up
+              // category assignment failed. Surface that specifically
+              // rather than swallowing it -- the user can still set the
+              // category from the detail page, but shouldn't be left
+              // thinking it was already applied.
+              toast.warning("Model created, but the category couldn't be set");
             }
           }
           setOpen(false);

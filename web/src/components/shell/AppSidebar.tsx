@@ -22,7 +22,9 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { SidebarPrinterWidget } from "@/components/shell/SidebarPrinterWidget";
 import { useSidebarCollapsed } from "@/components/shell/useSidebarCollapsed";
 import { NAV_GROUPS, SETTINGS_ITEM, type NavItem } from "@/components/shell/navItems";
+import { tagColorClass } from "@/lib/tagColors";
 import { cn } from "@/lib/utils";
+import type { LibrarySearch } from "@/pages/librarySearch";
 
 const MAX_COLLECTION_LINKS = 8;
 
@@ -299,14 +301,13 @@ export function AppSidebar({
               <Link
                 key={category.id}
                 to="/"
-                search={{ category: category.id }}
+                search={(prev: LibrarySearch) => ({ ...prev, category: category.id })}
                 className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
                 activeProps={{ className: "bg-muted font-medium text-foreground" }}
               >
                 <span
                   aria-hidden="true"
-                  className="size-2 shrink-0 rounded-full"
-                  style={{ backgroundColor: category.color ?? "var(--color-muted-foreground)" }}
+                  className={cn("size-2 shrink-0 rounded-full", tagColorClass(category.color) ?? "bg-muted-foreground")}
                 />
                 <span className="truncate">{category.name}</span>
                 <span className="ml-auto text-xs tabular-mono">{category.model_count}</span>

@@ -1,13 +1,20 @@
 import { useState } from "react";
-import { ChevronRightIcon, FolderIcon, SearchIcon } from "lucide-react";
+import { Link } from "@tanstack/react-router";
+import { ChevronRightIcon, DownloadIcon, FolderIcon, SearchIcon } from "lucide-react";
 
+import { useTagColorMap } from "@/api/library";
 import { useStorageTree } from "@/api/storageTree";
 import { ApiError } from "@/api/client";
-import { ModelCard } from "@/components/gallery/ModelCard";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { humanizeBytes } from "@/lib/format";
+import { formatIcon } from "@/lib/formatMeta";
+import { tagColorClass } from "@/lib/tagColors";
+import { cn } from "@/lib/utils";
+import type { ModelSummary, StorageTreeFile } from "@/api/types";
 
 /** Splits a `path` search param (`"figures/dnd/goblins"`) into its named
  * segments for the breadcrumb -- an empty/undefined path is the root, with
@@ -20,38 +27,92 @@ function joinPath(segments: string[]): string {
   return segments.join("/");
 }
 
+function FileRow({ file }: { file: StorageTreeFile }) {
+  const Icon = formatIcon(file.format);
+  return (
+    <div className="flex items-center gap-3 rounded-lg border border-transparent px-2 py-2 hover:border-border hover:bg-muted/50">
+      <div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+        <Icon className="size-4" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium" title={file.rel_path}>
+          {file.name}
+        </p>
+        <p className="truncate text-xs text-muted-foreground">{humanizeBytes(file.size)}</p>
+      </div>
+      <Link
+        to="/models/$slug"
+        params={{ slug: file.model_slug }}
+        className="shrink-0 text-xs text-muted-foreground hover:text-foreground hover:underline"
+      >
+        Open model
+      </Link>
+      <Button asChild variant="ghost" size="icon-sm" aria-label={`Download ${file.name}`}>
+        <a href={`/api/files/${file.id}/download`}>
+          <DownloadIcon className="size-4" />
+        </a>
+      </Button>
+    </div>
+  );
+}
+
+/** Header strip shown above the file list when `GET /storage/tree`'s
+ * `model` is non-null -- i.e. the current path is a single model's own
+ * directory, not just an arbitrary folder. */
+function ModelHeaderStrip({ model }: { model: ModelSummary }) {
+  const tagColors = useTagColorMap();
+  return (
+    <Card className="flex-row items-center justify-between gap-3 p-4">
+      <div className="min-w-0 space-y-1.5">
+        <h2 className="truncate text-sm font-semibold">{model.name}</h2>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {model.category && (
+            <Badge variant="outline" className="gap-1">
+              <span
+                aria-hidden="true"
+                className={cn("size-1.5 rounded-full", tagColorClass(model.category.color) ?? "bg-muted-foreground")}
+              />
+              {model.category.name}
+            </Badge>
+          )}
+          {model.tags.map((tag) => (
+            <Badge key={tag} variant="secondary" className={tagColorClass(tagColors[tag])}>
+              {tag}
+            </Badge>
+          ))}
+        </div>
+      </div>
+      <Button asChild variant="outline" size="sm" className="shrink-0">
+        <Link to="/models/$slug" params={{ slug: model.slug }}>
+          Open model
+        </Link>
+      </Button>
+    </Card>
+  );
+}
+
 /** Raw-storage folder navigation (R13b): one level of `GET /storage/tree` at
- * a time -- subfolders as cards, models directly in this folder as
- * `ModelCard`s. The current path is owned by the caller (`LibraryPage`'s
- * `?path=` search param) so switching view modes or navigating away/back
- * preserves it. */
-export function FolderBrowser({
-  path,
-  onNavigate,
-  selectedIds,
-  onSelectChange,
-  onModifiedClick,
-}: {
-  path: string;
-  onNavigate: (path: string) => void;
-  selectedIds: Set<number>;
-  onSelectChange: (id: number, next: boolean) => void;
-  onModifiedClick?: (event: React.MouseEvent, index: number) => void;
-}) {
+ * a time -- subfolders as cards, files directly in this folder as rows. A
+ * plain file browser, not a picker: no selection/bulk actions here (those
+ * live on the grid/list views). The current path is owned by the caller
+ * (`LibraryPage`'s `?path=` search param) so switching view modes or
+ * navigating away/back preserves it. */
+export function FolderBrowser({ path, onNavigate }: { path: string; onNavigate: (path: string) => void }) {
   const [filter, setFilter] = useState("");
   const treeQuery = useStorageTree(path);
   const segments = pathSegments(path);
 
   const dirs = treeQuery.data?.dirs ?? [];
-  const models = treeQuery.data?.models ?? [];
+  const files = treeQuery.data?.files ?? [];
+  const model = treeQuery.data?.model ?? null;
 
-  // No `useMemo` here: `dirs`/`models` are freshly derived (`?? []`) every
+  // No `useMemo` here: `dirs`/`files` are freshly derived (`?? []`) every
   // render anyway, so memoizing against them would never hit, and the
-  // filtering itself is cheap (a folder's own dir/model list, not the whole
+  // filtering itself is cheap (a folder's own dir/file list, not the whole
   // library).
   const normalizedFilter = filter.trim().toLowerCase();
   const filteredDirs = dirs.filter((dir) => dir.name.toLowerCase().includes(normalizedFilter));
-  const filteredModels = models.filter((model) => model.name.toLowerCase().includes(normalizedFilter));
+  const filteredFiles = files.filter((file) => file.name.toLowerCase().includes(normalizedFilter));
 
   function goToRoot() {
     onNavigate("");
@@ -61,8 +122,8 @@ export function FolderBrowser({
     onNavigate(joinPath(segments.slice(0, index + 1)));
   }
 
-  function openDir(name: string) {
-    onNavigate(joinPath([...segments, name]));
+  function openDir(dirPath: string) {
+    onNavigate(dirPath);
   }
 
   return (
@@ -122,48 +183,43 @@ export function FolderBrowser({
             </Button>
           </div>
         </Card>
-      ) : filteredDirs.length === 0 && filteredModels.length === 0 ? (
+      ) : filteredDirs.length === 0 && filteredFiles.length === 0 && !model ? (
         <Card className="mx-auto mt-12 max-w-md">
           <CardHeader className="items-center text-center">
             <CardTitle>{filter.trim() ? "No matches" : "This folder is empty"}</CardTitle>
             <CardDescription>
-              {filter.trim() ? "Try a different filter." : "No subfolders or models here."}
+              {filter.trim() ? "Try a different filter." : "No subfolders or files here."}
             </CardDescription>
           </CardHeader>
         </Card>
       ) : (
         <>
+          {model && <ModelHeaderStrip model={model} />}
           {filteredDirs.length > 0 && (
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
               {filteredDirs.map((dir) => (
                 <button
-                  key={dir.name}
+                  key={dir.path}
                   type="button"
-                  onClick={() => openDir(dir.name)}
+                  onClick={() => openDir(dir.path)}
                   className="flex items-center gap-2 rounded-xl border border-border bg-card p-3 text-left hover:bg-muted"
                 >
                   <FolderIcon className="size-8 shrink-0 text-muted-foreground" />
                   <span className="min-w-0">
                     <span className="block truncate text-sm font-medium">{dir.name}</span>
                     <span className="block text-xs text-muted-foreground">
-                      {dir.count} {dir.count === 1 ? "model" : "models"}
+                      {dir.file_count} {dir.file_count === 1 ? "file" : "files"}, {dir.model_count}{" "}
+                      {dir.model_count === 1 ? "model" : "models"}
                     </span>
                   </span>
                 </button>
               ))}
             </div>
           )}
-          {filteredModels.length > 0 && (
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
-              {filteredModels.map((model, index) => (
-                <ModelCard
-                  key={model.id}
-                  model={model}
-                  index={index}
-                  selected={selectedIds.has(model.id)}
-                  onSelectChange={onSelectChange}
-                  onModifiedClick={onModifiedClick}
-                />
+          {filteredFiles.length > 0 && (
+            <div className="space-y-0.5">
+              {filteredFiles.map((file) => (
+                <FileRow key={file.id} file={file} />
               ))}
             </div>
           )}

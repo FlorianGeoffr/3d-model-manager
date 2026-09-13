@@ -4,15 +4,15 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { FolderBrowser } from "@/components/gallery/FolderBrowser";
-import type { StorageTreeOut } from "@/api/types";
+import type { ModelSummary, StorageTreeOut } from "@/api/types";
 
 const { treesBox, getMock } = vi.hoisted(() => {
-  const model = {
+  const model: ModelSummary = {
     id: 1,
     slug: "goblin",
     name: "Goblin",
     description: null,
-    tags: [],
+    tags: ["fantasy"],
     updated_at: "2026-06-01T12:00:00Z",
     created_at: "2026-05-01T12:00:00Z",
     file_count: 1,
@@ -28,12 +28,40 @@ const { treesBox, getMock } = vi.hoisted(() => {
     dims_mm: null,
     best_slicer_file: null,
     printable_file: null,
+    category: { id: 1, name: "Minis", color: "violet", model_count: 1 },
+  };
+  const goblinFile = {
+    id: 11,
+    name: "goblin.stl",
+    rel_path: "figures/dnd/goblin/goblin.stl",
+    size: 204800,
+    kind: "mesh" as const,
+    format: "stl" as const,
+    model_slug: "goblin",
+    blob_hash: "abc123",
+    revision_id: 1,
   };
   return {
     treesBox: {
       current: {
-        "": { path: "", dirs: [{ name: "figures", count: 4 }], models: [] },
-        figures: { path: "figures", dirs: [{ name: "dnd", count: 2 }], models: [model] },
+        "": {
+          path: "",
+          dirs: [{ name: "figures", path: "figures", file_count: 4, model_count: 4 }],
+          files: [],
+          model: null,
+        },
+        figures: {
+          path: "figures",
+          dirs: [{ name: "dnd", path: "figures/dnd", file_count: 2, model_count: 2 }],
+          files: [],
+          model: null,
+        },
+        "figures/dnd/goblin": {
+          path: "figures/dnd/goblin",
+          dirs: [],
+          files: [goblinFile],
+          model,
+        },
       } as Record<string, StorageTreeOut>,
     },
     getMock: vi.fn((path: string) => Promise.resolve(path === "/tags" ? [] : {})),
@@ -42,16 +70,16 @@ const { treesBox, getMock } = vi.hoisted(() => {
 
 vi.mock("@/api/storageTree", () => ({
   useStorageTree: (path: string) => ({
-    data: treesBox.current[path] ?? { path, dirs: [], models: [] },
+    data: treesBox.current[path] ?? { path, dirs: [], files: [], model: null },
     isLoading: false,
     isError: false,
     refetch: vi.fn(),
   }),
 }));
 
-// `ModelCard` (rendered for leaf models) calls `usePatchModel`/`useTagColorMap`,
-// which go through the real `api` client -- stub it the same way
-// ModelCard.test.tsx does so those calls resolve harmlessly.
+// `useTagColorMap` (used by the model header strip) goes through the real
+// `api` client -- stub it the same way other gallery tests do so it
+// resolves harmlessly.
 vi.mock("@/api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/client")>();
   return {
@@ -66,9 +94,7 @@ function renderBrowser(path: string, onNavigate = vi.fn()) {
   const homeRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: "/",
-    component: () => (
-      <FolderBrowser path={path} onNavigate={onNavigate} selectedIds={new Set()} onSelectChange={vi.fn()} />
-    ),
+    component: () => <FolderBrowser path={path} onNavigate={onNavigate} />,
   });
   const modelRoute = createRoute({ getParentRoute: () => rootRoute, path: "/models/$slug", component: () => null });
   const router = createRouter({
@@ -91,11 +117,11 @@ beforeEach(() => {
 });
 
 describe("FolderBrowser", () => {
-  it("renders subfolders as cards with their model counts", async () => {
+  it("renders subfolders as cards with their file/model counts", async () => {
     renderBrowser("");
 
     expect(await screen.findByText("figures")).toBeInTheDocument();
-    expect(screen.getByText("4 models")).toBeInTheDocument();
+    expect(screen.getByText("4 files, 4 models")).toBeInTheDocument();
   });
 
   it("navigates into a subfolder when its card is clicked", async () => {
@@ -106,11 +132,10 @@ describe("FolderBrowser", () => {
     expect(onNavigate).toHaveBeenCalledExactlyOnceWith("figures");
   });
 
-  it("renders models directly in a folder as ModelCards, and a breadcrumb for the path", async () => {
+  it("renders a breadcrumb for the current path", async () => {
     renderBrowser("figures");
 
-    expect(await screen.findByText("Goblin")).toBeInTheDocument();
-    expect(screen.getByText("dnd")).toBeInTheDocument();
+    expect(await screen.findByText("dnd")).toBeInTheDocument();
     const breadcrumb = screen.getByRole("navigation", { name: "Folder path" });
     expect(breadcrumb).toHaveTextContent("Library");
     expect(breadcrumb).toHaveTextContent("figures");
@@ -118,26 +143,45 @@ describe("FolderBrowser", () => {
 
   it("navigates to the root when the Library breadcrumb is clicked", async () => {
     const { onNavigate } = renderBrowser("figures");
-    await screen.findByText("Goblin");
+    await screen.findByText("dnd");
 
     fireEvent.click(screen.getByRole("button", { name: "Library" }));
 
     expect(onNavigate).toHaveBeenCalledExactlyOnceWith("");
   });
 
-  it("filters folders and models by the in-folder text filter, client-side", async () => {
-    renderBrowser("figures");
-    await screen.findByText("Goblin");
+  it("filters folders and files by the in-folder text filter, client-side", async () => {
+    renderBrowser("figures/dnd/goblin");
+    await screen.findByText("goblin.stl");
 
-    fireEvent.change(screen.getByLabelText("Filter this folder"), { target: { value: "dnd" } });
+    fireEvent.change(screen.getByLabelText("Filter this folder"), { target: { value: "nomatch" } });
 
-    await waitFor(() => expect(screen.queryByText("Goblin")).not.toBeInTheDocument());
-    expect(screen.getByText("dnd")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("goblin.stl")).not.toBeInTheDocument());
   });
 
-  it("shows an empty state when a folder has no subfolders or models", async () => {
+  it("shows an empty state when a folder has no subfolders or files", async () => {
     renderBrowser("figures/dnd");
 
     expect(await screen.findByText("This folder is empty")).toBeInTheDocument();
+  });
+
+  it("renders files as rows with a download action and an Open model link", async () => {
+    renderBrowser("figures/dnd/goblin");
+
+    expect(await screen.findByText("goblin.stl")).toBeInTheDocument();
+    const openModelLinks = screen.getAllByRole("link", { name: "Open model" });
+    expect(openModelLinks.length).toBeGreaterThan(0);
+    expect(screen.getByRole("link", { name: "Download goblin.stl" })).toHaveAttribute(
+      "href",
+      "/api/files/11/download",
+    );
+  });
+
+  it("shows the model header strip (name, category, tags) when the tree response's model is non-null", async () => {
+    renderBrowser("figures/dnd/goblin");
+
+    expect(await screen.findByText("Goblin")).toBeInTheDocument();
+    expect(screen.getByText("Minis")).toBeInTheDocument();
+    expect(screen.getByText("fantasy")).toBeInTheDocument();
   });
 });

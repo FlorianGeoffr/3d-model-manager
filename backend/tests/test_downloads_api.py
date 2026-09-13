@@ -599,3 +599,71 @@ async def test_download_token_for_one_file_does_not_open_another(
         response = await anon.get(f"/api/files/{file_b.id}/download", params={"token": token_for_a})
 
     assert response.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# R13c: doc preview (`?inline=1`)
+# ---------------------------------------------------------------------------
+
+
+async def test_download_inline_pdf_sets_inline_disposition(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    created = await _create_model(authenticated_client, "Inline PDF Target")
+    revision_id = created["current_revision"]["id"]
+
+    upload = await authenticated_client.put(
+        "/api/uploads",
+        params={"model_id": created["id"], "revision_id": revision_id, "rel_path": "manual.pdf"},
+        content=b"%PDF-1.4 fake pdf bytes",
+    )
+    file_id = upload.json()["file_id"]
+
+    response = await authenticated_client.get(
+        f"/api/files/{file_id}/download", params={"inline": "1"}
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-disposition"].startswith("inline;")
+    assert 'filename="manual.pdf"' in response.headers["content-disposition"]
+    assert response.headers["content-type"] == "application/pdf"
+
+
+async def test_download_without_inline_param_stays_attachment_for_pdf(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    created = await _create_model(authenticated_client, "Attachment PDF Target")
+    revision_id = created["current_revision"]["id"]
+
+    upload = await authenticated_client.put(
+        "/api/uploads",
+        params={"model_id": created["id"], "revision_id": revision_id, "rel_path": "manual.pdf"},
+        content=b"%PDF-1.4 fake pdf bytes",
+    )
+    file_id = upload.json()["file_id"]
+
+    response = await authenticated_client.get(f"/api/files/{file_id}/download")
+
+    assert response.headers["content-disposition"].startswith("attachment;")
+
+
+async def test_download_inline_docx_still_downloads(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    """``.docx`` has no reliable in-browser renderer, so `?inline=1` is a
+    no-op for it -- it always downloads."""
+    created = await _create_model(authenticated_client, "Inline Docx Target")
+    revision_id = created["current_revision"]["id"]
+
+    upload = await authenticated_client.put(
+        "/api/uploads",
+        params={"model_id": created["id"], "revision_id": revision_id, "rel_path": "bom.docx"},
+        content=b"fake docx bytes",
+    )
+    file_id = upload.json()["file_id"]
+
+    response = await authenticated_client.get(
+        f"/api/files/{file_id}/download", params={"inline": "1"}
+    )
+
+    assert response.headers["content-disposition"].startswith("attachment;")

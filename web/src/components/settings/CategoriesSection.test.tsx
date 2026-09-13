@@ -51,6 +51,22 @@ beforeEach(() => {
   patchMock.mockClear();
 });
 
+describe("CategoriesSection -- error state", () => {
+  it("shows a styled error card with Retry when the list query fails, and refetches on click", async () => {
+    const getMock = vi.mocked((await import("@/api/client")).api.get);
+    getMock.mockRejectedValueOnce(new Error("boom"));
+    renderSection();
+
+    expect(await screen.findByText("Couldn't load categories")).toBeInTheDocument();
+    expect(screen.queryByText("not found")).not.toBeInTheDocument();
+
+    getMock.mockResolvedValueOnce(categoriesBox.current);
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(await screen.findByText("Miniatures")).toBeInTheDocument();
+  });
+});
+
 describe("CategoriesSection -- color palette (fix-review finding 1/2)", () => {
   it("sends a TagColor palette name (not hex) when creating a category", async () => {
     renderSection();

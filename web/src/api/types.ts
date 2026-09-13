@@ -16,12 +16,18 @@ export const BLOB_FORMATS = [
   "gcode",
   "png",
   "jpg",
+  "webp",
+  // R13c: doc file kinds (`BlobKind.doc`).
+  "pdf",
+  "md",
+  "txt",
+  "docx",
   "other",
 ] as const;
 
 export type BlobFormat = (typeof BLOB_FORMATS)[number];
 
-export type BlobKind = "mesh" | "cad" | "sliced" | "gcode" | "image" | "other";
+export type BlobKind = "mesh" | "cad" | "sliced" | "gcode" | "image" | "doc" | "other";
 
 // -- models (backend/app/schemas/library.py) -------------------------------
 
@@ -42,6 +48,10 @@ export interface ModelPatch {
   is_archived?: boolean;
   // R13b: single category assignment -- `null` clears it.
   category_id?: number | null;
+  // R13c: freeform key/value custom fields (`MetadataEditor`) and a
+  // freeform print-tips note -- both `null` clear the field entirely.
+  metadata?: Record<string, string> | null;
+  print_tips?: string | null;
 }
 
 // `POST /models/{slug}/redownload` payload (feat/import-fidelity T3):
@@ -266,6 +276,9 @@ export interface ModelDetail {
   // R13b (categories): mirrors `ModelSummary.category`/`category_id` above.
   category_id?: number | null;
   category?: CategoryOut | null;
+  // R13c: freeform key/value custom fields + a freeform print-tips note.
+  metadata: Record<string, string> | null;
+  print_tips: string | null;
 }
 
 // -- diff ----------------------------------------------------------
@@ -553,6 +566,9 @@ export interface StatsOut {
   };
   recent: { models_added_7d: number; prints_7d: number };
   jobs: { running: number; queued: number; failed_24h: number };
+  recent_models: ModelSummary[];
+  recent_prints: PrintEntry[];
+  material_usage: { material_id: number | null; name: string; grams: number; prints: number }[];
 }
 
 export type PrinterKind = "bambu_lan";
@@ -567,6 +583,7 @@ export interface PrinterOut {
   enabled: boolean;
   options: Record<string, unknown>;
   access_code_set: boolean;
+  build_volume_mm: { x: number; y: number; z: number } | null;
 }
 
 export interface PrinterCreate {
@@ -578,6 +595,7 @@ export interface PrinterCreate {
   model?: string | null;
   enabled?: boolean;
   options?: Record<string, unknown>;
+  build_volume_mm?: { x: number; y: number; z: number } | null;
 }
 
 export interface PrinterUpdate {
@@ -588,6 +606,7 @@ export interface PrinterUpdate {
   model?: string | null;
   enabled?: boolean;
   options?: Record<string, unknown>;
+  build_volume_mm?: { x: number; y: number; z: number } | null;
 }
 
 export interface ProbeOut {
@@ -878,6 +897,52 @@ export interface ApiTokenOut {
 
 export type PrintResult = "success" | "fail" | "partial";
 
+// -- materials (R13c) -------------------------------------------------------
+// Filament profiles a print can reference (`PrintEntry.material_id`), in
+// addition to the freeform `filament` text note.
+
+// Known kind values offered by the material form's `Select` (backend's
+// `MaterialCreate`/`MaterialUpdate`/`MaterialOut.kind` are a plain
+// `str | None`, not DB/pydantic-enforced against this list -- it's a
+// client-side convenience list, not the wire type).
+export type MaterialKind = "PLA" | "PETG" | "ABS" | "ASA" | "TPU" | "Resin" | "Other";
+
+export interface MaterialOut {
+  id: number;
+  name: string;
+  kind: string | null;
+  color: string | null;
+  vendor: string | null;
+  notes: string | null;
+  print_count: number;
+}
+
+export interface MaterialCreate {
+  name: string;
+  kind?: string | null;
+  color?: string | null;
+  vendor?: string | null;
+  notes?: string | null;
+}
+
+export interface MaterialPatch {
+  name?: string;
+  kind?: string | null;
+  color?: string | null;
+  vendor?: string | null;
+  notes?: string | null;
+}
+
+// The nested `material` a `PrintEntry` carries (`backend/app/schemas/
+// prints.py`'s `PrintMaterialOut`) -- a smaller shape than `MaterialOut`
+// (no `vendor`/`notes`/`print_count`).
+export interface PrintMaterialOut {
+  id: number;
+  name: string;
+  kind: string | null;
+  color: string | null;
+}
+
 export interface PrintEntry {
   id: number;
   model_id: number;
@@ -889,6 +954,15 @@ export interface PrintEntry {
   duration_min: number | null;
   notes: string | null;
   created_at: string;
+  // R13c: optional structured material reference alongside the freeform
+  // `filament` text fallback (mirrors backend `PrintMaterialOut`).
+  material_id: number | null;
+  material: PrintMaterialOut | null;
+  // R13c: populated only by `GET /stats`'s `recent_prints` (backend's
+  // `PrintOut.model_slug`/`model_name`) -- `null` for every other caller
+  // (per-model listing already scopes to one model).
+  model_slug: string | null;
+  model_name: string | null;
 }
 
 // `POST /models/{model_id}/prints` payload -- an omitted `printed_at` lets
@@ -897,6 +971,7 @@ export interface PrintEntry {
 export interface PrintCreateIn {
   printed_at?: string;
   printer_name?: string | null;
+  material_id?: number | null;
   filament?: string | null;
   filament_g?: number | null;
   result?: PrintResult;
@@ -910,6 +985,7 @@ export interface PrintCreateIn {
 export interface PrintPatchIn {
   printed_at?: string;
   printer_name?: string | null;
+  material_id?: number | null;
   filament?: string | null;
   filament_g?: number | null;
   result?: PrintResult;

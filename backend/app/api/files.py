@@ -27,7 +27,7 @@ from app.models import Blob, File
 from app.models.enums import BlobFormat
 from app.pipeline import slicedmeta
 from app.services import library, signed_urls
-from app.services.http_names import content_disposition_attachment
+from app.services.http_names import content_disposition_attachment, content_disposition_inline
 from app.services.storage_backends import resolve_backend_for_file
 from app.storage.base import StorageBackend
 from app.storage.errors import StorageKeyNotFound
@@ -62,12 +62,32 @@ _MEDIA_TYPES_BY_SUFFIX: dict[str, str] = {
     ".stp": "model/step",
     ".obj": "model/obj",
     ".gcode": "text/x.gcode",
+    # R13c: doc kinds.
+    ".pdf": "application/pdf",
+    ".md": "text/markdown",
+    ".txt": "text/plain",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 }
+
+# R13c: doc formats a browser can render inline (``?inline=1``) rather than
+# download -- ``.docx`` has no reliable in-browser renderer, so it's
+# excluded and always downloads.
+_INLINE_PREVIEWABLE_SUFFIXES = {".pdf", ".txt", ".md"}
 
 
 def _media_type_for_filename(filename: str) -> str:
     suffix = PurePosixPath(filename).suffix.lower()
     return _MEDIA_TYPES_BY_SUFFIX.get(suffix, "application/octet-stream")
+
+
+def _content_disposition_for_filename(filename: str, *, inline: bool) -> str:
+    """``?inline=1`` (R13c doc preview) renders pdf/txt/md in the browser
+    instead of downloading; every other request/format keeps the existing
+    ``attachment`` behavior unchanged."""
+    suffix = PurePosixPath(filename).suffix.lower()
+    if inline and suffix in _INLINE_PREVIEWABLE_SUFFIXES:
+        return content_disposition_inline(filename)
+    return content_disposition_attachment(filename)
 
 
 # Chunk size for streaming a zip member out (review finding 1) -- matches
@@ -152,6 +172,7 @@ async def _download_file(
     member: str | None,
     plate: int | None,
     token: str | None,
+    inline: bool = False,
     tdmm_session: str | None,
     db: AsyncSession,
     settings: Settings,
@@ -235,7 +256,7 @@ async def _download_file(
         iterate_in_threadpool(iterator),
         media_type=_media_type_for_filename(filename),
         headers={
-            "Content-Disposition": content_disposition_attachment(filename),
+            "Content-Disposition": _content_disposition_for_filename(filename, inline=inline),
             "Content-Length": str(blob.size),
         },
     )
@@ -249,6 +270,9 @@ async def download_file(
     token: str | None = Query(
         None,
         description="Signed slicer-deep-link token (POST .../slicer-link); bypasses the cookie",
+    ),
+    inline: bool = Query(
+        False, description="R13c: render pdf/txt/md inline instead of downloading"
     ),
     tdmm_session: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
     db: AsyncSession = Depends(get_db),
@@ -265,6 +289,7 @@ async def download_file(
         member=member,
         plate=plate,
         token=token,
+        inline=inline,
         tdmm_session=tdmm_session,
         db=db,
         settings=settings,
@@ -280,6 +305,9 @@ async def download_file_with_filename(
     token: str | None = Query(
         None,
         description="Signed slicer-deep-link token (POST .../slicer-link); bypasses the cookie",
+    ),
+    inline: bool = Query(
+        False, description="R13c: render pdf/txt/md inline instead of downloading"
     ),
     tdmm_session: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
     db: AsyncSession = Depends(get_db),
@@ -297,6 +325,7 @@ async def download_file_with_filename(
         member=member,
         plate=plate,
         token=token,
+        inline=inline,
         tdmm_session=tdmm_session,
         db=db,
         settings=settings,

@@ -15,20 +15,26 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
+from app.config import Settings
 from app.models.collections import FollowedCollection
-from app.models.library import Blob, File, Model, Print, Tag
+from app.models.library import Blob, File, Material, Model, Print, Tag
 from app.models.storage import StorageBackendRow
 from app.models.system import Job
+from app.schemas.library import ModelSummary
+from app.schemas.prints import PrintOut
 from app.schemas.stats import (
     FilesStats,
     JobsStats,
+    MaterialUsageOut,
     ModelsStats,
     PrintsStats,
     RecentStats,
     StatsOut,
 )
 from app.services import layout
+from app.services.library import build_model_summaries
 
 CACHE_TTL_S = 30.0
 
@@ -153,7 +159,81 @@ async def _jobs_stats(db: AsyncSession) -> JobsStats:
     return JobsStats(running=running, queued=queued, failed_24h=failed_24h)
 
 
-async def _compute_stats(db: AsyncSession) -> StatsOut:
+async def _recent_models(db: AsyncSession, settings: Settings) -> list[ModelSummary]:
+    """The 10 most recently created models (R13c dashboard), built via the
+    SAME `build_model_summaries` aggregate-then-assemble path the gallery
+    uses -- not a hand-rolled second summary shape."""
+    stmt = (
+        select(Model)
+        .options(selectinload(Model.tags), selectinload(Model.category))
+        .order_by(Model.created_at.desc(), Model.id.desc())
+        .limit(10)
+    )
+    models = list((await db.execute(stmt)).scalars().unique().all())
+    return await build_model_summaries(db, settings, models)
+
+
+async def _recent_prints(db: AsyncSession) -> list[PrintOut]:
+    """The 10 most recent print log entries (R13c dashboard), with the
+    parent model's slug/name joined in (`PrintOut.model_slug`/`model_name`,
+    populated only here -- the per-model listing already scopes to one
+    model)."""
+    stmt = (
+        select(Print, Model.slug, Model.name)
+        .join(Model, Model.id == Print.model_id)
+        .options(selectinload(Print.material))
+        .order_by(Print.printed_at.desc(), Print.id.desc())
+        .limit(10)
+    )
+    rows = (await db.execute(stmt)).all()
+    return [
+        PrintOut.from_model(print_row, model_slug=slug, model_name=name)
+        for print_row, slug, name in rows
+    ]
+
+
+async def _material_usage(db: AsyncSession) -> list[MaterialUsageOut]:
+    """Total filament grams + print count per material (R13c dashboard),
+    grouped by ``Material`` where a print resolved to one, falling back to
+    the free-text ``Print.filament`` snapshot for prints that didn't
+    (``material_id: null`` there) -- two group-bys, not a per-print loop."""
+    with_material = (
+        await db.execute(
+            select(
+                Material.id,
+                Material.name,
+                func.coalesce(func.sum(Print.filament_g), 0.0),
+                func.count(Print.id),
+            )
+            .join(Print, Print.material_id == Material.id)
+            .group_by(Material.id, Material.name)
+        )
+    ).all()
+    without_material = (
+        await db.execute(
+            select(
+                Print.filament,
+                func.coalesce(func.sum(Print.filament_g), 0.0),
+                func.count(Print.id),
+            )
+            .where(Print.material_id.is_(None), Print.filament.is_not(None), Print.filament != "")
+            .group_by(Print.filament)
+        )
+    ).all()
+
+    usage = [
+        MaterialUsageOut(material_id=material_id, name=name, grams=float(grams), prints=count)
+        for material_id, name, grams, count in with_material
+    ]
+    usage += [
+        MaterialUsageOut(material_id=None, name=filament, grams=float(grams), prints=count)
+        for filament, grams, count in without_material
+    ]
+    usage.sort(key=lambda row: row.grams, reverse=True)
+    return usage
+
+
+async def _compute_stats(db: AsyncSession, settings: Settings) -> StatsOut:
     models = await _models_stats(db)
     files = await _files_stats(db)
     tags = (await db.execute(select(func.count()).select_from(Tag))).scalar_one()
@@ -163,6 +243,9 @@ async def _compute_stats(db: AsyncSession) -> StatsOut:
     prints = await _prints_stats(db)
     recent = await _recent_stats(db)
     jobs = await _jobs_stats(db)
+    recent_models = await _recent_models(db, settings)
+    recent_prints = await _recent_prints(db)
+    material_usage = await _material_usage(db)
 
     return StatsOut(
         models=models,
@@ -172,16 +255,19 @@ async def _compute_stats(db: AsyncSession) -> StatsOut:
         prints=prints,
         recent=recent,
         jobs=jobs,
+        recent_models=recent_models,
+        recent_prints=recent_prints,
+        material_usage=material_usage,
     )
 
 
-async def get_stats(db: AsyncSession) -> StatsOut:
+async def get_stats(db: AsyncSession, settings: Settings) -> StatsOut:
     """Cached dashboard stats -- recomputed at most once every
     ``CACHE_TTL_S`` seconds process-wide."""
     global _cache
     now = time.monotonic()
     if _cache is not None and now - _cache[1] < CACHE_TTL_S:
         return _cache[0]
-    stats = await _compute_stats(db)
+    stats = await _compute_stats(db, settings)
     _cache = (stats, now)
     return stats

@@ -13,10 +13,16 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session as SyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models.enums import PrintResult
-from app.models.library import Model, Print
+from app.models.library import Material, Model, Print
 from app.schemas.prints import PrintOut
+
+
+async def _check_material_id(db: AsyncSession, material_id: int | None) -> None:
+    if material_id is not None and await db.get(Material, material_id) is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "unknown material_id")
 
 
 async def create_print(
@@ -27,6 +33,7 @@ async def create_print(
     printer_name: str | None,
     filament: str | None,
     filament_g: float | None = None,
+    material_id: int | None = None,
     result: PrintResult,
     duration_min: int | None,
     notes: str | None,
@@ -36,11 +43,13 @@ async def create_print(
     below -- is the ONLY writer of ``print_count``; ``recount_print_counts``
     is the self-healing backstop, not a second writer).
     """
+    await _check_material_id(db, material_id)
     row = Print(
         model_id=model_id,
         printer_name=printer_name,
         filament=filament,
         filament_g=filament_g,
+        material_id=material_id,
         result=result,
         duration_min=duration_min,
         notes=notes,
@@ -53,6 +62,7 @@ async def create_print(
     )
     await db.commit()
     await db.refresh(row)
+    await db.refresh(row, attribute_names=["material"])
     return PrintOut.from_model(row)
 
 
@@ -63,6 +73,7 @@ async def list_prints(db: AsyncSession, model_id: int) -> list[PrintOut]:
     stmt = (
         select(Print)
         .where(Print.model_id == model_id)
+        .options(selectinload(Print.material))
         .order_by(Print.printed_at.desc(), Print.id.desc())
     )
     rows = (await db.execute(stmt)).scalars().all()
@@ -81,11 +92,14 @@ async def patch_print(db: AsyncSession, print_id: int, changes: dict[str, object
     only the fields present in the request body change.
     """
     row = await _get_print_or_404(db, print_id)
+    if "material_id" in changes:
+        await _check_material_id(db, changes["material_id"])
     for field in (
         "printed_at",
         "printer_name",
         "filament",
         "filament_g",
+        "material_id",
         "result",
         "duration_min",
         "notes",
@@ -94,6 +108,7 @@ async def patch_print(db: AsyncSession, print_id: int, changes: dict[str, object
             setattr(row, field, changes[field])
     await db.commit()
     await db.refresh(row)
+    await db.refresh(row, attribute_names=["material"])
     return PrintOut.from_model(row)
 
 

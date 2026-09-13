@@ -477,9 +477,14 @@ async def patch_model(
         "favorite",
         "is_archived",
         "category_id",
+        "print_tips",
     ):
         if field in changes:
             setattr(model, field, changes[field])
+    # R13c: API field `metadata` maps to the `metadata_json` column
+    # (`metadata` is reserved on `Base`).
+    if "metadata" in changes:
+        model.metadata_json = changes["metadata"]
     await db.commit()
     if "category_id" in changes:
         # `expire_on_commit=False` (app.db.get_sessionmaker) means the
@@ -1438,6 +1443,8 @@ async def build_model_detail(db: AsyncSession, model: Model, settings: Settings)
             if model.category is not None
             else None
         ),
+        metadata=model.metadata_json,
+        print_tips=model.print_tips,
     )
 
 

@@ -200,3 +200,115 @@ async def test_detect_serial_error(authenticated_client, printer_enabled, monkey
     assert r.status_code == 200
     body = r.json()
     assert body["serial"] is None and "Couldn't read a serial" in body["detail"]
+
+
+# ---------------------------------------------------------------------------
+# R13c: build_volume_mm seeding
+# ---------------------------------------------------------------------------
+
+
+async def test_create_seeds_build_volume_from_a1_mini_model(authenticated_client, printer_enabled):
+    r = await authenticated_client.post(
+        "/api/printers", json={**CREATE, "model": "Bambu Lab A1 mini"}
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["build_volume_mm"] == {"x": 180.0, "y": 180.0, "z": 180.0}
+
+
+async def test_create_seeds_build_volume_from_plain_a1_model_not_mini(
+    authenticated_client, printer_enabled
+):
+    r = await authenticated_client.post("/api/printers", json={**CREATE, "model": "Bambu Lab A1"})
+    assert r.status_code == 201, r.text
+    assert r.json()["build_volume_mm"] == {"x": 256.0, "y": 256.0, "z": 256.0}
+
+
+async def test_create_seeds_build_volume_for_prusa_mk4(authenticated_client, printer_enabled):
+    r = await authenticated_client.post("/api/printers", json={**CREATE, "model": "Prusa MK4"})
+    assert r.status_code == 201, r.text
+    assert r.json()["build_volume_mm"] == {"x": 250.0, "y": 210.0, "z": 220.0}
+
+
+async def test_create_unknown_model_leaves_build_volume_null(authenticated_client, printer_enabled):
+    r = await authenticated_client.post(
+        "/api/printers", json={**CREATE, "model": "Some Unknown Thing"}
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["build_volume_mm"] is None
+
+
+async def test_create_explicit_build_volume_wins_over_model_seed(
+    authenticated_client, printer_enabled
+):
+    r = await authenticated_client.post(
+        "/api/printers",
+        json={**CREATE, "model": "Bambu Lab A1 mini", "build_volume_mm": {"x": 1, "y": 2, "z": 3}},
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["build_volume_mm"] == {"x": 1.0, "y": 2.0, "z": 3.0}
+
+
+async def test_patch_updates_build_volume(authenticated_client, printer_enabled):
+    pid = (await authenticated_client.post("/api/printers", json=CREATE)).json()["id"]
+    got = await authenticated_client.get(f"/api/printers/{pid}")
+    assert got.json()["build_volume_mm"] is None
+
+    r = await authenticated_client.patch(
+        f"/api/printers/{pid}", json={"build_volume_mm": {"x": 300, "y": 300, "z": 400}}
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["build_volume_mm"] == {"x": 300.0, "y": 300.0, "z": 400.0}
+
+
+async def test_patch_model_change_reseeds_null_build_volume(authenticated_client, printer_enabled):
+    """A `model` PATCH re-runs the create-time seed when build_volume_mm is
+    still NULL and the patch itself didn't set one -- otherwise a printer
+    created before its model was known (or with an unrecognized model) stays
+    stuck at null forever even after the model is corrected."""
+    pid = (
+        await authenticated_client.post("/api/printers", json={**CREATE, "model": "Unknown"})
+    ).json()["id"]
+    assert (await authenticated_client.get(f"/api/printers/{pid}")).json()[
+        "build_volume_mm"
+    ] is None
+
+    r = await authenticated_client.patch(
+        f"/api/printers/{pid}", json={"model": "Bambu Lab A1 mini"}
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["build_volume_mm"] == {"x": 180.0, "y": 180.0, "z": 180.0}
+
+
+async def test_patch_model_change_does_not_override_explicit_build_volume(
+    authenticated_client, printer_enabled
+):
+    pid = (
+        await authenticated_client.post("/api/printers", json={**CREATE, "model": "Unknown"})
+    ).json()["id"]
+
+    r = await authenticated_client.patch(
+        f"/api/printers/{pid}",
+        json={"model": "Bambu Lab A1 mini", "build_volume_mm": {"x": 1, "y": 2, "z": 3}},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["build_volume_mm"] == {"x": 1.0, "y": 2.0, "z": 3.0}
+
+
+async def test_patch_model_change_does_not_override_existing_build_volume(
+    authenticated_client, printer_enabled
+):
+    """A printer that already has a (possibly hand-edited) build_volume_mm
+    keeps it on an unrelated model rename -- the re-seed only fires when the
+    column is NULL."""
+    pid = (
+        await authenticated_client.post(
+            "/api/printers", json={**CREATE, "model": "Bambu Lab A1 mini"}
+        )
+    ).json()["id"]
+    await authenticated_client.patch(
+        f"/api/printers/{pid}", json={"build_volume_mm": {"x": 9, "y": 9, "z": 9}}
+    )
+
+    r = await authenticated_client.patch(f"/api/printers/{pid}", json={"model": "Prusa MK4"})
+    assert r.status_code == 200, r.text
+    assert r.json()["build_volume_mm"] == {"x": 9.0, "y": 9.0, "z": 9.0}

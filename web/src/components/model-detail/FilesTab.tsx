@@ -1,21 +1,19 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { DownloadIcon, EyeIcon, PlusIcon, Trash2Icon } from "lucide-react";
+import { PlusIcon } from "lucide-react";
 
-import { modelQueryOptions, useDeleteFile } from "@/api/library";
-import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { modelQueryOptions } from "@/api/library";
 import { CopyableHash } from "@/components/model-detail/CopyableHash";
+import { FileActionsMenu } from "@/components/model-detail/FileActionsMenu";
 import { OpenInSlicerButton } from "@/components/model-detail/OpenInSlicerButton";
 import { SendToPrinterButton } from "@/components/model-detail/SendToPrinterButton";
 import { UploadDropzone, type UploadTarget } from "@/components/upload/UploadDropzone";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatDateTime, humanizeBytes, humanizeDuration } from "@/lib/format";
 import { formatIcon } from "@/lib/formatMeta";
 import { isSlicerEligible } from "@/lib/slicers";
-import { isStudioViewable } from "@/components/viewer/viewable";
 import type { BlobMetaOut, FileOut, ModelDetail } from "@/api/types";
 
 /** `{triangle_count} tris · {dims_mm joined ×} mm · {volume_cm3} cm³`, skipping
@@ -81,10 +79,11 @@ export function FilesTab({
    * a future window/embed) without a studio to hand off to. */
   onViewIn3D?: (file: FileOut) => void;
 }) {
-  const deleteFile = useDeleteFile(model.slug);
   const queryClient = useQueryClient();
   const [showAddFiles, setShowAddFiles] = useState(false);
-  const files = model.current_revision?.files ?? [];
+  // Doc-kind files (README, license, etc.) surface only in the Docs tab --
+  // exclude them here so they don't also clutter the Files table.
+  const files = (model.current_revision?.files ?? []).filter((file) => file.kind !== "doc");
   const currentRevision = model.current_revision;
 
   // Uploads (Task 10, correctness map §B4) always target the model's
@@ -105,7 +104,6 @@ export function FilesTab({
   }
 
   return (
-    <TooltipProvider>
     <div className="space-y-4">
       {currentRevision ? (
         <div className="flex justify-end">
@@ -170,54 +168,9 @@ export function FilesTab({
                   </TableCell>
                   <TableCell>
                     <div className="flex justify-end gap-1">
-                      {onViewIn3D && isStudioViewable(file) ? (
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon-sm"
-                              aria-label={`View ${file.rel_path} in 3D`}
-                              onClick={() => onViewIn3D(file)}
-                            >
-                              <EyeIcon className="size-4" />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>View in 3D</TooltipContent>
-                        </Tooltip>
-                      ) : null}
                       <SendToPrinterButton file={file} />
                       {file.verified_at && isSlicerEligible(file) ? <OpenInSlicerButton file={file} /> : null}
-                      {file.verified_at ? (
-                        <Button asChild variant="ghost" size="icon-sm" aria-label={`Download ${file.rel_path}`}>
-                          <a href={`/api/files/${file.id}/download`}>
-                            <DownloadIcon className="size-4" />
-                          </a>
-                        </Button>
-                      ) : (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon-sm"
-                          disabled
-                          aria-label={`Download ${file.rel_path}`}
-                          title="Still processing — download will be available once verified"
-                        >
-                          <DownloadIcon className="size-4" />
-                        </Button>
-                      )}
-                      <ConfirmDialog
-                        trigger={
-                          <Button type="button" variant="ghost" size="icon-sm" aria-label={`Delete ${file.rel_path}`}>
-                            <Trash2Icon className="size-4" />
-                          </Button>
-                        }
-                        title={`Delete ${file.rel_path}?`}
-                        description="This removes the file from the current revision."
-                        confirmLabel="Delete"
-                        destructive
-                        onConfirm={() => deleteFile.mutate(file.id)}
-                      />
+                      <FileActionsMenu file={file} model={model} onViewIn3D={onViewIn3D} />
                     </div>
                   </TableCell>
                 </TableRow>
@@ -227,6 +180,5 @@ export function FilesTab({
         </Table>
       )}
     </div>
-    </TooltipProvider>
   );
 }

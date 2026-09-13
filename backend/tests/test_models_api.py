@@ -1656,3 +1656,109 @@ async def test_gallery_dims_and_file_picks_are_null_without_files(
     assert item["dims_mm"] is None
     assert item["best_slicer_file"] is None
     assert item["printable_file"] is None
+
+
+# ---------------------------------------------------------------------------
+# R13c: custom metadata + print_tips
+# ---------------------------------------------------------------------------
+
+
+async def test_model_metadata_and_print_tips_default_to_none(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    created = await _create_model(authenticated_client, "Metadata Defaults")
+
+    assert created["metadata"] is None
+    assert created["print_tips"] is None
+
+
+async def test_patch_model_metadata_roundtrip(authenticated_client: httpx.AsyncClient) -> None:
+    created = await _create_model(authenticated_client, "Metadata Roundtrip")
+
+    response = await authenticated_client.patch(
+        f"/api/models/{created['slug']}",
+        json={"metadata": {"Nozzle": "0.4mm", "Layer height": "0.2mm"}},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["metadata"] == {"Nozzle": "0.4mm", "Layer height": "0.2mm"}
+
+    detail = await authenticated_client.get(f"/api/models/{created['slug']}")
+    assert detail.json()["metadata"] == {"Nozzle": "0.4mm", "Layer height": "0.2mm"}
+
+
+async def test_patch_model_metadata_null_clears_it(authenticated_client: httpx.AsyncClient) -> None:
+    created = await _create_model(authenticated_client, "Metadata Clear")
+    await authenticated_client.patch(
+        f"/api/models/{created['slug']}", json={"metadata": {"a": "b"}}
+    )
+
+    response = await authenticated_client.patch(
+        f"/api/models/{created['slug']}", json={"metadata": None}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["metadata"] is None
+
+
+async def test_patch_model_metadata_too_many_entries_is_422(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    created = await _create_model(authenticated_client, "Metadata Too Many")
+    too_many = {f"key{i}": "value" for i in range(51)}
+
+    response = await authenticated_client.patch(
+        f"/api/models/{created['slug']}", json={"metadata": too_many}
+    )
+
+    assert response.status_code == 422
+
+
+async def test_patch_model_metadata_key_too_long_is_422(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    created = await _create_model(authenticated_client, "Metadata Key Too Long")
+
+    response = await authenticated_client.patch(
+        f"/api/models/{created['slug']}", json={"metadata": {"x" * 65: "value"}}
+    )
+
+    assert response.status_code == 422
+
+
+async def test_patch_model_metadata_value_too_long_is_422(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    created = await _create_model(authenticated_client, "Metadata Value Too Long")
+
+    response = await authenticated_client.patch(
+        f"/api/models/{created['slug']}", json={"metadata": {"key": "x" * 2001}}
+    )
+
+    assert response.status_code == 422
+
+
+async def test_patch_model_metadata_empty_key_is_422(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    created = await _create_model(authenticated_client, "Metadata Empty Key")
+
+    response = await authenticated_client.patch(
+        f"/api/models/{created['slug']}", json={"metadata": {"": "value"}}
+    )
+
+    assert response.status_code == 422
+
+
+async def test_patch_model_print_tips_roundtrip(authenticated_client: httpx.AsyncClient) -> None:
+    created = await _create_model(authenticated_client, "Print Tips Roundtrip")
+
+    response = await authenticated_client.patch(
+        f"/api/models/{created['slug']}", json={"print_tips": "Use a brim, print slow."}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["print_tips"] == "Use a brim, print slow."
+
+    detail = await authenticated_client.get(f"/api/models/{created['slug']}")
+    assert detail.json()["print_tips"] == "Use a brim, print slow."

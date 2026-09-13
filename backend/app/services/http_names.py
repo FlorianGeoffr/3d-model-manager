@@ -31,14 +31,25 @@ def _ascii_fallback(name: str) -> str:
     return cleaned or "download"
 
 
+def _content_disposition(disposition: str, name: str) -> str:
+    fallback = _ascii_fallback(name)
+    # `quote`'s default safe set already excludes CR/LF and quotes; also
+    # exclude "/" so a title containing one can't look like a path segment.
+    encoded = quote(name, safe="")
+    return f"{disposition}; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"
+
+
 def content_disposition_attachment(name: str) -> str:
     """Build a ``Content-Disposition: attachment`` header value that's safe
     regardless of what ``name`` contains, per RFC 6266: an ASCII-only
     ``filename`` fallback for clients that don't understand ``filename*``,
     plus a percent-encoded UTF-8 ``filename*`` for clients that do.
     """
-    fallback = _ascii_fallback(name)
-    # `quote`'s default safe set already excludes CR/LF and quotes; also
-    # exclude "/" so a title containing one can't look like a path segment.
-    encoded = quote(name, safe="")
-    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"
+    return _content_disposition("attachment", name)
+
+
+def content_disposition_inline(name: str) -> str:
+    """Same as :func:`content_disposition_attachment`, but ``inline`` (R13c
+    doc preview: pdf/txt/md render in the browser via ``?inline=1`` instead
+    of downloading)."""
+    return _content_disposition("inline", name)

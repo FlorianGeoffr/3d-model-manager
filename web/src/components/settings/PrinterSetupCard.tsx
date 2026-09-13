@@ -43,19 +43,44 @@ interface PrinterDraft {
   serial: string;
   model: string;
   access_code: string;
+  buildVolumeX: string;
+  buildVolumeY: string;
+  buildVolumeZ: string;
 }
 
-type DraftErrors = Partial<Record<keyof PrinterDraft, string>>;
+// `buildVolume` isn't a `PrinterDraft` key -- the partial-fill validation
+// error applies to all three build-volume fields together, not any one.
+type DraftErrors = Partial<Record<keyof PrinterDraft, string>> & { buildVolume?: string };
 
 function emptyDraft(): PrinterDraft {
-  return { name: "", host: "", serial: "", model: "", access_code: "" };
+  // Blank build-volume fields mean "don't send `build_volume_mm`" on
+  // create -- the server seeds it from a model->volume map instead.
+  return {
+    name: "",
+    host: "",
+    serial: "",
+    model: "",
+    access_code: "",
+    buildVolumeX: "",
+    buildVolumeY: "",
+    buildVolumeZ: "",
+  };
 }
 
 /** A saved printer's `access_code` is never returned by the API (only
  * `access_code_set`) -- the field always seeds blank, which is what "leave
  * unchanged" looks like on save (mirrors `StorageBackendForm.seedDraft`). */
 function seedDraft(printer: PrinterOut): PrinterDraft {
-  return { name: printer.name, host: printer.host, serial: printer.serial, model: printer.model ?? "", access_code: "" };
+  return {
+    name: printer.name,
+    host: printer.host,
+    serial: printer.serial,
+    model: printer.model ?? "",
+    access_code: "",
+    buildVolumeX: printer.build_volume_mm?.x != null ? String(printer.build_volume_mm.x) : "",
+    buildVolumeY: printer.build_volume_mm?.y != null ? String(printer.build_volume_mm.y) : "",
+    buildVolumeZ: printer.build_volume_mm?.z != null ? String(printer.build_volume_mm.z) : "",
+  };
 }
 
 export function PrinterSetupCard() {
@@ -127,7 +152,9 @@ function PrinterEditor({ printer }: { printer?: PrinterOut }) {
   /** Serial is required on both create and update (mirrors the backend's
    * `PrinterCreate`/`PrinterUpdate` serial validator); name/host/access_code
    * are only required on create -- an existing printer's row already has
-   * them, and a blank `access_code` on update means "keep the stored one". */
+   * them, and a blank `access_code` on update means "keep the stored one".
+   * Build volume is optional, but must be all-three-or-none: a partial fill
+   * can't be turned into a valid `{x,y,z}` body. */
   function validate(): boolean {
     const next: DraftErrors = {};
     if (draft.serial.trim() === "") next.serial = "Serial is required.";
@@ -136,8 +163,24 @@ function PrinterEditor({ printer }: { printer?: PrinterOut }) {
       if (draft.host.trim() === "") next.host = "Host is required.";
       if (draft.access_code.trim() === "") next.access_code = "Access code is required.";
     }
+    const volumeFilled = [draft.buildVolumeX, draft.buildVolumeY, draft.buildVolumeZ].filter(
+      (v) => v.trim() !== "",
+    ).length;
+    if (volumeFilled > 0 && volumeFilled < 3) {
+      next.buildVolume = "Enter all three dimensions, or leave all blank.";
+    }
     setErrors(next);
     return Object.keys(next).length === 0;
+  }
+
+  /** `undefined` when all three fields are blank (create: let the server
+   * seed from its model->volume map; update: leave the stored value
+   * untouched) -- `validate()` above already blocked a partial fill. */
+  function buildVolumeBody(): { x: number; y: number; z: number } | undefined {
+    if (draft.buildVolumeX.trim() === "" && draft.buildVolumeY.trim() === "" && draft.buildVolumeZ.trim() === "") {
+      return undefined;
+    }
+    return { x: Number(draft.buildVolumeX), y: Number(draft.buildVolumeY), z: Number(draft.buildVolumeZ) };
   }
 
   function detect() {
@@ -154,10 +197,12 @@ function PrinterEditor({ printer }: { printer?: PrinterOut }) {
   function save() {
     if (!validate()) return;
     const code = draft.access_code.trim();
+    const buildVolume = buildVolumeBody();
     if (printer) {
       // PATCH: a blank access_code means "keep the stored one" -- the key
       // is left out of the body entirely so the backend's `exclude_unset`
-      // handling never touches `access_code_enc`.
+      // handling never touches `access_code_enc`. Same idea for
+      // `build_volume_mm`: omitted entirely when left blank.
       const body: PrinterUpdate = {
         name: draft.name,
         host: draft.host,
@@ -165,12 +210,14 @@ function PrinterEditor({ printer }: { printer?: PrinterOut }) {
         model: draft.model.trim() === "" ? null : draft.model,
       };
       if (code !== "") body.access_code = code;
+      if (buildVolume) body.build_volume_mm = buildVolume;
       updatePrinter.mutate(body, { onSuccess: () => setField("access_code", "") });
     } else {
       // POST: `access_code` is a required field on `PrinterCreate` (a new
       // printer has no stored code to fall back to) -- `validate()` above
       // already blocked a blank one client-side, so this always sends a
-      // real value.
+      // real value. `build_volume_mm` is omitted when blank so the server's
+      // model->volume seed logic applies.
       createPrinter.mutate(
         {
           name: draft.name,
@@ -178,6 +225,7 @@ function PrinterEditor({ printer }: { printer?: PrinterOut }) {
           serial: draft.serial,
           model: draft.model.trim() === "" ? null : draft.model,
           access_code: code,
+          ...(buildVolume ? { build_volume_mm: buildVolume } : {}),
         },
         { onSuccess: () => setDraft(emptyDraft()) },
       );
@@ -284,6 +332,49 @@ function PrinterEditor({ printer }: { printer?: PrinterOut }) {
           {errors.access_code ? (
             <p role="alert" className="text-xs text-destructive">
               {errors.access_code}
+            </p>
+          ) : null}
+        </div>
+        <div className="flex flex-col gap-1.5 sm:col-span-2">
+          <span className="text-sm font-medium text-foreground">Build volume (mm)</span>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor={`${idPrefix}-volume-x`}>Build volume X (mm)</Label>
+              <Input
+                id={`${idPrefix}-volume-x`}
+                type="number"
+                value={draft.buildVolumeX}
+                onChange={(e) => setField("buildVolumeX", e.target.value)}
+                disabled={busy}
+                aria-invalid={Boolean(errors.buildVolume)}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor={`${idPrefix}-volume-y`}>Y (mm)</Label>
+              <Input
+                id={`${idPrefix}-volume-y`}
+                type="number"
+                value={draft.buildVolumeY}
+                onChange={(e) => setField("buildVolumeY", e.target.value)}
+                disabled={busy}
+                aria-invalid={Boolean(errors.buildVolume)}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor={`${idPrefix}-volume-z`}>Z (mm)</Label>
+              <Input
+                id={`${idPrefix}-volume-z`}
+                type="number"
+                value={draft.buildVolumeZ}
+                onChange={(e) => setField("buildVolumeZ", e.target.value)}
+                disabled={busy}
+                aria-invalid={Boolean(errors.buildVolume)}
+              />
+            </div>
+          </div>
+          {errors.buildVolume ? (
+            <p role="alert" className="text-xs text-destructive">
+              {errors.buildVolume}
             </p>
           ) : null}
         </div>

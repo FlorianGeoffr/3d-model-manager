@@ -210,10 +210,12 @@ async def test_intake_traversal_filename_uses_basename_only(
 async def test_intake_unsupported_extension_is_422_naming_the_file(
     client: httpx.AsyncClient, slicer_token: str
 ) -> None:
-    response = await _intake(client, slicer_token, filename="notes.txt", content=b"just some text")
+    # `.txt` is no longer unsupported (R13c: `BlobKind.DOC`/`BlobFormat.TXT`)
+    # -- use a genuinely unrecognized extension instead.
+    response = await _intake(client, slicer_token, filename="notes.xyz", content=b"just some text")
 
     assert response.status_code == 422
-    assert "notes.txt" in response.text
+    assert "notes.xyz" in response.text
 
 
 async def test_intake_empty_body_is_400(

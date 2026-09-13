@@ -1,13 +1,30 @@
-/** Right-column placeholder (R13a) -- print tips (freeform per-model notes
- * on how to best print the thing) don't have a data model yet; that lands in
- * a future revision's `models.print_tips` column + `MetadataEditor`. Renders
- * nothing for now (per the "no dead controls" rule -- a disabled textarea is
- * still a control) rather than a permanently-disabled field; `ModelDetailPage`
- * has stopped rendering this card too, but the component stays so wiring it
- * back in is a one-line change once the data model lands.
- *
- * TODO(R13c): replace with a real `models.print_tips` editor and re-add to
- * `ModelDetailPage`'s right column. */
-export function PrintTipsCard() {
-  return null;
+import { usePatchModel } from "@/api/library";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { InlineEdit } from "@/components/InlineEdit";
+import type { ModelDetail } from "@/api/types";
+
+/** Right-column card for freeform print tips (`models.print_tips`, R13c).
+ * Same posture as `DescriptionCard` -- owns its own `usePatchModel`
+ * mutation and always shows the `InlineEdit` affordance (no page-level
+ * edit-mode gate). Empty/whitespace-only saves clear the field to `null`. */
+export function PrintTipsCard({ model }: { model: ModelDetail }) {
+  const patchModel = usePatchModel(model.slug);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Print tips</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <InlineEdit
+          value={model.print_tips ?? ""}
+          placeholder="Add print tips…"
+          aria-label="print tips"
+          multiline
+          onSave={(print_tips) => patchModel.mutate({ print_tips: print_tips || null })}
+          displayClassName="text-sm text-muted-foreground"
+        />
+      </CardContent>
+    </Card>
+  );
 }

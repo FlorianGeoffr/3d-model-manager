@@ -100,7 +100,7 @@ def _resolve_names(filename: str) -> tuple[str, BlobKind, BlobFormat]:
     """
     rel_path = _safe_basename(filename)
     kind, format_ = infer_blob_kind_format(rel_path)
-    if kind is BlobKind.OTHER and format_ is BlobFormat.OTHER:
+    if (kind is BlobKind.OTHER and format_ is BlobFormat.OTHER) or kind is BlobKind.DOC:
         raise UnsupportedIntake(rel_path)
     return rel_path, kind, format_
 

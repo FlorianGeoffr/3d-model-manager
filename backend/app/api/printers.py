@@ -43,6 +43,7 @@ from app.schemas.printers import (
     PrintJobOut,
     PrintRequest,
     ProbeOut,
+    seed_build_volume_mm,
 )
 from app.services.printer_state import preflight_ok, read_state_async
 from app.tasks.printing import send_to_printer
@@ -74,6 +75,11 @@ async def create_printer(
     code = (payload.access_code or "").strip()
     if code in ("", _REDACTED_SENTINEL):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "access_code is required")
+    build_volume_mm = (
+        payload.build_volume_mm.model_dump()
+        if payload.build_volume_mm is not None
+        else seed_build_volume_mm(payload.model)
+    )
     printer = Printer(
         name=payload.name,
         kind=payload.kind,
@@ -83,6 +89,7 @@ async def create_printer(
         model=payload.model,
         enabled=payload.enabled,
         options=payload.options,
+        build_volume_mm=build_volume_mm,
     )
     db.add(printer)
     await db.commit()
@@ -148,6 +155,14 @@ async def update_printer(
         # blank, or sentinel-with-a-stored-code -> keep the existing ciphertext
     for key, value in data.items():
         setattr(printer, key, value)
+    # R13c: a `model` change that leaves `build_volume_mm` NULL (and the
+    # patch itself didn't set one) re-runs the create-time seed -- otherwise
+    # an unset build volume would stay stuck at the OLD model's seed-or-null
+    # forever, since PATCH never re-seeds on its own.
+    if "model" in data and "build_volume_mm" not in data and printer.build_volume_mm is None:
+        seeded = seed_build_volume_mm(printer.model)
+        if seeded is not None:
+            printer.build_volume_mm = seeded
     await db.commit()
     await db.refresh(printer)
     return PrinterOut.from_model(printer)

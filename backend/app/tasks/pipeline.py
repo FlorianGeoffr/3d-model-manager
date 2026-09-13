@@ -82,6 +82,11 @@ PIPELINE_STEPS: dict[BlobFormat, tuple[str, ...]] = {
     BlobFormat.PNG: ("render_thumb",),
     BlobFormat.JPG: ("render_thumb",),
     BlobFormat.WEBP: ("render_thumb",),
+    # R13c: doc kinds never enter the GLB/thumb pipeline.
+    BlobFormat.PDF: (),
+    BlobFormat.MD: (),
+    BlobFormat.TXT: (),
+    BlobFormat.DOCX: (),
     BlobFormat.OTHER: (),
 }
 

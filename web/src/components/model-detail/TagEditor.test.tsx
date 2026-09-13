@@ -41,6 +41,8 @@ const MODEL: ModelDetail = {
   favorite: false,
   print_count: 0,
   last_printed_at: null,
+  metadata: null,
+  print_tips: null,
 };
 
 function renderEditor(editMode: boolean) {

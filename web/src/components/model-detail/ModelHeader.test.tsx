@@ -50,6 +50,8 @@ const MODEL: ModelDetail = {
   favorite: false,
   print_count: 0,
   last_printed_at: null,
+  metadata: null,
+  print_tips: null,
 };
 
 const MODEL_WITH_SOURCE: ModelDetail = {

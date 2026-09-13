@@ -25,6 +25,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, str_enum
@@ -136,6 +137,13 @@ class Model(Base):
     # the SAME keyset-cursor path as `updated_at`/`name`, which a live
     # `COUNT(*)` subquery couldn't.
     print_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    # R13c: free-form user metadata (API field `metadata`; the column is
+    # named `metadata_json` because `Base`/SQLAlchemy's declarative machinery
+    # reserves the bare attribute name `metadata` on every mapped class).
+    # Bounds (key/value length, entry count) are enforced at the schema
+    # layer (`app.schemas.library.ModelPatch`), not here.
+    metadata_json: Mapped[dict[str, str] | None] = mapped_column(JSONB)
+    print_tips: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         server_default=func.now(), onupdate=func.now(), nullable=False
@@ -164,6 +172,25 @@ class Category(Base):
     # app.schemas.library.TagColor) -- enforced by a Literal at the API layer
     # and a CHECK constraint in the DB.
     color: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+
+
+class Material(Base):
+    """A user-defined filament/resin material (R13c): distinct from
+    ``prints.filament`` (a free-text per-print snapshot that survives a
+    material's deletion via ``ON DELETE SET NULL`` on ``Print.material_id``).
+    """
+
+    __tablename__ = "materials"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    kind: Mapped[str | None] = mapped_column(String)
+    # Free-form hex color (``#RRGGBB``), NOT the fixed `Tag`/`Category`
+    # palette -- validated at the schema layer, not by a DB CHECK.
+    color: Mapped[str | None] = mapped_column(String)
+    vendor: Mapped[str | None] = mapped_column(String)
+    notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
 
 
@@ -244,6 +271,13 @@ class Print(Base):
     # (R11-B item 14: print cost estimate + the dashboard's
     # `prints.filament_g_total` stat need an actual number to sum).
     filament_g: Mapped[float | None] = mapped_column(Float)
+    # R13c: optional structured material, alongside the `filament` free-text
+    # snapshot above (kept for prints logged before a material existed, or
+    # never resolved to one). ON DELETE SET NULL -- deleting a material must
+    # not delete print history.
+    material_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("materials.id", ondelete="SET NULL"), index=True
+    )
     result: Mapped[PrintResult] = mapped_column(
         str_enum(PrintResult, "print_result"),
         nullable=False,
@@ -252,6 +286,8 @@ class Print(Base):
     duration_min: Mapped[int | None] = mapped_column(Integer)
     notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+
+    material: Mapped["Material | None"] = relationship()
 
 
 class Revision(Base):

@@ -28,6 +28,7 @@ const PRINTER: PrinterOut = {
   enabled: true,
   options: {},
   access_code_set: true,
+  build_volume_mm: null,
 };
 
 const SLICED_FILE: FileOut = {

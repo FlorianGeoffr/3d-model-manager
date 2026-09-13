@@ -109,4 +109,12 @@ def infer_blob_kind_format(rel_path: str) -> tuple[BlobKind, BlobFormat]:
         return BlobKind.IMAGE, BlobFormat.JPG
     if lower.endswith(".webp"):
         return BlobKind.IMAGE, BlobFormat.WEBP
+    if lower.endswith(".pdf"):
+        return BlobKind.DOC, BlobFormat.PDF
+    if lower.endswith(".md"):
+        return BlobKind.DOC, BlobFormat.MD
+    if lower.endswith(".txt"):
+        return BlobKind.DOC, BlobFormat.TXT
+    if lower.endswith(".docx"):
+        return BlobKind.DOC, BlobFormat.DOCX
     return BlobKind.OTHER, BlobFormat.OTHER

@@ -33,10 +33,8 @@ import type { ViewerStageProps } from "@/components/viewer/ViewerStage";
 import { glbUrl, type ViewerPart } from "@/components/viewer/viewable";
 import type { FileOut } from "@/api/types";
 
-// Single source for the build-plate's mm side length -- a future settings
-// surface can replace this constant with a per-printer value without
-// touching anything downstream (`ModelViewer`, `PlateGrid`) that already
-// reads it as a prop.
+// Fallback build-plate mm side length when there's no configured printer
+// (or it has no `build_volume_mm`) to derive one from.
 const PLATE_SIZE_MM = 256;
 
 /** Seed values so the pop-out window can start from its URL instead of this
@@ -117,6 +115,10 @@ export function useViewerScene({
   const viewerApiRef = useRef<ViewerApi | null>(null);
   const printers = usePrinters();
   const printerId = printers.data?.[0]?.id;
+  // `ModelViewer`'s plate grid is square, so only X is used for the
+  // footprint side length -- matches the previous hardcoded behavior, now
+  // sourced from the first printer's build volume when one is configured.
+  const plateSize = printers.data?.[0]?.build_volume_mm?.x ?? PLATE_SIZE_MM;
   const queryClient = useQueryClient();
 
   useEffect(() => {
@@ -289,7 +291,7 @@ export function useViewerScene({
     onToolsChange: setTools,
     stats,
     onStats: setStats,
-    plateSize: PLATE_SIZE_MM,
+    plateSize,
     fitSignal,
     onFit: () => setFitSignal((prev) => prev + 1),
     viewerApiRef,

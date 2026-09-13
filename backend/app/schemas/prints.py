@@ -16,6 +16,16 @@ if TYPE_CHECKING:
     from app.models.library import Print
 
 
+class PrintMaterialOut(BaseModel):
+    """The nested `material` a `PrintOut` carries -- the full CRUD shape
+    lives in `app.schemas.materials`."""
+
+    id: int
+    name: str
+    kind: str | None = None
+    color: str | None = None
+
+
 class PrintCreateIn(BaseModel):
     """``POST /models/{model_id}/prints`` payload. An omitted ``printed_at``
     defaults to now (the DB column's own ``server_default=now()`` -- left
@@ -27,6 +37,10 @@ class PrintCreateIn(BaseModel):
     printer_name: str | None = None
     filament: str | None = None
     filament_g: float | None = Field(default=None, ge=0)
+    # R13c: optional structured material, alongside the `filament` free-text
+    # snapshot above (the Log-print form's "Other..." free-text path leaves
+    # this unset).
+    material_id: int | None = None
     result: PrintResult = PrintResult.SUCCESS
     duration_min: int | None = Field(default=None, ge=0)
     notes: str | None = None
@@ -42,6 +56,7 @@ class PrintPatchIn(BaseModel):
     printer_name: str | None = None
     filament: str | None = None
     filament_g: float | None = Field(default=None, ge=0)
+    material_id: int | None = None
     result: PrintResult | None = None
     duration_min: int | None = Field(default=None, ge=0)
     notes: str | None = None
@@ -67,13 +82,36 @@ class PrintOut(BaseModel):
     printer_name: str | None
     filament: str | None
     filament_g: float | None
+    material_id: int | None = None
+    material: PrintMaterialOut | None = None
     result: PrintResult
     duration_min: int | None
     notes: str | None
     created_at: datetime
+    # R13c: populated only by `app.services.stats`'s `recent_prints` --
+    # `None` for every other caller (per-model listing already scopes to
+    # one model, so it would be redundant there).
+    model_slug: str | None = None
+    model_name: str | None = None
 
     @classmethod
-    def from_model(cls, row: Print) -> PrintOut:
+    def from_model(
+        cls,
+        row: Print,
+        *,
+        model_slug: str | None = None,
+        model_name: str | None = None,
+    ) -> PrintOut:
+        material = (
+            PrintMaterialOut(
+                id=row.material.id,
+                name=row.material.name,
+                kind=row.material.kind,
+                color=row.material.color,
+            )
+            if row.material is not None
+            else None
+        )
         return cls(
             id=row.id,
             model_id=row.model_id,
@@ -81,8 +119,12 @@ class PrintOut(BaseModel):
             printer_name=row.printer_name,
             filament=row.filament,
             filament_g=row.filament_g,
+            material_id=row.material_id,
+            material=material,
             result=row.result,
             duration_min=row.duration_min,
             notes=row.notes,
             created_at=row.created_at,
+            model_slug=model_slug,
+            model_name=model_name,
         )

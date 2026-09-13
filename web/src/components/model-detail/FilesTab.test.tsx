@@ -82,6 +82,8 @@ function buildModel(files: FileOut[]): ModelDetail {
     favorite: false,
     print_count: 0,
     last_printed_at: null,
+    metadata: null,
+    print_tips: null,
     current_revision: {
       id: 1,
       model_id: 1,
@@ -112,22 +114,30 @@ describe("FilesTab", () => {
     uploadFileMock.mockReset();
   });
 
-  it("keeps the download action enabled and linked for a verified file", () => {
-    renderFilesTab([VERIFIED_FILE]);
+  // R13c: Download/Delete/View-in-3D moved into the shared `FileActionsMenu`
+  // dropdown (folded out of FilesTab's own per-row buttons) -- opening the
+  // menu first (`pointerDown` on its trigger, same convention as
+  // `OpenInSlicerButton.test.tsx`) is required before these actions are
+  // reachable by role.
+  function openActionsMenu(file: FileOut) {
+    fireEvent.pointerDown(screen.getByRole("button", { name: `Actions for ${file.rel_path}` }), { button: 0 });
+  }
 
-    const downloadLink = screen.getByRole("link", { name: `Download ${VERIFIED_FILE.rel_path}` });
+  it("keeps the download action enabled and linked for a verified file", async () => {
+    renderFilesTab([VERIFIED_FILE]);
+    openActionsMenu(VERIFIED_FILE);
+
+    const downloadLink = await screen.findByRole("menuitem", { name: `Download ${VERIFIED_FILE.rel_path}` });
     expect(downloadLink).toHaveAttribute("href", `/api/files/${VERIFIED_FILE.id}/download`);
   });
 
-  it("disables the download action for a file still processing (verified_at === null)", () => {
+  it("disables the download action for a file still processing (verified_at === null)", async () => {
     renderFilesTab([PROCESSING_FILE]);
+    openActionsMenu(PROCESSING_FILE);
 
-    // Not rendered as a navigable link at all — no raw-409 SPA navigation.
-    expect(screen.queryByRole("link", { name: `Download ${PROCESSING_FILE.rel_path}` })).not.toBeInTheDocument();
-
-    const downloadButton = screen.getByRole("button", { name: `Download ${PROCESSING_FILE.rel_path}` });
-    expect(downloadButton).toBeDisabled();
-    expect(downloadButton).toHaveAttribute("title", expect.stringMatching(/processing/i));
+    const downloadItem = await screen.findByRole("menuitem", { name: `Download ${PROCESSING_FILE.rel_path}` });
+    expect(downloadItem).toHaveAttribute("aria-disabled", "true");
+    expect(downloadItem).toHaveAttribute("title", expect.stringMatching(/processing/i));
 
     expect(screen.getByText("processing")).toBeInTheDocument();
   });
@@ -252,28 +262,52 @@ describe("FilesTab", () => {
     expect(screen.queryByTitle(/tris|plates/)).not.toBeInTheDocument();
   });
 
-  it("shows a View in 3D action only for studio-viewable files, and only when onViewIn3D is passed", () => {
-    const glbFile: FileOut = { ...VERIFIED_FILE, glb_status: "ok" };
-    const cadPending: FileOut = { ...VERIFIED_FILE, id: 3, rel_path: "part.step", format: "step", kind: "cad", glb_status: "pending" };
-    const notViewable: FileOut = { ...VERIFIED_FILE, id: 4, rel_path: "readme.txt", format: "step", kind: "cad", glb_status: null };
+  const glbFile: FileOut = { ...VERIFIED_FILE, glb_status: "ok" };
+  const cadPending: FileOut = {
+    ...VERIFIED_FILE,
+    id: 3,
+    rel_path: "part.step",
+    format: "step",
+    kind: "cad",
+    glb_status: "pending",
+  };
+  const notViewable: FileOut = {
+    ...VERIFIED_FILE,
+    id: 4,
+    rel_path: "readme.txt",
+    format: "step",
+    kind: "cad",
+    glb_status: null,
+  };
 
-    const { rerender } = renderFilesTab([glbFile, cadPending, notViewable]);
-    expect(screen.queryByRole("button", { name: /View .* in 3D/ })).not.toBeInTheDocument();
+  it("omits View in 3D for every file when onViewIn3D isn't passed", async () => {
+    renderFilesTab([glbFile, cadPending, notViewable]);
+    openActionsMenu(glbFile);
+    await screen.findByRole("menuitem", { name: `Download ${glbFile.rel_path}` });
+    expect(screen.queryByRole("menuitem", { name: /View .* in 3D/ })).not.toBeInTheDocument();
+  });
 
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  it("shows View in 3D for a glb-ready file once onViewIn3D is passed", async () => {
+    renderFilesTab([glbFile, cadPending, notViewable], vi.fn());
+    openActionsMenu(glbFile);
+    expect(await screen.findByRole("menuitem", { name: `View ${glbFile.rel_path} in 3D` })).toBeInTheDocument();
+  });
+
+  it("shows View in 3D for a CAD file pending GLB conversion, and fires onViewIn3D with that file", async () => {
     const onViewIn3D = vi.fn();
-    rerender(
-      <QueryClientProvider client={queryClient}>
-        <FilesTab model={buildModel([glbFile, cadPending, notViewable])} onViewIn3D={onViewIn3D} />
-      </QueryClientProvider>,
-    );
+    renderFilesTab([glbFile, cadPending, notViewable], onViewIn3D);
+    openActionsMenu(cadPending);
 
-    expect(screen.getByRole("button", { name: `View ${glbFile.rel_path} in 3D` })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: `View ${cadPending.rel_path} in 3D` })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: `View ${notViewable.rel_path} in 3D` })).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: `View ${cadPending.rel_path} in 3D` }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: `View ${cadPending.rel_path} in 3D` }));
     expect(onViewIn3D).toHaveBeenCalledWith(cadPending);
+  });
+
+  it("omits View in 3D for a file that isn't studio-viewable, even when onViewIn3D is passed", async () => {
+    renderFilesTab([glbFile, cadPending, notViewable], vi.fn());
+    openActionsMenu(notViewable);
+
+    await screen.findByRole("menuitem", { name: `Download ${notViewable.rel_path}` });
+    expect(screen.queryByRole("menuitem", { name: `View ${notViewable.rel_path} in 3D` })).not.toBeInTheDocument();
   });
 
   it("hides the Print button for a sliced file when the printer feature is off (default mock)", async () => {
@@ -296,6 +330,7 @@ describe("FilesTab", () => {
       enabled: true,
       options: {},
       access_code_set: true,
+      build_volume_mm: null,
     };
     const features: Features = { printer_enabled: true, watch_dir: null, watch_enabled: false };
     getMock.mockImplementation((path: string) => {

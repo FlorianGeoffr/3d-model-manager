@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 
 import { PrintsTab } from "@/components/model-detail/PrintsTab";
-import type { ModelDetail, ModelSummary, PrintEntry, QueueEntry } from "@/api/types";
+import type { MaterialOut, ModelDetail, ModelSummary, PrintEntry, QueueEntry } from "@/api/types";
 
 // `vi.mock` factories are hoisted above the module's own top-level bindings,
 // so the fakes have to be created through `vi.hoisted` (same pattern as
@@ -81,6 +81,8 @@ const MODEL: ModelDetail = {
   favorite: false,
   print_count: 0,
   last_printed_at: null,
+  metadata: null,
+  print_tips: null,
 };
 
 const SUMMARY: ModelSummary = {
@@ -127,6 +129,10 @@ function printEntry(overrides: Partial<PrintEntry> = {}): PrintEntry {
     duration_min: 125,
     notes: null,
     created_at: "2026-07-01T10:00:00Z",
+    material_id: null,
+    material: null,
+    model_slug: null,
+    model_name: null,
     ...overrides,
   };
 }
@@ -141,10 +147,16 @@ const DEFAULT_APP_SETTINGS = {
   machine_cost_per_hour: 0,
 };
 
+const MATERIALS: MaterialOut[] = [
+  { id: 1, name: "Galaxy Black", kind: "PLA", color: "#111111", vendor: "Bambu", notes: null, print_count: 2 },
+  { id: 2, name: "Clear PETG", kind: "PETG", color: null, vendor: null, notes: null, print_count: 0 },
+];
+
 function setupGet(
   overrides: {
     prints?: PrintEntry[];
     printers?: unknown[];
+    materials?: MaterialOut[];
     queue?: QueueEntry[];
     appSettings?: typeof DEFAULT_APP_SETTINGS;
   } = {},
@@ -152,6 +164,7 @@ function setupGet(
   getMock.mockImplementation((path: string) => {
     if (path === "/models/1/prints") return Promise.resolve(overrides.prints ?? []);
     if (path === "/printers") return Promise.resolve(overrides.printers ?? []);
+    if (path === "/materials") return Promise.resolve(overrides.materials ?? MATERIALS);
     if (path === "/queue") return Promise.resolve(overrides.queue ?? []);
     if (path === "/settings/app") return Promise.resolve(overrides.appSettings ?? DEFAULT_APP_SETTINGS);
     return Promise.resolve([]);
@@ -252,6 +265,7 @@ describe("PrintsTab -- log form", () => {
     expect(body).toEqual({
       printer_name: null,
       result: "success",
+      material_id: null,
       filament: null,
       filament_g: null,
       duration_min: null,
@@ -288,6 +302,46 @@ describe("PrintsTab -- log form", () => {
 
     await openComposer();
     expect(screen.getByLabelText("Filament")).toHaveValue("");
+  });
+
+  it("shows the material select with saved materials plus an Other option", async () => {
+    setupGet({ prints: [] });
+    renderPrintsTab();
+
+    await openComposer();
+    const materialSelect = await screen.findByRole("combobox", { name: "Material" });
+    expect(within(materialSelect).getByText("Galaxy Black")).toBeInTheDocument();
+    expect(within(materialSelect).getByText("Clear PETG")).toBeInTheDocument();
+    expect(within(materialSelect).getByText("Other...")).toBeInTheDocument();
+    // Filament field stays visible by default (materialId defaults to "none").
+    expect(screen.getByLabelText("Filament")).toBeInTheDocument();
+  });
+
+  it("hides the filament field once a real material is picked, and shows it again for Other", async () => {
+    setupGet({ prints: [] });
+    renderPrintsTab();
+
+    await openComposer();
+    const materialSelect = await screen.findByRole("combobox", { name: "Material" });
+    fireEvent.change(materialSelect, { target: { value: "1" } });
+    expect(screen.queryByLabelText("Filament")).not.toBeInTheDocument();
+
+    fireEvent.change(materialSelect, { target: { value: "__other__" } });
+    expect(screen.getByLabelText("Filament")).toBeInTheDocument();
+  });
+
+  it("sends material_id when a saved material is picked, and null filament", async () => {
+    setupGet({ prints: [] });
+    renderPrintsTab();
+
+    await openComposer();
+    const materialSelect = await screen.findByRole("combobox", { name: "Material" });
+    fireEvent.change(materialSelect, { target: { value: "2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Log print" }));
+
+    await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
+    const [, body] = postMock.mock.calls[0] as [string, Record<string, unknown>];
+    expect(body).toMatchObject({ material_id: 2, filament: null });
   });
 });
 

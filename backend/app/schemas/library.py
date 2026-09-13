@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Annotated, Literal
 
-from pydantic import BaseModel, StringConstraints
+from pydantic import BaseModel, StringConstraints, field_validator
 
 from app.models.enums import BlobFormat, BlobKind
 
@@ -20,6 +20,25 @@ if TYPE_CHECKING:
 # Empty/whitespace-only strings 422 (stripped before the min_length check),
 # per Task 5's "empty-name model -> 422" interface decision.
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+# R13c custom metadata bounds (`ModelPatch.metadata`/`ModelDetail.metadata`):
+# a plain, small key/value bag -- not a schema-free document store.
+_METADATA_MAX_ENTRIES = 50
+_METADATA_MAX_KEY_LEN = 64
+_METADATA_MAX_VALUE_LEN = 2000
+
+
+def _validate_metadata(value: dict[str, str] | None) -> dict[str, str] | None:
+    if value is None:
+        return None
+    if len(value) > _METADATA_MAX_ENTRIES:
+        raise ValueError(f"metadata cannot have more than {_METADATA_MAX_ENTRIES} entries")
+    for key, val in value.items():
+        if not key or len(key) > _METADATA_MAX_KEY_LEN:
+            raise ValueError(f"metadata keys must be 1-{_METADATA_MAX_KEY_LEN} characters")
+        if len(val) > _METADATA_MAX_VALUE_LEN:
+            raise ValueError(f"metadata values cannot exceed {_METADATA_MAX_VALUE_LEN} characters")
+    return value
 
 
 # -- models -------------------------------------------------------------
@@ -51,6 +70,16 @@ class ModelPatch(BaseModel):
     # R13b: single-valued category assignment; explicit `null` clears it
     # (unlike `name`, `category_id` is genuinely nullable at the DB level).
     category_id: int | None = None
+    # R13c: free-form key/value metadata (maps to `Model.metadata_json`;
+    # the API field is named `metadata` -- `metadata` itself is reserved on
+    # SQLAlchemy's declarative `Base`, hence the column's different name).
+    metadata: dict[str, str] | None = None
+    print_tips: str | None = None
+
+    @field_validator("metadata")
+    @classmethod
+    def _check_metadata(cls, value: dict[str, str] | None) -> dict[str, str] | None:
+        return _validate_metadata(value)
 
 
 class ModelRedownloadIn(BaseModel):
@@ -403,6 +432,9 @@ class ModelDetail(BaseModel):
     # R13b: single-valued category assignment (None = uncategorized).
     category_id: int | None = None
     category: ModelCategoryOut | None = None
+    # R13c: free-form key/value metadata + a plain-text print-tips note.
+    metadata: dict[str, str] | None = None
+    print_tips: str | None = None
 
 
 # -- diff -------------------------------------------------------------

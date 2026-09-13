@@ -1,4 +1,11 @@
-import { Box, FileCode2, Image as ImageIcon, type LucideIcon, File as FileIcon } from "lucide-react";
+import {
+  Box,
+  FileCode2,
+  FileText,
+  Image as ImageIcon,
+  type LucideIcon,
+  File as FileIcon,
+} from "lucide-react";
 
 import type { BlobFormat } from "@/api/types";
 
@@ -13,6 +20,12 @@ export const FORMAT_LABELS: Record<BlobFormat, string> = {
   gcode: "G-code",
   png: "PNG",
   jpg: "JPG",
+  webp: "WebP",
+  // R13c: doc file kinds (`BlobKind.doc`).
+  pdf: "PDF",
+  md: "Markdown",
+  txt: "Text",
+  docx: "Word",
   other: "File",
 };
 
@@ -30,7 +43,13 @@ export function formatIcon(format: BlobFormat | undefined): LucideIcon {
       return FileCode2;
     case "png":
     case "jpg":
+    case "webp":
       return ImageIcon;
+    case "pdf":
+    case "md":
+    case "txt":
+    case "docx":
+      return FileText;
     default:
       return FileIcon;
   }

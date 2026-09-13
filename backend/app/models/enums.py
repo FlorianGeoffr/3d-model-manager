@@ -18,6 +18,10 @@ class BlobKind(StrEnum):
     SLICED = "sliced"
     GCODE = "gcode"
     IMAGE = "image"
+    # R13c: reference documents attached to a model (instructions, BOMs,
+    # notes) -- distinct from every other kind, which are all 3D-printing
+    # artifacts. Never enters the GLB/thumb pipeline (see `PIPELINE_STEPS`).
+    DOC = "doc"
     OTHER = "other"
 
 
@@ -34,6 +38,11 @@ class BlobFormat(StrEnum):
     PNG = "png"
     JPG = "jpg"
     WEBP = "webp"
+    # R13c: doc formats (`BlobKind.DOC`) -- see `infer_blob_kind_format`.
+    PDF = "pdf"
+    MD = "md"
+    TXT = "txt"
+    DOCX = "docx"
     OTHER = "other"
 
 

@@ -39,6 +39,8 @@ const MODEL: ModelDetail = {
   favorite: false,
   print_count: 0,
   last_printed_at: null,
+  metadata: null,
+  print_tips: null,
 };
 
 vi.mock("@/api/library", () => ({
@@ -77,6 +79,9 @@ vi.mock("@/components/model-detail/cards/RevisionsCard", () => ({
 }));
 vi.mock("@/components/model-detail/cards/NotesCard", () => ({
   NotesCard: () => <div data-testid="card-notes" />,
+}));
+vi.mock("@/components/model-detail/cards/PrintTipsCard", () => ({
+  PrintTipsCard: () => <div data-testid="card-print-tips" />,
 }));
 vi.mock("@/components/model-detail/cards/SpecsCard", () => ({
   SpecsCard: () => <div data-testid="card-specs" />,
@@ -123,7 +128,7 @@ describe("ModelDetailPage -- composition (R13a DetailLayout)", () => {
     expect(leftIndexes.every((i) => i !== -1)).toBe(true);
   });
 
-  it("orders the right column: g-code profiles, print history, files/docs, revisions, notes, specs", async () => {
+  it("orders the right column: g-code profiles, print history, files/docs, revisions, notes, print tips, specs", async () => {
     renderPage();
     await screen.findByTestId("model-header");
 
@@ -136,6 +141,7 @@ describe("ModelDetailPage -- composition (R13a DetailLayout)", () => {
       "card-files-docs",
       "card-revisions",
       "card-notes",
+      "card-print-tips",
       "card-specs",
     ];
     const rightIndexes = rightOrder.map((id) => ids.indexOf(id));

@@ -13,6 +13,7 @@ import { FilesDocsCard } from "@/components/model-detail/cards/FilesDocsCard";
 import { GcodeProfilesCard } from "@/components/model-detail/cards/GcodeProfilesCard";
 import { NotesCard } from "@/components/model-detail/cards/NotesCard";
 import { PrintHistoryCard } from "@/components/model-detail/cards/PrintHistoryCard";
+import { PrintTipsCard } from "@/components/model-detail/cards/PrintTipsCard";
 import { RevisionsCard } from "@/components/model-detail/cards/RevisionsCard";
 import { SpecsCard } from "@/components/model-detail/cards/SpecsCard";
 import { TagsLinksCard } from "@/components/model-detail/cards/TagsLinksCard";
@@ -107,6 +108,7 @@ export function ModelDetailPage() {
             <FilesDocsCard model={model} onViewIn3D={studio.onViewIn3D} />
             <RevisionsCard model={model} />
             <NotesCard model={model} />
+            <PrintTipsCard model={model} />
             <SpecsCard model={model} />
           </>
         }

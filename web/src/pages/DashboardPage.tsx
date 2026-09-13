@@ -9,10 +9,27 @@ import { Link } from "@tanstack/react-router";
 
 import { ApiError } from "@/api/client";
 import { useStats } from "@/api/stats";
+import type { PrintResult } from "@/api/types";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { FilamentChip } from "@/components/ui/filament-chip";
 import { PageContainer } from "@/components/ui/page-container";
 import { Skeleton } from "@/components/ui/skeleton";
-import { humanizeBytes } from "@/lib/format";
+import { formatDate, humanizeBytes } from "@/lib/format";
+import { formatIcon } from "@/lib/formatMeta";
+
+// Duplicated from `PrintsTab.tsx` (not exported there) -- keep in sync if the
+// result vocabulary changes.
+const RESULT_LABELS: Record<PrintResult, string> = {
+  success: "Success",
+  fail: "Fail",
+  partial: "Partial",
+};
+const RESULT_BADGE: Record<PrintResult, { variant: "destructive" | "outline"; className?: string }> = {
+  success: { variant: "outline", className: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400" },
+  fail: { variant: "destructive" },
+  partial: { variant: "outline", className: "bg-amber-500/15 text-amber-700 dark:text-amber-400" },
+};
 
 function StatTile({ label, value }: { label: string; value: string | number }) {
   return (
@@ -79,6 +96,7 @@ function DashboardContent({ stats }: { stats: NonNullable<ReturnType<typeof useS
   const maxFormatCount = Math.max(1, ...formatEntries.map(([, count]) => count));
   const backendEntries = Object.entries(stats.files.bytes_by_backend).sort(([, a], [, b]) => b - a);
   const maxBackendBytes = Math.max(1, ...backendEntries.map(([, bytes]) => bytes));
+  const maxMaterialGrams = Math.max(1, ...stats.material_usage.map((m) => m.grams));
 
   return (
     <div className="space-y-6">
@@ -170,6 +188,108 @@ function DashboardContent({ stats }: { stats: NonNullable<ReturnType<typeof useS
           </CardContent>
         </Card>
       </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>Recent models</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {stats.recent_models.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No models yet.</p>
+            ) : (
+              stats.recent_models.slice(0, 10).map((model) => {
+                const Icon = formatIcon(model.formats[0]);
+                return (
+                  <Link
+                    key={model.id}
+                    to="/models/$slug"
+                    params={{ slug: model.slug }}
+                    className="flex items-center gap-3 rounded-md hover:bg-accent/50"
+                  >
+                    {model.cover ? (
+                      <img src={model.cover} alt="" className="size-10 shrink-0 rounded object-cover" />
+                    ) : (
+                      <div className="flex size-10 shrink-0 items-center justify-center rounded bg-muted text-muted-foreground">
+                        <Icon className="size-5" />
+                      </div>
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium text-foreground">{model.name}</p>
+                    </div>
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      {formatDate(model.updated_at)}
+                    </span>
+                  </Link>
+                );
+              })
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Recent prints</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {stats.recent_prints.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No prints logged yet.</p>
+            ) : (
+              stats.recent_prints.slice(0, 10).map((entry) => {
+                  const badge = RESULT_BADGE[entry.result];
+                  return (
+                    <div key={entry.id} className="flex flex-wrap items-center gap-2 text-sm">
+                      {entry.model_slug ? (
+                        <Link
+                          to="/models/$slug"
+                          params={{ slug: entry.model_slug }}
+                          className="truncate font-medium text-foreground hover:underline"
+                        >
+                          {entry.model_name}
+                        </Link>
+                      ) : (
+                        <span className="truncate font-medium text-foreground">{entry.model_name}</span>
+                      )}
+                      <Badge variant={badge.variant} className={badge.className}>
+                        {RESULT_LABELS[entry.result]}
+                      </Badge>
+                      {entry.material && (
+                        <FilamentChip
+                          size="sm"
+                          color={entry.material.color ?? undefined}
+                          material={entry.material.name}
+                        />
+                      )}
+                      <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+                        {formatDate(entry.printed_at)}
+                      </span>
+                    </div>
+                  );
+                })
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Material usage</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {stats.material_usage.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No material usage logged yet.</p>
+          ) : (
+            stats.material_usage.map((entry) => (
+              <Bar
+                key={entry.material_id}
+                label={`${entry.name} — ${Math.round(entry.grams)} g · ${entry.prints} print(s)`}
+                value={entry.grams}
+                max={maxMaterialGrams}
+              />
+            ))
+          )}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

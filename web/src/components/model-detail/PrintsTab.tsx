@@ -10,14 +10,24 @@ import { PlusIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { useAppSettings } from "@/api/appSettings";
+import { useMaterials } from "@/api/materials";
 import { useLogPrint, usePatchPrint, useDeletePrint, usePrints } from "@/api/prints";
 import { usePrinters } from "@/api/printers";
 import { useQueue, useRemoveQueueEntry } from "@/api/queue";
-import type { ModelDetail, PrintCreateIn, PrintEntry, PrintPatchIn, PrintResult, PrinterOut } from "@/api/types";
+import type {
+  MaterialOut,
+  ModelDetail,
+  PrintCreateIn,
+  PrintEntry,
+  PrintPatchIn,
+  PrintResult,
+  PrinterOut,
+} from "@/api/types";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { FilamentChip } from "@/components/ui/filament-chip";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -29,6 +39,13 @@ import { estimatePrintCost, formatPrintCost } from "@/lib/printCost";
  * an empty-string value for "no selection", so it can't represent `null`
  * directly. */
 const NO_PRINTER = "__none__";
+
+/** Same sentinel pattern as `NO_PRINTER`, for the material `Select`: no
+ * material picked yet, or explicitly "Other..." (use the freeform filament
+ * text field instead of a saved material). Both keep the filament field
+ * visible; only picking a real material hides it. */
+const NO_MATERIAL = "__none__";
+const OTHER_MATERIAL = "__other__";
 
 const RESULT_LABELS: Record<PrintResult, string> = {
   success: "Success",
@@ -49,6 +66,7 @@ interface PrintDraft {
   printedAt: string;
   printerName: string;
   result: PrintResult;
+  materialId: string;
   filament: string;
   filamentG: string;
   durationMin: string;
@@ -60,6 +78,7 @@ function emptyDraft(): PrintDraft {
     printedAt: toDatetimeLocalValue(new Date()),
     printerName: NO_PRINTER,
     result: "success",
+    materialId: NO_MATERIAL,
     filament: "",
     filamentG: "",
     durationMin: "",
@@ -72,6 +91,7 @@ function draftFromEntry(entry: PrintEntry): PrintDraft {
     printedAt: toDatetimeLocalValue(new Date(entry.printed_at)),
     printerName: entry.printer_name ?? NO_PRINTER,
     result: entry.result,
+    materialId: entry.material_id != null ? String(entry.material_id) : NO_MATERIAL,
     filament: entry.filament ?? "",
     filamentG: entry.filament_g != null ? String(entry.filament_g) : "",
     durationMin: entry.duration_min != null ? String(entry.duration_min) : "",
@@ -87,10 +107,12 @@ function PrintFields({
   draft,
   onFieldChange,
   printers,
+  materials,
 }: {
   draft: PrintDraft;
   onFieldChange: <K extends keyof PrintDraft>(key: K, value: PrintDraft[K]) => void;
   printers: PrinterOut[];
+  materials: MaterialOut[];
 }) {
   const id = useId();
 
@@ -145,14 +167,37 @@ function PrintFields({
         </Select>
       </div>
       <div className="flex flex-col gap-1.5">
-        <Label htmlFor={`${id}-filament`}>Filament</Label>
-        <Input
-          id={`${id}-filament`}
-          placeholder="e.g. PLA — Galaxy Black"
-          value={draft.filament}
-          onChange={(event) => onFieldChange("filament", event.target.value)}
-        />
+        <Label htmlFor={`${id}-material`}>Material</Label>
+        <Select
+          aria-label="Material"
+          value={draft.materialId}
+          onValueChange={(value) => onFieldChange("materialId", value)}
+        >
+          <SelectTrigger id={`${id}-material`} aria-label="Material" className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={NO_MATERIAL}>None</SelectItem>
+            {materials.map((material) => (
+              <SelectItem key={material.id} value={String(material.id)}>
+                {material.name}
+              </SelectItem>
+            ))}
+            <SelectItem value={OTHER_MATERIAL}>Other...</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
+      {(draft.materialId === NO_MATERIAL || draft.materialId === OTHER_MATERIAL) && (
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor={`${id}-filament`}>Filament</Label>
+          <Input
+            id={`${id}-filament`}
+            placeholder="e.g. PLA — Galaxy Black"
+            value={draft.filament}
+            onChange={(event) => onFieldChange("filament", event.target.value)}
+          />
+        </div>
+      )}
       <div className="flex flex-col gap-1.5">
         <Label htmlFor={`${id}-duration`}>Duration (minutes)</Label>
         <Input
@@ -195,11 +240,13 @@ function PrintComposer({
   modelId,
   slug,
   printers,
+  materials,
   onLogged,
 }: {
   modelId: number;
   slug: string;
   printers: PrinterOut[];
+  materials: MaterialOut[];
   onLogged: (result: PrintResult) => void;
 }) {
   const [draft, setDraft] = useState<PrintDraft>(emptyDraft);
@@ -216,6 +263,8 @@ function PrintComposer({
     const payload: PrintCreateIn = {
       printer_name: draft.printerName === NO_PRINTER ? null : draft.printerName,
       result: draft.result,
+      material_id:
+        draft.materialId !== NO_MATERIAL && draft.materialId !== OTHER_MATERIAL ? Number(draft.materialId) : null,
       filament: draft.filament.trim() || null,
       filament_g: draft.filamentG.trim() === "" ? null : Number(draft.filamentG),
       duration_min: draft.durationMin.trim() === "" ? null : Number(draft.durationMin),
@@ -237,7 +286,7 @@ function PrintComposer({
       <CardContent>
         <form onSubmit={handleSubmit} className="space-y-3">
           <h3 className="text-sm font-semibold">Log a print</h3>
-          <PrintFields draft={draft} onFieldChange={handleFieldChange} printers={printers} />
+          <PrintFields draft={draft} onFieldChange={handleFieldChange} printers={printers} materials={materials} />
           <Button type="submit" size="sm" disabled={logPrint.isPending}>
             Log print
           </Button>
@@ -254,12 +303,14 @@ function PrintComposer({
 function PrintRow({
   entry,
   printers,
+  materials,
   isSaving,
   onSave,
   onDelete,
 }: {
   entry: PrintEntry;
   printers: PrinterOut[];
+  materials: MaterialOut[];
   isSaving: boolean;
   onSave: (patch: PrintPatchIn, onSuccess: () => void) => void;
   onDelete: () => void;
@@ -280,6 +331,10 @@ function PrintRow({
     if (touched.printedAt) patch.printed_at = new Date(draft.printedAt).toISOString();
     if (touched.printerName) patch.printer_name = draft.printerName === NO_PRINTER ? null : draft.printerName;
     if (touched.result) patch.result = draft.result;
+    if (touched.materialId) {
+      patch.material_id =
+        draft.materialId !== NO_MATERIAL && draft.materialId !== OTHER_MATERIAL ? Number(draft.materialId) : null;
+    }
     if (touched.filament) patch.filament = draft.filament.trim() || null;
     if (touched.filamentG) patch.filament_g = draft.filamentG.trim() === "" ? null : Number(draft.filamentG);
     if (touched.durationMin) patch.duration_min = draft.durationMin.trim() === "" ? null : Number(draft.durationMin);
@@ -296,7 +351,7 @@ function PrintRow({
   if (editing) {
     return (
       <li className="rounded-lg border border-border p-3">
-        <PrintFields draft={draft} onFieldChange={handleFieldChange} printers={printers} />
+        <PrintFields draft={draft} onFieldChange={handleFieldChange} printers={printers} materials={materials} />
         <div className="mt-3 flex gap-2">
           <Button type="button" size="sm" disabled={isSaving} onClick={handleSave}>
             Save
@@ -329,7 +384,11 @@ function PrintRow({
             {RESULT_LABELS[entry.result]}
           </Badge>
           {entry.printer_name ? <span className="text-muted-foreground">{entry.printer_name}</span> : null}
-          {entry.filament ? <span className="text-muted-foreground">{entry.filament}</span> : null}
+          {entry.material ? (
+            <FilamentChip color={entry.material.color ?? undefined} material={entry.material.name} size="sm" />
+          ) : entry.filament ? (
+            <span className="text-muted-foreground">{entry.filament}</span>
+          ) : null}
           {entry.filament_g != null ? (
             <span className="text-muted-foreground">{entry.filament_g} g</span>
           ) : null}
@@ -365,6 +424,7 @@ function PrintRow({
 export function PrintsTab({ model }: { model: ModelDetail }) {
   const printsQuery = usePrints(model.id);
   const printersQuery = usePrinters();
+  const materialsQuery = useMaterials();
   const queueQuery = useQueue();
   const patchPrint = usePatchPrint(model.id, model.slug);
   const deletePrint = useDeletePrint(model.id, model.slug);
@@ -376,6 +436,7 @@ export function PrintsTab({ model }: { model: ModelDetail }) {
 
   const prints = printsQuery.data ?? [];
   const printers = printersQuery.data ?? [];
+  const materials = materialsQuery.data ?? [];
   const queueEntry = queueQuery.data?.find((entry) => entry.model_id === model.id);
 
   // Offers to clear the model off the print queue after a successful log --
@@ -412,6 +473,7 @@ export function PrintsTab({ model }: { model: ModelDetail }) {
           modelId={model.id}
           slug={model.slug}
           printers={printers}
+          materials={materials}
           onLogged={(result) => {
             handleLogged(result);
             setComposerOpen(false);
@@ -428,6 +490,7 @@ export function PrintsTab({ model }: { model: ModelDetail }) {
               key={entry.id}
               entry={entry}
               printers={printers}
+              materials={materials}
               isSaving={patchPrint.isPending}
               onSave={(patch, onSuccess) => patchPrint.mutate({ id: entry.id, patch }, { onSuccess })}
               onDelete={() => deletePrint.mutate(entry.id)}

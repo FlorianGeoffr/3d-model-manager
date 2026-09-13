@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.collections import FollowedCollection
 from app.models.enums import BlobFormat, BlobKind, CollectionSyncMode, ImportSite, PrintResult
-from app.models.library import Blob, File, Model, Print, Revision, Tag
+from app.models.library import Blob, File, Material, Model, Print, Revision, Tag
 from app.models.storage import StorageBackendRow
 from app.models.system import Job
 from app.services import stats as stats_service
@@ -182,3 +182,69 @@ async def test_stats_cache_ttl(
     fake_time[0] += 30  # past the TTL
     refreshed = await authenticated_client.get("/api/stats")
     assert refreshed.json()["tags"] == 1
+
+
+# ---------------------------------------------------------------------------
+# R13c: recent_models, recent_prints, material_usage
+# ---------------------------------------------------------------------------
+
+
+async def test_stats_recent_models_and_prints(
+    authenticated_client: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    older = await _make_model(db_session, "Older Recent Model")
+    newer = await _make_model(db_session, "Newer Recent Model")
+    await db_session.flush()
+    # Force a deterministic created_at ordering independent of insert speed.
+    older.created_at = datetime.now(UTC) - timedelta(days=1)
+    newer.created_at = datetime.now(UTC)
+    db_session.add(
+        Print(model_id=newer.id, result=PrintResult.SUCCESS, filament="Generic PLA", filament_g=5.0)
+    )
+    await db_session.commit()
+
+    response = await authenticated_client.get("/api/stats")
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    recent_model_ids = [m["id"] for m in body["recent_models"]]
+    assert recent_model_ids.index(newer.id) < recent_model_ids.index(older.id)
+
+    assert len(body["recent_prints"]) == 1
+    recent_print = body["recent_prints"][0]
+    assert recent_print["model_id"] == newer.id
+    assert recent_print["model_slug"] == newer.slug
+    assert recent_print["model_name"] == newer.name
+
+
+async def test_stats_material_usage_grouped_by_material_and_filament_fallback(
+    authenticated_client: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    model = await _make_model(db_session, "Material Usage Model")
+    material = Material(name="Usage PLA", kind="PLA")
+    db_session.add(material)
+    await db_session.flush()
+
+    db_session.add(Print(model_id=model.id, material_id=material.id, filament_g=20.0))
+    db_session.add(Print(model_id=model.id, material_id=material.id, filament_g=30.0))
+    db_session.add(Print(model_id=model.id, filament="Generic ABS", filament_g=15.0))
+    # No filament text and no material -- must be excluded from usage rows.
+    db_session.add(Print(model_id=model.id, filament_g=99.0))
+    await db_session.commit()
+
+    response = await authenticated_client.get("/api/stats")
+    assert response.status_code == 200, response.text
+    usage = response.json()["material_usage"]
+
+    by_material_row = next(row for row in usage if row["material_id"] == material.id)
+    assert by_material_row["name"] == "Usage PLA"
+    assert by_material_row["grams"] == pytest.approx(50.0)
+    assert by_material_row["prints"] == 2
+
+    fallback_row = next(row for row in usage if row["material_id"] is None)
+    assert fallback_row["name"] == "Generic ABS"
+    assert fallback_row["grams"] == pytest.approx(15.0)
+    assert fallback_row["prints"] == 1
+
+    # the material-less, filament-less print is excluded from usage rows
+    assert sum(row["prints"] for row in usage) == 3

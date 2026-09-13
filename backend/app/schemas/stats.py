@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
+from app.schemas.library import ModelSummary
+from app.schemas.prints import PrintOut
+
 
 class ModelsStats(BaseModel):
     total: int
@@ -38,6 +41,18 @@ class JobsStats(BaseModel):
     failed_24h: int
 
 
+class MaterialUsageOut(BaseModel):
+    """One row of the dashboard's material-usage breakdown (R13c) --
+    grouped by ``material_id`` where a print resolved to a catalog
+    ``Material``, falling back to the free-text ``Print.filament`` name
+    otherwise (``material_id: null`` in that case)."""
+
+    material_id: int | None
+    name: str
+    grams: float
+    prints: int
+
+
 class StatsOut(BaseModel):
     models: ModelsStats
     files: FilesStats
@@ -46,3 +61,7 @@ class StatsOut(BaseModel):
     prints: PrintsStats
     recent: RecentStats
     jobs: JobsStats
+    # R13c: dashboard additions.
+    recent_models: list[ModelSummary] = []
+    recent_prints: list[PrintOut] = []
+    material_usage: list[MaterialUsageOut] = []

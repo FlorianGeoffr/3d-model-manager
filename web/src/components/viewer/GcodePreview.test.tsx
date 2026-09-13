@@ -6,6 +6,7 @@ import { GcodePreview } from "@/components/viewer/GcodePreview";
 const processGCode = vi.fn();
 const renderSpy = vi.fn();
 const dispose = vi.fn();
+const initMock = vi.fn();
 
 const fakePreview = {
   processGCode,
@@ -17,12 +18,23 @@ const fakePreview = {
 };
 
 vi.mock("gcode-preview", () => ({
-  init: vi.fn(() => fakePreview),
+  init: (...args: unknown[]) => initMock(...args),
+}));
+
+const usePrintersMock = vi.fn();
+const usePrinterStatusMock = vi.fn();
+
+vi.mock("@/api/printers", () => ({
+  usePrinters: (...args: unknown[]) => usePrintersMock(...args),
+  usePrinterStatus: (...args: unknown[]) => usePrinterStatusMock(...args),
 }));
 
 describe("GcodePreview", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    initMock.mockReturnValue(fakePreview);
+    usePrintersMock.mockReturnValue({ data: [] });
+    usePrinterStatusMock.mockReturnValue({ data: undefined });
     globalThis.fetch = vi.fn(() =>
       Promise.resolve({
         ok: true,
@@ -75,5 +87,50 @@ describe("GcodePreview", () => {
       expect(screen.getByText(/too large to preview in the browser/i)).toBeInTheDocument(),
     );
     expect(text).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the default 256mm cube when there's no configured printer", async () => {
+    usePrintersMock.mockReturnValue({ data: [] });
+
+    render(<GcodePreview fileId={42} />);
+
+    await waitFor(() =>
+      expect(initMock).toHaveBeenCalledWith(
+        expect.objectContaining({ buildVolume: { x: 256, y: 256, z: 256 } }),
+      ),
+    );
+    const call = initMock.mock.calls[0][0];
+    expect(call.extrusionColor).toBeUndefined();
+  });
+
+  it("derives build volume and extrusion color from the first printer/tray", async () => {
+    usePrintersMock.mockReturnValue({
+      data: [{ id: 7, build_volume_mm: { x: 300, y: 300, z: 400 } }],
+    });
+    usePrinterStatusMock.mockReturnValue({
+      data: { trays: [{ slot: 0, color: null, material: null }, { slot: 1, color: "#FF0000", material: "PLA" }] },
+    });
+
+    render(<GcodePreview fileId={42} />);
+
+    await waitFor(() =>
+      expect(initMock).toHaveBeenCalledWith(
+        expect.objectContaining({ buildVolume: { x: 300, y: 300, z: 400 }, extrusionColor: "#FF0000" }),
+      ),
+    );
+  });
+
+  it("lets an explicit buildVolume/extrusionColor prop override the derived values", async () => {
+    usePrintersMock.mockReturnValue({
+      data: [{ id: 7, build_volume_mm: { x: 300, y: 300, z: 400 } }],
+    });
+
+    render(<GcodePreview fileId={42} buildVolume={{ x: 100, y: 100, z: 100 }} extrusionColor="#00FF00" />);
+
+    await waitFor(() =>
+      expect(initMock).toHaveBeenCalledWith(
+        expect.objectContaining({ buildVolume: { x: 100, y: 100, z: 100 }, extrusionColor: "#00FF00" }),
+      ),
+    );
   });
 });

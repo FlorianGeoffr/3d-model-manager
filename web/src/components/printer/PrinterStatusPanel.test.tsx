@@ -29,6 +29,7 @@ function fakePrinter(overrides: Partial<PrinterOut> = {}): PrinterOut {
     enabled: true,
     options: {},
     access_code_set: true,
+    build_volume_mm: null,
     ...overrides,
   };
 }

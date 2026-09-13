@@ -43,6 +43,10 @@ class Printer(Base):
     model: Mapped[str | None] = mapped_column(String)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=true())
     options: Mapped[dict | None] = mapped_column(JSONB)
+    # R13c: `{x, y, z}` mm, used by `GcodePreview`'s build-plate render.
+    # Seeded from a small model-name -> volume map on create (see
+    # `app.schemas.printers.seed_build_volume_mm`); editable afterward.
+    build_volume_mm: Mapped[dict | None] = mapped_column(JSONB)
 
 
 class PrintJob(Base):

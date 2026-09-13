@@ -126,7 +126,9 @@ async def test_fresh_unsupported_extension_file_is_left_in_place(
     kind/format is still left alone while its mtime is inside the
     stability window, exactly like a supported one would be, instead of
     being yanked straight into `.failed/` regardless of age."""
-    f = watch_dir / "notes.txt"
+    # `.txt` is no longer unsupported (R13c: `BlobKind.DOC`/`BlobFormat.TXT`)
+    # -- use a genuinely unrecognized extension instead.
+    f = watch_dir / "notes.xyz"
     f.write_text("just some notes")  # mtime == now, well inside the default 10s window
 
     scan_slicer_watch()
@@ -189,14 +191,16 @@ async def test_matches_existing_model_name_case_insensitively(
 async def test_unsupported_extension_is_moved_to_failed_no_model(
     watch_dir: Path, db_session
 ) -> None:
-    f = watch_dir / "notes.txt"
+    # `.txt` is no longer unsupported (R13c: `BlobKind.DOC`/`BlobFormat.TXT`)
+    # -- use a genuinely unrecognized extension instead.
+    f = watch_dir / "notes.xyz"
     f.write_text("just some notes")
     _age(f, 3600)
 
     scan_slicer_watch()
 
     assert not f.exists()
-    assert (watch_dir / FAILED_DIRNAME / "notes.txt").exists()
+    assert (watch_dir / FAILED_DIRNAME / "notes.xyz").exists()
     count = await db_session.scalar(select(func.count()).select_from(Model))
     assert count == 0
 

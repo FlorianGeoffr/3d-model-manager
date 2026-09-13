@@ -29,8 +29,13 @@ from app.services.layout import infer_blob_kind_format
         ("cover.jpeg", BlobKind.IMAGE, BlobFormat.JPG),
         ("preview.webp", BlobKind.IMAGE, BlobFormat.WEBP),
         ("PREVIEW.WEBP", BlobKind.IMAGE, BlobFormat.WEBP),
-        ("readme.txt", BlobKind.OTHER, BlobFormat.OTHER),
+        ("manual.pdf", BlobKind.DOC, BlobFormat.PDF),
+        ("MANUAL.PDF", BlobKind.DOC, BlobFormat.PDF),
+        ("notes.md", BlobKind.DOC, BlobFormat.MD),
+        ("readme.txt", BlobKind.DOC, BlobFormat.TXT),
+        ("bom.docx", BlobKind.DOC, BlobFormat.DOCX),
         ("no-extension", BlobKind.OTHER, BlobFormat.OTHER),
+        ("archive.zip", BlobKind.OTHER, BlobFormat.OTHER),
     ],
 )
 def test_infer_blob_kind_format(

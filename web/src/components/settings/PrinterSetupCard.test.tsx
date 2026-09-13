@@ -33,6 +33,7 @@ const PRINTER: PrinterOut = {
   enabled: true,
   options: {},
   access_code_set: true,
+  build_volume_mm: { x: 256, y: 256, z: 256 },
 };
 
 // Only `printer_enabled` matters to this card -- `Pick` keeps every call
@@ -227,5 +228,61 @@ describe("PrinterSetupCard", () => {
 
     await screen.findByText("Add a printer");
     expect(screen.getByRole("button", { name: "Detect" })).toBeDisabled();
+  });
+
+  it("seeds the build-volume fields from the printer's build_volume_mm", async () => {
+    mockApi({ printer_enabled: true }, [PRINTER]);
+
+    renderCard();
+
+    await screen.findByDisplayValue("Bambu A1");
+    expect(screen.getAllByDisplayValue("256")).toHaveLength(3);
+  });
+
+  it("includes build_volume_mm in the PATCH body once all three dimensions are filled", async () => {
+    mockApi({ printer_enabled: true }, [PRINTER]);
+    patchMock.mockResolvedValue(PRINTER);
+
+    renderCard();
+
+    await screen.findByDisplayValue("Bambu A1");
+    fireEvent.change(screen.getAllByLabelText("Build volume X (mm)")[0], { target: { value: "300" } });
+    fireEvent.change(screen.getAllByLabelText("Y (mm)")[0], { target: { value: "300" } });
+    fireEvent.change(screen.getAllByLabelText("Z (mm)")[0], { target: { value: "400" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(patchMock).toHaveBeenCalled());
+    const [, body] = patchMock.mock.calls[0] as [string, Record<string, unknown>];
+    expect(body.build_volume_mm).toEqual({ x: 300, y: 300, z: 400 });
+  });
+
+  it("omits build_volume_mm from the PATCH body when all three fields are blank", async () => {
+    mockApi({ printer_enabled: true }, [PRINTER]);
+    patchMock.mockResolvedValue(PRINTER);
+
+    renderCard();
+
+    await screen.findByDisplayValue("Bambu A1");
+    fireEvent.change(screen.getAllByLabelText("Build volume X (mm)")[0], { target: { value: "" } });
+    fireEvent.change(screen.getAllByLabelText("Y (mm)")[0], { target: { value: "" } });
+    fireEvent.change(screen.getAllByLabelText("Z (mm)")[0], { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(patchMock).toHaveBeenCalled());
+    const [, body] = patchMock.mock.calls[0] as [string, Record<string, unknown>];
+    expect(body).not.toHaveProperty("build_volume_mm");
+  });
+
+  it("shows a validation error when only some build-volume dimensions are filled", async () => {
+    mockApi({ printer_enabled: true }, [PRINTER]);
+
+    renderCard();
+
+    await screen.findByDisplayValue("Bambu A1");
+    fireEvent.change(screen.getAllByLabelText("Y (mm)")[0], { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    expect(await screen.findByText("Enter all three dimensions, or leave all blank.")).toBeInTheDocument();
+    expect(patchMock).not.toHaveBeenCalled();
   });
 });

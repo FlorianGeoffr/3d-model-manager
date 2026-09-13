@@ -6,9 +6,21 @@
  * "Preview layers" button, so it never lands in the main bundle. It does
  * NOT reuse `ModelViewer`'s R3F scene: `gcode-preview` drives its own
  * `<canvas>`/renderer directly.
+ *
+ * `buildVolume`/`extrusionColor` are optional overrides (mainly for tests).
+ * `PlatePanel` renders this standalone with no printer data threaded down
+ * (that plumbing would run `PlatePanel` -> `StudioSurface` -> `FilesTab`,
+ * out of scope here), so by default this component is self-sufficient: it
+ * reads the first printer's `build_volume_mm` and first colored tray itself
+ * via `usePrinters`/`usePrinterStatus`, same as `useViewerScene` does for
+ * the R3F viewer's plate size.
  */
 import { useEffect, useRef, useState } from "react";
 import type { WebGLPreview } from "gcode-preview";
+
+import { usePrinters, usePrinterStatus } from "@/api/printers";
+
+const DEFAULT_BUILD_VOLUME = { x: 256, y: 256, z: 256 };
 
 /** GET /api/files/{id}/download?member=gcode (R10-B) — the backend
  * extracts a `.gcode.3mf`'s embedded plate gcode; a bare `.gcode` file
@@ -24,12 +36,30 @@ function gcodeDownloadUrl(fileId: number): string {
  * `response.text()` on that risks hanging/crashing the tab. */
 const TOO_LARGE_TO_PREVIEW_BYTES = 150 * 1024 * 1024;
 
-export function GcodePreview({ fileId }: { fileId: number }) {
+export function GcodePreview({
+  fileId,
+  buildVolume,
+  extrusionColor,
+}: {
+  fileId: number;
+  buildVolume?: { x: number; y: number; z: number };
+  extrusionColor?: string;
+}) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const previewRef = useRef<WebGLPreview | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error" | "too-large">("loading");
   const [layerCount, setLayerCount] = useState(0);
   const [layer, setLayer] = useState(1);
+
+  const printers = usePrinters();
+  const firstPrinterId = printers.data?.[0]?.id;
+  const printerStatus = usePrinterStatus(firstPrinterId ?? -1, { enabled: firstPrinterId !== undefined });
+
+  const resolvedBuildVolume = buildVolume ?? printers.data?.[0]?.build_volume_mm ?? DEFAULT_BUILD_VOLUME;
+  // Mirrors `ViewerMorePanel.tsx`'s `AmsSync`: first tray reporting a
+  // truthy `color`, or undefined when none does.
+  const resolvedExtrusionColor =
+    extrusionColor ?? (printerStatus.data?.trays ?? []).find((tray) => tray.color)?.color ?? undefined;
 
   useEffect(() => {
     let cancelled = false;
@@ -52,7 +82,11 @@ export function GcodePreview({ fileId }: { fileId: number }) {
         const text = await response.text();
         if (cancelled || !canvasRef.current) return;
 
-        const preview = init({ canvas: canvasRef.current, buildVolume: { x: 256, y: 256, z: 256 } });
+        const preview = init({
+          canvas: canvasRef.current,
+          buildVolume: resolvedBuildVolume,
+          ...(resolvedExtrusionColor ? { extrusionColor: resolvedExtrusionColor } : {}),
+        });
         preview.processGCode(text);
         preview.render();
         previewRef.current = preview;
@@ -72,7 +106,11 @@ export function GcodePreview({ fileId }: { fileId: number }) {
       previewRef.current?.dispose();
       previewRef.current = null;
     };
-  }, [fileId]);
+    // Deps use the resolved primitives (not the objects) so a printer status
+    // poll that returns an equal-valued build volume/color doesn't
+    // needlessly re-fetch and re-init the preview.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fileId, resolvedBuildVolume.x, resolvedBuildVolume.y, resolvedBuildVolume.z, resolvedExtrusionColor]);
 
   useEffect(() => {
     const preview = previewRef.current;

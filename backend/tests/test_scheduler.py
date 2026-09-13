@@ -156,7 +156,9 @@ async def test_dispatch_scheduled_watch_fires_when_dir_set_and_due(
     db_session, redis_url: str, watch_dir
 ) -> None:
     await _set_app_row(db_session, watch_interval_s=30)
-    stale = watch_dir / "notes.txt"  # unsupported extension -> observably moved to .failed/
+    # `.txt` is no longer unsupported (R13c: `BlobKind.DOC`/`BlobFormat.TXT`)
+    # -- use a genuinely unrecognized extension instead.
+    stale = watch_dir / "notes.xyz"  # unsupported extension -> observably moved to .failed/
     stale.write_text("just some notes")
     old = time.time() - 3600
     os.utime(stale, (old, old))
@@ -167,7 +169,7 @@ async def test_dispatch_scheduled_watch_fires_when_dir_set_and_due(
     dispatch_scheduled()
 
     assert not stale.exists()
-    assert (watch_dir / FAILED_DIRNAME / "notes.txt").exists()
+    assert (watch_dir / FAILED_DIRNAME / "notes.xyz").exists()
 
 
 async def test_dispatch_scheduled_watch_never_fires_without_a_watch_dir(

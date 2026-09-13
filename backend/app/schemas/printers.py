@@ -36,6 +36,46 @@ def _clean_serial(value: str) -> str:
     return stripped
 
 
+class BuildVolumeMm(BaseModel):
+    """`{x, y, z}` mm build plate dimensions (R13c) -- used by
+    `GcodePreview`'s build-plate render."""
+
+    x: float
+    y: float
+    z: float
+
+
+# R13c: seeded onto `Printer.build_volume_mm` on create when `model` matches
+# a known key (case-insensitive substring match -- see
+# `seed_build_volume_mm`); left `None` for anything else, editable
+# afterward. Bambu's A1/A1 mini share a printer `kind` but differ in bed
+# size, hence the separate "a1 mini" vs "a1" entries (mini matched first).
+_KNOWN_BUILD_VOLUMES_MM: dict[str, BuildVolumeMm] = {
+    "a1 mini": BuildVolumeMm(x=180, y=180, z=180),
+    "a1": BuildVolumeMm(x=256, y=256, z=256),
+    "p1s": BuildVolumeMm(x=256, y=256, z=256),
+    "x1c": BuildVolumeMm(x=256, y=256, z=256),
+    "mk4": BuildVolumeMm(x=250, y=210, z=220),
+}
+
+
+def seed_build_volume_mm(model: str | None) -> dict[str, float] | None:
+    """Best-effort seed for a new printer's ``build_volume_mm`` from its
+    free-text ``model`` field (Round 8 T1: ``Printer`` has no structured
+    model enum). Matches the longest/most specific key first (``"a1 mini"``
+    before ``"a1"``) so an A1 mini printer doesn't get the plain A1's
+    larger bed. Returns ``None`` -- left for the user to fill in -- when
+    nothing matches.
+    """
+    if not model:
+        return None
+    lowered = model.strip().lower()
+    for key in sorted(_KNOWN_BUILD_VOLUMES_MM, key=len, reverse=True):
+        if key in lowered:
+            return _KNOWN_BUILD_VOLUMES_MM[key].model_dump()
+    return None
+
+
 class PrinterCreate(BaseModel):
     name: str
     kind: PrinterKind = PrinterKind.BAMBU_LAN
@@ -45,6 +85,9 @@ class PrinterCreate(BaseModel):
     model: str | None = None
     enabled: bool = True
     options: dict = Field(default_factory=dict)
+    # R13c: explicit value wins over the `model`-based seed (see
+    # `app.api.printers.create_printer`).
+    build_volume_mm: BuildVolumeMm | None = None
 
     @field_validator("serial")
     @classmethod
@@ -60,6 +103,7 @@ class PrinterUpdate(BaseModel):
     model: str | None = None
     enabled: bool | None = None
     options: dict | None = None
+    build_volume_mm: BuildVolumeMm | None = None
 
     @field_validator("serial")
     @classmethod
@@ -85,6 +129,7 @@ class PrinterOut(BaseModel):
     enabled: bool
     options: dict
     access_code_set: bool  # NEVER the code or ciphertext
+    build_volume_mm: BuildVolumeMm | None = None
 
     @classmethod
     def from_model(cls, p: Printer) -> PrinterOut:
@@ -98,6 +143,7 @@ class PrinterOut(BaseModel):
             enabled=p.enabled,
             options=p.options or {},
             access_code_set=bool(p.access_code_enc),
+            build_volume_mm=p.build_volume_mm,
         )
 
 

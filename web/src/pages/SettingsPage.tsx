@@ -7,6 +7,7 @@ import { BambuAccountCard } from "@/components/settings/BambuAccountCard";
 import { BrowserExtensionCard } from "@/components/settings/BrowserExtensionCard";
 import { CategoriesSection } from "@/components/settings/CategoriesSection";
 import { ChangePasswordCard } from "@/components/settings/ChangePasswordCard";
+import { MaterialsSection } from "@/components/settings/MaterialsSection";
 import { PrinterEnabledCard } from "@/components/settings/PrinterEnabledCard";
 import { PrinterSetupCard } from "@/components/settings/PrinterSetupCard";
 import { PrintablesAccountCard } from "@/components/settings/PrintablesAccountCard";
@@ -73,6 +74,7 @@ export function SettingsPage() {
           <TabsContent value="printer" className="space-y-6">
             <PrinterEnabledCard />
             <PrinterSetupCard />
+            <MaterialsSection />
           </TabsContent>
           <TabsContent value="accounts" className="space-y-6">
             {/* Signpost, kept OUTSIDE the cards grid below: users connect an

@@ -28,6 +28,7 @@ from app.schemas.stats import (
     RecentStats,
     StatsOut,
 )
+from app.services import layout
 
 CACHE_TTL_S = 30.0
 
@@ -63,11 +64,17 @@ async def _models_stats(db: AsyncSession) -> ModelsStats:
 
 
 async def _files_stats(db: AsyncSession) -> FilesStats:
+    # Internal snapshot files (the cover-image snapshot -- R13a review fix)
+    # are never user content; exclude them from every total below, same as
+    # the model detail/files listing and zip export.
+    not_snapshot = ~File.rel_path.startswith(layout.SNAPSHOT_PREFIX)
+
     total, bytes_total = (
         await db.execute(
             select(func.count(), func.coalesce(func.sum(Blob.size), 0))
             .select_from(File)
             .join(Blob, File.blob_hash == Blob.hash)
+            .where(not_snapshot)
         )
     ).one()
 
@@ -77,6 +84,7 @@ async def _files_stats(db: AsyncSession) -> FilesStats:
             .select_from(File)
             .join(Blob, File.blob_hash == Blob.hash)
             .join(StorageBackendRow, File.backend_id == StorageBackendRow.id)
+            .where(not_snapshot)
             .group_by(StorageBackendRow.name)
         )
     ).all()
@@ -86,6 +94,7 @@ async def _files_stats(db: AsyncSession) -> FilesStats:
             select(Blob.format, func.count())
             .select_from(File)
             .join(Blob, File.blob_hash == Blob.hash)
+            .where(not_snapshot)
             .group_by(Blob.format)
         )
     ).all()

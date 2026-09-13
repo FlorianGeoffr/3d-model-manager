@@ -24,6 +24,7 @@ from zipstream import ZipStream
 from app.config import Settings
 from app.models import Blob, File, FollowedCollection, Model
 from app.models.enums import BlobFormat
+from app.services import layout
 from app.services.storage_backends import resolve_backend_for_file
 
 # Already-compressed archive formats -- re-deflating them wastes CPU for
@@ -82,7 +83,13 @@ async def _current_revision_files(db: AsyncSession, model: Model) -> list[tuple[
         .where(File.revision_id == model.current_revision_id)
         .order_by(File.rel_path)
     )
-    return [(f, b) for f, b in (await db.execute(stmt)).all()]
+    return [
+        (f, b)
+        for f, b in (await db.execute(stmt)).all()
+        # Internal snapshot files (the cover-image snapshot -- R13a review
+        # fix) are never user content; exclude them from the export.
+        if not layout.is_snapshot_path(f.rel_path)
+    ]
 
 
 async def _add_model_entries(

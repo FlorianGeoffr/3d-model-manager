@@ -1,4 +1,4 @@
-import { LoaderCircleIcon } from "lucide-react";
+import { ArrowLeftIcon, LoaderCircleIcon } from "lucide-react";
 
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { PlatePanel } from "@/components/model-detail/PlatePanel";
@@ -6,7 +6,7 @@ import { PlaceholderCard, ViewerStage, type ViewerStageProps } from "@/component
 import type { StudioSelection } from "@/components/model-detail/studioSelection";
 import type { FileOut } from "@/api/types";
 
-type StageProps = Omit<ViewerStageProps, "variant" | "showExpand" | "onExpand" | "showWindowButtons">;
+type StageProps = Omit<ViewerStageProps, "variant" | "showWindowButtons">;
 
 function FileState({ file }: { file: FileOut }) {
   if (file.kind === "sliced") return <PlatePanel file={file} />;
@@ -53,24 +53,27 @@ function FileState({ file }: { file: FileOut }) {
   }
 }
 
-/** The right-of-rail viewing surface (Phase 4 studio): a pure switch on the
- * rail's current selection. The assembly view reuses the exact `ViewerStage`
- * the old `MeshSection` rendered (pop-out window buttons kept, Expand
- * dropped -- there's no dialog to expand into anymore, the studio layout IS
- * the expanded view) and, when the model ALSO has sliced files, shows a
- * compact plate-card strip underneath so neither view hides the other. */
+/** The studio's viewing surface (R13a re-chrome): a pure switch on the rail's
+ * current selection. The assembly view reuses the exact `ViewerStage` the
+ * old `MeshSection` rendered (pop-out window buttons kept). The sliced-plate
+ * strip that used to render underneath it here has moved to the right
+ * column's `GcodeProfilesCard` (still `PlatePanel`, just relocated) -- this
+ * surface no longer needs `slicedFiles` at all. */
 export function StudioSurface({
   selection,
   hasGlb,
   otherFiles,
-  slicedFiles,
   stageProps,
+  onSelectAssembly,
 }: {
   selection: StudioSelection | undefined;
   hasGlb: boolean;
   otherFiles: FileOut[];
-  slicedFiles: FileOut[];
   stageProps: StageProps;
+  /** R13c "View in 3D" hand-off: returns the surface to the combined
+   * assembly view. Only rendered as a chip when a single file is selected
+   * AND the model actually has an assembly to go back to. */
+  onSelectAssembly: () => void;
 }) {
   if (!selection) {
     return (
@@ -83,30 +86,8 @@ export function StudioSurface({
 
   if (selection.type === "assembly" && hasGlb) {
     return (
-      <div className="flex min-w-0 flex-1 flex-col gap-4">
-        <ViewerStage
-          {...stageProps}
-          variant="inline"
-          showWindowButtons
-          showExpand={false}
-          // FileRail is the single source of truth for part visibility/color
-          // in the studio layout -- hide this panel's own (redundant) Parts
-          // checklist. Every other panel section (Appearance, View, Section,
-          // Explode, AMS sync) is unaffected.
-          showPartsList={false}
-        />
-        {slicedFiles.length > 0 && (
-          <div className="space-y-2">
-            <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-              Sliced plates
-            </span>
-            <div className="flex gap-4 overflow-x-auto">
-              {slicedFiles.map((file) => (
-                <PlatePanel key={file.id} file={file} compact />
-              ))}
-            </div>
-          </div>
-        )}
+      <div className="flex min-w-0 flex-col gap-4">
+        <ViewerStage {...stageProps} variant="inline" showWindowButtons />
       </div>
     );
   }
@@ -122,7 +103,17 @@ export function StudioSurface({
   }
 
   return (
-    <div className="min-w-0 flex-1">
+    <div className="flex min-w-0 flex-col gap-2">
+      {hasGlb && (
+        <button
+          type="button"
+          onClick={onSelectAssembly}
+          className="inline-flex w-fit items-center gap-1 rounded-full border border-border bg-card px-3 py-1 text-xs text-muted-foreground outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50"
+        >
+          <ArrowLeftIcon className="size-3.5" />
+          Back to assembly
+        </button>
+      )}
       <FileState file={file} />
     </div>
   );

@@ -214,6 +214,17 @@ export function useModel(slug: string) {
   return useQuery(modelQueryOptions(slug));
 }
 
+/** R13a viewer "Cover" action: POSTs a raw PNG screenshot (from the viewer's
+ * `screenshot()` capture) to the cover-snapshot endpoint, which ingests it
+ * through the normal upload pipeline and sets `model.cover_blob_hash` in one
+ * transaction (`backend/app/api/models.py`'s `POST /models/{slug}/cover`).
+ * Returns the updated `ModelDetail` -- callers invalidate the detail + list
+ * queries themselves (see `useViewerScene`'s `captureCover`) since the
+ * optimistic local object-URL swap needs to happen around the same await. */
+export function uploadModelCover(slug: string, blob: Blob): Promise<ModelDetail> {
+  return api.postRaw<ModelDetail>(`/models/${encodeURIComponent(slug)}/cover`, blob, "image/png");
+}
+
 export function useCreateModel() {
   const queryClient = useQueryClient();
   return useMutation({

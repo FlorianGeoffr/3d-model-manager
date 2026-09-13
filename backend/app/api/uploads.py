@@ -8,10 +8,7 @@ completes (see ``app.tasks.ingest.store_to_backend``).
 
 from __future__ import annotations
 
-import uuid
-
 import anyio
-from blake3 import blake3
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,32 +50,13 @@ async def upload_file(
         db, model_id=model_id, revision_id=revision_id, rel_path=rel_path, replace=replace
     )
 
-    await anyio.to_thread.run_sync(spool.ensure_spool_dir, settings)
-    token = uuid.uuid4()
-    path = spool.spool_path(settings, token)
-
     # Any failure between here and the job dispatch below must not orphan
     # the spool file (once dispatched, the spool's lifecycle belongs to
     # store_to_backend: deleted on success, kept on failure for retry).
+    token, path, blob_hash, size = await spool.stream_to_spool(request, settings)
     try:
-        hasher = blake3()
-        size = 0
-        fh = await anyio.to_thread.run_sync(path.open, "wb")
-        try:
-            async for chunk in request.stream():
-                if not chunk:
-                    continue
-                hasher.update(chunk)
-                size += len(chunk)
-                await anyio.to_thread.run_sync(fh.write, chunk)
-            await anyio.to_thread.run_sync(fh.flush)
-        finally:
-            await anyio.to_thread.run_sync(fh.close)
-
         if size == 0:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "empty upload body")
-
-        blob_hash = hasher.hexdigest()
 
         if not allow_duplicate:
             existing = await find_model_by_blob_hash(db, blob_hash, exclude_model_id=model_id)

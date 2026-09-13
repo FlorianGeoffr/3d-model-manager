@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { DownloadIcon, PlusIcon, Trash2Icon } from "lucide-react";
+import { DownloadIcon, EyeIcon, PlusIcon, Trash2Icon } from "lucide-react";
 
 import { modelQueryOptions, useDeleteFile } from "@/api/library";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -11,9 +11,11 @@ import { UploadDropzone, type UploadTarget } from "@/components/upload/UploadDro
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatDateTime, humanizeBytes, humanizeDuration } from "@/lib/format";
 import { formatIcon } from "@/lib/formatMeta";
 import { isSlicerEligible } from "@/lib/slicers";
+import { isStudioViewable } from "@/components/viewer/viewable";
 import type { BlobMetaOut, FileOut, ModelDetail } from "@/api/types";
 
 /** `{triangle_count} tris · {dims_mm joined ×} mm · {volume_cm3} cm³`, skipping
@@ -66,7 +68,19 @@ function FileThumb({ file }: { file: FileOut }) {
   );
 }
 
-export function FilesTab({ model }: { model: ModelDetail }) {
+export function FilesTab({
+  model,
+  onViewIn3D,
+}: {
+  model: ModelDetail;
+  /** R13c "View in 3D" hand-off: jumps the studio surface above to this
+   * file (or the combined assembly, for a ready-glb file) -- the only way
+   * to reach a non-glb file (CAD pending, conversion failed, plain gcode,
+   * sliced) once the model also has GLB parts, since those crowd out the
+   * old per-file rail. Optional so this tab still renders standalone (e.g.
+   * a future window/embed) without a studio to hand off to. */
+  onViewIn3D?: (file: FileOut) => void;
+}) {
   const deleteFile = useDeleteFile(model.slug);
   const queryClient = useQueryClient();
   const [showAddFiles, setShowAddFiles] = useState(false);
@@ -91,6 +105,7 @@ export function FilesTab({ model }: { model: ModelDetail }) {
   }
 
   return (
+    <TooltipProvider>
     <div className="space-y-4">
       {currentRevision ? (
         <div className="flex justify-end">
@@ -155,6 +170,22 @@ export function FilesTab({ model }: { model: ModelDetail }) {
                   </TableCell>
                   <TableCell>
                     <div className="flex justify-end gap-1">
+                      {onViewIn3D && isStudioViewable(file) ? (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-sm"
+                              aria-label={`View ${file.rel_path} in 3D`}
+                              onClick={() => onViewIn3D(file)}
+                            >
+                              <EyeIcon className="size-4" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>View in 3D</TooltipContent>
+                        </Tooltip>
+                      ) : null}
                       <SendToPrinterButton file={file} />
                       {file.verified_at && isSlicerEligible(file) ? <OpenInSlicerButton file={file} /> : null}
                       {file.verified_at ? (
@@ -196,5 +227,6 @@ export function FilesTab({ model }: { model: ModelDetail }) {
         </Table>
       )}
     </div>
+    </TooltipProvider>
   );
 }

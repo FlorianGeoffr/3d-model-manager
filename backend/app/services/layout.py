@@ -20,6 +20,20 @@ from app.storage.base import StorageBackend
 # Sidecar filename, per SPEC "Path layout": `<slug>/.3dmm.json`.
 SIDECAR_NAME = ".3dmm.json"
 
+# Prefix used for internally-generated snapshot files (currently just the
+# cover-image snapshot -- R13a review fix): these live in the revision's
+# file tree (so they upload/store through the normal ingest pipeline) but
+# are NOT user content, so every user-facing file listing/export/aggregate
+# must exclude them via `is_snapshot_path` below.
+SNAPSHOT_PREFIX = "_snapshots/"
+
+
+def is_snapshot_path(rel_path: str) -> bool:
+    """Whether ``rel_path`` is an internal snapshot file (``SNAPSHOT_PREFIX``)
+    that must be excluded from file listings, zip export, storage totals,
+    and the gallery cover fallback (R13a review fix)."""
+    return rel_path.startswith(SNAPSHOT_PREFIX)
+
 
 def slug_for(name: str) -> str:
     """Base slug candidate for a model name (before uniquification)."""

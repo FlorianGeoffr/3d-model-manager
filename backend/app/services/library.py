@@ -18,7 +18,7 @@ the scanner (SPEC M3 "Rescan/reconcile") -- not handled here.
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import PurePosixPath
@@ -846,7 +846,12 @@ async def _gallery_aggregates(
         bucket["formats"].add(fmt)
         if print_time_s is not None:
             bucket["print_times"].append(print_time_s)
-        bucket["thumb_files"].append((rel_path, blob_hash, thumb_ok_id is not None))
+        # Internal snapshot files (the cover-image snapshot -- R13a review
+        # fix) must never win the "first ok thumb by rel_path" gallery
+        # fallback below -- `_snapshots/` sorts first, which would make a
+        # user-set cover eclipse every uploaded model file's own thumb.
+        if not layout.is_snapshot_path(rel_path):
+            bucket["thumb_files"].append((rel_path, blob_hash, thumb_ok_id is not None))
 
         file_row = {
             "id": file_id,
@@ -1225,7 +1230,10 @@ async def build_revision_detail(
     db: AsyncSession, revision: Revision, settings: Settings
 ) -> RevisionDetail:
     notes = await _list_notes(db, model_id=None, revision_id=revision.id)
-    sorted_files = sorted(revision.files, key=lambda f: f.rel_path)
+    sorted_files = sorted(
+        (f for f in revision.files if not layout.is_snapshot_path(f.rel_path)),
+        key=lambda f: f.rel_path,
+    )
     enrichments = await _build_file_enrichments(settings, (f.blob for f in sorted_files))
     files = [FileOut.from_model(f, enrichments.get(f.blob_hash)) for f in sorted_files]
     return RevisionDetail(
@@ -1666,6 +1674,7 @@ async def finalize_upload(
     kind: BlobKind,
     format_: BlobFormat,
     replace: bool,
+    after_blob_flush: Callable[[], None] | None = None,
 ) -> File:
     """Upsert the ``Blob`` by hash (dedupe) and create/replace the ``File``
     row once the upload's bytes are fully spooled and hashed (Task 6
@@ -1675,6 +1684,14 @@ async def finalize_upload(
     ``File`` row; ``storage_path`` is rel_path-derived so the new file's
     backend write naturally overwrites the same object regardless of
     content.
+
+    ``after_blob_flush`` (R13a's ``POST /models/{slug}/cover``) runs once
+    the ``Blob`` row is guaranteed to exist in this transaction -- a caller
+    that wants to point another row's FK at this same blob (e.g.
+    ``model.cover_blob_hash``) sets it here rather than before this call,
+    so the eventual commit below never races the blob insert (a
+    same-transaction ``UPDATE ... SET cover_blob_hash`` issued before the
+    referenced ``Blob`` row is flushed 500s on the FK constraint).
     """
     blob = await db.get(Blob, blob_hash)
     if blob is None:
@@ -1697,6 +1714,9 @@ async def finalize_upload(
                 status.HTTP_409_CONFLICT,
                 f"blob {blob_hash!r} is being uploaded concurrently; retry",
             ) from None
+
+    if after_blob_flush is not None:
+        after_blob_flush()
 
     if replace:
         existing = (

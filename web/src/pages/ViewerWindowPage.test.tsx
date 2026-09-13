@@ -1,8 +1,23 @@
+import type { ReactNode } from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ViewerWindowPage } from "@/pages/ViewerWindowPage";
 import type { FileOut, ModelDetail } from "@/api/types";
+
+/** `useViewerScene` calls `useQueryClient()` unconditionally (R13a's Cover
+ * action needs it to invalidate the model/gallery caches on capture) --
+ * every render needs a `QueryClientProvider` ancestor now, even in the
+ * pop-out window (`persist: false` just skips ever USING the client here). */
+function renderPage() {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <ViewerWindowPage />
+    </QueryClientProvider>,
+  );
+}
 
 type ViewerToolsStub = {
   grid: boolean;
@@ -67,7 +82,11 @@ vi.mock("@tanstack/react-router", () => ({
   useParams: () => paramsBox.current,
   useSearch: () => searchBox.current,
 }));
-vi.mock("@/api/library", () => ({ useModel: () => modelBox.current }));
+vi.mock("@/api/library", () => ({
+  useModel: () => modelBox.current,
+  modelQueryOptions: (slug: string) => ({ queryKey: ["models", "detail", slug] }),
+  uploadModelCover: vi.fn(),
+}));
 vi.mock("@/components/viewer/ModelViewer", () => ({ default: modelViewerMock }));
 // The window now renders the full ViewerStage, which reaches for the printer
 // (AMS color sync) and the app theme (the "Match theme" background). Neither
@@ -77,6 +96,17 @@ vi.mock("@/api/printers", () => ({
   usePrinterStatus: () => ({ data: undefined }),
 }));
 vi.mock("next-themes", () => ({ useTheme: () => ({ resolvedTheme: "light" }) }));
+// R13a re-chrome: Parts (`ViewerTopOverlay`) and Background/Lighting/Section/
+// etc. (`ViewerMorePanel`) now live inside Popovers, which never reach an
+// interactive open state under jsdom (same convention as
+// `LibraryPage.test.tsx`) -- render trigger/content unconditionally so this
+// file's existing assertions (checkboxes, radiogroups) stay reachable
+// without a real open click.
+vi.mock("@/components/ui/popover", () => ({
+  Popover: ({ children }: { children?: ReactNode }) => <>{children}</>,
+  PopoverTrigger: ({ children }: { children?: ReactNode }) => <>{children}</>,
+  PopoverContent: ({ children }: { children?: ReactNode }) => <>{children}</>,
+}));
 
 function glbFile(id: number, hash: string, rel: string): FileOut {
   return {
@@ -117,7 +147,7 @@ describe("ViewerWindowPage", () => {
     };
     searchBox.current = { ids: "2", bg: "#112233", colors: "2:ff0000" };
 
-    render(<ViewerWindowPage />);
+    renderPage();
 
     const viewer = await screen.findByTestId("model-viewer");
     expect(viewer).toHaveAttribute("data-background", "#112233");
@@ -137,7 +167,7 @@ describe("ViewerWindowPage", () => {
       isLoading: false,
     };
 
-    render(<ViewerWindowPage />);
+    renderPage();
 
     const viewer = await screen.findByTestId("model-viewer");
     expect(viewer).toHaveAttribute("data-background", "#a1a1aa");
@@ -147,7 +177,7 @@ describe("ViewerWindowPage", () => {
 
   it("shows a not-found message when the model is missing", async () => {
     modelBox.current = { data: undefined, isLoading: false };
-    render(<ViewerWindowPage />);
+    renderPage();
     expect(await screen.findByText("Model not found.")).toBeInTheDocument();
     expect(screen.queryByTestId("model-viewer")).not.toBeInTheDocument();
   });
@@ -159,7 +189,7 @@ describe("ViewerWindowPage", () => {
     };
     searchBox.current = { ids: "1" };
 
-    render(<ViewerWindowPage />);
+    renderPage();
 
     await screen.findByTestId("model-viewer");
     expect(screen.getByRole("radiogroup", { name: "Background" })).toBeInTheDocument();
@@ -178,7 +208,7 @@ describe("ViewerWindowPage", () => {
     };
     searchBox.current = { ids: "1" };
 
-    render(<ViewerWindowPage />);
+    renderPage();
     await screen.findByTestId("model-viewer");
 
     const before = modelViewerMock.mock.calls.at(-1)?.[0].parts;
@@ -205,7 +235,7 @@ describe("ViewerWindowPage", () => {
     };
     searchBox.current = { ids: "1" };
 
-    render(<ViewerWindowPage />);
+    renderPage();
     await screen.findByTestId("model-viewer");
 
     expect(screen.getByRole("checkbox", { name: "a.glb" })).toBeChecked();
@@ -228,7 +258,7 @@ describe("ViewerWindowPage", () => {
     modelBox.current = { data: fakeModel([glbFile(1, "aaa", "a.glb")]), isLoading: false };
     searchBox.current = { bg: "white" };
 
-    render(<ViewerWindowPage />);
+    renderPage();
 
     expect(await screen.findByTestId("model-viewer")).toHaveAttribute("data-background", "#ffffff");
   });
@@ -237,7 +267,7 @@ describe("ViewerWindowPage", () => {
     modelBox.current = { data: fakeModel([glbFile(1, "aaa", "a.glb")]), isLoading: false };
     searchBox.current = { wf: "1", grid: "0", sec: "y:0.25" };
 
-    render(<ViewerWindowPage />);
+    renderPage();
 
     const viewer = await screen.findByTestId("model-viewer");
     expect(viewer).toHaveAttribute("data-grid", "false");
@@ -253,7 +283,7 @@ describe("ViewerWindowPage", () => {
     modelBox.current = { data: fakeModel([glbFile(1, "aaa", "a.glb")]), isLoading: false };
     searchBox.current = { xr: "1" };
 
-    render(<ViewerWindowPage />);
+    renderPage();
 
     expect(await screen.findByTestId("model-viewer")).toHaveAttribute("data-shading", "xray");
   });
@@ -262,7 +292,7 @@ describe("ViewerWindowPage", () => {
     modelBox.current = { data: fakeModel([glbFile(1, "aaa", "a.glb")]), isLoading: false };
     searchBox.current = { sec: "diagonal:0.5" };
 
-    render(<ViewerWindowPage />);
+    renderPage();
 
     expect(await screen.findByTestId("model-viewer")).toHaveAttribute("data-section", "false:x:0.5");
   });
@@ -271,7 +301,7 @@ describe("ViewerWindowPage", () => {
     modelBox.current = { data: fakeModel([glbFile(1, "aaa", "a.glb")]), isLoading: false };
     searchBox.current = { ex: "2.5" };
 
-    render(<ViewerWindowPage />);
+    renderPage();
 
     expect(await screen.findByTestId("model-viewer")).toHaveAttribute("data-explode", "1");
   });
@@ -279,7 +309,7 @@ describe("ViewerWindowPage", () => {
   it("does not persist appearance changes -- the window is a URL-derived view, not the tab's prefs", async () => {
     modelBox.current = { data: fakeModel([glbFile(1, "aaa", "a.glb")]), isLoading: false };
     // No light param -> seeds studio (shadow on).
-    render(<ViewerWindowPage />);
+    renderPage();
     await screen.findByTestId("model-viewer");
 
     // "Flat" is unique to the Lighting group. Switching it proves the change
@@ -296,7 +326,7 @@ describe("ViewerWindowPage", () => {
 
   it("does not persist tool changes -- toggling grid in the window never writes viewer-tools", async () => {
     modelBox.current = { data: fakeModel([glbFile(1, "aaa", "a.glb")]), isLoading: false };
-    render(<ViewerWindowPage />);
+    renderPage();
     await screen.findByTestId("model-viewer");
 
     fireEvent.click(screen.getByRole("button", { name: "Grid" }));
@@ -309,12 +339,12 @@ describe("ViewerWindowPage", () => {
     modelBox.current = { data: fakeModel([glbFile(1, "aaa", "a.glb")]), isLoading: false };
     searchBox.current = { light: "flat" };
 
-    const { unmount } = render(<ViewerWindowPage />);
+    const { unmount } = renderPage();
     expect(await screen.findByTestId("model-viewer")).toHaveAttribute("data-contact-shadow", "false");
     unmount();
 
     searchBox.current = {};
-    render(<ViewerWindowPage />);
+    renderPage();
     expect(await screen.findByTestId("model-viewer")).toHaveAttribute("data-contact-shadow", "true");
   });
 });

@@ -19,10 +19,17 @@ function PopoverContent({
   className,
   align = "center",
   sideOffset = 4,
+  container,
   ...props
-}: React.ComponentProps<typeof PopoverPrimitive.Content>) {
+}: React.ComponentProps<typeof PopoverPrimitive.Content> & {
+  /** Portal target -- defaults to `document.body` (Radix's own default) when
+   * omitted. The viewer's More popover passes the fullscreened stage element
+   * here so the popover still renders (fullscreen hides everything outside
+   * the fullscreened element, including the default body portal). */
+  container?: HTMLElement | null;
+}) {
   return (
-    <PopoverPrimitive.Portal>
+    <PopoverPrimitive.Portal container={container ?? undefined}>
       <PopoverPrimitive.Content
         data-slot="popover-content"
         align={align}

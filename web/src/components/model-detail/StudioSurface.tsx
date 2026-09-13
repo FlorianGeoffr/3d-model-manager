@@ -6,7 +6,7 @@ import { PlaceholderCard, ViewerStage, type ViewerStageProps } from "@/component
 import type { StudioSelection } from "@/components/model-detail/studioSelection";
 import type { FileOut } from "@/api/types";
 
-type StageProps = Omit<ViewerStageProps, "variant" | "showExpand" | "onExpand" | "showWindowButtons">;
+type StageProps = Omit<ViewerStageProps, "variant" | "showWindowButtons">;
 
 function FileState({ file }: { file: FileOut }) {
   if (file.kind === "sliced") return <PlatePanel file={file} />;
@@ -53,23 +53,21 @@ function FileState({ file }: { file: FileOut }) {
   }
 }
 
-/** The right-of-rail viewing surface (Phase 4 studio): a pure switch on the
- * rail's current selection. The assembly view reuses the exact `ViewerStage`
- * the old `MeshSection` rendered (pop-out window buttons kept, Expand
- * dropped -- there's no dialog to expand into anymore, the studio layout IS
- * the expanded view) and, when the model ALSO has sliced files, shows a
- * compact plate-card strip underneath so neither view hides the other. */
+/** The studio's viewing surface (R13a re-chrome): a pure switch on the rail's
+ * current selection. The assembly view reuses the exact `ViewerStage` the
+ * old `MeshSection` rendered (pop-out window buttons kept). The sliced-plate
+ * strip that used to render underneath it here has moved to the right
+ * column's `GcodeProfilesCard` (still `PlatePanel`, just relocated) -- this
+ * surface no longer needs `slicedFiles` at all. */
 export function StudioSurface({
   selection,
   hasGlb,
   otherFiles,
-  slicedFiles,
   stageProps,
 }: {
   selection: StudioSelection | undefined;
   hasGlb: boolean;
   otherFiles: FileOut[];
-  slicedFiles: FileOut[];
   stageProps: StageProps;
 }) {
   if (!selection) {
@@ -84,29 +82,7 @@ export function StudioSurface({
   if (selection.type === "assembly" && hasGlb) {
     return (
       <div className="flex min-w-0 flex-1 flex-col gap-4">
-        <ViewerStage
-          {...stageProps}
-          variant="inline"
-          showWindowButtons
-          showExpand={false}
-          // FileRail is the single source of truth for part visibility/color
-          // in the studio layout -- hide this panel's own (redundant) Parts
-          // checklist. Every other panel section (Appearance, View, Section,
-          // Explode, AMS sync) is unaffected.
-          showPartsList={false}
-        />
-        {slicedFiles.length > 0 && (
-          <div className="space-y-2">
-            <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-              Sliced plates
-            </span>
-            <div className="flex gap-4 overflow-x-auto">
-              {slicedFiles.map((file) => (
-                <PlatePanel key={file.id} file={file} compact />
-              ))}
-            </div>
-          </div>
-        )}
+        <ViewerStage {...stageProps} variant="inline" showWindowButtons />
       </div>
     );
   }

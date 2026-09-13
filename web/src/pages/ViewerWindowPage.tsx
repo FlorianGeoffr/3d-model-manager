@@ -124,14 +124,13 @@ function ViewerWindow({ slug, files, search }: { slug: string; files: FileOut[];
       colors: decodePartColors(search.colors),
       background: decodeBackground(search.bg, search.bgc),
       lighting: (search.light ?? "studio") as LightingPreset,
-      panelOpen: true,
       tools: decodeTools(search),
     },
   });
 
   return (
     <div className="flex h-svh w-svw flex-col gap-2 bg-background p-2">
-      <ViewerStage {...stageProps} variant="window" showExpand={false} showWindowButtons={false} />
+      <ViewerStage {...stageProps} variant="window" showWindowButtons={false} />
     </div>
   );
 }

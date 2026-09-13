@@ -9,54 +9,26 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
-import {
-  BoxIcon,
-  CameraIcon,
-  ExternalLinkIcon,
-  GhostIcon,
-  Grid3x3Icon,
-  LoaderCircleIcon,
-  Maximize2Icon,
-  MaximizeIcon,
-  MinimizeIcon,
-  PanelRightCloseIcon,
-  PanelRightOpenIcon,
-  RotateCcwIcon,
-  RotateCwIcon,
-  ScanIcon,
-  TriangleDashedIcon,
-} from "lucide-react";
+import { LoaderCircleIcon } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { useHotkeys } from "@/hooks/useHotkeys";
 import { cn } from "@/lib/utils";
-import { usePrinterStatus } from "@/api/printers";
-import { FilamentChip } from "@/components/ui/filament-chip";
-import { BackgroundSwatches } from "@/components/viewer/BackgroundSwatches";
-import { SegmentedControl } from "@/components/viewer/SegmentedControl";
 import type { BackgroundPreset } from "@/components/viewer/background";
-import { explodeControlLabel } from "@/components/viewer/explode";
 import type { ExplodeMode } from "@/components/viewer/explode";
+import type { LightingPreset, LightingRig } from "@/components/viewer/lighting";
+import type { PartColors } from "@/components/viewer/partColors";
 import {
-  LIGHTING_PRESET_LABELS,
-  LIGHTING_PRESET_ORDER,
-  type LightingPreset,
-  type LightingRig,
-} from "@/components/viewer/lighting";
-import { traysToPartColors, type PartColors } from "@/components/viewer/partColors";
-import {
-  formatStats,
-  type CameraPreset,
   type SceneStats,
-  type SectionAxis,
   type ViewerApi,
   type ViewerToolsState,
 } from "@/components/viewer/tools";
+import { ViewerDock } from "@/components/viewer/ViewerDock";
+import { ViewerFooterStrip } from "@/components/viewer/ViewerFooterStrip";
+import { ViewerMorePanel } from "@/components/viewer/ViewerMorePanel";
+import { ViewerTopOverlay } from "@/components/viewer/ViewerTopOverlay";
 import type { ViewerPart } from "@/components/viewer/viewable";
 import type { FileOut } from "@/api/types";
 
@@ -64,24 +36,6 @@ import type { FileOut } from "@/api/types";
 // RULE") — load them only once a GLB actually needs rendering, so the main
 // bundle never pays for the viewer on pages that don't render this stage.
 const ModelViewer = lazy(() => import("@/components/viewer/ModelViewer"));
-
-// Order + labels for the cross-section's axis picker (Task 5) -- mirrors the
-// Background/Lighting `SegmentedControl` usages below.
-const SECTION_AXIS_OPTIONS: readonly SectionAxis[] = ["x", "y", "z"];
-const SECTION_AXIS_LABELS: Record<SectionAxis, string> = { x: "X", y: "Y", z: "Z" };
-
-// R10 camera presets -- mirrors the Section axis picker above. `Exclude<...,
-// null>` since the segmented control's OPTIONS are always the four concrete
-// presets; `null` ("no preset active") is only ever the current `value`, see
-// `SegmentedControl`'s nullable-value support.
-type CameraPresetOption = Exclude<CameraPreset, null>;
-const CAMERA_PRESET_OPTIONS: readonly CameraPresetOption[] = ["iso", "top", "front", "side"];
-const CAMERA_PRESET_LABELS: Record<CameraPresetOption, string> = {
-  iso: "Iso",
-  top: "Top",
-  front: "Front",
-  side: "Side",
-};
 
 /** A centered card used for every "nothing to render here" state -- shared by
  * this stage's empty-selection case and `ViewerTab`'s file-status cards
@@ -198,7 +152,6 @@ function MeshCanvas({
   tools,
   plateSize,
   onStats,
-  stats,
   fitSignal,
   apiRef,
   onPartLoaded,
@@ -213,7 +166,6 @@ function MeshCanvas({
   tools: ViewerToolsState;
   plateSize: number;
   onStats: (stats: SceneStats | null) => void;
-  stats: SceneStats | null;
   fitSignal: number;
   apiRef: React.MutableRefObject<ViewerApi | null>;
   /** Task 5 explode view: forwarded straight through to `ModelViewer` -- see
@@ -274,68 +226,11 @@ function MeshCanvas({
           No parts selected
         </div>
       )}
-      {/* "How big is this print?" -- the combined mm bounding box + triangle
-          count of every visible, loaded part (`ModelViewer`'s stats-
-          reporting effect), rendered over the canvas the same way the
-          "No parts selected" hint above is: `pointer-events-none` so it
-          never intercepts orbit-control drags, absolutely positioned within
-          the stage's `relative` wrapper rather than `inset-0` since it's a
-          corner chip, not a full-canvas overlay. */}
-      {stats && (
-        <div
-          data-testid="scene-stats"
-          className="pointer-events-none absolute bottom-2 left-2 rounded-md bg-background/70 px-2 py-1 text-xs text-muted-foreground backdrop-blur-sm"
-        >
-          {formatStats(stats)}
-        </div>
-      )}
+      {/* "How big is this print?" chip is now `ViewerTopOverlay`'s dims pill
+          -- this local stats overlay is gone (see that component). */}
     </>
   );
 }
-
-/** AMS filament legend + "Sync colors from printer" (M8 G3), styled for the
- * narrow right-hand panel column (a vertical stack, not the old horizontal
- * bar). Rendered only when a printer is configured, so its
- * `usePrinterStatus` poll (which has no `enabled` gate) always has a real
- * id. Maps the checked parts onto the loaded trays in order, cycling if
- * there are more parts than trays. */
-function AmsSync({
-  printerId,
-  partIds,
-  onApply,
-}: {
-  printerId: number;
-  partIds: number[];
-  onApply: (colors: PartColors) => void;
-}) {
-  const status = usePrinterStatus(printerId);
-  const trays = (status.data?.trays ?? []).filter((tray) => tray.color);
-  if (trays.length === 0) return null;
-
-  return (
-    <div className="flex flex-col gap-2">
-      <span className="text-xs font-medium text-muted-foreground">Loaded filament</span>
-      <div className="flex flex-wrap gap-1.5">
-        {trays.map((tray) => (
-          <FilamentChip key={tray.slot} color={tray.color ?? undefined} material={tray.material ?? undefined} />
-        ))}
-      </div>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        disabled={partIds.length === 0}
-        onClick={() => onApply(traysToPartColors(partIds, trays))}
-        className="w-full"
-      >
-        Sync colors from printer
-      </Button>
-    </div>
-  );
-}
-
-const BODY_BASE_CLASS = "flex min-h-0 flex-1 flex-col gap-3 lg:flex-row";
-const INLINE_BODY_HEIGHT_CLASS = "h-[70vh] min-h-[32rem]";
 
 export interface ViewerStageProps {
   /** The model's slug -- used only as the downloaded screenshot's filename
@@ -344,13 +239,16 @@ export interface ViewerStageProps {
   files: FileOut[];
   checkedIds: ReadonlySet<number>;
   onToggleFile: (fileId: number, checked: boolean) => void;
-  /** Parts header All/None buttons -- flips every file's `visible` flag in
+  /** Parts popover All/None buttons -- flips every file's `visible` flag in
    * one step, the same way a single checkbox click flips one (see
    * `useViewerScene`'s `setAllChecked`). `parts` stays mounted either way. */
   onSetAllChecked: (checked: boolean) => void;
   colors: PartColors;
   onSetPartColor: (fileId: number, hex: string) => void;
   onClearPartColor: (fileId: number) => void;
+  /** R13a dock quick swatches (Key decision 2): bulk-writes one hex into
+   * every checked part's color. */
+  onSetAllColors: (hex: string) => void;
   hasColors: boolean;
   onResetColors: () => void;
   preset: BackgroundPreset;
@@ -366,29 +264,25 @@ export interface ViewerStageProps {
   parts: ViewerPart[];
   checkedList: number[];
   onOpenWindow: (ids: number[]) => void;
-  /** Shows the "New window" / "Parts in windows" pop-out buttons. False in
-   * the `window` variant -- you're already in a pop-out, so re-popping is
-   * noise. */
+  /** Shows the "New window" / "Parts in windows" pop-out buttons (now inside
+   * `ViewerMorePanel`). False in the `window` variant -- you're already in a
+   * pop-out, so re-popping is noise. */
   showWindowButtons: boolean;
-  showExpand: boolean;
-  onExpand?: () => void;
-  panelOpen: boolean;
-  onTogglePanel: () => void;
-  /** "inline" gets its own `h-[70vh]` since it isn't inside a sized flex
-   * ancestor; "dialog" and "window" must NOT hard-code a height -- the
-   * dialog's `h-[90vh]` wrapper and the window page's `h-svh` wrapper already
-   * provide it, and the body row just needs to flex to fill it. */
-  variant: "inline" | "dialog" | "window";
+  /** "inline" gets its own `h-[450px]` since it isn't inside a sized flex
+   * ancestor; "window" must NOT hard-code a height -- the window page's
+   * `h-svh` wrapper already provides it, and the stage just needs to flex to
+   * fill it. */
+  variant: "inline" | "window";
   /** View-affecting toggles (build-plate grid, auto-rotate, orthographic
    * camera, wireframe, cross-section, explode) -- see `tools.ts`. Driven by
-   * the panel's View section, Section block, and Explode block below, and
-   * the `F`/`R`/`W`/`G` keyboard shortcuts. */
+   * `ViewerDock`/`ViewerMorePanel` and the `F`/`R`/`W`/`G` keyboard
+   * shortcuts. */
   tools: ViewerToolsState;
   onToolsChange: (patch: Partial<ViewerToolsState>) => void;
   /** "How big is this print?" -- the combined mm bounding box + triangle
    * count of the currently visible, loaded parts, reported by `ModelViewer`
-   * and rendered by `MeshCanvas`'s stats overlay chip. `null` until
-   * something visible has loaded. */
+   * and rendered by `ViewerTopOverlay`'s dims pill. `null` until something
+   * visible has loaded. */
   stats: SceneStats | null;
   onStats: (stats: SceneStats | null) => void;
   /** The build plate's mm side length -- single source in `useViewerScene`
@@ -418,43 +312,41 @@ export interface ViewerStageProps {
    * the old "blank canvas until the GLB pops in" gap with something to look
    * at. */
   coverUrl?: string | null;
+  /** R13a Cover action (risk resolution 6): captures the canvas + uploads it
+   * as the model's new cover. */
+  onCaptureCover: () => void;
+  capturingCover: boolean;
+  /** False in the pop-out window (`persist=false` in `useViewerScene`) --
+   * there's no model-detail card to reflect a new cover there. */
+  canCaptureCover: boolean;
   /** Fix wave finding 4: `ViewerTab`'s `MeshSection` keeps the inline stage
-   * mounted while the Expand dialog's own stage is also mounted (open), so
-   * without this both stages' `Shift+F` hotkey bindings would fire on one
-   * keypress -- both see `document.fullscreenElement === null` (the
-   * Fullscreen API is async) and both call `requestFullscreen`, so whichever
-   * stage isn't visible can "win" the fullscreen request. Only the currently
-   * visible/active stage should bind the hotkey; defaults to `true` since
-   * every other caller (the dialog itself, the pop-out window) only ever has
-   * one stage mounted at a time. */
+   * mounted while another stage could also be mounted, so without this both
+   * stages' `Shift+F` hotkey bindings would fire on one keypress -- both see
+   * `document.fullscreenElement === null` (the Fullscreen API is async) and
+   * both call `requestFullscreen`, so whichever stage isn't visible can
+   * "win" the fullscreen request. Only the currently visible/active stage
+   * should bind the hotkey; defaults to `true` since every other caller
+   * (the pop-out window) only ever has one stage mounted at a time. */
   active?: boolean;
-  /** Phase 4 studio follow-up: `StudioWorkspace` moved per-part visibility
-   * checkboxes AND the color swatch into `FileRail`, so it's the single
-   * source of truth for parts there -- this panel's own Parts checklist
-   * would just be a second, redundant control bound to the same
-   * `checkedIds`/`colors` state. Set `false` to hide just that checklist
-   * (the header's All/None/count row and the file list); every other
-   * section (Appearance, View, Section, Explode, AMS sync) is unaffected.
-   * Defaults to `true` so the `/viewer/$slug` pop-out window keeps its own
-   * full Parts checklist unchanged. */
-  showPartsList?: boolean;
 }
 
-/** Strip + canvas + collapsible parts panel -- the whole redesigned viewer
- * surface. Rendered from the inline tab, the Expand dialog, and the pop-out
- * window with the SAME props (assembled by `useViewerScene`), so all three
- * are always in sync and none strips the controls away. Returns a fragment
- * rather than its own wrapping element: each caller supplies its own
- * height-bearing flex column (the inline tab a `flex flex-col gap-3` div, the
- * dialog `DialogContent`, the window page an `h-svh` column), so the body row
- * becomes a direct flex item of whichever real container it's in without an
- * extra wrapper needing its own `min-h-0 flex-1` to pass the height down.
+/** Canvas + absolutely-positioned chrome -- the whole redesigned viewer
+ * surface (R13a GyroidVault re-chrome). Rendered from the studio surface and
+ * the pop-out window with the SAME props (assembled by `useViewerScene`), so
+ * both stay in sync. Returns a fragment rather than its own wrapping
+ * element: each caller supplies its own height-bearing flex column (the
+ * inline surface a `flex flex-col gap-3` div, the window page an `h-svh`
+ * column), so the stage becomes a direct flex item of whichever real
+ * container it's in without an extra wrapper needing its own `min-h-0
+ * flex-1` to pass the height down.
  *
- * The appearance controls (Background, Lighting) live INSIDE the parts panel,
- * not the top strip: they're appearance settings and belong beside the
- * per-part color swatches. A consequence to accept -- collapsing the panel
- * hides them too. That's correct: the panel is THE control surface, and the
- * strip's reopen toggle brings the whole thing back. */
+ * Every control the old right-hand panel had still exists -- moved into
+ * `ViewerTopOverlay` (Parts, Spin, Cover, Fullscreen), `ViewerDock` (camera
+ * preset, shading, quick colors, Grid), and `ViewerMorePanel` (Background,
+ * Lighting, Section, Explode, Ortho, Fit, Auto-rotate, Screenshot, Reset
+ * colors, AMS sync, New window/Parts in windows, hotkey legend) -- see Key
+ * decision 1 ("re-chrome, not re-plumb"): this component still owns none of
+ * that state, it only lays the same props out differently. */
 export function ViewerStage({
   slug,
   files,
@@ -464,6 +356,7 @@ export function ViewerStage({
   colors,
   onSetPartColor,
   onClearPartColor,
+  onSetAllColors,
   hasColors,
   onResetColors,
   preset,
@@ -480,10 +373,6 @@ export function ViewerStage({
   checkedList,
   onOpenWindow,
   showWindowButtons,
-  showExpand,
-  onExpand,
-  panelOpen,
-  onTogglePanel,
   variant,
   tools,
   onToolsChange,
@@ -494,58 +383,31 @@ export function ViewerStage({
   onFit,
   viewerApiRef,
   coverUrl,
+  onCaptureCover,
+  capturingCover,
+  canCaptureCover,
   active = true,
-  showPartsList = true,
 }: ViewerStageProps) {
-  // The strip only exists to host actions. With the panel open and no
-  // pop-out/expand actions to show (the window's steady state), it would be
-  // an empty bar -- so render it only when it has something in it.
-  const stripHasContent = !panelOpen || showWindowButtons || showExpand;
-
-  // The ortho toggle swaps drei's default camera (perspective <->
-  // orthographic), which remounts `OrbitControls` underneath it (it
-  // re-derives its internal controls instance from the store's `camera`) and
-  // resets the orbit target/framing -- `onFit()` right after recovers it.
-  // See `ModelViewer.tsx`'s ortho-camera comment for the underlying
-  // mechanism.
-  const handleOrthoToggle = useCallback(() => {
-    onToolsChange({ ortho: !tools.ortho });
-    onFit();
-  }, [onToolsChange, onFit, tools.ortho]);
-
   const handleAutoRotateToggle = useCallback(() => {
     onToolsChange({ autoRotate: !tools.autoRotate });
   }, [onToolsChange, tools.autoRotate]);
 
   // `shading` is an enum, not an independent boolean per mode -- toggling
   // Wireframe just switches straight to/from "wireframe" regardless of
-  // whichever mode (including "xray") was active, same as clicking a radio
-  // option. Keeps the pre-R10 Wireframe button/`W` key behavior unchanged.
+  // whichever mode (including "xray") was active. Kept for the `W` hotkey;
+  // `ViewerDock`'s shading segmented control sets the enum directly.
   const handleWireframeToggle = useCallback(() => {
     onToolsChange({ shading: tools.shading === "wireframe" ? "solid" : "wireframe" });
   }, [onToolsChange, tools.shading]);
 
-  // R10 X-ray: same toggle shape as Wireframe above, just the other mode.
-  const handleXrayToggle = useCallback(() => {
-    onToolsChange({ shading: tools.shading === "xray" ? "solid" : "xray" });
-  }, [onToolsChange, tools.shading]);
-
-  // R10 camera presets: `ModelViewer`'s `CameraPresetTween` does the actual
-  // tween/refit; this just records which preset is active so the segmented
-  // control reflects it. `OrbitPresetGuard` (wired below) clears it back to
-  // `null` the moment the user actually orbits.
-  const handleCameraPreset = useCallback(
-    (preset: CameraPreset) => onToolsChange({ cameraPreset: preset }),
-    [onToolsChange],
-  );
-  const handleCameraPresetClear = useCallback(
-    () => onToolsChange({ cameraPreset: null }),
-    [onToolsChange],
-  );
-
   const handleGridToggle = useCallback(() => {
     onToolsChange({ grid: !tools.grid });
   }, [onToolsChange, tools.grid]);
+
+  const handleQuickColor = useCallback(
+    (hex: string) => onSetAllColors(hex),
+    [onSetAllColors],
+  );
 
   // The explode slider leaves a nonzero offset applied to whichever parts
   // were already loaded when it moved -- a part that finishes loading LATE
@@ -612,7 +474,7 @@ export function ViewerStage({
 
   // Explode classification reported by `ModelViewer` once parts load --
   // "none" until then (and for single-part / degenerate scenes), which keeps
-  // the control hidden. Drives the Explode/Separate-parts block below.
+  // the control hidden. Drives `ViewerMorePanel`'s Explode/Separate block.
   const [explodeMode, setExplodeMode] = useState<ExplodeMode>("none");
 
   // `viewerApiRef.current` is populated by `ModelViewer`'s `CaptureBridge`
@@ -683,453 +545,121 @@ export function ViewerStage({
     return () => document.removeEventListener("fullscreenchange", handleChange);
   }, []);
 
+  // Risk resolution 2: the More popover/sheet portals INTO the stage element
+  // (not `document.body`) so it still renders while `stageRef.current` is
+  // the fullscreened element -- a `document.body` portal renders outside a
+  // fullscreened element and so becomes invisible. `stageRef.current` isn't
+  // available on the first render (ref not yet attached), so this is state
+  // set from an effect rather than read directly, letting the popover/sheet
+  // re-render once the container exists.
+  const [portalContainer, setPortalContainer] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    setPortalContainer(stageRef.current);
+  }, []);
+
   return (
     <TooltipProvider>
-      {stripHasContent && (
-        <div className="flex flex-wrap items-center justify-end gap-2 rounded-lg border border-border bg-card px-3 py-2">
-          {!panelOpen && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="icon-sm"
-                  aria-label="Expand panel"
-                  aria-expanded={false}
-                  onClick={onTogglePanel}
-                >
-                  <PanelRightOpenIcon />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Expand panel</TooltipContent>
-            </Tooltip>
-          )}
-          {showWindowButtons && (
-            <>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={checkedList.length === 0}
-                onClick={() => onOpenWindow(checkedList)}
-              >
-                <ExternalLinkIcon />
-                New window
-              </Button>
-              {checkedList.length > 1 && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => checkedList.forEach((id) => onOpenWindow([id]))}
-                >
-                  Parts in windows
-                </Button>
-              )}
-            </>
-          )}
-          {showExpand && (
-            <Button type="button" variant="outline" size="sm" onClick={onExpand}>
-              <Maximize2Icon />
-              Expand
-            </Button>
-          )}
-        </div>
-      )}
-
-      <div className={cn(BODY_BASE_CLASS, variant === "inline" && INLINE_BODY_HEIGHT_CLASS)}>
-        <div
-          ref={stageRef}
-          className="relative min-h-0 flex-1 overflow-hidden rounded-lg border border-border outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-          tabIndex={0}
-          onKeyDown={handleCanvasKeyDown}
-        >
-          <MeshCanvas
-            parts={parts}
-            background={background}
-            lighting={lighting}
-            tools={tools}
-            plateSize={plateSize}
-            onStats={onStats}
-            stats={stats}
-            fitSignal={fitSignal}
-            apiRef={viewerApiRef}
-            onPartLoaded={handlePartLoaded}
-            onExplodeModeChange={setExplodeMode}
-            onCameraPresetClear={handleCameraPresetClear}
-            hasCoverThumbnail={Boolean(coverUrl) && parts.length > 0}
-            onError={handleLoadError}
+      <div
+        ref={stageRef}
+        className={cn(
+          "relative overflow-hidden rounded-lg border border-border bg-card outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+          variant === "inline" ? "h-[450px]" : "h-full min-h-0 flex-1",
+          isFullscreen && "h-screen",
+        )}
+        tabIndex={0}
+        onKeyDown={handleCanvasKeyDown}
+      >
+        <MeshCanvas
+          parts={parts}
+          background={background}
+          lighting={lighting}
+          tools={tools}
+          plateSize={plateSize}
+          onStats={onStats}
+          fitSignal={fitSignal}
+          apiRef={viewerApiRef}
+          onPartLoaded={handlePartLoaded}
+          onExplodeModeChange={setExplodeMode}
+          onCameraPresetClear={() => onToolsChange({ cameraPreset: null })}
+          hasCoverThumbnail={Boolean(coverUrl) && parts.length > 0}
+          onError={handleLoadError}
+        />
+        {coverUrl && parts.length > 0 && thumbnailMounted && (
+          <img
+            src={coverUrl}
+            alt=""
+            aria-hidden="true"
+            data-testid="viewer-thumbnail"
+            className={cn(
+              "pointer-events-none absolute inset-0 h-full w-full object-cover transition-opacity duration-[250ms] motion-reduce:transition-none",
+              modelReady ? "opacity-0" : "opacity-100",
+            )}
           />
-          {coverUrl && parts.length > 0 && thumbnailMounted && (
-            <img
-              src={coverUrl}
-              alt=""
-              aria-hidden="true"
-              data-testid="viewer-thumbnail"
-              className={cn(
-                "pointer-events-none absolute inset-0 h-full w-full object-cover transition-opacity duration-[250ms] motion-reduce:transition-none",
-                modelReady ? "opacity-0" : "opacity-100",
-              )}
-            />
-          )}
-          {coverUrl && parts.length > 0 && !modelReady && (
-            <div
-              data-testid="viewer-loading-indicator"
-              className="pointer-events-none absolute top-2 right-2 rounded-full bg-background/70 p-1.5 backdrop-blur-sm"
-            >
-              <LoaderCircleIcon className="size-4 animate-spin text-muted-foreground" />
-            </div>
-          )}
-        </div>
-
-        {panelOpen && (
-          <div className="flex w-full shrink-0 flex-col gap-4 rounded-lg border border-border bg-card p-3 lg:w-72">
-            <div className="flex items-center justify-between">
-              {showPartsList ? (
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-                    Parts
-                  </span>
-                  <span className="text-xs text-muted-foreground tabular-nums">
-                    {checkedList.length} of {files.length}
-                  </span>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="xs"
-                    aria-label="Show all parts"
-                    disabled={checkedList.length === files.length}
-                    onClick={() => onSetAllChecked(true)}
-                  >
-                    All
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="xs"
-                    aria-label="None — hide all parts"
-                    disabled={checkedList.length === 0}
-                    onClick={() => onSetAllChecked(false)}
-                  >
-                    None
-                  </Button>
-                </div>
-              ) : (
-                <span />
-              )}
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-sm"
-                    aria-label="Collapse panel"
-                    aria-expanded={true}
-                    onClick={onTogglePanel}
-                  >
-                    <PanelRightCloseIcon />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>Collapse panel</TooltipContent>
-              </Tooltip>
-            </div>
-
-            {showPartsList && (
-              <div className="space-y-1">
-                {files.map((file) => {
-                  const checked = checkedIds.has(file.id);
-                  const partColor = colors[file.id];
-                  return (
-                    <div key={file.id} className={cn("flex items-center gap-2", !checked && "opacity-60")}>
-                      <Checkbox
-                        checked={checked}
-                        onCheckedChange={(next) => onToggleFile(file.id, next === true)}
-                        aria-label={file.rel_path}
-                      />
-                      <label className="relative inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full focus-within:ring-2 focus-within:ring-ring/50">
-                        <FilamentChip color={partColor ?? "#cccccc"} />
-                        <input
-                          type="color"
-                          aria-label={`Color for ${file.rel_path}`}
-                          value={partColor ?? "#cccccc"}
-                          onChange={(event) => onSetPartColor(file.id, event.target.value)}
-                          className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                        />
-                      </label>
-                      <span className="min-w-0 flex-1 truncate text-sm" title={file.rel_path}>
-                        {file.rel_path}
-                      </span>
-                      {partColor && (
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <button
-                              type="button"
-                              aria-label={`Reset color for ${file.rel_path}`}
-                              onClick={() => onClearPartColor(file.id)}
-                              className="inline-flex size-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
-                            >
-                              <RotateCcwIcon className="size-3.5" />
-                            </button>
-                          </TooltipTrigger>
-                          <TooltipContent>Reset color</TooltipContent>
-                        </Tooltip>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            <div className="flex flex-col gap-3">
-              <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-                Appearance
-              </span>
-              <div className="flex flex-col gap-1.5">
-                <span className="text-xs text-muted-foreground">Background</span>
-                <BackgroundSwatches
-                  preset={preset}
-                  custom={custom}
-                  onPresetChange={onPresetChange}
-                  onCustomChange={onCustomChange}
-                />
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <span className="text-xs text-muted-foreground">Lighting</span>
-                <SegmentedControl
-                  label="Lighting"
-                  options={LIGHTING_PRESET_ORDER}
-                  labels={LIGHTING_PRESET_LABELS}
-                  value={lightingPreset}
-                  onChange={onLightingChange}
-                  className="flex-wrap"
-                />
-              </div>
-            </div>
-
-            {/* Camera/utility toggles + actions (Task 4), joined by
-                Wireframe (Task 5) and the build-plate Grid toggle (Task 6).
-                A compact icon-button row rather than labelled buttons --
-                there's no room for both an icon and a label at this panel
-                width, so each button carries its name via `aria-label` and a
-                `Tooltip` (see `@/components/ui/tooltip`) for a hover hint
-                instead of a native `title`. */}
-            <div className="flex flex-col gap-3">
-              <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-                View
-              </span>
-              <div className="flex flex-wrap items-center gap-1.5">
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      type="button"
-                      variant={tools.grid ? "secondary" : "outline"}
-                      size="icon-sm"
-                      aria-pressed={tools.grid}
-                      aria-label="Grid"
-                      onClick={handleGridToggle}
-                    >
-                      <Grid3x3Icon />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Grid (G)</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      type="button"
-                      variant={tools.shading === "wireframe" ? "secondary" : "outline"}
-                      size="icon-sm"
-                      aria-pressed={tools.shading === "wireframe"}
-                      aria-label="Wireframe"
-                      onClick={handleWireframeToggle}
-                    >
-                      <TriangleDashedIcon />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Wireframe (W)</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      type="button"
-                      variant={tools.shading === "xray" ? "secondary" : "outline"}
-                      size="icon-sm"
-                      aria-pressed={tools.shading === "xray"}
-                      aria-label="X-ray"
-                      onClick={handleXrayToggle}
-                    >
-                      <GhostIcon />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>X-ray</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      type="button"
-                      variant={tools.autoRotate ? "secondary" : "outline"}
-                      size="icon-sm"
-                      aria-pressed={tools.autoRotate}
-                      aria-label="Auto-rotate"
-                      onClick={handleAutoRotateToggle}
-                    >
-                      <RotateCwIcon />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Auto-rotate (R)</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      type="button"
-                      variant={tools.ortho ? "secondary" : "outline"}
-                      size="icon-sm"
-                      aria-pressed={tools.ortho}
-                      aria-label="Orthographic camera"
-                      onClick={handleOrthoToggle}
-                    >
-                      <BoxIcon />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Orthographic camera</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="icon-sm"
-                      aria-label="Fit view"
-                      onClick={onFit}
-                    >
-                      <ScanIcon />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Fit view (F)</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="icon-sm"
-                      aria-label="Screenshot"
-                      onClick={handleScreenshot}
-                    >
-                      <CameraIcon />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Screenshot</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="icon-sm"
-                      aria-pressed={isFullscreen}
-                      aria-label="Fullscreen"
-                      onClick={toggleFullscreen}
-                    >
-                      {isFullscreen ? <MinimizeIcon /> : <MaximizeIcon />}
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Fullscreen (Shift+F)</TooltipContent>
-                </Tooltip>
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <span className="text-xs text-muted-foreground">Camera</span>
-                <SegmentedControl
-                  label="Camera preset"
-                  options={CAMERA_PRESET_OPTIONS}
-                  labels={CAMERA_PRESET_LABELS}
-                  value={tools.cameraPreset}
-                  onChange={handleCameraPreset}
-                />
-              </div>
-            </div>
-
-            {/* Cross-section (Task 5): the checkbox both toggles
-                `section.enabled` and doubles as this block's heading (styled
-                to match the uppercase muted headings above it), so
-                "Section" isn't spelled out twice. Axis + sweep position only
-                render while enabled -- there's nothing useful to show them
-                for otherwise. */}
-            <div className="flex flex-col gap-3">
-              <Label className="flex items-center gap-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">
-                <Checkbox
-                  checked={tools.section.enabled}
-                  onCheckedChange={(next) =>
-                    onToolsChange({ section: { ...tools.section, enabled: next === true } })
-                  }
-                />
-                Section
-              </Label>
-              {tools.section.enabled && (
-                <div className="flex flex-col gap-2 pl-6">
-                  <div className="flex flex-col gap-1.5">
-                    <span className="text-xs text-muted-foreground">Axis</span>
-                    <SegmentedControl
-                      label="Axis"
-                      options={SECTION_AXIS_OPTIONS}
-                      labels={SECTION_AXIS_LABELS}
-                      value={tools.section.axis}
-                      onChange={(axis) => onToolsChange({ section: { ...tools.section, axis } })}
-                    />
-                  </div>
-                  <input
-                    type="range"
-                    min={0}
-                    max={1}
-                    step={0.01}
-                    aria-label="Section position"
-                    value={tools.section.t}
-                    onChange={(event) =>
-                      onToolsChange({ section: { ...tools.section, t: Number(event.target.value) } })
-                    }
-                    className="w-full"
-                  />
-                </div>
-              )}
-            </div>
-
-            {/* Explode / Separate-parts control. `ModelViewer` classifies the
-                loaded parts and reports the mode up: "explode" for a genuine
-                assembly (parts spread in space -> radial explode), "separate"
-                for an overlapping pile of separate files (-> grid layout), and
-                "none" when there's nothing to pull apart (fewer than two
-                loaded parts), which hides the control. Both modes share the
-                one `tools.explode` value; only the label differs. */}
-            {explodeMode !== "none" && (
-              <div className="flex flex-col gap-3">
-                <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-                  {explodeControlLabel(explodeMode)}
-                </span>
-                <input
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.01}
-                  aria-label={explodeControlLabel(explodeMode)}
-                  value={tools.explode}
-                  onChange={(event) => onToolsChange({ explode: Number(event.target.value) })}
-                  className="w-full"
-                />
-              </div>
-            )}
-
-            {printerId !== undefined && (
-              <AmsSync printerId={printerId} partIds={checkedList} onApply={onApplyAmsColors} />
-            )}
-
-            {hasColors && (
-              <Button type="button" variant="ghost" size="sm" className="w-full" onClick={onResetColors}>
-                Reset colors
-              </Button>
-            )}
+        )}
+        {coverUrl && parts.length > 0 && !modelReady && (
+          <div
+            data-testid="viewer-loading-indicator"
+            className="pointer-events-none absolute top-2 right-2 rounded-full bg-background/70 p-1.5 backdrop-blur-sm"
+          >
+            <LoaderCircleIcon className="size-4 animate-spin text-muted-foreground" />
           </div>
         )}
+
+        {/* Overlays: root is `pointer-events-none`, each interactive island
+            opts back in with `pointer-events-auto` (risk resolution 3) so
+            orbit drags reach the canvas everywhere the dock/overlay don't
+            cover. */}
+        <ViewerTopOverlay
+          stats={stats}
+          files={files}
+          checkedIds={checkedIds}
+          onToggleFile={onToggleFile}
+          onSetAllChecked={onSetAllChecked}
+          colors={colors}
+          onSetPartColor={onSetPartColor}
+          onClearPartColor={onClearPartColor}
+          autoRotate={tools.autoRotate}
+          onToggleAutoRotate={handleAutoRotateToggle}
+          onCaptureCover={onCaptureCover}
+          capturingCover={capturingCover}
+          canCaptureCover={canCaptureCover}
+          isFullscreen={isFullscreen}
+          onToggleFullscreen={toggleFullscreen}
+          container={portalContainer}
+        />
+        <div className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center px-2">
+          <ViewerDock
+            tools={tools}
+            onToolsChange={onToolsChange}
+            checkedList={checkedList}
+            onQuickColor={handleQuickColor}
+            morePanel={
+              <ViewerMorePanel
+                preset={preset}
+                custom={custom}
+                onPresetChange={onPresetChange}
+                onCustomChange={onCustomChange}
+                lightingPreset={lightingPreset}
+                onLightingChange={onLightingChange}
+                tools={tools}
+                onToolsChange={onToolsChange}
+                explodeMode={explodeMode}
+                onFit={onFit}
+                onScreenshot={handleScreenshot}
+                hasColors={hasColors}
+                onResetColors={onResetColors}
+                printerId={printerId}
+                checkedList={checkedList}
+                onApplyAmsColors={onApplyAmsColors}
+                onOpenWindow={onOpenWindow}
+                showWindowButtons={showWindowButtons}
+                container={portalContainer}
+              />
+            }
+          />
+        </div>
       </div>
+      <ViewerFooterStrip files={files} checkedIds={checkedIds} />
     </TooltipProvider>
   );
 }

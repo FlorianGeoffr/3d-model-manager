@@ -58,7 +58,12 @@ const MODEL_WITH_SOURCE: ModelDetail = {
   source_site: "thingiverse",
 };
 
-function renderHeader(editMode: boolean, onToggleEditMode = vi.fn(), model: ModelDetail = MODEL) {
+function renderHeader(
+  editMode: boolean,
+  onToggleEditMode = vi.fn(),
+  model: ModelDetail = MODEL,
+  onOpenRelocate = vi.fn(),
+) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const rootRoute = createRootRoute();
   // Starts on a dedicated "/detail" route (rather than "/") so a test can
@@ -69,7 +74,12 @@ function renderHeader(editMode: boolean, onToggleEditMode = vi.fn(), model: Mode
     getParentRoute: () => rootRoute,
     path: "/detail",
     component: () => (
-      <ModelHeader model={model} editMode={editMode} onToggleEditMode={onToggleEditMode} />
+      <ModelHeader
+        model={model}
+        editMode={editMode}
+        onToggleEditMode={onToggleEditMode}
+        onOpenRelocate={onOpenRelocate}
+      />
     ),
   });
   const jobsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/jobs", component: () => null });
@@ -80,6 +90,7 @@ function renderHeader(editMode: boolean, onToggleEditMode = vi.fn(), model: Mode
   return {
     router,
     onToggleEditMode,
+    onOpenRelocate,
     ...render(
       <QueryClientProvider client={queryClient}>
         <RouterProvider router={router} />
@@ -96,25 +107,22 @@ beforeEach(() => {
 });
 
 describe("ModelHeader -- read-only by default", () => {
-  it("renders name and description as plain text, no editing affordances", async () => {
+  it("renders the name as plain text, no editing affordances", async () => {
     renderHeader(false);
 
     const heading = await screen.findByRole("heading", { name: "Articulated Dragon" });
     expect(heading).toBeInTheDocument();
-    expect(screen.getByText("A flexible print-in-place dragon")).toBeInTheDocument();
 
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Edit name|Edit description/ })).not.toBeInTheDocument();
-    // Name/description aren't clickable buttons anymore.
+    expect(screen.queryByRole("button", { name: /Edit name/ })).not.toBeInTheDocument();
+    // The name isn't a clickable button anymore.
     expect(screen.queryByRole("button", { name: "Articulated Dragon" })).not.toBeInTheDocument();
   });
 
-  it("hides tag remove buttons; Archive/Delete are never direct buttons (they live in the overflow menu)", async () => {
+  it("Archive/Delete are never direct buttons (they live in the overflow menu)", async () => {
     renderHeader(false);
 
-    await screen.findByText("fantasy");
-    expect(screen.queryByRole("button", { name: /Remove tag/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Add tag" })).not.toBeInTheDocument();
+    await screen.findByRole("heading", { name: "Articulated Dragon" });
     expect(screen.queryByRole("button", { name: "Archive" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
   });
@@ -143,14 +151,11 @@ describe("ModelHeader -- edit mode", () => {
     expect(onToggleEditMode).toHaveBeenCalledOnce();
   });
 
-  it("reveals editing affordances for name/description and tags; toggle reads Done -- Archive/Delete stay in the overflow menu, not edit-gated", async () => {
+  it("reveals editing affordances for the name; toggle reads Done -- Archive/Delete stay in the overflow menu, not edit-gated", async () => {
     renderHeader(true);
 
     expect(await screen.findByRole("button", { name: "Done" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Edit name" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Edit description" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Remove tag fantasy" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Add tag" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Archive" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
   });
@@ -236,6 +241,41 @@ describe("ModelHeader -- Printed N× chip (Branch 5 Task 2)", () => {
   });
 });
 
+describe("ModelHeader -- badges (R13a slim header)", () => {
+  it("shows an Archived badge for an archived model", async () => {
+    renderHeader(false, vi.fn(), { ...MODEL, is_archived: true });
+
+    expect(await screen.findByText("Archived")).toBeInTheDocument();
+  });
+
+  it("hides the Archived badge for a non-archived model", async () => {
+    renderHeader(false);
+
+    await screen.findByRole("heading", { name: "Articulated Dragon" });
+    expect(screen.queryByText("Archived")).not.toBeInTheDocument();
+  });
+
+  it("shows a dismissible 'Needs review' badge when review_state is 'adopted'", async () => {
+    renderHeader(false, vi.fn(), { ...MODEL, review_state: "adopted" });
+
+    expect(await screen.findByTestId("review-badge")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss needs review" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Clear" }));
+
+    await waitFor(() =>
+      expect(patchMock).toHaveBeenCalledExactlyOnceWith("/models/articulated-dragon", { review_state: null }),
+    );
+  });
+
+  it("hides the review badge otherwise", async () => {
+    renderHeader(false);
+
+    await screen.findByRole("heading", { name: "Articulated Dragon" });
+    expect(screen.queryByTestId("review-badge")).not.toBeInTheDocument();
+  });
+});
+
 /** Opens the header's "More actions" overflow menu (Radix `DropdownMenu`)
  * and returns the menu element -- Archive, Delete, Re-download, and
  * Move/Copy all live behind it now, reachable in or out of edit mode.
@@ -295,14 +335,13 @@ describe("ModelHeader -- More actions overflow menu", () => {
     );
   });
 
-  it("'Move / copy…' opens the relocate dialog", async () => {
-    renderHeader(false);
+  it("'Move / copy…' calls onOpenRelocate -- the dialog itself now lives in TagsLinksCard", async () => {
+    const { onOpenRelocate } = renderHeader(false);
 
     await openMoreActions();
     fireEvent.click(await screen.findByRole("menuitem", { name: "Move / copy…" }));
 
-    const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByText("Move or copy to another backend")).toBeInTheDocument();
+    expect(onOpenRelocate).toHaveBeenCalledOnce();
   });
 });
 

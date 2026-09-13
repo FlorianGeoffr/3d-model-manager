@@ -8,8 +8,11 @@
  * caller only adds the per-surface `variant`/`showExpand`/`showWindowButtons`
  * flags), keeping the assembly in one place instead of duplicated per caller.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
+import { useQueryClient } from "@tanstack/react-query";
 
+import { modelQueryOptions, uploadModelCover } from "@/api/library";
 import { usePrinters } from "@/api/printers";
 import { useViewerBackground, type BackgroundPreset } from "@/components/viewer/background";
 import { useViewerLighting, type LightingPreset } from "@/components/viewer/lighting";
@@ -19,6 +22,7 @@ import {
   savePartColors,
   type PartColors,
 } from "@/components/viewer/partColors";
+import { applyToParts } from "@/components/viewer/quickColors";
 import {
   useViewerTools,
   type SceneStats,
@@ -44,7 +48,6 @@ export interface ViewerSceneInitial {
   colors?: PartColors;
   background?: { preset: BackgroundPreset; custom?: string };
   lighting?: LightingPreset;
-  panelOpen?: boolean;
   tools?: Partial<ViewerToolsState>;
 }
 
@@ -90,7 +93,6 @@ export function useViewerScene({
         initial?.checkedIds ?? (defaultAllChecked ? files.map((file) => file.id) : files[0] ? [files[0].id] : []),
       ),
   );
-  const [panelOpen, setPanelOpen] = useState(initial?.panelOpen ?? true);
   const [colors, setColors] = useState<PartColors>(() => initial?.colors ?? loadPartColors(slug));
   const { preset, custom, color, setPreset, setCustom } = useViewerBackground(
     initial?.background,
@@ -115,11 +117,77 @@ export function useViewerScene({
   const viewerApiRef = useRef<ViewerApi | null>(null);
   const printers = usePrinters();
   const printerId = printers.data?.[0]?.id;
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     if (!persist) return;
     savePartColors(slug, colors);
   }, [slug, colors, persist]);
+
+  // R13a Cover action (risk resolution 6): captures the canvas, uploads it
+  // through the normal ingest pipeline, then shows an OPTIMISTIC local
+  // object URL in the crossfade immediately -- the real thumbnail derivative
+  // (`render_thumb`) only exists after the async PNG pipeline step runs, so
+  // waiting for the refetch to show *something* would leave a stale/blank
+  // cover for a beat. `pendingCoverUrl` is cleared as soon as the caller's
+  // `coverUrl` prop itself changes (the `["models","detail",slug]` refetch
+  // landing with the new `cover_blob_hash`), so the optimistic image never
+  // outlives the real one.
+  const [pendingCoverUrl, setPendingCoverUrl] = useState<string | null>(null);
+  const [capturingCover, setCapturingCover] = useState(false);
+  const pendingCoverUrlRef = useRef<string | null>(null);
+  const initialCoverUrlRef = useRef(coverUrl);
+  useEffect(() => {
+    if (coverUrl === initialCoverUrlRef.current) return;
+    initialCoverUrlRef.current = coverUrl;
+    if (pendingCoverUrlRef.current) {
+      URL.revokeObjectURL(pendingCoverUrlRef.current);
+      pendingCoverUrlRef.current = null;
+    }
+    setPendingCoverUrl(null);
+  }, [coverUrl]);
+  useEffect(
+    () => () => {
+      if (pendingCoverUrlRef.current) URL.revokeObjectURL(pendingCoverUrlRef.current);
+    },
+    [],
+  );
+
+  // Disabled entirely when `persist` is false (the pop-out window, see this
+  // hook's `persist` doc comment) -- there's no model-detail card to reflect
+  // the new cover there, and the endpoint is keyed by `slug` the same way
+  // every other persisted write here is.
+  const captureCover = useCallback(async () => {
+    if (!persist) return;
+    setCapturingCover(true);
+    try {
+      const blob = await viewerApiRef.current?.screenshot();
+      if (!blob) {
+        toast.error("Couldn't capture a screenshot");
+        return;
+      }
+      const objectUrl = URL.createObjectURL(blob);
+      if (pendingCoverUrlRef.current) URL.revokeObjectURL(pendingCoverUrlRef.current);
+      pendingCoverUrlRef.current = objectUrl;
+      setPendingCoverUrl(objectUrl);
+
+      await uploadModelCover(slug, blob);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: modelQueryOptions(slug).queryKey }),
+        queryClient.invalidateQueries({ queryKey: ["models", "list"] }),
+      ]);
+      toast.success("Cover updated");
+    } catch {
+      if (pendingCoverUrlRef.current) {
+        URL.revokeObjectURL(pendingCoverUrlRef.current);
+        pendingCoverUrlRef.current = null;
+      }
+      setPendingCoverUrl(null);
+      toast.error("Couldn't update cover");
+    } finally {
+      setCapturingCover(false);
+    }
+  }, [persist, slug, queryClient]);
 
   // B1 "toggle-fix core": every combinable file becomes a part, checked or
   // not -- the scene keeps them all mounted and toggles `visible` instead of
@@ -168,6 +236,14 @@ export function useViewerScene({
       delete next[fileId];
       return next;
     });
+  }
+
+  // R13a dock quick swatches (Key decision 2): bulk-writes one hex into
+  // every CHECKED part's entry of the same `colors` map a per-part override
+  // writes one key of -- same `setColors`/persistence path, just applied to
+  // `checkedIds` instead of a single file id.
+  function setAllColors(hex: string) {
+    setColors((prev) => applyToParts(prev, [...checkedIds], hex));
   }
 
   const checkedList = [...checkedIds];
@@ -223,6 +299,7 @@ export function useViewerScene({
     colors,
     onSetPartColor: setPartColor,
     onClearPartColor: clearPartColor,
+    onSetAllColors: setAllColors,
     hasColors,
     onResetColors: () => setColors({}),
     preset,
@@ -238,8 +315,6 @@ export function useViewerScene({
     parts,
     checkedList,
     onOpenWindow: openInWindow,
-    panelOpen,
-    onTogglePanel: () => setPanelOpen((prev) => !prev),
     tools,
     onToolsChange: setTools,
     stats,
@@ -248,7 +323,10 @@ export function useViewerScene({
     fitSignal,
     onFit: () => setFitSignal((prev) => prev + 1),
     viewerApiRef,
-    coverUrl,
+    coverUrl: pendingCoverUrl ?? coverUrl,
+    onCaptureCover: captureCover,
+    capturingCover,
+    canCaptureCover: persist,
   };
 
   return { stageProps };

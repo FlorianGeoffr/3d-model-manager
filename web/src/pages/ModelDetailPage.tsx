@@ -3,10 +3,19 @@ import { getRouteApi } from "@tanstack/react-router";
 
 import { useModel } from "@/api/library";
 import { ArchivedBanner } from "@/components/model-detail/ArchivedBanner";
+import { DetailLayout } from "@/components/model-detail/DetailLayout";
 import { ModelHeader } from "@/components/model-detail/ModelHeader";
 import { RelatedModels } from "@/components/model-detail/RelatedModels";
-import { SidePanel } from "@/components/model-detail/SidePanel";
 import { StudioWorkspace } from "@/components/model-detail/StudioWorkspace";
+import { DescriptionCard } from "@/components/model-detail/cards/DescriptionCard";
+import { FilesDocsCard } from "@/components/model-detail/cards/FilesDocsCard";
+import { GcodeProfilesCard } from "@/components/model-detail/cards/GcodeProfilesCard";
+import { NotesCard } from "@/components/model-detail/cards/NotesCard";
+import { PrintHistoryCard } from "@/components/model-detail/cards/PrintHistoryCard";
+import { PrintTipsCard } from "@/components/model-detail/cards/PrintTipsCard";
+import { RevisionsCard } from "@/components/model-detail/cards/RevisionsCard";
+import { SpecsCard } from "@/components/model-detail/cards/SpecsCard";
+import { TagsLinksCard } from "@/components/model-detail/cards/TagsLinksCard";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ApiError } from "@/api/client";
 
@@ -19,6 +28,11 @@ export function ModelDetailPage() {
   // (name/description/tags/archive) behind an explicit toggle so a stray
   // click can't silently mutate a model.
   const [editMode, setEditMode] = useState(false);
+  // The "Move / copy…" trigger lives in `ModelHeader`'s overflow menu, but
+  // the dialog it opens (`StorageLocationBar`) now renders inside
+  // `TagsLinksCard` -- lifted here so both can share the same controlled
+  // `open` state.
+  const [relocateOpen, setRelocateOpen] = useState(false);
   // The route component stays mounted when only `$slug` changes (e.g. the
   // upcoming related-models strip links detail -> detail), so drop the gate
   // when navigating to a different model: landing on it already in edit
@@ -30,6 +44,7 @@ export function ModelDetailPage() {
   if (slug !== gateSlug) {
     setGateSlug(slug);
     setEditMode(false);
+    setRelocateOpen(false);
   }
 
   if (modelQuery.isLoading) {
@@ -53,13 +68,39 @@ export function ModelDetailPage() {
 
   return (
     <div className="space-y-6">
-      <ModelHeader model={model} editMode={editMode} onToggleEditMode={() => setEditMode((prev) => !prev)} />
+      <ModelHeader
+        model={model}
+        editMode={editMode}
+        onToggleEditMode={() => setEditMode((prev) => !prev)}
+        onOpenRelocate={() => setRelocateOpen(true)}
+      />
       <ArchivedBanner model={model} />
-      <RelatedModels model={model} />
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_380px]">
-        <StudioWorkspace model={model} />
-        <SidePanel model={model} />
-      </div>
+      <DetailLayout
+        left={
+          <>
+            <StudioWorkspace model={model} />
+            <DescriptionCard model={model} editMode={editMode} />
+            <TagsLinksCard
+              model={model}
+              editMode={editMode}
+              relocateOpen={relocateOpen}
+              onRelocateOpenChange={setRelocateOpen}
+            />
+            <RelatedModels model={model} />
+          </>
+        }
+        right={
+          <>
+            <GcodeProfilesCard model={model} />
+            <PrintHistoryCard model={model} />
+            <FilesDocsCard model={model} />
+            <RevisionsCard model={model} />
+            <NotesCard model={model} />
+            <PrintTipsCard />
+            <SpecsCard model={model} />
+          </>
+        }
+      />
     </div>
   );
 }

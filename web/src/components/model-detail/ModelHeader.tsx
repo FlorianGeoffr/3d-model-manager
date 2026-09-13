@@ -5,12 +5,12 @@ import {
   DownloadIcon,
   EllipsisIcon,
   FileArchiveIcon,
-  FileStackIcon,
   FolderInputIcon,
   ListPlusIcon,
   PencilIcon,
   StarIcon,
   Trash2Icon,
+  XIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -19,11 +19,7 @@ import { useEnqueueModel } from "@/api/queue";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { InlineEdit } from "@/components/InlineEdit";
 import { useHotkeys } from "@/hooks/useHotkeys";
-import { modelFilaments, revisionFormats } from "@/components/model-detail/modelSpec";
 import { OpenInSlicerButton } from "@/components/model-detail/OpenInSlicerButton";
-import { ProvenanceBlock } from "@/components/model-detail/ProvenanceBlock";
-import { StorageLocationBar } from "@/components/model-detail/StorageLocationBar";
-import { TagEditor } from "@/components/model-detail/TagEditor";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -41,13 +37,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { FilamentChip } from "@/components/ui/filament-chip";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { SpecRow, type SpecItem } from "@/components/ui/spec-row";
-import { formatDate, formatDateTime } from "@/lib/format";
-import { FORMAT_LABELS } from "@/lib/formatMeta";
-import { sanitizeDescriptionHtml } from "@/lib/richText";
+import { formatDateTime } from "@/lib/format";
 import { pickBestSlicerFile } from "@/lib/slicers";
 import type { ModelDetail } from "@/api/types";
 
@@ -130,10 +122,12 @@ export function ModelHeader({
   model,
   editMode,
   onToggleEditMode,
+  onOpenRelocate,
 }: {
   model: ModelDetail;
   editMode: boolean;
   onToggleEditMode: () => void;
+  onOpenRelocate: () => void;
 }) {
   const navigate = useNavigate();
   const patchModel = usePatchModel(model.slug);
@@ -142,70 +136,67 @@ export function ModelHeader({
   const enqueueModel = useEnqueueModel();
 
   const [redownloadOpen, setRedownloadOpen] = useState(false);
-  const [relocateOpen, setRelocateOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const canRedownload = Boolean(model.source_site && model.source_url);
+  const needsReview = model.review_state === "adopted";
 
   // R9-C item 5: same mutation as the star button below.
   useHotkeys({ f: () => patchModel.mutate({ favorite: !model.favorite }) });
 
-  const filaments = modelFilaments(model);
-  const formats = revisionFormats(model);
-  const fileCount = model.current_revision?.files.length ?? 0;
   // R10-C: the header's "Open in slicer" split button targets the best
   // slicer-eligible (3mf/step/obj/stl/iges) stored file on the current
   // revision, per `SLICER_FORMAT_PRIORITY` -- there's no broader "primary
   // file" concept to hang this off of yet.
   const slicerFile = pickBestSlicerFile(model.current_revision?.files ?? []);
-  const specItems: Array<SpecItem | null> = [
-    fileCount > 0
-      ? { icon: <FileStackIcon />, label: `${fileCount} ${fileCount === 1 ? "file" : "files"}` }
-      : null,
-    formats.length > 0 ? { label: formats.map((format) => FORMAT_LABELS[format]).join(" / ") } : null,
-    { label: `Updated ${formatDate(model.updated_at)}` },
-  ];
 
   return (
     <div className="space-y-3 border-b border-border pb-4">
       <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0 flex-1 space-y-1">
-          {editMode ? (
-            <>
-              {/* Keep the page's h1 in the heading outline even while the
-                  name is editable -- InlineEdit renders spans, so nesting
-                  it here is valid and screen readers still see a level-1
-                  heading in both modes. */}
-              <h1 className="text-2xl font-semibold">
-                <InlineEdit
-                  value={model.name}
-                  aria-label="name"
-                  onSave={(name) => {
-                    if (name) patchModel.mutate({ name });
-                  }}
-                  className="text-2xl font-semibold"
-                />
-              </h1>
+        <div className="min-w-0 flex-1 space-y-2">
+          {/* Keep the page's h1 in the heading outline even while the name
+              is editable -- InlineEdit renders spans, so nesting it here is
+              valid and screen readers still see a level-1 heading in both
+              modes. */}
+          <h1 className="text-2xl font-semibold">
+            {editMode ? (
               <InlineEdit
-                value={model.description ?? ""}
-                placeholder="Add a description…"
-                aria-label="description"
-                multiline
-                onSave={(description) => patchModel.mutate({ description: description || null })}
-                displayClassName="text-sm text-muted-foreground"
+                value={model.name}
+                aria-label="name"
+                onSave={(name) => {
+                  if (name) patchModel.mutate({ name });
+                }}
+                className="text-2xl font-semibold"
               />
-            </>
-          ) : (
-            <>
-              <h1 className="text-2xl font-semibold">{model.name}</h1>
-              {model.description && (
-                <div
-                  className="prose-compact text-sm text-muted-foreground"
-                  dangerouslySetInnerHTML={{ __html: sanitizeDescriptionHtml(model.description) }}
+            ) : (
+              model.name
+            )}
+          </h1>
+          <div className="flex flex-wrap items-center gap-2">
+            {model.is_archived ? <Badge variant="outline">Archived</Badge> : null}
+            {needsReview ? (
+              <Badge variant="secondary" className="gap-1 pr-1" data-testid="review-badge">
+                Needs review
+                <ConfirmDialog
+                  trigger={
+                    <button type="button" aria-label="Dismiss needs review" className="rounded-full hover:opacity-70">
+                      <XIcon className="size-3" />
+                    </button>
+                  }
+                  title='Clear "needs review"?'
+                  confirmLabel="Clear"
+                  onConfirm={() => patchModel.mutate({ review_state: null })}
                 />
-              )}
-            </>
-          )}
+              </Badge>
+            ) : null}
+            {/* Not edit-gated -- a print history fact, not editable metadata,
+                same treatment as the favorite star. */}
+            {model.print_count > 0 ? (
+              <Badge variant="secondary" title={`Last printed ${formatDateTime(model.last_printed_at)}`}>
+                Printed {model.print_count}×
+              </Badge>
+            ) : null}
+          </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {/* A star is a deliberate, always-live action -- not part of the
@@ -265,7 +256,7 @@ export function ModelHeader({
                   Download ZIP
                 </a>
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => setRelocateOpen(true)}>
+              <DropdownMenuItem onSelect={onOpenRelocate}>
                 <FolderInputIcon />
                 Move / copy…
               </DropdownMenuItem>
@@ -305,34 +296,6 @@ export function ModelHeader({
           />
         </div>
       </div>
-
-      <div className="space-y-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <SpecRow items={specItems} />
-          {/* Not edit-gated -- a print history fact, not editable metadata,
-              same treatment as the favorite star. */}
-          {model.print_count > 0 ? (
-            <Badge variant="secondary" title={`Last printed ${formatDateTime(model.last_printed_at)}`}>
-              Printed {model.print_count}×
-            </Badge>
-          ) : null}
-        </div>
-        {filaments.length > 0 && (
-          <div className="flex flex-wrap gap-2" data-testid="filament-strip">
-            {filaments.map((filament, index) => (
-              <FilamentChip
-                key={`${filament.color ?? ""}-${filament.material ?? ""}-${index}`}
-                color={filament.color ?? undefined}
-                material={filament.material ?? undefined}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-
-      <TagEditor model={model} editMode={editMode} />
-      <ProvenanceBlock model={model} />
-      <StorageLocationBar model={model} open={relocateOpen} onOpenChange={setRelocateOpen} />
     </div>
   );
 }

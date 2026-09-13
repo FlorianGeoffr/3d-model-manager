@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import time
 import uuid
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+import anyio
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_storage_backend
 from app.config import Settings, get_settings
 from app.db import get_db
+from app.models.enums import BlobFormat, BlobKind
+from app.models.library import Revision
 from app.schemas.jobs import JobOut
 from app.schemas.library import (
     GalleryPage,
@@ -25,14 +30,23 @@ from app.schemas.library import (
     ModelRelocateIn,
 )
 from app.services import jobs as jobs_service
-from app.services import library, zip_export
+from app.services import library, spool, zip_export
 from app.services import storage_backends as storage_backends_service
 from app.services.http_names import content_disposition_attachment
 from app.storage.base import StorageBackend
 from app.tasks.importing import redownload_model as redownload_model_task
+from app.tasks.ingest import store_to_backend
 from app.tasks.relocate import relocate_model_storage
 
 router = APIRouter(prefix="/models", tags=["models"])
+
+_COVER_MAX_SIZE = 20 * 1024 * 1024  # 20 MB (R13a plan: "sane cap")
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+def _read_magic(path: Path) -> bytes:
+    with path.open("rb") as fh:
+        return fh.read(len(_PNG_MAGIC))
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, response_model=ModelDetail)
@@ -119,6 +133,67 @@ async def get_model(
     slug: str, db: AsyncSession = Depends(get_db), settings: Settings = Depends(get_settings)
 ) -> ModelDetail:
     model = await library.get_model_by_slug(db, slug)
+    return await library.build_model_detail(db, model, settings)
+
+
+@router.post("/{slug}/cover", response_model=ModelDetail)
+async def set_model_cover(
+    slug: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> ModelDetail:
+    """Raw-body PNG upload (R13a): reuses the same tee-to-spool ingest path
+    as ``PUT /api/uploads`` (``app.services.spool.stream_to_spool`` ->
+    ``library.finalize_upload`` -> ``store_to_backend``/pipeline dispatch),
+    landing the bytes at ``_snapshots/cover-<epoch ns>.png`` on the model's
+    current revision and pointing ``model.cover_blob_hash`` at the new blob
+    in the same transaction as the ``File`` row. A repost always lands as a
+    NEW file (the epoch-based rel_path never collides) and simply repoints
+    ``cover_blob_hash`` -- the old cover file is left in place, same as any
+    other superseded revision file.
+    """
+    model = await library.get_model_by_slug(db, slug)
+    revision = await db.get(Revision, model.current_revision_id)
+
+    token, path, blob_hash, size = await spool.stream_to_spool(
+        request, settings, max_size=_COVER_MAX_SIZE
+    )
+    try:
+        if size == 0:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "empty upload body")
+
+        magic = await anyio.to_thread.run_sync(_read_magic, path)
+        if magic != _PNG_MAGIC:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "not a PNG file")
+
+        rel_path = f"_snapshots/cover-{time.time_ns()}.png"
+
+        def _set_cover_hash() -> None:
+            model.cover_blob_hash = blob_hash
+
+        file = await library.finalize_upload(
+            db,
+            model=model,
+            revision=revision,
+            rel_path=rel_path,
+            blob_hash=blob_hash,
+            size=size,
+            kind=BlobKind.IMAGE,
+            format_=BlobFormat.PNG,
+            replace=False,
+            after_blob_flush=_set_cover_hash,
+        )
+
+        job = await jobs_service.create_job(
+            db, id=token, type="store_to_backend", subject_type="file", subject_id=file.id
+        )
+    except BaseException:
+        await anyio.to_thread.run_sync(lambda: path.unlink(missing_ok=True))
+        raise
+
+    store_to_backend.apply_async(args=[str(job.id), file.id, str(path)], task_id=str(job.id))
+
     return await library.build_model_detail(db, model, settings)
 
 

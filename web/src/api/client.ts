@@ -52,19 +52,10 @@ async function extractDetail(response: Response): Promise<string> {
   return response.statusText || `Request failed with status ${response.status}`;
 }
 
-async function request<T>(path: string, init: JsonRequestInit = {}): Promise<T> {
-  const { body, headers, ...rest } = init;
-
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...rest,
-    credentials: "include",
-    headers: {
-      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
-      ...headers,
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
-
+/** Shared 401/error/empty-body handling for both the JSON path (`request`)
+ * and the raw-body path (`requestRaw`, e.g. the cover-snapshot upload) --
+ * everything past "here's a `Response`" is identical between the two. */
+async function handleResponse<T>(response: Response): Promise<T> {
   if (response.status === 401 && !isUnauthenticatedRedirectExempt()) {
     window.location.assign("/login");
     throw new ApiError(401, await extractDetail(response));
@@ -81,10 +72,42 @@ async function request<T>(path: string, init: JsonRequestInit = {}): Promise<T> 
   return (await response.json()) as T;
 }
 
+async function request<T>(path: string, init: JsonRequestInit = {}): Promise<T> {
+  const { body, headers, ...rest } = init;
+
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...rest,
+    credentials: "include",
+    headers: {
+      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+      ...headers,
+    },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+
+  return handleResponse<T>(response);
+}
+
+/** Raw (non-JSON) request body -- e.g. the cover-snapshot endpoint, which
+ * takes a raw PNG stream rather than a JSON envelope (`backend/app/api/
+ * models.py`'s `POST /models/{slug}/cover`, R13a). */
+async function requestRaw<T>(path: string, method: string, body: BodyInit, contentType: string): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, {
+    method,
+    credentials: "include",
+    headers: { "Content-Type": contentType },
+    body,
+  });
+
+  return handleResponse<T>(response);
+}
+
 export const api = {
   get: <T>(path: string) => request<T>(path, { method: "GET" }),
   post: <T>(path: string, body?: unknown) => request<T>(path, { method: "POST", body }),
   put: <T>(path: string, body?: unknown) => request<T>(path, { method: "PUT", body }),
   patch: <T>(path: string, body?: unknown) => request<T>(path, { method: "PATCH", body }),
   delete: <T>(path: string) => request<T>(path, { method: "DELETE" }),
+  /** POST with a raw (non-JSON) body, e.g. an image blob. */
+  postRaw: <T>(path: string, body: BodyInit, contentType: string) => requestRaw<T>(path, "POST", body, contentType),
 };

@@ -3,7 +3,6 @@ import { useMemo, useState } from "react";
 import { useViewerScene } from "@/components/viewer/useViewerScene";
 import { glbFiles, pickViewerFiles } from "@/components/viewer/viewable";
 import { PlaceholderCard } from "@/components/viewer/ViewerStage";
-import { FileRail } from "@/components/model-detail/FileRail";
 import type { StudioSelection } from "@/components/model-detail/studioSelection";
 import { StudioSurface } from "@/components/model-detail/StudioSurface";
 import type { FileOut, ModelDetail } from "@/api/types";
@@ -28,11 +27,14 @@ function StudioWorkspaceGeneration({
     defaultAllChecked: true,
   });
 
-  const [selection, setSelection] = useState<StudioSelection | undefined>(() =>
+  // R13a re-chrome: no more `FileRail` left column to drive this
+  // interactively -- `selection` still lives here (unchanged shape, not yet
+  // wired to a setter) so `StudioSurface`'s file-status switch keeps
+  // working, and so a future "View in 3D" row action (Files card, R13c) has
+  // somewhere to reintroduce a setter.
+  const [selection] = useState<StudioSelection | undefined>(() =>
     glbable.length > 0 ? { type: "assembly" } : others[0] ? { type: "file", id: others[0].id } : undefined,
   );
-
-  const slicedFiles = others.filter((file) => file.kind === "sliced");
 
   if (glbable.length === 0 && others.length === 0) {
     return (
@@ -58,24 +60,11 @@ function StudioWorkspaceGeneration({
           : undefined;
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col gap-4 md:flex-row">
-      <FileRail
-        glbFiles={glbable}
-        otherFiles={others}
-        selection={resolvedSelection}
-        onSelect={setSelection}
-        checkedIds={stageProps.checkedIds}
-        onToggleFile={stageProps.onToggleFile}
-        onSetAllChecked={stageProps.onSetAllChecked}
-        colors={stageProps.colors}
-        onSetPartColor={stageProps.onSetPartColor}
-        onClearPartColor={stageProps.onClearPartColor}
-      />
+    <div className="flex min-w-0 flex-1 flex-col gap-4">
       <StudioSurface
         selection={resolvedSelection}
         hasGlb={glbable.length > 0}
         otherFiles={others}
-        slicedFiles={slicedFiles}
         stageProps={stageProps}
       />
     </div>

@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.0](https://github.com/metril/3d-model-manager/compare/v0.2.0...v0.3.0) (2026-09-13)
+
+
+### Features
+
+* **r13a:** GyroidVault-style detail layout and viewer dock ([9b732c8](https://github.com/metril/3d-model-manager/commit/9b732c8d2076b9e9050a5797854e73f03cfe49cf))
+* **r13b:** library grid/list/folder views, categories, new sorts, scan button ([34ac797](https://github.com/metril/3d-model-manager/commit/34ac797e4893e6828950a3788186860325aa7529))
+* **r13c:** materials, custom metadata, print tips, doc files, dashboard lists, printer build volume ([6b1f935](https://github.com/metril/3d-model-manager/commit/6b1f935977a94a03ed75c710d738460517b8d6b4))
+
+
+### Bug Fixes
+
+* **r13a:** review fixes — View in 3D hand-off, sheet title, snapshot cover replace, layout stretch, dock wrap ([9e6d063](https://github.com/metril/3d-model-manager/commit/9e6d0639e1a40dc808e4f8540462c468ce0f4d1f))
+* **r13b:** palette category colors, drillable storage tree with files, sidebar filter sync, storage invalidation ([0867fc9](https://github.com/metril/3d-model-manager/commit/0867fc946f06d8ee9b4f603b5b86a97ae12e0fea))
+* **r13c:** docs out of Files tab, dashboard keys, metadata limits, migration downgrade safety, build-volume backfill/reseed, doc intake guard ([43dc41b](https://github.com/metril/3d-model-manager/commit/43dc41bcba0aa3d1da9894927677a36765bf600a))
+
 ## [0.2.0](https://github.com/metril/3d-model-manager/compare/v0.1.0...v0.2.0) (2026-09-12)
 
 

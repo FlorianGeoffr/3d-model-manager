@@ -21,6 +21,10 @@ vi.mock("@/api/collections", () => ({
   useFollowedCollections: () => ({ data: [{ id: 1, title: "MakerWorld favorites" }] }),
 }));
 
+vi.mock("@/api/categories", () => ({
+  useCategories: () => ({ data: [{ id: 1, name: "Miniatures", color: "#f00", model_count: 3 }] }),
+}));
+
 vi.mock("@/api/library", () => ({
   useModelSearchQuery: () => ({ data: undefined }),
 }));

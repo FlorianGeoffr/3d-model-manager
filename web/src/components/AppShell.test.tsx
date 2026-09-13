@@ -41,6 +41,10 @@ vi.mock("@/api/collections", () => ({
   useFollowedCollections: () => ({ data: [] }),
 }));
 
+vi.mock("@/api/categories", () => ({
+  useCategories: () => ({ data: [] }),
+}));
+
 vi.mock("@/api/printers", () => ({
   usePrinters: () => ({ data: [] }),
   usePrinterStatus: () => ({ data: undefined }),

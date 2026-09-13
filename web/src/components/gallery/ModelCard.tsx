@@ -263,9 +263,21 @@ export function ModelCard({
           )}
         </div>
         <CardContent className="flex flex-col gap-2 px-4">
-          <h3 className="truncate text-sm font-medium" title={model.name}>
-            {model.name}
-          </h3>
+          <div className="flex items-center gap-1.5">
+            <h3 className="truncate text-sm font-medium" title={model.name}>
+              {model.name}
+            </h3>
+            {model.category && (
+              <Badge variant="outline" className="shrink-0 gap-1">
+                <span
+                  aria-hidden="true"
+                  className="size-1.5 rounded-full"
+                  style={{ backgroundColor: model.category.color ?? undefined }}
+                />
+                {model.category.name}
+              </Badge>
+            )}
+          </div>
 
           <SpecRow data-testid="model-spec" items={specItems} />
 

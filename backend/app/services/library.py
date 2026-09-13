@@ -37,7 +37,7 @@ from app.config import Settings
 from app.importers.base import SiteImporter
 from app.importers.registry import get_importer
 from app.models.enums import BlobFormat, BlobKind, DerivativeKind, DerivativeStatus, ImportSite
-from app.models.library import Blob, File, Model, Note, Print, Revision, Tag, model_tags
+from app.models.library import Blob, Category, File, Model, Note, Print, Revision, Tag, model_tags
 from app.models.processing import AssemblyThumb, BlobMeta, Derivative
 from app.models.storage import FileLocation, StorageBackendRow
 from app.models.system import Job
@@ -49,6 +49,7 @@ from app.schemas.library import (
     FileEnrichment,
     FileOut,
     ModelBackendOut,
+    ModelCategoryOut,
     ModelDetail,
     ModelSummary,
     NoteOut,
@@ -74,7 +75,38 @@ if TYPE_CHECKING:
     # simplest): only needed for the `store_imported_file_sync` annotation.
     from app.importers.download import StagedFile
 
-_SORT_COLUMNS = {"updated_at": Model.updated_at, "name": Model.name}
+
+def _parse_cursor_datetime(raw: str) -> datetime:
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid cursor") from exc
+
+
+def _parse_cursor_int(raw: str) -> int:
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid cursor") from exc
+
+
+def _parse_cursor_str(raw: str) -> str:
+    return raw
+
+
+# Table-driven keyset-cursor support (Task 5 D1; R13b Risk resolution 7):
+# each sortable field maps to `(column, parse, extract)` -- `parse` turns
+# the cursor's decoded string back into a value comparable against `column`
+# (an int/datetime/str cursor all work through the SAME `list_models` code
+# path below), and `extract` renders a page's last row's sort value back
+# into a string for `encode_cursor`. Adding a new sortable field is exactly
+# one entry here, never a new `if field_name == ...` branch.
+_SORT_FIELDS: dict[str, tuple[object, object, object]] = {
+    "updated_at": (Model.updated_at, _parse_cursor_datetime, lambda m: m.updated_at.isoformat()),
+    "created_at": (Model.created_at, _parse_cursor_datetime, lambda m: m.created_at.isoformat()),
+    "name": (Model.name, _parse_cursor_str, lambda m: m.name),
+    "print_count": (Model.print_count, _parse_cursor_int, lambda m: str(m.print_count)),
+}
 
 # Formats whose blobs get a `glb` derivative at all (Global Constraints
 # "Pipeline shape" table) -- mirrors `app.tasks.pipeline`'s private
@@ -209,6 +241,7 @@ async def create_model(
         name=name,
         description=description,
         tags=[],
+        category=None,
         source_url=source_url,
         source_site=source_site,
         source_author=source_author,
@@ -289,6 +322,7 @@ def create_imported_model_sync(
         name=name,
         description=description,
         tags=[],
+        category=None,
         source_url=source_url,
         source_site=source_site,
         source_author=source_author,
@@ -384,7 +418,11 @@ async def get_model_by_id(db: AsyncSession, model_id: int) -> Model:
 
 
 async def get_model_by_slug(db: AsyncSession, slug: str) -> Model:
-    stmt = select(Model).where(Model.slug == slug).options(selectinload(Model.tags))
+    stmt = (
+        select(Model)
+        .where(Model.slug == slug)
+        .options(selectinload(Model.tags), selectinload(Model.category))
+    )
     model = (await db.execute(stmt)).scalar_one_or_none()
     if model is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"model {slug!r} not found")
@@ -412,6 +450,15 @@ async def patch_model(
                     status.HTTP_422_UNPROCESSABLE_CONTENT, detail="unknown cover_blob_hash"
                 )
 
+    if "category_id" in changes:
+        new_category_id = changes["category_id"]
+        if new_category_id is not None:  # None clears the category; only validate non-None
+            category = await db.get(Category, new_category_id)
+            if category is None:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_CONTENT, detail="unknown category_id"
+                )
+
     new_name = changes.get("name")
     name_changing = "name" in changes and new_name != model.name
     if name_changing:
@@ -429,10 +476,18 @@ async def patch_model(
         "review_state",
         "favorite",
         "is_archived",
+        "category_id",
     ):
         if field in changes:
             setattr(model, field, changes[field])
     await db.commit()
+    if "category_id" in changes:
+        # `expire_on_commit=False` (app.db.get_sessionmaker) means the
+        # already-loaded `category` relationship would otherwise keep
+        # pointing at the OLD row after `category_id` changes above --
+        # refresh it explicitly so `build_model_detail`'s `model.category`
+        # read reflects the new FK.
+        await db.refresh(model, ["category"])
     return model
 
 
@@ -1078,6 +1133,12 @@ async def build_model_summaries(
                 dims_mm=agg.dims_mm if agg else None,
                 best_slicer_file=agg.best_slicer_file if agg else None,
                 printable_file=agg.printable_file if agg else None,
+                category_id=m.category_id,
+                category=(
+                    ModelCategoryOut(id=m.category.id, name=m.category.name, color=m.category.color)
+                    if m.category is not None
+                    else None
+                ),
             )
         )
     return items
@@ -1093,6 +1154,7 @@ async def list_models(
     has_sliced: bool | None,
     collection: int | None,
     favorite: bool | None,
+    category: int | None,
     sort: str,
     archived: bool,
     limit: int,
@@ -1103,15 +1165,18 @@ async def list_models(
     adds the ``collection`` filter -- a plain equality on the denormalized
     ``Model.source_collection_id``, no join needed; Branch 4 Task 1 adds the
     ``favorite`` filter -- ``favorite=true`` narrows to starred models,
-    ``false``/omitted apply no filter at all (never hides favorites)).
+    ``false``/omitted apply no filter at all (never hides favorites); R13b
+    adds the ``category`` filter -- a plain equality on ``Model.category_id``,
+    same shape as ``collection``).
     """
     is_desc = sort.startswith("-")
     field_name = sort[1:] if is_desc else sort
-    sort_column = _SORT_COLUMNS.get(field_name)
-    if sort_column is None:
+    sort_field = _SORT_FIELDS.get(field_name)
+    if sort_field is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"invalid sort field: {field_name!r}")
+    sort_column, parse_cursor_value, extract_sort_value = sort_field
 
-    stmt = select(Model).options(selectinload(Model.tags))
+    stmt = select(Model).options(selectinload(Model.tags), selectinload(Model.category))
     if not archived:
         stmt = stmt.where(Model.is_archived.is_(False))
     if q:
@@ -1153,6 +1218,8 @@ async def list_models(
         stmt = stmt.where(Model.source_collection_id == collection)
     if favorite:
         stmt = stmt.where(Model.favorite.is_(True))
+    if category is not None:
+        stmt = stmt.where(Model.category_id == category)
 
     order_col = sort_column.desc() if is_desc else sort_column.asc()
     order_id = Model.id.desc() if is_desc else Model.id.asc()
@@ -1160,14 +1227,7 @@ async def list_models(
 
     if cursor:
         cursor_raw, cursor_id = decode_cursor(cursor)
-        cursor_value: object
-        if field_name == "updated_at":
-            try:
-                cursor_value = datetime.fromisoformat(cursor_raw)
-            except ValueError as exc:
-                raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid cursor") from exc
-        else:
-            cursor_value = cursor_raw
+        cursor_value = parse_cursor_value(cursor_raw)
         keyset = tuple_(sort_column, Model.id)
         cursor_tuple = tuple_(cursor_value, cursor_id)
         stmt = stmt.where(keyset < cursor_tuple if is_desc else keyset > cursor_tuple)
@@ -1183,8 +1243,7 @@ async def list_models(
     next_cursor = None
     if has_more and page_models:
         last = page_models[-1]
-        sort_value = last.updated_at.isoformat() if field_name == "updated_at" else last.name
-        next_cursor = encode_cursor(sort_value, last.id)
+        next_cursor = encode_cursor(extract_sort_value(last), last.id)
 
     return items, next_cursor
 
@@ -1371,6 +1430,14 @@ async def build_model_detail(db: AsyncSession, model: Model, settings: Settings)
         favorite=model.favorite,
         print_count=print_count,
         last_printed_at=last_printed_at,
+        category_id=model.category_id,
+        category=(
+            ModelCategoryOut(
+                id=model.category.id, name=model.category.name, color=model.category.color
+            )
+            if model.category is not None
+            else None
+        ),
     )
 
 

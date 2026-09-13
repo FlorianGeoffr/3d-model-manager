@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { Bookmark } from "lucide-react";
+import { Bookmark, Shapes } from "lucide-react";
 
+import { useCategories } from "@/api/categories";
 import { useFollowedCollections } from "@/api/collections";
 import { useModelSearchQuery } from "@/api/library";
 import {
@@ -28,6 +29,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
   const [query, setQuery] = useState("");
   const [debounced, setDebounced] = useState("");
   const followed = useFollowedCollections();
+  const categoriesQuery = useCategories();
 
   useHotkeys({ "mod+k": () => onOpenChange(!open) });
 
@@ -49,6 +51,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
   const search = useModelSearchQuery(trimmed);
   const models = trimmed.length > 0 ? (search.data?.items ?? []) : [];
   const collections = followed.data ?? [];
+  const categories = categoriesQuery.data ?? [];
 
   function goTo(to: string) {
     onOpenChange(false);
@@ -58,6 +61,11 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
   function goToCollection(id: number) {
     onOpenChange(false);
     void navigate({ to: "/", search: { collection: id } });
+  }
+
+  function goToCategory(id: number) {
+    onOpenChange(false);
+    void navigate({ to: "/", search: { category: id } });
   }
 
   function goToModel(slug: string) {
@@ -90,6 +98,23 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
                 >
                   <Bookmark className="size-4" />
                   {c.title}
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </>
+        )}
+        {categories.length > 0 && (
+          <>
+            <CommandSeparator />
+            <CommandGroup heading="Categories">
+              {categories.map((category) => (
+                <CommandItem
+                  key={category.id}
+                  value={`category-${category.name}`}
+                  onSelect={() => goToCategory(category.id)}
+                >
+                  <Shapes className="size-4" />
+                  {category.name}
                 </CommandItem>
               ))}
             </CommandGroup>

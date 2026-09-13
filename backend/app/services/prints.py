@@ -10,11 +10,12 @@ from __future__ import annotations
 from datetime import datetime
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session as SyncSession
 
 from app.models.enums import PrintResult
-from app.models.library import Print
+from app.models.library import Model, Print
 from app.schemas.prints import PrintOut
 
 
@@ -30,6 +31,11 @@ async def create_print(
     duration_min: int | None,
     notes: str | None,
 ) -> PrintOut:
+    """Inserts the print row AND bumps ``Model.print_count`` by one, in the
+    SAME transaction (R13b Risk resolution 4: this -- plus ``delete_print``
+    below -- is the ONLY writer of ``print_count``; ``recount_print_counts``
+    is the self-healing backstop, not a second writer).
+    """
     row = Print(
         model_id=model_id,
         printer_name=printer_name,
@@ -42,6 +48,9 @@ async def create_print(
     if printed_at is not None:
         row.printed_at = printed_at
     db.add(row)
+    await db.execute(
+        update(Model).where(Model.id == model_id).values(print_count=Model.print_count + 1)
+    )
     await db.commit()
     await db.refresh(row)
     return PrintOut.from_model(row)
@@ -90,5 +99,38 @@ async def patch_print(db: AsyncSession, print_id: int, changes: dict[str, object
 
 async def delete_print(db: AsyncSession, print_id: int) -> None:
     row = await _get_print_or_404(db, print_id)
+    model_id = row.model_id
     await db.delete(row)
+    # `GREATEST(..., 0)` is a pure defensive floor -- normal operation never
+    # needs it, since every print row was counted exactly once by
+    # `create_print` above; it only guards against a print_count that was
+    # already out of sync (pre-migration data, a bug) going negative.
+    await db.execute(
+        update(Model)
+        .where(Model.id == model_id)
+        .values(print_count=func.greatest(Model.print_count - 1, 0))
+    )
     await db.commit()
+
+
+async def recount_print_counts(db: AsyncSession) -> None:
+    """Self-heals any ``print_count`` drift (R13b Risk resolution 4) by
+    recomputing every model's count from ``prints`` directly, in one
+    statement -- called at the end of the scan job (``app.tasks.scan``) so
+    drift (a pre-migration import, a bug, manual DB surgery) never lingers
+    past the next scan. Models with zero prints are reset to 0 via the
+    ``COALESCE`` fallback -- a plain correlated-subquery ``UPDATE`` would
+    otherwise leave them untouched only when they already happen to be 0.
+    """
+    subquery = select(func.count(Print.id)).where(Print.model_id == Model.id).scalar_subquery()
+    await db.execute(update(Model).values(print_count=func.coalesce(subquery, 0)))
+    await db.commit()
+
+
+def recount_print_counts_sync(session: SyncSession) -> None:
+    """SYNC twin of :func:`recount_print_counts` for the Celery scan job
+    (``app.tasks.scan``/``app.services.scanner``, which runs in the sync
+    worker world -- see ``app.tasks.base``)."""
+    subquery = select(func.count(Print.id)).where(Print.model_id == Model.id).scalar_subquery()
+    session.execute(update(Model).values(print_count=func.coalesce(subquery, 0)))
+    session.commit()

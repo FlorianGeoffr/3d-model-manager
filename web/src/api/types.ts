@@ -40,6 +40,8 @@ export interface ModelPatch {
   // /models/{slug}` is now a real hard delete, so archiving/unarchiving a
   // model is reversible PATCH traffic instead (both directions).
   is_archived?: boolean;
+  // R13b: single category assignment -- `null` clears it.
+  category_id?: number | null;
 }
 
 // `POST /models/{slug}/redownload` payload (feat/import-fidelity T3):
@@ -114,6 +116,11 @@ export interface ModelSummary {
   dims_mm: number[] | null;
   best_slicer_file: FileOut | null;
   printable_file: FileOut | null;
+  // R13b (categories): a model's single category, or `null` for uncategorized.
+  // `category_id` mirrors it for cache-patching convenience; both come from
+  // the same backend join and always agree.
+  category_id?: number | null;
+  category?: CategoryOut | null;
 }
 
 export interface GalleryPage {
@@ -256,6 +263,9 @@ export interface ModelDetail {
   // `print_count: 0, last_printed_at: null` for a model with no logged prints.
   print_count: number;
   last_printed_at: string | null;
+  // R13b (categories): mirrors `ModelSummary.category`/`category_id` above.
+  category_id?: number | null;
+  category?: CategoryOut | null;
 }
 
 // -- diff ----------------------------------------------------------
@@ -301,6 +311,30 @@ export interface TagOut {
   id: number;
   name: string;
   color?: TagColor | null;
+}
+
+// -- categories (R13b, backend/app/schemas/library.py) ---------------------
+// Unlike tags (many-per-model), a model has AT MOST ONE category -- a
+// coarser, exclusive grouping (mirrors GyroidVault's shelves). `color` is a
+// free-form string (the backend doesn't constrain it to `TagColor`'s fixed
+// 10-key palette), so it's rendered as an inline dot/swatch rather than
+// through `tagColorClass`.
+
+export interface CategoryOut {
+  id: number;
+  name: string;
+  color: string | null;
+  model_count: number;
+}
+
+export interface CategoryCreate {
+  name: string;
+  color?: string | null;
+}
+
+export interface CategoryPatch {
+  name?: string;
+  color?: string | null;
 }
 
 // -- uploads (backend/app/schemas/uploads.py) --------------------------------
@@ -956,4 +990,20 @@ export interface DuplicatesResolveOut {
   deleted: number;
   reclaimed_bytes: number;
   skipped: SkippedCopy[];
+}
+
+// -- storage tree browser (R13b, `GET /storage/tree?path=`) ----------------
+// Folder-first navigation over the raw storage layout: `dirs` are the
+// immediate subdirectories of `path` (each with its own model count), and
+// `models` are the `ModelSummary`s that live directly under `path` (leaves).
+
+export interface StorageTreeDir {
+  name: string;
+  count: number;
+}
+
+export interface StorageTreeOut {
+  path: string;
+  dirs: StorageTreeDir[];
+  models: ModelSummary[];
 }

@@ -69,6 +69,8 @@ _PATH_PARAM_VALUES = {
     "entry_id": "1",
     # Branch 5 Task 1: per-model print history.
     "print_id": "1",
+    # R13b: categories.
+    "category_id": "1",
 }
 
 

@@ -79,3 +79,19 @@ export function estimateRowHeight(containerWidth: number, columns: number): numb
   const cardWidth = (containerWidth - GRID_GAP_PX * (columns - 1)) / columns;
   return cardWidth + CARD_FOOTER_HEIGHT_PX + GRID_GAP_PX;
 }
+
+// R13b list view: `ModelRow` is a fixed-height horizontal row (96px thumb +
+// padding), unlike the grid's aspect-square cards -- so, unlike
+// `estimateRowHeight` above, this needs no container-width math at all. One
+// constant, shared by the virtualizer's `estimateSize` and `ModelRow` itself
+// so the two can never disagree.
+export const LIST_ROW_HEIGHT_PX = 96 + GRID_GAP_PX;
+
+/** List view always has exactly one item per virtual row (unlike the grid's
+ * `chunkIntoRows`, which fans out across `columns`) -- this just documents
+ * that intent at the call site while giving list rows their own fixed
+ * estimate function, mirroring `estimateRowHeight`'s signature-less-columns
+ * shape for parity. */
+export function estimateListRowHeight(): number {
+  return LIST_ROW_HEIGHT_PX;
+}

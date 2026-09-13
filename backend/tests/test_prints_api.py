@@ -13,7 +13,8 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.library import Print
+from app.models.library import Model, Print
+from app.services import prints as prints_service
 
 pytestmark = pytest.mark.usefixtures("library_root")
 
@@ -407,6 +408,78 @@ async def test_model_detail_print_aggregates_reflect_rows(
     body = detail.json()
     assert body["print_count"] == 3
     assert body["last_printed_at"] == "2026-07-01T00:00:00Z"
+
+
+# ---------------------------------------------------------------------------
+# print_count (R13b): single writer in app.services.prints, self-healed by
+# recount_print_counts on scan.
+# ---------------------------------------------------------------------------
+
+
+async def test_create_print_increments_model_print_count(
+    authenticated_client: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    model = await _create_model(authenticated_client, "Print Count Increment")
+
+    await authenticated_client.post(f"/api/models/{model['id']}/prints", json={})
+    await authenticated_client.post(f"/api/models/{model['id']}/prints", json={})
+
+    row = await db_session.get(Model, model["id"])
+    await db_session.refresh(row)
+    assert row.print_count == 2
+
+
+async def test_delete_print_decrements_model_print_count(
+    authenticated_client: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    model = await _create_model(authenticated_client, "Print Count Decrement")
+    created = await authenticated_client.post(f"/api/models/{model['id']}/prints", json={})
+    await authenticated_client.post(f"/api/models/{model['id']}/prints", json={})
+    print_id = created.json()["id"]
+
+    response = await authenticated_client.delete(f"/api/prints/{print_id}")
+    assert response.status_code == 204
+
+    row = await db_session.get(Model, model["id"])
+    await db_session.refresh(row)
+    assert row.print_count == 1
+
+
+async def test_recount_print_counts_fixes_drift(
+    authenticated_client: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    model = await _create_model(authenticated_client, "Print Count Drift")
+    await authenticated_client.post(f"/api/models/{model['id']}/prints", json={})
+    await authenticated_client.post(f"/api/models/{model['id']}/prints", json={})
+
+    # Simulate drift: manually corrupt the denormalized counter, bypassing
+    # the single writer (app.services.prints).
+    await db_session.execute(
+        text("UPDATE models SET print_count = 999 WHERE id = :id"), {"id": model["id"]}
+    )
+    await db_session.commit()
+
+    await prints_service.recount_print_counts(db_session)
+
+    row = await db_session.get(Model, model["id"])
+    await db_session.refresh(row)
+    assert row.print_count == 2
+
+
+async def test_recount_print_counts_resets_models_with_zero_prints(
+    authenticated_client: httpx.AsyncClient, db_session: AsyncSession
+) -> None:
+    model = await _create_model(authenticated_client, "Print Count Zero Drift")
+    await db_session.execute(
+        text("UPDATE models SET print_count = 5 WHERE id = :id"), {"id": model["id"]}
+    )
+    await db_session.commit()
+
+    await prints_service.recount_print_counts(db_session)
+
+    row = await db_session.get(Model, model["id"])
+    await db_session.refresh(row)
+    assert row.print_count == 0
 
 
 async def test_model_detail_print_aggregates_do_not_leak_across_models(

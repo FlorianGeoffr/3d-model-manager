@@ -106,6 +106,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.config import Settings
 from app.models import Blob, File, FileLocation, Model, Revision, ScanRun, StorageBackendRow
 from app.services import layout
+from app.services import prints as prints_service
 from app.services import storage_backends as storage_backends_service
 from app.storage.base import EntryInfo, StorageBackend
 from app.storage.s3 import S3StorageBackend
@@ -238,6 +239,11 @@ def run_scan_all_backends(session: Session, settings: Settings, scan_run_id: int
     scan_run.state = "done"
     scan_run.finished_at = datetime.now(UTC)
     session.commit()
+
+    # R13b Risk resolution 4: self-heal any `Model.print_count` drift on
+    # every scan, rather than trusting `app.services.prints`' single-writer
+    # increments/decrements to never fall out of sync forever.
+    prints_service.recount_print_counts_sync(session)
 
 
 def _touch_location(session: Session, file_id: int, backend_id: int, verified_at: datetime) -> None:

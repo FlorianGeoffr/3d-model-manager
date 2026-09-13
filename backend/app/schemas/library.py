@@ -48,6 +48,9 @@ class ModelPatch(BaseModel):
     review_state: str | None = None
     favorite: bool | None = None
     is_archived: bool | None = None
+    # R13b: single-valued category assignment; explicit `null` clears it
+    # (unlike `name`, `category_id` is genuinely nullable at the DB level).
+    category_id: int | None = None
 
 
 class ModelRedownloadIn(BaseModel):
@@ -101,6 +104,19 @@ class ModelBulkDeleteOut(BaseModel):
     deleted: int
 
 
+# -- categories (R13b) ---------------------------------------------------
+
+
+class ModelCategoryOut(BaseModel):
+    """The nested `category` a `ModelSummary`/`ModelDetail` carries -- the
+    full CRUD shape (with `model_count`) lives in `app.schemas.categories`.
+    """
+
+    id: int
+    name: str
+    color: str | None = None
+
+
 class ModelSummary(BaseModel):
     """Gallery list item (Task 5 interface decision; Task 7 adds
     ``print_time_s``/``has_sliced`` and makes ``cover`` a real URL).
@@ -135,6 +151,9 @@ class ModelSummary(BaseModel):
     dims_mm: list[float] | None = None
     best_slicer_file: FileOut | None = None
     printable_file: FileOut | None = None
+    # R13b: single-valued category assignment (None = uncategorized).
+    category_id: int | None = None
+    category: ModelCategoryOut | None = None
 
 
 class GalleryPage(BaseModel):
@@ -381,6 +400,9 @@ class ModelDetail(BaseModel):
     # (keeps `list_models` lean, Branch 5 Task 1 brief).
     print_count: int = 0
     last_printed_at: datetime | None = None
+    # R13b: single-valued category assignment (None = uncategorized).
+    category_id: int | None = None
+    category: ModelCategoryOut | None = None
 
 
 # -- diff -------------------------------------------------------------

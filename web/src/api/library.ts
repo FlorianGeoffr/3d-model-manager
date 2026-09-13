@@ -147,6 +147,9 @@ export interface GalleryFilters {
   // defaults to `false` server-side -- so leaving this unset already gets
   // the "hide archived" default, and only `true` is ever worth sending.
   archived?: boolean;
+  // R13b: single-select category facet -- ANDed with every other filter,
+  // same as `collection`.
+  category?: number;
   sort: string;
 }
 
@@ -163,6 +166,7 @@ function buildModelsUrl(filters: Partial<GalleryFilters>, cursor?: string, limit
   // mirrors the backend's `favorite` query param semantics.
   if (filters.favorite) params.set("favorite", "true");
   if (filters.archived) params.set("archived", "true");
+  if (filters.category !== undefined) params.set("category", String(filters.category));
   if (filters.sort) params.set("sort", filters.sort);
   params.set("limit", String(limit));
   if (cursor) params.set("cursor", cursor);

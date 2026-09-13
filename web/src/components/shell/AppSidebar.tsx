@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 
 import { useAuth, useLogout } from "@/api/auth";
+import { useCategories } from "@/api/categories";
 import { useFeatures } from "@/api/features";
 import { useFollowedCollections } from "@/api/collections";
 import { useFailedImportsCount } from "@/api/imports";
@@ -164,6 +165,7 @@ export function AppSidebar({
   const features = useFeatures();
   const failedImports = useFailedImportsCount();
   const followed = useFollowedCollections();
+  const categories = useCategories();
   const [collapsed, setCollapsed] = useSidebarCollapsed();
 
   useEffect(() => {
@@ -282,6 +284,36 @@ export function AppSidebar({
             ))}
           </div>
         ))}
+        {/* Categories (R13b): NOT one of `navItems.ts`'s pages -- a
+            dynamic, data-driven list like the Collections sublist above,
+            just always visible (no parent nav item to nest under) rather
+            than tied to one. Each link deep-links via `?category=<id>`,
+            same one-way-seed contract `librarySearch.ts` already documents
+            for `?collection=<id>`. */}
+        {!collapsed && (categories.data?.length ?? 0) > 0 && (
+          <div className="flex flex-col gap-1">
+            <div className="px-2.5 pb-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+              Categories
+            </div>
+            {(categories.data ?? []).map((category) => (
+              <Link
+                key={category.id}
+                to="/"
+                search={{ category: category.id }}
+                className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+                activeProps={{ className: "bg-muted font-medium text-foreground" }}
+              >
+                <span
+                  aria-hidden="true"
+                  className="size-2 shrink-0 rounded-full"
+                  style={{ backgroundColor: category.color ?? "var(--color-muted-foreground)" }}
+                />
+                <span className="truncate">{category.name}</span>
+                <span className="ml-auto text-xs tabular-mono">{category.model_count}</span>
+              </Link>
+            ))}
+          </div>
+        )}
       </nav>
       <div className="flex flex-col gap-1 border-t border-border px-2 py-2">
         <NavLink item={SETTINGS_ITEM} collapsed={collapsed} />

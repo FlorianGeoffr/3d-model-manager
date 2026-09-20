@@ -13,7 +13,7 @@
  * it just now owns the `open` state itself and renders its trigger button
  * as a plain sibling instead of a `DialogTrigger`.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { PrinterIcon } from "lucide-react";
 
 import { ApiError } from "@/api/client";
@@ -24,7 +24,13 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
-export function SendToPrinterButton({ file }: { file: FileOut }) {
+export function SendToPrinterButton({
+  file,
+  initialPlate,
+}: {
+  file: FileOut;
+  initialPlate?: number;
+}) {
   const features = useFeatures();
   const enabled = !!features.data?.printer_enabled;
   const printers = usePrinters({ enabled });
@@ -33,7 +39,6 @@ export function SendToPrinterButton({ file }: { file: FileOut }) {
   const isPrintable = file.format === "gcode_3mf" || file.format === "gcode";
   if (!enabled || !isPrintable || !printers.data || printers.data.length === 0) return null;
   return (
-
     <>
       <Button
         type="button"
@@ -44,12 +49,18 @@ export function SendToPrinterButton({ file }: { file: FileOut }) {
       >
         <PrinterIcon className="size-4" />
       </Button>
-      <SendToPrinterDialog file={file} printers={printers.data} open={open} onOpenChange={setOpen} />
+      <SendToPrinterDialog
+        file={file}
+        printers={printers.data}
+        open={open}
+        onOpenChange={setOpen}
+        initialPlate={initialPlate}
+      />
     </>
   );
 }
 
-/** `{ file, printers, open, onOpenChange, onSuccess? }` -- the plate/AMS
+/** `{ file, printers, open, onOpenChange, onSuccess?, initialPlate? }` -- the plate/AMS
  * form + submit mutation are unchanged from before the extraction.
  * `onSuccess` fires (in addition to closing the dialog) after a successful
  * start-print mutation, letting a caller react to "this file is now on its
@@ -60,19 +71,27 @@ export function SendToPrinterDialog({
   open,
   onOpenChange,
   onSuccess,
+  initialPlate,
 }: {
   file: FileOut;
   printers: PrinterOut[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSuccess?: () => void;
+  initialPlate?: number;
 }) {
   const [printerId, setPrinterId] = useState(printers[0].id);
-  const [plate, setPlate] = useState(file.meta?.plates?.[0]?.index ?? 1);
+  const [plate, setPlate] = useState(initialPlate ?? file.meta?.plates?.[0]?.index ?? 1);
   const [useAms, setUseAms] = useState(false);
   const [bedLevelling, setBedLevelling] = useState(true);
   const [flowCali, setFlowCali] = useState(true);
   const [timelapse, setTimelapse] = useState(false);
+
+  useEffect(() => {
+    if (initialPlate !== undefined) {
+      setPlate(initialPlate);
+    }
+  }, [initialPlate, open]);
   const selectedPrinter = printers.find((p) => p.id === printerId);
   const isMoonraker = selectedPrinter?.kind === "moonraker";
   const start = useStartPrint(printerId);

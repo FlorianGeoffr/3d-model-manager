@@ -112,6 +112,9 @@ class PrinterWorker:
                 job.started_at = now
             if new_state in _TERMINAL:
                 job.finished_at = now
+            if new_state == PrintJobState.FINISHED:
+                from app.services.camera_snapshot import capture_and_save_finish_snapshot
+                capture_and_save_finish_snapshot(self.settings, session, job, self.adapter)
             job_id = job.id
             session.commit()
         publish_print_job_event_sync(

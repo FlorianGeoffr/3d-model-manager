@@ -1,11 +1,15 @@
 import { lazy, Suspense, useState } from "react";
-import { ImageIcon, LayersIcon, LoaderCircleIcon } from "lucide-react";
+import { ImageIcon, LayersIcon, LoaderCircleIcon, PrinterIcon } from "lucide-react";
 
 import { useAppSettings } from "@/api/appSettings";
+import { useFeatures } from "@/api/features";
+import { usePrinters } from "@/api/printers";
 import { Button } from "@/components/ui/button";
 import { humanizeDuration } from "@/lib/format";
 import { estimatePrintCost, formatPrintCost } from "@/lib/printCost";
+import { cn } from "@/lib/utils";
 import type { AppSettings, FileOut, PlateOut } from "@/api/types";
+import { SendToPrinterDialog } from "@/components/model-detail/SendToPrinterButton";
 
 // `gcode-preview` drives its own three.js/WebGL renderer (Global Constraints
 // "BUNDLE RULE") — loaded only once someone actually asks to preview layers.
@@ -57,11 +61,32 @@ function plateCaption(plate: PlateOut, settings: AppSettings | undefined): strin
   return parts.filter((part): part is string => part !== null).join(" · ");
 }
 
-function PlateCard({ blobHash, plate }: { blobHash: string; plate: PlateOut }) {
+function PlateCard({
+  blobHash,
+  plate,
+  isSelected,
+  onSelect,
+  onPrint,
+  canPrint,
+}: {
+  blobHash: string;
+  plate: PlateOut;
+  isSelected?: boolean;
+  onSelect?: () => void;
+  onPrint?: () => void;
+  canPrint?: boolean;
+}) {
   const settings = useAppSettings();
   return (
-    <div className="w-48 shrink-0 space-y-2 rounded-lg border border-border p-3">
-      <div className="flex aspect-square items-center justify-center overflow-hidden rounded bg-muted">
+    <div
+      className={cn(
+        "w-48 shrink-0 space-y-2 rounded-lg border p-3 transition-all",
+        isSelected ? "border-primary ring-1 ring-primary bg-primary/5" : "border-border hover:border-muted-foreground/40",
+        onSelect && "cursor-pointer",
+      )}
+      onClick={onSelect}
+    >
+      <div className="relative flex aspect-square items-center justify-center overflow-hidden rounded bg-muted">
         {plate.thumbnail_available ? (
           <img
             src={`/api/blobs/${blobHash}/plates/${plate.index}/thumb`}
@@ -71,6 +96,9 @@ function PlateCard({ blobHash, plate }: { blobHash: string; plate: PlateOut }) {
         ) : (
           <ImageIcon className="size-8 text-muted-foreground" />
         )}
+        <div className="absolute top-1.5 left-1.5 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white shadow-xs">
+          Plate {plate.index}
+        </div>
       </div>
       <p className="text-xs text-muted-foreground">{plateCaption(plate, settings.data)}</p>
       {plate.filaments.length > 0 && (
@@ -92,6 +120,22 @@ function PlateCard({ blobHash, plate }: { blobHash: string; plate: PlateOut }) {
           ))}
         </div>
       )}
+      {canPrint && onPrint ? (
+        <div className="pt-1">
+          <Button
+            size="sm"
+            variant="outline"
+            className="w-full h-7 text-xs gap-1.5"
+            onClick={(e) => {
+              e.stopPropagation();
+              onPrint();
+            }}
+          >
+            <PrinterIcon className="size-3" />
+            <span>Print Plate {plate.index}</span>
+          </Button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -109,6 +153,13 @@ export function PlatePanel({ file, compact = false }: { file: FileOut; compact?:
   const header = headerLine(file);
   const meta = metaLine(file);
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [selectedPlate, setSelectedPlate] = useState<number | undefined>(plates[0]?.index);
+  const [printDialogPlate, setPrintDialogPlate] = useState<number | null>(null);
+
+  const features = useFeatures();
+  const printerEnabled = !!features.data?.printer_enabled;
+  const printers = usePrinters({ enabled: printerEnabled });
+  const canPrint = printerEnabled && !!printers.data && printers.data.length > 0;
 
   return (
     <div className="space-y-3">
@@ -116,20 +167,30 @@ export function PlatePanel({ file, compact = false }: { file: FileOut; compact?:
       {!compact && meta ? <p className="text-sm text-muted-foreground">{meta}</p> : null}
       {!compact &&
         (previewOpen ? (
-          <Suspense
-            fallback={
-              <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
-                <LoaderCircleIcon className="size-4 animate-spin" />
-                Loading g-code preview…
-              </div>
-            }
-          >
-            <GcodePreview fileId={file.id} />
-          </Suspense>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-foreground">
+                G-code preview {selectedPlate !== undefined ? `— Plate ${selectedPlate}` : ""}
+              </span>
+              <Button variant="ghost" size="xs" onClick={() => setPreviewOpen(false)}>
+                Close preview
+              </Button>
+            </div>
+            <Suspense
+              fallback={
+                <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
+                  <LoaderCircleIcon className="size-4 animate-spin" />
+                  Loading g-code preview…
+                </div>
+              }
+            >
+              <GcodePreview fileId={file.id} plate={selectedPlate} />
+            </Suspense>
+          </div>
         ) : (
           <Button variant="outline" size="sm" onClick={() => setPreviewOpen(true)}>
             <LayersIcon className="size-4" />
-            Preview layers
+            Preview layers {selectedPlate !== undefined && plates.length > 1 ? `(Plate ${selectedPlate})` : ""}
           </Button>
         ))}
       {plates.length === 0 ? (
@@ -139,10 +200,30 @@ export function PlatePanel({ file, compact = false }: { file: FileOut; compact?:
       ) : (
         <div className="flex gap-3 overflow-x-auto pb-2">
           {plates.map((plate) => (
-            <PlateCard key={plate.index} blobHash={file.blob_hash} plate={plate} />
+            <PlateCard
+              key={plate.index}
+              blobHash={file.blob_hash}
+              plate={plate}
+              isSelected={selectedPlate === plate.index}
+              onSelect={() => setSelectedPlate(plate.index)}
+              canPrint={canPrint}
+              onPrint={() => setPrintDialogPlate(plate.index)}
+            />
           ))}
         </div>
       )}
+
+      {canPrint && printers.data && printDialogPlate !== null ? (
+        <SendToPrinterDialog
+          file={file}
+          printers={printers.data}
+          open={printDialogPlate !== null}
+          onOpenChange={(open) => {
+            if (!open) setPrintDialogPlate(null);
+          }}
+          initialPlate={printDialogPlate}
+        />
+      ) : null}
     </div>
   );
 }

@@ -26,8 +26,8 @@ const DEFAULT_BUILD_VOLUME = { x: 256, y: 256, z: 256 };
  * extracts a `.gcode.3mf`'s embedded plate gcode; a bare `.gcode` file
  * would just stream itself, though `PlatePanel` only mounts this for
  * sliced files today. */
-function gcodeDownloadUrl(fileId: number): string {
-  return `/api/files/${fileId}/download?member=gcode`;
+function gcodeDownloadUrl(fileId: number, plate?: number): string {
+  return `/api/files/${fileId}/download?member=gcode${plate !== undefined ? `&plate=${plate}` : ""}`;
 }
 
 /** Above this, don't even try to load the gcode text into the browser
@@ -38,10 +38,12 @@ const TOO_LARGE_TO_PREVIEW_BYTES = 150 * 1024 * 1024;
 
 export function GcodePreview({
   fileId,
+  plate,
   buildVolume,
   extrusionColor,
 }: {
   fileId: number;
+  plate?: number;
   buildVolume?: { x: number; y: number; z: number };
   extrusionColor?: string;
 }) {
@@ -69,7 +71,7 @@ export function GcodePreview({
       try {
         const [{ init }, response] = await Promise.all([
           import("gcode-preview"),
-          fetch(gcodeDownloadUrl(fileId), { credentials: "include" }),
+          fetch(gcodeDownloadUrl(fileId, plate), { credentials: "include" }),
         ]);
         if (!response.ok) throw new Error(`gcode download failed: ${response.status}`);
 
@@ -110,7 +112,7 @@ export function GcodePreview({
     // poll that returns an equal-valued build volume/color doesn't
     // needlessly re-fetch and re-init the preview.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fileId, resolvedBuildVolume.x, resolvedBuildVolume.y, resolvedBuildVolume.z, resolvedExtrusionColor]);
+  }, [fileId, plate, resolvedBuildVolume.x, resolvedBuildVolume.y, resolvedBuildVolume.z, resolvedExtrusionColor]);
 
   useEffect(() => {
     const preview = previewRef.current;

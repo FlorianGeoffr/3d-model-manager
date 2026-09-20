@@ -297,3 +297,52 @@ class MoonrakerAdapter(PrinterAdapter):
         resp = client.post("/server/files/upload", files=files, data=data)
         if not resp.is_success:
             raise RuntimeError(f"Moonraker upload failed ({resp.status_code}): {resp.text}")
+
+    def get_camera_urls(self) -> dict[str, str | None]:
+        """Fetch configured webcams from Moonraker or fallback to standard /webcam/ URLs."""
+        base_url = normalize_base_url(self.conn.host)
+        parsed = urlparse(base_url)
+        hostname = parsed.hostname or self.conn.host
+        headers = {}
+        if self.conn.access_code:
+            headers["X-Api-Key"] = self.conn.access_code
+
+        # Attempt to probe Moonraker's /server/webcams/list across common ports
+        candidates = [base_url]
+        if parsed.port != 7125:
+            candidates.append(f"{parsed.scheme}://{hostname}:7125")
+        if parsed.port and parsed.port != 80:
+            candidates.append(f"{parsed.scheme}://{hostname}")
+
+        for endpoint in candidates:
+            try:
+                resp = httpx.get(f"{endpoint}/server/webcams/list", headers=headers, timeout=3.0)
+                if resp.is_success:
+                    data = resp.json()
+                    webcams = data.get("result", {}).get("webcams", [])
+                    for cam in webcams:
+                        if cam.get("enabled", True):
+                            stream_rel = cam.get("stream_url") or "/webcam/?action=stream"
+                            snapshot_rel = cam.get("snapshot_url") or "/webcam/?action=snapshot"
+
+                            def to_abs(url: str) -> str:
+                                if url.startswith(("http://", "https://")):
+                                    return url
+                                return f"http://{hostname}{url}"
+
+                            return {
+                                "name": cam.get("name", "Camera"),
+                                "stream_url": to_abs(stream_rel),
+                                "snapshot_url": to_abs(snapshot_rel),
+                                "aspect_ratio": cam.get("aspect_ratio", "4:3"),
+                            }
+            except Exception:
+                continue
+
+        return {
+            "name": "Camera",
+            "stream_url": f"http://{hostname}/webcam/?action=stream",
+            "snapshot_url": f"http://{hostname}/webcam/?action=snapshot",
+            "aspect_ratio": "4:3",
+        }
+

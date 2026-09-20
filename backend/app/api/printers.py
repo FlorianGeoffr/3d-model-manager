@@ -17,8 +17,10 @@ from __future__ import annotations
 import json
 
 import anyio
+import httpx
 import redis.asyncio as aioredis
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,6 +38,7 @@ from app.printers.registry import build_adapter
 from app.schemas.printers import (
     DetectSerialIn,
     DetectSerialOut,
+    PrinterCameraOut,
     PrinterCreate,
     PrinterOut,
     PrinterStatusOut,
@@ -345,3 +348,91 @@ async def stop_printer(
     await _get_enabled_or_404(db, printer_id)
     await _publish_command(settings, printer_id, "stop")
     return {"status": "sent"}
+
+
+@router.get("/{printer_id}/camera", response_model=PrinterCameraOut)
+async def get_printer_camera(
+    printer_id: int,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> PrinterCameraOut:
+    printer = await _get_or_404(db, printer_id)
+    conn = connection_from_printer(settings, printer)
+    adapter = build_adapter(printer.kind, conn)
+    cam = await anyio.to_thread.run_sync(adapter.get_camera_urls)
+    stream_url = cam.get("stream_url")
+    if not stream_url:
+        return PrinterCameraOut(available=False)
+
+    return PrinterCameraOut(
+        available=True,
+        name=cam.get("name") or "Camera",
+        stream_url=f"/api/printers/{printer_id}/camera/stream",
+        snapshot_url=f"/api/printers/{printer_id}/camera/snapshot",
+        aspect_ratio=cam.get("aspect_ratio") or "4:3",
+        direct_stream_url=stream_url,
+    )
+
+
+@router.get("/{printer_id}/camera/snapshot")
+async def get_printer_camera_snapshot(
+    printer_id: int,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> Response:
+    printer = await _get_or_404(db, printer_id)
+    conn = connection_from_printer(settings, printer)
+    adapter = build_adapter(printer.kind, conn)
+    cam = await anyio.to_thread.run_sync(adapter.get_camera_urls)
+    snapshot_url = cam.get("snapshot_url") or cam.get("stream_url")
+    if not snapshot_url:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Camera snapshot not available")
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(snapshot_url)
+            if not resp.is_success:
+                raise HTTPException(
+                    status.HTTP_502_BAD_GATEWAY,
+                    f"Camera snapshot failed with status {resp.status_code}",
+                )
+            return Response(
+                content=resp.content,
+                media_type=resp.headers.get("content-type", "image/jpeg"),
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Camera snapshot error: {exc}") from exc
+
+
+@router.get("/{printer_id}/camera/stream")
+async def get_printer_camera_stream(
+    printer_id: int,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    printer = await _get_or_404(db, printer_id)
+    conn = connection_from_printer(settings, printer)
+    adapter = build_adapter(printer.kind, conn)
+    cam = await anyio.to_thread.run_sync(adapter.get_camera_urls)
+    stream_url = cam.get("stream_url")
+    if not stream_url:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Camera stream not available")
+
+    async def stream_generator():
+        async with httpx.AsyncClient(timeout=None) as client:
+            try:
+                async with client.stream("GET", stream_url) as resp:
+                    if not resp.is_success:
+                        return
+                    async for chunk in resp.aiter_bytes():
+                        yield chunk
+            except Exception:
+                return
+
+    return StreamingResponse(
+        stream_generator(),
+        media_type="multipart/x-mixed-replace;boundary=boundarydonotcross",
+    )
+

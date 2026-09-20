@@ -637,6 +637,15 @@ export interface AmsTray {
   material: string | null;
 }
 
+export interface PrinterCameraOut {
+  available: boolean;
+  name: string;
+  stream_url: string | null;
+  snapshot_url: string | null;
+  aspect_ratio: string | null;
+  direct_stream_url: string | null;
+}
+
 export interface PrinterStatusOut {
   online: boolean;
   gcode_state: string | null;

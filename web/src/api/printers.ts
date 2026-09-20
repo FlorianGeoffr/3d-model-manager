@@ -11,6 +11,7 @@ import { api } from "@/api/client";
 import type {
   DetectSerialIn,
   DetectSerialOut,
+  PrinterCameraOut,
   PrinterCreate,
   PrinterOut,
   PrinterStatusOut,
@@ -129,3 +130,13 @@ export function useStartPrint(printerId: number) {
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["print-jobs"] }),
   });
 }
+
+export function usePrinterCamera(id: number, options?: { enabled?: boolean }) {
+  return useQuery({
+    queryKey: ["printers", id, "camera"] as const,
+    queryFn: () => api.get<PrinterCameraOut>(`/printers/${id}/camera`),
+    enabled: options?.enabled ?? true,
+    staleTime: 30000,
+  });
+}
+

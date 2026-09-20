@@ -211,6 +211,15 @@ class PrinterStatusOut(BaseModel):
     trays: list[AmsTrayOut] = Field(default_factory=list)
 
 
+class PrinterCameraOut(BaseModel):
+    available: bool
+    name: str = "Camera"
+    stream_url: str | None = None
+    snapshot_url: str | None = None
+    aspect_ratio: str | None = "4:3"
+    direct_stream_url: str | None = None
+
+
 class PrintRequest(BaseModel):
     file_id: int
     plate: int = 1

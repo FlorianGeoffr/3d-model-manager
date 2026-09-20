@@ -100,4 +100,31 @@ describe("PrinterStatusPanel", () => {
     expect(screen.getByRole("button", { name: "Pause" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
   });
+
+  it("toggles the camera view when camera button is clicked", async () => {
+    getMock.mockImplementation((url: string) => {
+      if (url.includes("/camera")) {
+        return Promise.resolve({
+          available: true,
+          name: "Qidi Cam",
+          stream_url: "/api/printers/1/camera/stream",
+          snapshot_url: "/api/printers/1/camera/snapshot",
+          aspect_ratio: "4:3",
+          direct_stream_url: "http://imprimante3d-1.lan/webcam/?action=stream",
+        });
+      }
+      return Promise.resolve(fakeStatus());
+    });
+
+    renderPanel();
+
+    const cameraButton = await screen.findByRole("button", { name: /Camera/i });
+    expect(screen.queryByAltText("Qidi Cam")).not.toBeInTheDocument();
+
+    cameraButton.click();
+
+    expect(await screen.findByAltText("Qidi Cam")).toBeInTheDocument();
+    expect(screen.getByText("LIVE")).toBeInTheDocument();
+  });
 });
+

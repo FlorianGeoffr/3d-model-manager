@@ -115,3 +115,8 @@ class PrinterAdapter(ABC):
     def public_state(self, merged: dict) -> PrinterPublicState: ...
     @abstractmethod
     def job_state(self, public: PrinterPublicState) -> PrintJobState | None: ...
+
+    def get_camera_urls(self) -> dict[str, str | None]:
+        """Return camera info {'name': str, 'stream_url': str, 'snapshot_url': str, 'aspect_ratio': str} if supported, else empty dict."""
+        return {}
+

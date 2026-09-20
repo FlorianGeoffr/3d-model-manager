@@ -312,3 +312,22 @@ async def test_patch_model_change_does_not_override_existing_build_volume(
     r = await authenticated_client.patch(f"/api/printers/{pid}", json={"model": "Prusa MK4"})
     assert r.status_code == 200, r.text
     assert r.json()["build_volume_mm"] == {"x": 9.0, "y": 9.0, "z": 9.0}
+
+
+async def test_create_moonraker_without_access_code(authenticated_client, printer_enabled):
+    r = await authenticated_client.post(
+        "/api/printers",
+        json={
+            "name": "Qidi Q2",
+            "kind": "moonraker",
+            "host": "192.168.1.120",
+            "model": "Qidi Q2",
+        },
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["kind"] == "moonraker"
+    assert body["name"] == "Qidi Q2"
+    assert body["host"] == "192.168.1.120"
+    assert body["build_volume_mm"] == {"x": 270.0, "y": 270.0, "z": 256.0}
+    assert body["serial"] != ""  # Auto-generated alphanumeric serial

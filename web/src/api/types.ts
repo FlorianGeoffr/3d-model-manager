@@ -571,7 +571,7 @@ export interface StatsOut {
   material_usage: { material_id: number | null; name: string; grams: number; prints: number }[];
 }
 
-export type PrinterKind = "bambu_lan";
+export type PrinterKind = "bambu_lan" | "moonraker";
 
 export interface PrinterOut {
   id: number;
@@ -590,13 +590,14 @@ export interface PrinterCreate {
   name: string;
   kind?: PrinterKind;
   host: string;
-  serial: string;
-  access_code: string;
+  serial?: string;
+  access_code?: string;
   model?: string | null;
   enabled?: boolean;
   options?: Record<string, unknown>;
   build_volume_mm?: { x: number; y: number; z: number } | null;
 }
+
 
 export interface PrinterUpdate {
   name?: string;

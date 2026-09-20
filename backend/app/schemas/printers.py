@@ -10,9 +10,9 @@ happens ONLY inside the test-probe path via
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models.enums import PrinterKind
 
@@ -56,6 +56,12 @@ _KNOWN_BUILD_VOLUMES_MM: dict[str, BuildVolumeMm] = {
     "p1s": BuildVolumeMm(x=256, y=256, z=256),
     "x1c": BuildVolumeMm(x=256, y=256, z=256),
     "mk4": BuildVolumeMm(x=250, y=210, z=220),
+    "qidi q2": BuildVolumeMm(x=270, y=270, z=256),
+    "q2": BuildVolumeMm(x=270, y=270, z=256),
+    "qidi q1 pro": BuildVolumeMm(x=245, y=245, z=245),
+    "q1 pro": BuildVolumeMm(x=245, y=245, z=245),
+    "qidi x-max 3": BuildVolumeMm(x=325, y=325, z=315),
+    "qidi x-plus 3": BuildVolumeMm(x=280, y=280, z=270),
 }
 
 
@@ -80,8 +86,8 @@ class PrinterCreate(BaseModel):
     name: str
     kind: PrinterKind = PrinterKind.BAMBU_LAN
     host: str
-    serial: str
-    access_code: str
+    serial: str = ""
+    access_code: str = ""
     model: str | None = None
     enabled: bool = True
     options: dict = Field(default_factory=dict)
@@ -89,10 +95,23 @@ class PrinterCreate(BaseModel):
     # `app.api.printers.create_printer`).
     build_volume_mm: BuildVolumeMm | None = None
 
-    @field_validator("serial")
-    @classmethod
-    def _validate_serial(cls, value: str) -> str:
-        return _clean_serial(value)
+    @model_validator(mode="after")
+    def _validate_fields_by_kind(self) -> Self:
+        if self.kind == PrinterKind.BAMBU_LAN:
+            if not self.serial or not self.serial.strip():
+                raise ValueError("serial is required")
+            self.serial = _clean_serial(self.serial)
+            if not self.access_code or not self.access_code.strip():
+                raise ValueError("access_code is required")
+        elif self.kind == PrinterKind.MOONRAKER:
+            if not self.serial or not self.serial.strip():
+                import hashlib
+
+                h = hashlib.md5(self.host.encode()).hexdigest().upper()[:16]
+                self.serial = f"MOON{h[:12]}"
+            else:
+                self.serial = _clean_serial(self.serial)
+        return self
 
 
 class PrinterUpdate(BaseModel):

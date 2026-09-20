@@ -29,16 +29,18 @@ import {
   useTestPrinter,
   useUpdatePrinter,
 } from "@/api/printers";
-import type { PrinterOut, PrinterUpdate } from "@/api/types";
+import type { PrinterKind, PrinterOut, PrinterUpdate } from "@/api/types";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 
 interface PrinterDraft {
   name: string;
+  kind: PrinterKind;
   host: string;
   serial: string;
   model: string;
@@ -57,6 +59,7 @@ function emptyDraft(): PrinterDraft {
   // create -- the server seeds it from a model->volume map instead.
   return {
     name: "",
+    kind: "bambu_lan",
     host: "",
     serial: "",
     model: "",
@@ -67,12 +70,14 @@ function emptyDraft(): PrinterDraft {
   };
 }
 
+
 /** A saved printer's `access_code` is never returned by the API (only
  * `access_code_set`) -- the field always seeds blank, which is what "leave
  * unchanged" looks like on save (mirrors `StorageBackendForm.seedDraft`). */
 function seedDraft(printer: PrinterOut): PrinterDraft {
   return {
     name: printer.name,
+    kind: printer.kind ?? "bambu_lan",
     host: printer.host,
     serial: printer.serial,
     model: printer.model ?? "",
@@ -82,6 +87,7 @@ function seedDraft(printer: PrinterOut): PrinterDraft {
     buildVolumeZ: printer.build_volume_mm?.z != null ? String(printer.build_volume_mm.z) : "",
   };
 }
+
 
 export function PrinterSetupCard() {
   const features = useFeatures();
@@ -157,11 +163,13 @@ function PrinterEditor({ printer }: { printer?: PrinterOut }) {
    * can't be turned into a valid `{x,y,z}` body. */
   function validate(): boolean {
     const next: DraftErrors = {};
-    if (draft.serial.trim() === "") next.serial = "Serial is required.";
+    if (draft.kind === "bambu_lan" && draft.serial.trim() === "") next.serial = "Serial is required.";
     if (!printer) {
       if (draft.name.trim() === "") next.name = "Name is required.";
       if (draft.host.trim() === "") next.host = "Host is required.";
-      if (draft.access_code.trim() === "") next.access_code = "Access code is required.";
+      if (draft.kind === "bambu_lan" && draft.access_code.trim() === "") {
+        next.access_code = "Access code is required.";
+      }
     }
     const volumeFilled = [draft.buildVolumeX, draft.buildVolumeY, draft.buildVolumeZ].filter(
       (v) => v.trim() !== "",
@@ -206,23 +214,20 @@ function PrinterEditor({ printer }: { printer?: PrinterOut }) {
       const body: PrinterUpdate = {
         name: draft.name,
         host: draft.host,
-        serial: draft.serial,
+        serial: draft.serial.trim() !== "" ? draft.serial : undefined,
         model: draft.model.trim() === "" ? null : draft.model,
       };
       if (code !== "") body.access_code = code;
       if (buildVolume) body.build_volume_mm = buildVolume;
       updatePrinter.mutate(body, { onSuccess: () => setField("access_code", "") });
     } else {
-      // POST: `access_code` is a required field on `PrinterCreate` (a new
-      // printer has no stored code to fall back to) -- `validate()` above
-      // already blocked a blank one client-side, so this always sends a
-      // real value. `build_volume_mm` is omitted when blank so the server's
-      // model->volume seed logic applies.
+      // POST: `access_code` is required for Bambu LAN, optional for Moonraker.
       createPrinter.mutate(
         {
           name: draft.name,
+          kind: draft.kind,
           host: draft.host,
-          serial: draft.serial,
+          serial: draft.serial.trim() !== "" ? draft.serial : undefined,
           model: draft.model.trim() === "" ? null : draft.model,
           access_code: code,
           ...(buildVolume ? { build_volume_mm: buildVolume } : {}),
@@ -232,14 +237,38 @@ function PrinterEditor({ printer }: { printer?: PrinterOut }) {
     }
   }
 
+
   return (
     <div className="space-y-3 rounded-lg border border-border p-4">
       <div className="grid gap-3 sm:grid-cols-2">
+        <div className="flex flex-col gap-1.5 sm:col-span-2">
+          <Label htmlFor={`${idPrefix}-kind`}>Printer Type</Label>
+          <Select
+            value={draft.kind}
+            onValueChange={(v) => {
+              const k = v as PrinterKind;
+              setField("kind", k);
+              if (k === "moonraker" && !draft.model) {
+                setField("model", "Qidi Q2");
+              }
+            }}
+            disabled={busy || !!printer}
+          >
+            <SelectTrigger id={`${idPrefix}-kind`}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="bambu_lan">Bambu Lab (LAN)</SelectItem>
+              <SelectItem value="moonraker">Klipper / Moonraker (Qidi, Voron, etc.)</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
         <div className="flex flex-col gap-1.5">
           <Label htmlFor={`${idPrefix}-name`}>Name</Label>
           <Input
             id={`${idPrefix}-name`}
             value={draft.name}
+            placeholder={draft.kind === "moonraker" ? "Qidi Q2" : "A1 mini"}
             onChange={(e) => setField("name", e.target.value)}
             disabled={busy}
             aria-invalid={Boolean(errors.name)}
@@ -255,7 +284,7 @@ function PrinterEditor({ printer }: { printer?: PrinterOut }) {
           <Input
             id={`${idPrefix}-host`}
             value={draft.host}
-            placeholder="192.168.1.50"
+            placeholder={draft.kind === "moonraker" ? "192.168.1.50 or 192.168.1.50:7125" : "192.168.1.50"}
             onChange={(e) => setField("host", e.target.value)}
             disabled={busy}
             aria-invalid={Boolean(errors.host)}
@@ -267,36 +296,41 @@ function PrinterEditor({ printer }: { printer?: PrinterOut }) {
           ) : null}
         </div>
         <div className="flex flex-col gap-1.5">
-          <Label htmlFor={`${idPrefix}-serial`}>Serial</Label>
+          <Label htmlFor={`${idPrefix}-serial`}>
+            {draft.kind === "moonraker" ? "Serial (optional)" : "Serial"}
+          </Label>
           <div className="flex gap-1.5">
             <Input
               id={`${idPrefix}-serial`}
               value={draft.serial}
+              placeholder={draft.kind === "moonraker" ? "Auto-generated if blank" : ""}
               onChange={(e) => setField("serial", e.target.value)}
               disabled={busy}
               aria-invalid={Boolean(errors.serial)}
             />
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={busy || detectSerial.isPending || draft.host.trim() === ""}
-              onClick={detect}
-            >
-              {detectSerial.isPending ? "Detecting..." : "Detect"}
-            </Button>
+            {draft.kind === "bambu_lan" ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={busy || detectSerial.isPending || draft.host.trim() === ""}
+                onClick={detect}
+              >
+                {detectSerial.isPending ? "Detecting..." : "Detect"}
+              </Button>
+            ) : null}
           </div>
           {errors.serial ? (
             <p role="alert" className="text-xs text-destructive">
               {errors.serial}
             </p>
           ) : null}
-          {detectSerial.isError ? (
+          {draft.kind === "bambu_lan" && detectSerial.isError ? (
             <p role="alert" className="text-xs text-destructive">
               {detectSerial.error instanceof ApiError ? detectSerial.error.detail : "Could not detect the serial"}
             </p>
           ) : null}
-          {detectSerial.data ? (
+          {draft.kind === "bambu_lan" && detectSerial.data ? (
             <p
               role={detectSerial.data.serial ? undefined : "alert"}
               className={
@@ -312,18 +346,28 @@ function PrinterEditor({ printer }: { printer?: PrinterOut }) {
           <Input
             id={`${idPrefix}-model`}
             value={draft.model}
-            placeholder="A1 mini"
+            placeholder={draft.kind === "moonraker" ? "Qidi Q2" : "A1 mini"}
             onChange={(e) => setField("model", e.target.value)}
             disabled={busy}
           />
         </div>
         <div className="flex flex-col gap-1.5 sm:col-span-2">
-          <Label htmlFor={`${idPrefix}-access-code`}>Access code</Label>
+          <Label htmlFor={`${idPrefix}-access-code`}>
+            {draft.kind === "moonraker" ? "API Key (optional)" : "Access code"}
+          </Label>
           <Input
             id={`${idPrefix}-access-code`}
             type="password"
             value={draft.access_code}
-            placeholder={printer?.access_code_set ? "•• (unchanged)" : "LAN access code"}
+            placeholder={
+              draft.kind === "moonraker"
+                ? printer?.access_code_set
+                  ? "•• (unchanged)"
+                  : "Leave blank if no API key configured"
+                : printer?.access_code_set
+                  ? "•• (unchanged)"
+                  : "LAN access code"
+            }
             onChange={(e) => setField("access_code", e.target.value)}
             disabled={busy}
             autoComplete="new-password"
@@ -337,6 +381,7 @@ function PrinterEditor({ printer }: { printer?: PrinterOut }) {
         </div>
         <div className="flex flex-col gap-1.5 sm:col-span-2">
           <span className="text-sm font-medium text-foreground">Build volume (mm)</span>
+
           <div className="grid gap-3 sm:grid-cols-3">
             <div className="flex flex-col gap-1.5">
               <Label htmlFor={`${idPrefix}-volume-x`}>Build volume X (mm)</Label>

@@ -49,7 +49,8 @@ def load_or_create_printer_key(settings: Settings) -> bytes:
         # generating (and clobbering) a second one.
         return _read_existing_key(path)
     try:
-        os.fchmod(fd, 0o600)
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
         os.write(fd, key)
     finally:
         os.close(fd)

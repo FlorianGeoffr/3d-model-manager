@@ -14,6 +14,12 @@ def test_bambu_lan_is_registered():
     assert PrinterKind.BAMBU_LAN in PRINTER_REGISTRY  # bambu import at registry bottom (Task 3)
 
 
+def test_moonraker_is_registered():
+    from app.printers import moonraker  # noqa: F401
+
+    assert PrinterKind.MOONRAKER in PRINTER_REGISTRY
+
+
 def test_build_adapter_unknown_kind_raises():
     class _Bogus:
         value = "nope"

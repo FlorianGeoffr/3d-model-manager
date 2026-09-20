@@ -32,3 +32,4 @@ def build_adapter(kind: PrinterKind, conn: PrinterConnection) -> PrinterAdapter:
 
 
 from app.printers import bambu as _bambu  # noqa: F401,E402  (registers bambu_lan)
+from app.printers import moonraker as _moonraker  # noqa: F401,E402  (registers moonraker)

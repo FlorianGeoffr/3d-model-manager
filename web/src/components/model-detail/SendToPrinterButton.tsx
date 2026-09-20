@@ -30,8 +30,10 @@ export function SendToPrinterButton({ file }: { file: FileOut }) {
   const printers = usePrinters({ enabled });
   const [open, setOpen] = useState(false);
 
-  if (!enabled || file.format !== "gcode_3mf" || !printers.data || printers.data.length === 0) return null;
+  const isPrintable = file.format === "gcode_3mf" || file.format === "gcode";
+  if (!enabled || !isPrintable || !printers.data || printers.data.length === 0) return null;
   return (
+
     <>
       <Button
         type="button"
@@ -71,6 +73,8 @@ export function SendToPrinterDialog({
   const [bedLevelling, setBedLevelling] = useState(true);
   const [flowCali, setFlowCali] = useState(true);
   const [timelapse, setTimelapse] = useState(false);
+  const selectedPrinter = printers.find((p) => p.id === printerId);
+  const isMoonraker = selectedPrinter?.kind === "moonraker";
   const start = useStartPrint(printerId);
   const plates = file.meta?.plates ?? [];
 
@@ -79,11 +83,11 @@ export function SendToPrinterDialog({
       {
         file_id: file.id,
         plate,
-        use_ams: useAms,
+        use_ams: isMoonraker ? false : useAms,
         ams_mapping: [0],
-        bed_levelling: bedLevelling,
-        flow_cali: flowCali,
-        timelapse,
+        bed_levelling: isMoonraker ? false : bedLevelling,
+        flow_cali: isMoonraker ? false : flowCali,
+        timelapse: isMoonraker ? false : timelapse,
       },
       {
         onSuccess: () => {
@@ -110,7 +114,7 @@ export function SendToPrinterDialog({
               <SelectContent>
                 {printers.map((p) => (
                   <SelectItem key={p.id} value={String(p.id)}>
-                    {p.name}
+                    {p.name} {p.kind === "moonraker" ? "(Klipper)" : ""}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -133,20 +137,25 @@ export function SendToPrinterDialog({
               </Select>
             </label>
           ) : null}
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={useAms} onChange={(e) => setUseAms(e.target.checked)} /> Use AMS
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={bedLevelling} onChange={(e) => setBedLevelling(e.target.checked)} /> Bed
-            levelling
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={flowCali} onChange={(e) => setFlowCali(e.target.checked)} /> Flow
-            calibration
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={timelapse} onChange={(e) => setTimelapse(e.target.checked)} /> Timelapse
-          </label>
+          {!isMoonraker ? (
+            <>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={useAms} onChange={(e) => setUseAms(e.target.checked)} /> Use AMS
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={bedLevelling} onChange={(e) => setBedLevelling(e.target.checked)} /> Bed
+                levelling
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={flowCali} onChange={(e) => setFlowCali(e.target.checked)} /> Flow
+                calibration
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={timelapse} onChange={(e) => setTimelapse(e.target.checked)} /> Timelapse
+              </label>
+            </>
+          ) : null}
+
           {start.isError ? (
             <p role="alert" className="text-sm text-destructive">
               {start.error instanceof ApiError ? start.error.detail : "Could not start print"}

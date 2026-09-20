@@ -30,7 +30,7 @@ import redis
 
 from app.config import Settings, get_settings
 from app.models import Blob, File, Printer, PrintJob
-from app.models.enums import PrintJobState
+from app.models.enums import BlobFormat, PrintJobState
 from app.printers import gcode3mf
 from app.printers.base import PrinterConnection, PrintSpec
 from app.printers.connection import connection_from_printer
@@ -108,6 +108,7 @@ def _send_to_printer(
         blob = s.get(Blob, file.blob_hash)
         printer_id, kind = printer.id, printer.kind
         blob_hash = blob.hash
+        blob_format = blob.format
         subtask = job.subtask_name or file.rel_path
     _set_job_state(settings, print_job_id, PrintJobState.UPLOADING)
     conn: PrinterConnection | None = None
@@ -135,21 +136,24 @@ def _send_to_printer(
             # Workstream C task C2: resolves the specific verified File's own
             # backend internally (a blob can have verified copies on more
             # than one backend) rather than a caller-supplied default.
-            path = derivatives.fetch_blob_to_temp(s2, settings, blob_hash, Path(tmp), ".gcode.3mf")
-            try:
-                gcode3mf.assert_plate_available(path.read_bytes(), options["plate"])
-            except gcode3mf.NotSendableError as e:
-                raise SendError(str(e)) from e
+            suffix = ".gcode" if blob_format == BlobFormat.GCODE else ".gcode.3mf"
+            remote_name = f"tdmm-{print_job_id}{suffix}"
+            path = derivatives.fetch_blob_to_temp(s2, settings, blob_hash, Path(tmp), suffix)
+            if blob_format == BlobFormat.GCODE_3MF:
+                try:
+                    gcode3mf.assert_plate_available(path.read_bytes(), options.get("plate", 1))
+                except gcode3mf.NotSendableError as e:
+                    raise SendError(str(e)) from e
             spec = PrintSpec(
                 source_path=path,
-                remote_name=f"tdmm-{print_job_id}.gcode.3mf",
-                plate=options["plate"],
+                remote_name=remote_name,
+                plate=options.get("plate", 1),
                 subtask_name=subtask,
-                use_ams=options["use_ams"],
-                ams_mapping=tuple(options["ams_mapping"]),
-                bed_levelling=options["bed_levelling"],
-                flow_cali=options["flow_cali"],
-                timelapse=options["timelapse"],
+                use_ams=options.get("use_ams", False),
+                ams_mapping=tuple(options.get("ams_mapping", (0,))),
+                bed_levelling=options.get("bed_levelling", True),
+                flow_cali=options.get("flow_cali", True),
+                timelapse=options.get("timelapse", False),
             )
             adapter = build_adapter(kind, conn)
             try:
@@ -157,6 +161,7 @@ def _send_to_printer(
             finally:
                 with contextlib.suppress(Exception):
                     adapter.close()
+
         _set_job_state(settings, print_job_id, PrintJobState.STARTING)
     except Exception as exc:
         _set_job_state(settings, print_job_id, PrintJobState.FAILED, error=_scrub(exc, conn))

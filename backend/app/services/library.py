@@ -1335,7 +1335,10 @@ async def newest_printable_files(
     stmt = (
         select(File)
         .join(Blob, Blob.hash == File.blob_hash)
-        .where(File.revision_id.in_(revision_ids), Blob.format == BlobFormat.GCODE_3MF)
+        .where(
+            File.revision_id.in_(revision_ids),
+            Blob.format.in_((BlobFormat.GCODE_3MF, BlobFormat.GCODE)),
+        )
         .options(
             selectinload(File.blob).selectinload(Blob.meta),
             selectinload(File.blob).selectinload(Blob.derivatives),

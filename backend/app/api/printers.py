@@ -28,7 +28,7 @@ from app.config import Settings, get_settings
 from app.crypto import encrypt_secret
 from app.db import get_db
 from app.models import Blob, File, Printer, PrintJob
-from app.models.enums import BlobFormat, PrintJobState
+from app.models.enums import BlobFormat, PrinterKind, PrintJobState
 from app.printers import discovery
 from app.printers.base import command_channel
 from app.printers.connection import connection_from_printer
@@ -73,8 +73,9 @@ async def create_printer(
     settings: Settings = Depends(get_settings),
 ) -> PrinterOut:
     code = (payload.access_code or "").strip()
-    if code in ("", _REDACTED_SENTINEL):
+    if payload.kind == PrinterKind.BAMBU_LAN and code in ("", _REDACTED_SENTINEL):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "access_code is required")
+
     build_volume_mm = (
         payload.build_volume_mm.model_dump()
         if payload.build_volume_mm is not None
@@ -212,11 +213,19 @@ async def start_print(
     if file is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "file not found")
     blob = await db.get(Blob, file.blob_hash)
-    if blob is None or blob.format != BlobFormat.GCODE_3MF:
+    if blob is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "file not found")
+    if printer.kind == PrinterKind.BAMBU_LAN and blob.format != BlobFormat.GCODE_3MF:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             "only sliced .gcode.3mf files can be sent to a printer",
         )
+    if blob.format not in (BlobFormat.GCODE_3MF, BlobFormat.GCODE):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "only sliced .gcode or .gcode.3mf files can be sent to a printer",
+        )
+
     client = aioredis.Redis.from_url(settings.redis_url)
     try:
         state = await read_state_async(client, printer_id)

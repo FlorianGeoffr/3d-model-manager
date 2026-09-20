@@ -11,6 +11,7 @@ This adapter interacts with Moonraker over its REST API:
 
 from __future__ import annotations
 
+import contextlib
 import io
 import re
 import zipfile
@@ -209,7 +210,9 @@ class MoonrakerAdapter(PrinterAdapter):
         extruder = status.get("extruder") or {}
         heater_bed = status.get("heater_bed") or {}
         caselight = status.get("output_pin caselight") or {}
-        light_on = (caselight.get("value") or 0.0) > 0.0 if "output_pin caselight" in status else None
+        light_on = (
+            (caselight.get("value") or 0.0) > 0.0 if "output_pin caselight" in status else None
+        )
 
         ps_state = str(print_stats.get("state", "standby")).lower()
         gcode_state = _MOONRAKER_STATE_MAP.get(ps_state, ps_state.upper())
@@ -270,11 +273,8 @@ class MoonrakerAdapter(PrinterAdapter):
         try:
             client.post("/printer/gcode/script", json={"script": cmd})
         except Exception:
-            try:
+            with contextlib.suppress(Exception):
                 client.post("/printer/gcode/script", json={"script": f"M355 S{val}"})
-            except Exception:
-                pass
-
 
     def job_state(self, public: PrinterPublicState) -> PrintJobState | None:
         if public.print_error:
@@ -363,4 +363,3 @@ class MoonrakerAdapter(PrinterAdapter):
             "snapshot_url": f"http://{hostname}/webcam/?action=snapshot",
             "aspect_ratio": "4:3",
         }
-

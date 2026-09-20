@@ -1,4 +1,5 @@
 """Automatic camera snapshot on print job completion."""
+
 from __future__ import annotations
 
 import logging

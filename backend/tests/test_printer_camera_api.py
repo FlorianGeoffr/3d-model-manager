@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-
 CREATE_MOONRAKER = {
     "name": "Qidi Q2",
     "kind": "moonraker",

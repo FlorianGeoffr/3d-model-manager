@@ -452,4 +452,3 @@ async def get_printer_camera_stream(
         stream_generator(),
         media_type="multipart/x-mixed-replace;boundary=boundarydonotcross",
     )
-

@@ -240,7 +240,9 @@ async def _download_file(
                 headers={"Content-Length": str(blob.size)},
             )
         if blob.format is not BlobFormat.GCODE_3MF:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "member=gcode needs a gcode or gcode_3mf file")
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, "member=gcode needs a gcode or gcode_3mf file"
+            )
         try:
             tmp_path = await anyio.to_thread.run_sync(
                 _spool_to_temp_file, backend, file.storage_path

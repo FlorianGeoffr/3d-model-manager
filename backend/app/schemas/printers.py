@@ -209,6 +209,7 @@ class PrinterStatusOut(BaseModel):
     subtask_name: str | None = None
     wifi_signal: str | None = None
     trays: list[AmsTrayOut] = Field(default_factory=list)
+    light_on: bool | None = None
 
 
 class PrinterCameraOut(BaseModel):
@@ -218,6 +219,10 @@ class PrinterCameraOut(BaseModel):
     snapshot_url: str | None = None
     aspect_ratio: str | None = "4:3"
     direct_stream_url: str | None = None
+
+
+class PrinterLightIn(BaseModel):
+    on: bool | None = None
 
 
 class PrintRequest(BaseModel):

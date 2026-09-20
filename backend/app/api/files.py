@@ -227,8 +227,20 @@ async def _download_file(
     blob = await db.get(Blob, file.blob_hash)
 
     if member == "gcode":
-        if blob is None or blob.format is not BlobFormat.GCODE_3MF:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "member=gcode needs a gcode_3mf file")
+        if blob is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "blob not found")
+        if blob.format is BlobFormat.GCODE:
+            try:
+                iterator = await anyio.to_thread.run_sync(backend.read, file.storage_path)
+            except StorageKeyNotFound as exc:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "file missing from storage") from exc
+            return StreamingResponse(
+                iterate_in_threadpool(iterator),
+                media_type="text/x-gcode",
+                headers={"Content-Length": str(blob.size)},
+            )
+        if blob.format is not BlobFormat.GCODE_3MF:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "member=gcode needs a gcode or gcode_3mf file")
         try:
             tmp_path = await anyio.to_thread.run_sync(
                 _spool_to_temp_file, backend, file.storage_path

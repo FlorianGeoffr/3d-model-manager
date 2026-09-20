@@ -241,6 +241,36 @@ async def test_download_member_gcode_extracts_embedded_plate(
     assert response.content == corpus.bambu_gcode.read_bytes()
 
 
+async def test_download_member_gcode_on_plain_gcode_streams_file(
+    authenticated_client: httpx.AsyncClient,
+    corpus: CorpusPaths,
+) -> None:
+    """``?member=gcode`` on a plain ``.gcode`` file directly streams its content."""
+    created = await _create_model(authenticated_client, "Plain Gcode Model")
+    revision_id = created["current_revision"]["id"]
+    content = b"; G-code test\nG28\nG1 X10 Y10 F3000\n"
+
+    upload = await authenticated_client.put(
+        "/api/uploads",
+        params={
+            "model_id": created["id"],
+            "revision_id": revision_id,
+            "rel_path": "model.gcode",
+        },
+        content=content,
+    )
+    assert upload.status_code == 201, upload.text
+    file_id = upload.json()["file_id"]
+
+    response = await authenticated_client.get(
+        f"/api/files/{file_id}/download", params={"member": "gcode"}
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/x-gcode")
+    assert response.content == content
+
+
 async def test_download_member_gcode_streams_without_buffering_whole_member(
     corpus: CorpusPaths,
     backend: LocalStorageBackend,

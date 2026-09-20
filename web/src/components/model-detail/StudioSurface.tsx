@@ -1,10 +1,13 @@
-import { ArrowLeftIcon, LoaderCircleIcon } from "lucide-react";
+import { lazy, Suspense } from "react";
+import { ArrowLeftIcon, LayersIcon, LoaderCircleIcon } from "lucide-react";
 
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { PlatePanel } from "@/components/model-detail/PlatePanel";
 import { PlaceholderCard, ViewerStage, type ViewerStageProps } from "@/components/viewer/ViewerStage";
 import type { StudioSelection } from "@/components/model-detail/studioSelection";
 import type { FileOut } from "@/api/types";
+
+const GcodePreview = lazy(() => import("@/components/viewer/GcodePreview"));
 
 type StageProps = Omit<ViewerStageProps, "variant" | "showWindowButtons">;
 
@@ -13,10 +16,22 @@ function FileState({ file }: { file: FileOut }) {
 
   if (file.format === "gcode") {
     return (
-      <PlaceholderCard
-        title="Plain G-code — no 3D preview"
-        description="This file has no mesh geometry to render."
-      />
+      <div className="mx-auto w-full max-w-4xl p-4">
+        <div className="mb-2 flex items-center gap-2 text-xs font-medium text-muted-foreground">
+          <LayersIcon className="size-3.5 text-primary" />
+          <span>G-code toolpath preview — {file.rel_path}</span>
+        </div>
+        <Suspense
+          fallback={
+            <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
+              <LoaderCircleIcon className="size-5 animate-spin" />
+              Loading g-code preview…
+            </div>
+          }
+        >
+          <GcodePreview fileId={file.id} />
+        </Suspense>
+      </div>
     );
   }
 

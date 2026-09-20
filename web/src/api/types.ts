@@ -659,6 +659,7 @@ export interface PrinterStatusOut {
   subtask_name: string | null;
   wifi_signal: string | null;
   trays: AmsTray[];
+  light_on?: boolean | null;
 }
 
 export type PrintJobState =

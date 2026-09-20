@@ -40,6 +40,7 @@ from app.schemas.printers import (
     DetectSerialOut,
     PrinterCameraOut,
     PrinterCreate,
+    PrinterLightIn,
     PrinterOut,
     PrinterStatusOut,
     PrinterUpdate,
@@ -264,6 +265,7 @@ _STATE_FIELDS = (
     "bed_temper",
     "subtask_name",
     "wifi_signal",
+    "light_on",
 )
 
 
@@ -347,6 +349,21 @@ async def stop_printer(
 ) -> dict:
     await _get_enabled_or_404(db, printer_id)
     await _publish_command(settings, printer_id, "stop")
+    return {"status": "sent"}
+
+
+@router.post("/{printer_id}/light", status_code=status.HTTP_202_ACCEPTED)
+async def toggle_printer_light(
+    printer_id: int,
+    payload: PrinterLightIn | None = None,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    await _get_enabled_or_404(db, printer_id)
+    cmd = "toggle_light"
+    if payload and payload.on is not None:
+        cmd = "light_on" if payload.on else "light_off"
+    await _publish_command(settings, printer_id, cmd)
     return {"status": "sent"}
 
 

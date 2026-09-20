@@ -3,13 +3,15 @@ import {
   ChevronDown,
   ChevronUp,
   ExternalLink,
+  Lightbulb,
+  LightbulbOff,
   Maximize2,
   Minimize2,
   RefreshCw,
   Video,
 } from "lucide-react";
 
-import { usePrinterCamera, usePrinterCommand, usePrinterStatus } from "@/api/printers";
+import { usePrinterCamera, usePrinterCommand, usePrinterStatus, useTogglePrinterLight } from "@/api/printers";
 import type { PrinterOut } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,6 +21,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 export function PrinterStatusPanel({ printer }: { printer: PrinterOut }) {
   const status = usePrinterStatus(printer.id);
   const command = usePrinterCommand(printer.id);
+  const toggleLight = useTogglePrinterLight(printer.id);
   const [cameraOpen, setCameraOpen] = useState(false);
   const [streamKey, setStreamKey] = useState(0);
   const [streamError, setStreamError] = useState(false);
@@ -49,6 +52,8 @@ export function PrinterStatusPanel({ printer }: { printer: PrinterOut }) {
   const gs = s?.gcode_state ?? null;
   const printing = gs === "RUNNING";
   const paused = gs === "PAUSE";
+  const hasLight = Boolean(s?.online && (s.light_on != null || printer.kind === "moonraker"));
+  const isLightOn = Boolean(s?.light_on);
 
   return (
     <Card className="overflow-hidden">
@@ -62,6 +67,26 @@ export function PrinterStatusPanel({ printer }: { printer: PrinterOut }) {
         </CardDescription>
         <CardAction>
           <div className="flex items-center gap-2">
+            {hasLight ? (
+              <Button
+                size="sm"
+                variant={isLightOn ? "secondary" : "outline"}
+                className={`h-7 gap-1.5 text-xs ${isLightOn ? "border-amber-500/40 text-amber-600 dark:text-amber-400 bg-amber-500/10" : ""}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleLight.mutate(!isLightOn);
+                }}
+                disabled={toggleLight.isPending}
+                title={isLightOn ? "Turn chamber light off" : "Turn chamber light on"}
+              >
+                {isLightOn ? (
+                  <Lightbulb className="size-3.5 fill-amber-400 text-amber-500" />
+                ) : (
+                  <LightbulbOff className="size-3.5 text-muted-foreground" />
+                )}
+                <span>{isLightOn ? "Light On" : "Light Off"}</span>
+              </Button>
+            ) : null}
             <Button
               size="sm"
               variant={cameraOpen ? "secondary" : "outline"}
@@ -116,6 +141,21 @@ export function PrinterStatusPanel({ printer }: { printer: PrinterOut }) {
 
                 {/* Stream Controls */}
                 <div className="absolute top-2.5 right-2.5 flex items-center gap-1 opacity-90 transition-opacity group-hover:opacity-100">
+                  {hasLight ? (
+                    <Button
+                      size="icon-xs"
+                      variant="ghost"
+                      className={`size-7 bg-black/60 text-white hover:bg-black/80 hover:text-white ${isLightOn ? "text-amber-400 hover:text-amber-300" : ""}`}
+                      title={isLightOn ? "Turn off chamber light" : "Turn on chamber light"}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleLight.mutate(!isLightOn);
+                      }}
+                      disabled={toggleLight.isPending}
+                    >
+                      <Lightbulb className={`size-3.5 ${isLightOn ? "fill-amber-400" : ""}`} />
+                    </Button>
+                  ) : null}
                   <Button
                     size="icon-xs"
                     variant="ghost"

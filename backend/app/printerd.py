@@ -131,6 +131,12 @@ class PrinterWorker:
             self.adapter.resume()
         elif command == "stop":
             self.adapter.stop()
+        elif command in ("toggle_light", "light_on", "light_off"):
+            if command == "toggle_light":
+                curr = self._merged.get("light_on")
+                self.adapter.set_light(not curr if curr is not None else True)
+            else:
+                self.adapter.set_light(command == "light_on")
         else:
             log.warning("printerd: unknown command %r for printer %s", command, self.printer_id)
 

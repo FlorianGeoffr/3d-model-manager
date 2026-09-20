@@ -192,7 +192,7 @@ class MoonrakerAdapter(PrinterAdapter):
         try:
             client = self._http_client(timeout=5.0)
             resp = client.get(
-                "/printer/objects/query?print_stats&display_status&extruder&heater_bed&heater_generic%20chamber"
+                "/printer/objects/query?print_stats&display_status&extruder&heater_bed&heater_generic%20chamber&output_pin%20caselight"
             )
             if not resp.is_success:
                 return
@@ -208,6 +208,8 @@ class MoonrakerAdapter(PrinterAdapter):
         display_status = status.get("display_status") or {}
         extruder = status.get("extruder") or {}
         heater_bed = status.get("heater_bed") or {}
+        caselight = status.get("output_pin caselight") or {}
+        light_on = (caselight.get("value") or 0.0) > 0.0 if "output_pin caselight" in status else None
 
         ps_state = str(print_stats.get("state", "standby")).lower()
         gcode_state = _MOONRAKER_STATE_MAP.get(ps_state, ps_state.upper())
@@ -237,6 +239,7 @@ class MoonrakerAdapter(PrinterAdapter):
             "subtask_name": print_stats.get("filename") or None,
             "wifi_signal": None,
             "trays": [],
+            "light_on": light_on,
         }
 
     # -- state conversion ----------------------------------------------
@@ -256,7 +259,22 @@ class MoonrakerAdapter(PrinterAdapter):
             subtask_name=merged.get("subtask_name"),
             wifi_signal=merged.get("wifi_signal"),
             trays=merged.get("trays") or [],
+            light_on=merged.get("light_on"),
         )
+
+    def set_light(self, on: bool) -> None:
+        """Control enclosure/chamber light via Moonraker."""
+        val = 1 if on else 0
+        cmd = f"SET_PIN PIN=caselight VALUE={val}"
+        client = self._http_client(timeout=5.0)
+        try:
+            client.post("/printer/gcode/script", json={"script": cmd})
+        except Exception:
+            try:
+                client.post("/printer/gcode/script", json={"script": f"M355 S{val}"})
+            except Exception:
+                pass
+
 
     def job_state(self, public: PrinterPublicState) -> PrintJobState | None:
         if public.print_error:

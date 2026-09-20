@@ -31,8 +31,16 @@ class Settings(BaseSettings):
     app_version: str = "dev"
     database_url: str = "postgresql+asyncpg://tdmm:tdmm@localhost:5432/tdmm"
     redis_url: str = "redis://localhost:6379/0"
-    data_dir: Path = Path("./data")
-    library_root: Path = Path("./library")
+    data_dir: Path = Field(
+        default=Path("./data"),
+        validation_alias=AliasChoices("DATA_DIR", "TDMM_DATA_DIR", "data_dir"),
+    )
+    library_root: Path = Field(
+        default=Path("./library"),
+        validation_alias=AliasChoices(
+            "LIBRARY_ROOT", "LIBRARY_DIR", "TDMM_LIBRARY_ROOT", "library_root"
+        ),
+    )
     admin_username: str = "admin"
     admin_password: SecretStr | None = None
     cookie_secure: bool = False

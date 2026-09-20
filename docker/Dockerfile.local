@@ -1,0 +1,8 @@
+FROM ghcr.io/metril/3d-model-manager:latest
+
+# Overlay our modified backend code and migrations
+COPY backend/app/ /app/app/
+COPY backend/alembic/ /app/alembic/
+
+# Overlay our newly compiled web interface
+COPY web/dist/ /app/static/

@@ -1,0 +1,154 @@
+services:
+  api:
+    image: 3d-model-manager:local
+    pull_policy: never
+    ports:
+      - "8085:8080"
+    environment:
+      ROLE: api
+      WATCH_DIR: /watch
+      DATA_DIR: /data
+      LIBRARY_ROOT: /library
+      LIBRARY_DIR: /library
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      DATABASE_URL: postgresql+asyncpg://tdmm:tdmm_secret@db:5432/tdmm
+      REDIS_URL: redis://redis:6379/0
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin12345}
+    volumes:
+      - tdmm_data:/data
+      - ./library:/library
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request as u; u.urlopen('http://localhost:8080/api/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  worker-io:
+    image: 3d-model-manager:local
+    pull_policy: never
+    environment:
+      ROLE: worker
+      QUEUES: io
+      CONCURRENCY: 2
+      WATCH_DIR: /watch
+      DATA_DIR: /data
+      LIBRARY_ROOT: /library
+      LIBRARY_DIR: /library
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      DATABASE_URL: postgresql+asyncpg://tdmm:tdmm_secret@db:5432/tdmm
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - tdmm_data:/data
+      - ./library:/library
+      - ${WATCH_HOST_DIR:-./slicer-watch}:/watch
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.tasks.celery_app inspect ping -t 10 -d celery@$$HOSTNAME"]
+      interval: 30s
+      start_period: 30s
+      retries: 3
+    restart: unless-stopped
+
+  worker-cpu:
+    image: 3d-model-manager:local
+    pull_policy: never
+    environment:
+      ROLE: worker
+      QUEUES: cpu
+      MAX_TASKS_PER_CHILD: 16
+      MAX_MEMORY_PER_CHILD: 1572864
+      DATA_DIR: /data
+      LIBRARY_ROOT: /library
+      LIBRARY_DIR: /library
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      DATABASE_URL: postgresql+asyncpg://tdmm:tdmm_secret@db:5432/tdmm
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - tdmm_data:/data
+      - ./library:/library
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.tasks.celery_app inspect ping -t 10 -d celery@$$HOSTNAME"]
+      interval: 30s
+      start_period: 30s
+      retries: 3
+    restart: unless-stopped
+
+  beat:
+    image: 3d-model-manager:local
+    pull_policy: never
+    command: ["celery", "-A", "app.tasks.celery_app", "beat", "-l", "info", "-s", "/tmp/celerybeat-schedule"]
+    environment:
+      WATCH_DIR: /watch
+      DATA_DIR: /data
+      DATABASE_URL: postgresql+asyncpg://tdmm:tdmm_secret@db:5432/tdmm
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  printerd:
+    image: 3d-model-manager:local
+    pull_policy: never
+    command: ["python", "-m", "app.printerd"]
+    environment:
+      DATA_DIR: /data
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      DATABASE_URL: postgresql+asyncpg://tdmm:tdmm_secret@db:5432/tdmm
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - tdmm_data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: tdmm
+      POSTGRES_PASSWORD: tdmm_secret
+      POSTGRES_DB: tdmm
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tdmm -d tdmm"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  tdmm_data:

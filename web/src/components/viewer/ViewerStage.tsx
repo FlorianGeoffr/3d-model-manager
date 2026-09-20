@@ -432,6 +432,10 @@ export function ViewerStage({
     if (tools.explode !== 0) onToolsChange({ explode: 0 });
   }, [tools.explode, onToolsChange]);
 
+  const handleCameraPresetClear = useCallback(() => {
+    onToolsChange({ cameraPreset: null });
+  }, [onToolsChange]);
+
   // R9-D item 8: keeps the thumbnail `<img>` mounted for the ~250ms fade
   // (Tailwind `transition-opacity`) after `modelReady` flips, then unmounts
   // it -- a plain timer rather than an `onTransitionEnd` handler because
@@ -580,7 +584,7 @@ export function ViewerStage({
           apiRef={viewerApiRef}
           onPartLoaded={handlePartLoaded}
           onExplodeModeChange={setExplodeMode}
-          onCameraPresetClear={() => onToolsChange({ cameraPreset: null })}
+          onCameraPresetClear={handleCameraPresetClear}
           hasCoverThumbnail={Boolean(coverUrl) && parts.length > 0}
           onError={handleLoadError}
         />

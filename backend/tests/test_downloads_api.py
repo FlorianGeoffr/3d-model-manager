@@ -397,7 +397,7 @@ async def test_slicer_link_url_includes_filename(
     link = await authenticated_client.post(f"/api/files/{file.id}/slicer-link")
     assert link.status_code == 200, link.text
     url = link.json()["url"]
-    assert f"/api/files/{file.id}/download/sliced.3mf?token=" in url
+    assert f"/api/files/{file.id}/download/" in url and url.endswith("/sliced.3mf")
 
     path_and_query = url.split("/api", 1)[1]
     async with _anon_client() as anon:
@@ -461,8 +461,7 @@ async def test_slicer_link_token_allows_download_without_cookie(
     assert link.status_code == 200, link.text
     body = link.json()
     assert "url" in body and "expires_at" in body
-    assert f"/api/files/{file_id}/download" in body["url"]
-    assert "token=" in body["url"]
+    assert f"/api/files/{file_id}/download/" in body["url"] and body["url"].endswith("/part.stl")
 
     path_and_query = body["url"].split("/api", 1)[1]
     async with _anon_client() as anon:

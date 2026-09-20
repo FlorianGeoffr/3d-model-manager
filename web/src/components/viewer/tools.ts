@@ -202,7 +202,13 @@ export function useViewerTools(
   }, [tools.grid, persist]);
 
   const setTools = useCallback((patch: Partial<ViewerToolsState>) => {
-    setToolsState((prev) => ({ ...prev, ...patch }));
+    setToolsState((prev) => {
+      const hasChange = Object.entries(patch).some(
+        ([k, v]) => prev[k as keyof ViewerToolsState] !== v,
+      );
+      if (!hasChange) return prev;
+      return { ...prev, ...patch };
+    });
   }, []);
 
   return { tools, setTools };

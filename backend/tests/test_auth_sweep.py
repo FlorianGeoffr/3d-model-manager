@@ -73,6 +73,8 @@ _PATH_PARAM_VALUES = {
     "category_id": "1",
     # R13c: materials.
     "material_id": "1",
+    # Signed download route token
+    "token": "placeholder-token",
 }
 
 

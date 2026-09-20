@@ -30,7 +30,7 @@ import redis
 
 from app.config import Settings, get_settings
 from app.models import Blob, File, Printer, PrintJob
-from app.models.enums import BlobFormat, PrintJobState
+from app.models.enums import BlobFormat, PrinterKind, PrintJobState
 from app.printers import gcode3mf
 from app.printers.base import PrinterConnection, PrintSpec
 from app.printers.connection import connection_from_printer
@@ -136,10 +136,13 @@ def _send_to_printer(
             # Workstream C task C2: resolves the specific verified File's own
             # backend internally (a blob can have verified copies on more
             # than one backend) rather than a caller-supplied default.
-            suffix = ".gcode" if blob_format == BlobFormat.GCODE else ".gcode.3mf"
+            if kind == PrinterKind.MOONRAKER and blob_format == BlobFormat.GCODE:
+                suffix = ".gcode"
+            else:
+                suffix = ".gcode.3mf"
             remote_name = f"tdmm-{print_job_id}{suffix}"
             path = derivatives.fetch_blob_to_temp(s2, settings, blob_hash, Path(tmp), suffix)
-            if blob_format == BlobFormat.GCODE_3MF:
+            if kind != PrinterKind.MOONRAKER or blob_format == BlobFormat.GCODE_3MF:
                 try:
                     gcode3mf.assert_plate_available(path.read_bytes(), options.get("plate", 1))
                 except gcode3mf.NotSendableError as e:

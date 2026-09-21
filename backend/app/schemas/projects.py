@@ -15,12 +15,16 @@ class ProjectCreate(BaseModel):
     name: NonEmptyStr
     description: str | None = None
     color: TagColor | None = None
+    icon: str | None = None
+    parent_id: int | None = None
 
 
 class ProjectUpdate(BaseModel):
     name: NonEmptyStr | None = None
     description: str | None = None
     color: TagColor | None = None
+    icon: str | None = None
+    parent_id: int | None = None
 
 
 class ProjectOut(BaseModel):
@@ -31,6 +35,8 @@ class ProjectOut(BaseModel):
     slug: str
     description: str | None = None
     color: str | None = None
+    icon: str | None = None
+    parent_id: int | None = None
     created_at: datetime
     updated_at: datetime
     model_count: int = 0

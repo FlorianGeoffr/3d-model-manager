@@ -63,12 +63,16 @@ RUN apt-get update \
 # just placeholders, immediately overwritten by `usermod -o -u "$PUID" ...`
 # when PUID/PGID are set. Root stays the default (see the ENTRYPOINT note
 # below) when neither is set.
-RUN groupadd -g 1000 tdmm && useradd -u 1000 -g tdmm -M -s /usr/sbin/nologin tdmm
+RUN groupadd -g 1000 tdmm && useradd -u 1000 -g tdmm -m -d /home/tdmm -s /usr/sbin/nologin tdmm \
+    && mkdir -p /home/tdmm/.cache /tmp/.cache \
+    && chmod 1777 /tmp/.cache \
+    && chown -R tdmm:tdmm /home/tdmm
 
 COPY --from=gltfpack-build /build/gltfpack /usr/local/bin/gltfpack
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
+    XDG_CACHE_HOME=/tmp/.cache \
     UV_PROJECT_ENVIRONMENT=/app/.venv \
     PATH="/app/.venv/bin:${PATH}" \
     STATIC_DIR=/app/static

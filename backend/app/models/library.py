@@ -176,12 +176,22 @@ class Project(Base):
     slug: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     color: Mapped[str | None] = mapped_column(String, nullable=True)
+    icon: Mapped[str | None] = mapped_column(String, nullable=True)
+    parent_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
     models: Mapped[list["Model"]] = relationship(back_populates="project")
+    children: Mapped[list["Project"]] = relationship(
+        back_populates="parent", cascade="all, delete-orphan", foreign_keys=[parent_id]
+    )
+    parent: Mapped["Project | None"] = relationship(
+        back_populates="children", remote_side=[id], foreign_keys=[parent_id]
+    )
 
 
 class Category(Base):

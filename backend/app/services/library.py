@@ -28,6 +28,7 @@ import anyio
 from fastapi import HTTPException, status
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, or_, select, tuple_
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session as SyncSession
@@ -224,6 +225,13 @@ async def create_model(
     *,
     name: str,
     description: str | None,
+    project_id: int | None = None,
+    print_status: str | None = None,
+    quantity_target: int = 1,
+    quantity_printed: int = 0,
+    print_tips: str | None = None,
+    cover_blob_hash: str | None = None,
+    metadata_json: dict[str, str] | None = None,
     source_url: str | None = None,
     source_site: str | None = None,
     source_author: str | None = None,
@@ -255,6 +263,13 @@ async def create_model(
         tags=[],
         category=None,
         project=None,
+        project_id=project_id,
+        print_status=print_status,
+        quantity_target=quantity_target,
+        quantity_printed=quantity_printed,
+        print_tips=print_tips,
+        cover_blob_hash=cover_blob_hash,
+        metadata_json=metadata_json,
         source_url=source_url,
         source_site=source_site,
         source_author=source_author,
@@ -1172,6 +1187,16 @@ def _gallery_render_url(model: Model, aggregate: _GalleryAggregate | None) -> st
     return None
 
 
+def _get_loaded(obj: object, attr: str) -> object | None:
+    try:
+        insp = sa_inspect(obj)
+        if attr in insp.unloaded:
+            return None
+        return getattr(obj, attr, None)
+    except Exception:
+        return None
+
+
 async def build_model_summaries(
     db: AsyncSession, settings: Settings, models: list[Model]
 ) -> list[ModelSummary]:
@@ -1212,19 +1237,19 @@ async def build_model_summaries(
                 printable_file=agg.printable_file if agg else None,
                 category_id=m.category_id,
                 category=(
-                    ModelCategoryOut(id=m.category.id, name=m.category.name, color=m.category.color)
-                    if m.category is not None
+                    ModelCategoryOut(id=cat.id, name=cat.name, color=cat.color)
+                    if (cat := _get_loaded(m, "category")) is not None
                     else None
                 ),
                 project_id=m.project_id,
                 project=(
                     ModelProjectOut(
-                        id=m.project.id,
-                        name=m.project.name,
-                        slug=m.project.slug,
-                        color=m.project.color,
+                        id=proj.id,
+                        name=proj.name,
+                        slug=proj.slug,
+                        color=proj.color,
                     )
-                    if m.project is not None
+                    if (proj := _get_loaded(m, "project")) is not None
                     else None
                 ),
                 print_status=m.print_status,

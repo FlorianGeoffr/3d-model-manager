@@ -55,6 +55,8 @@ class ModelProjectOut(BaseModel):
     name: str
     slug: str
     color: str | None = None
+    icon: str | None = None
+    parent_id: int | None = None
 
 
 # -- models -------------------------------------------------------------
@@ -63,6 +65,7 @@ class ModelProjectOut(BaseModel):
 class ModelCreate(BaseModel):
     name: NonEmptyStr
     description: str | None = None
+    project_id: int | None = None
 
 
 class ModelPatch(BaseModel):

@@ -618,3 +618,19 @@ export function useDeleteFile(slug: string) {
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: modelQueryOptions(slug).queryKey }),
   });
 }
+
+export function explodePlates(slug: string): Promise<ModelSummary[]> {
+  return api.post<ModelSummary[]>(`/models/${encodeURIComponent(slug)}/explode-plates`, {});
+}
+
+export function useExplodePlates() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (slug: string) => explodePlates(slug),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["models"] });
+      void queryClient.invalidateQueries({ queryKey: ["projects"] });
+    },
+  });
+}
+

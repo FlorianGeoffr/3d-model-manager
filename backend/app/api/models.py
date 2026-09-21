@@ -2,19 +2,23 @@
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from pathlib import Path
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_storage_backend
 from app.config import Settings, get_settings
 from app.db import get_db
-from app.models.enums import BlobFormat, BlobKind
-from app.models.library import Revision
+from app.models.enums import BlobFormat, BlobKind, DerivativeKind, DerivativeStatus
+from app.models.library import Blob, File, Model, Revision
+from app.models.processing import Derivative
 from app.schemas.jobs import JobOut
 from app.schemas.library import (
     GalleryPage,
@@ -27,9 +31,11 @@ from app.schemas.library import (
     ModelPatch,
     ModelRedownloadIn,
     ModelRelocateIn,
+    ModelSummary,
 )
-from app.services import jobs as jobs_service
+from app.services import derivatives, jobs as jobs_service
 from app.services import layout, library, spool, zip_export
+from app.services import projects as projects_service
 from app.services import storage_backends as storage_backends_service
 from app.services.http_names import content_disposition_attachment
 from app.storage.base import StorageBackend
@@ -56,7 +62,11 @@ async def create_model(
     settings: Settings = Depends(get_settings),
 ) -> ModelDetail:
     model = await library.create_model(
-        db, backend, name=payload.name, description=payload.description
+        db,
+        backend,
+        name=payload.name,
+        description=payload.description,
+        project_id=payload.project_id,
     )
     return await library.build_model_detail(db, model, settings)
 
@@ -346,3 +356,182 @@ async def relocate_model(
     # app.api.settings.migrate_storage_settings).
     await db.refresh(job)
     return JobOut.from_model(job)
+
+
+@router.post("/{slug}/explode-plates", response_model=list[ModelSummary])
+async def explode_plates(
+    slug: str,
+    db: AsyncSession = Depends(get_db),
+    backend: StorageBackend = Depends(get_storage_backend),
+    settings: Settings = Depends(get_settings),
+) -> list[ModelSummary]:
+    """Explode a multi-plate model into distinct tracked child models in the project (Option B).
+    Creates an entry per plate with its dedicated plate thumbnail, print status, and metrics.
+    """
+    model = await library.get_model_by_slug(db, slug)
+    if model.current_revision_id is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Le modèle n'a pas de fichier.")
+
+    # Find the file and blob with plates
+    stmt = (
+        select(File, Blob)
+        .join(Blob, Blob.hash == File.blob_hash)
+        .options(selectinload(Blob.meta))
+        .where(File.revision_id == model.current_revision_id)
+        .order_by(File.rel_path)
+    )
+    files = (await db.execute(stmt)).all()
+
+    target_file: File | None = None
+    target_blob: Blob | None = None
+    plates: list[dict] | None = None
+
+    for f, b in files:
+        if b.meta and b.meta.raw:
+            raw_plates = b.meta.raw.get("plates")
+            if raw_plates and len(raw_plates) > 1:
+                target_file = f
+                target_blob = b
+                plates = raw_plates
+                break
+
+    if not target_file or not target_blob or not plates:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "Ce modèle ne contient pas plusieurs plateaux."
+        )
+
+    # Ensure project exists
+    if model.project_id is None:
+        proj = await projects_service.create_project(
+            db,
+            name=model.name,
+            description=f"Projet créé lors de l'éclatement des plateaux de {model.name}",
+        )
+        model.project_id = proj.id
+        await db.commit()
+        project_id = proj.id
+    else:
+        project_id = model.project_id
+
+    created_models: list[Model] = []
+    for plate in plates:
+        idx = plate.get("index", 1)
+        p_name = plate.get("name") or f"Plateau {idx}"
+        child_name = f"{model.name} - {p_name}"
+
+        # Generate print tips / filament info
+        pred = plate.get("prediction_s")
+        weight = plate.get("weight_g")
+        filaments = plate.get("filaments", [])
+        fil_strs = [
+            f"{f.get('type') or 'Filament'} ({f.get('color') or ''})".replace(" ()", "")
+            for f in filaments
+            if isinstance(f, dict)
+        ]
+        tips_parts = []
+        if pred:
+            h = pred // 3600
+            m = (pred % 3600) // 60
+            tips_parts.append(f"Temps: {h}h {m}m" if h > 0 else f"Temps: {m}m")
+        if weight:
+            tips_parts.append(f"Poids: {round(float(weight), 1)}g")
+        if fil_strs:
+            tips_parts.append(f"Filaments: {', '.join(fil_strs)}")
+        print_tips = " • ".join(tips_parts) if tips_parts else None
+
+        # Check plate thumbnail
+        cover_hash = None
+        plate_thumb_path = derivatives.plate_thumb_path(settings, target_blob.hash, idx)
+        if plate_thumb_path.is_file():
+            png_bytes = plate_thumb_path.read_bytes()
+            cover_hash = hashlib.sha256(png_bytes).hexdigest()
+
+            # Ensure Blob exists
+            thumb_blob = await db.get(Blob, cover_hash)
+            if thumb_blob is None:
+                thumb_blob = Blob(
+                    hash=cover_hash,
+                    size=len(png_bytes),
+                    kind=BlobKind.IMAGE,
+                    format=BlobFormat.PNG,
+                )
+                db.add(thumb_blob)
+                await db.flush()
+
+            # Ensure Derivative THUMB_256 exists
+            stmt = select(Derivative).where(
+                Derivative.blob_hash == cover_hash,
+                Derivative.kind == DerivativeKind.THUMB_256,
+            )
+            deriv = (await db.execute(stmt)).scalar_one_or_none()
+            deriv_path = derivatives.derivative_path(settings, cover_hash, DerivativeKind.THUMB_256)
+            deriv_path.parent.mkdir(parents=True, exist_ok=True)
+            if not deriv_path.is_file():
+                deriv_path.write_bytes(png_bytes)
+
+            if deriv is None:
+                deriv = Derivative(
+                    blob_hash=cover_hash,
+                    kind=DerivativeKind.THUMB_256,
+                    status=DerivativeStatus.OK,
+                )
+                db.add(deriv)
+
+        child = await library.create_model(
+            db,
+            backend,
+            name=child_name,
+            description=f"Plateau {idx} extrait de {model.name}",
+            project_id=project_id,
+            print_status="to_print",
+            quantity_target=1,
+            quantity_printed=0,
+            print_tips=print_tips,
+            cover_blob_hash=cover_hash,
+            metadata_json={"plate_index": str(idx), "parent_model_slug": model.slug},
+            commit=False,
+        )
+
+        # Attach file reference to child revision
+        if child.current_revision_id is not None:
+            dest_storage_path = layout.file_storage_path(
+                child.slug,
+                layout.revision_dir_name(1, "initial"),
+                target_file.rel_path,
+            )
+            try:
+                await anyio.to_thread.run_sync(
+                    lambda: backend.copy(target_file.storage_path, dest_storage_path)
+                )
+            except Exception:
+                dest_storage_path = target_file.storage_path
+
+            file_row = File(
+                revision_id=child.current_revision_id,
+                blob_hash=target_blob.hash,
+                rel_path=target_file.rel_path,
+                storage_path=dest_storage_path,
+                backend_id=target_file.backend_id,
+                verified_at=func.now(),
+            )
+            db.add(file_row)
+
+        created_models.append(child)
+
+    await db.commit()
+
+    # Re-fetch models with relationships loaded for build_model_summaries
+    child_ids = [c.id for c in created_models]
+    stmt = (
+        select(Model)
+        .where(Model.id.in_(child_ids))
+        .options(
+            selectinload(Model.tags),
+            selectinload(Model.category),
+            selectinload(Model.project),
+        )
+        .order_by(Model.name)
+    )
+    loaded_children = (await db.execute(stmt)).scalars().all()
+    return await library.build_model_summaries(db, settings, loaded_children)
+

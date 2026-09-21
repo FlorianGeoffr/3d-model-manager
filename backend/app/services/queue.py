@@ -39,7 +39,11 @@ async def _to_out(
     stmt = (
         select(Model)
         .where(Model.id.in_(model_ids))
-        .options(selectinload(Model.tags), selectinload(Model.category))
+        .options(
+            selectinload(Model.tags),
+            selectinload(Model.category),
+            selectinload(Model.project),
+        )
     )
     models_by_id = {m.id: m for m in (await db.execute(stmt)).scalars().unique().all()}
     summaries = await library.build_model_summaries(

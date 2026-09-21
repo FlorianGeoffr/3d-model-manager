@@ -18,7 +18,7 @@ export function GcodeProfilesCard({ model }: { model: ModelDetail }) {
       </CardHeader>
       <CardContent className="space-y-4">
         {slicedFiles.map((file) => (
-          <PlatePanel key={file.id} file={file} />
+          <PlatePanel key={file.id} file={file} modelSlug={model.slug} />
         ))}
       </CardContent>
     </Card>

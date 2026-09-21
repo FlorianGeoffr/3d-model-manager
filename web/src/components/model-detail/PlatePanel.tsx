@@ -2,6 +2,7 @@ import { lazy, Suspense, useState } from "react";
 import { ImageIcon, LayersIcon, LoaderCircleIcon, PrinterIcon } from "lucide-react";
 
 import { useAppSettings } from "@/api/appSettings";
+import { useExplodePlates } from "@/api/library";
 import { useFeatures } from "@/api/features";
 import { usePrinters } from "@/api/printers";
 import { Button } from "@/components/ui/button";
@@ -10,6 +11,7 @@ import { estimatePrintCost, formatPrintCost } from "@/lib/printCost";
 import { cn } from "@/lib/utils";
 import type { AppSettings, FileOut, PlateOut } from "@/api/types";
 import { SendToPrinterDialog } from "@/components/model-detail/SendToPrinterButton";
+import { toast } from "sonner";
 
 // `gcode-preview` drives its own three.js/WebGL renderer (Global Constraints
 // "BUNDLE RULE") — loaded only once someone actually asks to preview layers.
@@ -148,7 +150,15 @@ function PlateCard({
  * `StudioSurface` shows beneath the assembly viewer when the model has both
  * ready GLB parts AND sliced files, so neither view has to hide behind the
  * other. */
-export function PlatePanel({ file, compact = false }: { file: FileOut; compact?: boolean }) {
+export function PlatePanel({
+  file,
+  modelSlug,
+  compact = false,
+}: {
+  file: FileOut;
+  modelSlug?: string;
+  compact?: boolean;
+}) {
   const plates = file.meta?.plates ?? [];
   const header = headerLine(file);
   const meta = metaLine(file);
@@ -160,6 +170,7 @@ export function PlatePanel({ file, compact = false }: { file: FileOut; compact?:
   const printerEnabled = !!features.data?.printer_enabled;
   const printers = usePrinters({ enabled: printerEnabled });
   const canPrint = printerEnabled && !!printers.data && printers.data.length > 0;
+  const explodePlatesMutation = useExplodePlates();
 
   return (
     <div className="space-y-3">
@@ -188,10 +199,40 @@ export function PlatePanel({ file, compact = false }: { file: FileOut; compact?:
             </Suspense>
           </div>
         ) : (
-          <Button variant="outline" size="sm" onClick={() => setPreviewOpen(true)}>
-            <LayersIcon className="size-4" />
-            Preview layers {selectedPlate !== undefined && plates.length > 1 ? `(Plate ${selectedPlate})` : ""}
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => setPreviewOpen(true)}>
+              <LayersIcon className="size-4" />
+              Preview layers {selectedPlate !== undefined && plates.length > 1 ? `(Plate ${selectedPlate})` : ""}
+            </Button>
+            {modelSlug && plates.length > 1 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  explodePlatesMutation.mutate(modelSlug, {
+                    onSuccess: (exploded) => {
+                      toast.success(
+                        `${exploded.length} plateaux éclatés en pièces individuelles dans le projet !`,
+                      );
+                    },
+                    onError: () => {
+                      toast.error("Échec de l'éclatement des plateaux");
+                    },
+                  });
+                }}
+                disabled={explodePlatesMutation.isPending}
+                className="gap-1.5"
+                title="Créer une entrée distincte par plateau dans le dossier du projet avec sa miniature et ses métriques"
+              >
+                <LayersIcon className="size-3.5 text-primary" />
+                <span>
+                  {explodePlatesMutation.isPending
+                    ? "Éclatement…"
+                    : `Éclater les plateaux (${plates.length})`}
+                </span>
+              </Button>
+            )}
+          </div>
         ))}
       {plates.length === 0 ? (
         !compact && (

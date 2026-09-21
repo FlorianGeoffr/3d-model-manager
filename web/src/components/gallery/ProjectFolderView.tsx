@@ -1,7 +1,8 @@
 import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeftIcon,
-  FolderIcon,
+  DownloadIcon,
   FolderOpenIcon,
   FolderPlusIcon,
   MoreVerticalIcon,
@@ -11,8 +12,9 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { useBulkUpdateModels } from "@/api/library";
+import { useBulkUpdateModels, useCreateModel } from "@/api/library";
 import { useDeleteProject, useProjects } from "@/api/projects";
+import { uploadFile } from "@/api/upload";
 import type { ProjectOut, TagColor } from "@/api/types";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ProjectDialog } from "@/components/projects/ProjectDialog";
@@ -25,6 +27,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { getProjectIcon } from "@/lib/projectIcons";
 import { cn } from "@/lib/utils";
 
 function folderColorStyle(color: TagColor | string | null | undefined) {
@@ -64,12 +67,15 @@ export function ProjectFolderView({
   onSelectProject,
   totalModelsInView = 0,
 }: ProjectFolderViewProps) {
+  const queryClient = useQueryClient();
   const projectsQuery = useProjects();
   const projects = projectsQuery.data ?? [];
   const bulkUpdate = useBulkUpdateModels();
   const deleteProject = useDeleteProject();
+  const createModel = useCreateModel();
 
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [createDialogParentId, setCreateDialogParentId] = useState<number | null>(null);
   const [editingProject, setEditingProject] = useState<ProjectOut | null>(null);
   const [deletingProject, setDeletingProject] = useState<ProjectOut | null>(null);
   const [dragOverProjectId, setDragOverProjectId] = useState<number | null>(null);
@@ -77,11 +83,74 @@ export function ProjectFolderView({
 
   const activeProject = projects.find((p) => p.id === activeProjectId);
 
-  function handleModelDrop(targetProjectId: number | null, event: React.DragEvent) {
+  // Compute breadcrumb ancestors
+  const ancestors: ProjectOut[] = [];
+  if (activeProject) {
+    let curr = activeProject;
+    const visited = new Set<number>();
+    while (curr && curr.parent_id !== null) {
+      if (visited.has(curr.parent_id)) break;
+      visited.add(curr.parent_id);
+      const parent = projects.find((p) => p.id === curr.parent_id);
+      if (!parent) break;
+      ancestors.unshift(parent);
+      curr = parent;
+    }
+  }
+
+  async function uploadLocalFiles(files: File[], targetProjectId: number | null) {
+    const targetProject = projects.find((p) => p.id === targetProjectId);
+    const targetName = targetProject ? targetProject.name : "la bibliothèque générale";
+    const toastId = toast.loading(`Importation de ${files.length} fichier${files.length > 1 ? "s" : ""} dans "${targetName}"...`);
+    let successCount = 0;
+
+    for (const file of files) {
+      try {
+        const modelName = file.name.replace(/\.[^/.]+$/, "");
+        const model = await createModel.mutateAsync({
+          name: modelName,
+          project_id: targetProjectId ?? undefined,
+        });
+        if (model.current_revision) {
+          await uploadFile({
+            modelId: model.id,
+            revisionId: model.current_revision.id,
+            relPath: file.name,
+            file,
+          });
+          successCount++;
+        }
+      } catch (err) {
+        console.error("Erreur lors de l'upload du fichier:", err);
+      }
+    }
+
+    await queryClient.invalidateQueries({ queryKey: ["models"] });
+    await queryClient.invalidateQueries({ queryKey: ["projects"] });
+
+    if (successCount > 0) {
+      toast.success(
+        `${successCount} fichier${successCount > 1 ? "s" : ""} importé${successCount > 1 ? "s" : ""} dans "${targetName}"`,
+        { id: toastId },
+      );
+    } else {
+      toast.error("Échec de l'importation des fichiers", { id: toastId });
+    }
+  }
+
+  async function handleDrop(targetProjectId: number | null, event: React.DragEvent) {
     event.preventDefault();
     setDragOverProjectId(null);
     setDragOverRoot(false);
 
+    // Check if OS files were dropped directly from Windows Explorer
+    if (event.dataTransfer.files && event.dataTransfer.files.length > 0) {
+      const droppedFiles = Array.from(event.dataTransfer.files);
+      await uploadLocalFiles(droppedFiles, targetProjectId);
+      return;
+    }
+
+    // Otherwise, handle moving internal models
     try {
       const rawData = event.dataTransfer.getData("application/json");
       if (!rawData) return;
@@ -107,14 +176,138 @@ export function ProjectFolderView({
     }
   }
 
+  function downloadProjectZip(project: ProjectOut) {
+    const link = document.createElement("a");
+    link.href = `/api/projects/${project.id}/zip`;
+    link.download = `${project.name}.zip`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+
+  // Helper to render a folder card (reused for root and subprojects)
+  function renderFolderCard(proj: ProjectOut) {
+    const style = folderColorStyle(proj.color);
+    const IconComp = getProjectIcon(proj.icon);
+    const isOver = dragOverProjectId === proj.id;
+    const hasTarget = proj.total_quantity_target > 0;
+    return (
+      <Card
+        key={proj.id}
+        onClick={() => onSelectProject(proj.id)}
+        onDragOver={(e) => {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          setDragOverProjectId(proj.id);
+        }}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+            setDragOverProjectId(null);
+          }
+        }}
+        onDrop={(e) => handleDrop(proj.id, e)}
+        className={cn(
+          "group relative cursor-pointer p-3.5 flex flex-col justify-between gap-2.5 transition-all duration-150 border select-none rounded-xl min-h-[105px]",
+          isOver
+            ? "border-primary bg-primary/10 ring-2 ring-primary shadow-md scale-[1.02]"
+            : "hover:border-primary/40 hover:shadow-xs hover:bg-muted/30",
+        )}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+            <div className="p-2 rounded-lg bg-background border border-border/80 shadow-2xs shrink-0 group-hover:scale-105 transition-transform">
+              <IconComp className={cn("size-5", style.icon)} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <h3 className="text-sm font-semibold truncate text-foreground leading-tight" title={proj.name}>
+                {proj.name}
+              </h3>
+              <p className="text-[11px] text-muted-foreground mt-0.5">
+                {proj.model_count} modèle{proj.model_count > 1 ? "s" : ""}
+              </p>
+            </div>
+          </div>
+
+          <div onClick={(e) => e.stopPropagation()} className="shrink-0">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="Options du dossier"
+                  className="p-1 rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                >
+                  <MoreVerticalIcon className="size-3.5" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-44">
+                <DropdownMenuItem onClick={() => downloadProjectZip(proj)}>
+                  <DownloadIcon className="size-3.5 mr-1.5" />
+                  Exporter (.zip)
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setEditingProject(proj)}>
+                  <PencilIcon className="size-3.5 mr-1.5" />
+                  Modifier
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => setDeletingProject(proj)}
+                  className="text-destructive focus:text-destructive"
+                >
+                  <Trash2Icon className="size-3.5 mr-1.5" />
+                  Supprimer
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+
+        {/* Barre de progression des pièces */}
+        {hasTarget ? (
+          <div className="space-y-1.5 pt-1.5 border-t border-border/40">
+            <div className="flex items-center justify-between text-[11px] font-mono text-muted-foreground">
+              <span>
+                {proj.total_quantity_printed}/{proj.total_quantity_target} imprimé{proj.total_quantity_target > 1 ? "s" : ""}
+              </span>
+              <span className={cn(proj.progress_pct === 100 && "text-emerald-500 font-semibold")}>
+                {Math.round(proj.progress_pct)}%
+              </span>
+            </div>
+            <div className="w-full h-1.5 rounded-full bg-muted overflow-hidden">
+              <div
+                className={cn("h-full transition-all duration-300", style.progress)}
+                style={{ width: `${Math.min(100, Math.max(0, proj.progress_pct))}%` }}
+              />
+            </div>
+          </div>
+        ) : (
+          <div className="pt-1 border-t border-border/40 flex items-center justify-between text-[11px] text-muted-foreground/80">
+            <span>Dossier</span>
+            <span className="text-[10px] uppercase font-mono tracking-wider text-muted-foreground/60">Projet</span>
+          </div>
+        )}
+
+        {/* Message au survol du drag & drop */}
+        {isOver && (
+          <div className="absolute inset-0 bg-primary/15 backdrop-blur-[1px] rounded-xl flex items-center justify-center p-2 text-center pointer-events-none">
+            <span className="text-xs font-semibold text-primary bg-background/90 px-2.5 py-1 rounded-full shadow-xs">
+              Déposer pour ranger / importer ici
+            </span>
+          </div>
+        )}
+      </Card>
+    );
+  }
+
   // --- Vue dossier sélectionné (Intérieur d'un dossier) ---
   if (activeProjectId && activeProject) {
     const style = folderColorStyle(activeProject.color);
+    const ActiveIcon = getProjectIcon(activeProject.icon);
+    const subProjects = projects.filter((p) => p.parent_id === activeProjectId);
+
     return (
       <div className="space-y-4">
-        {/* Breadcrumb avec drop zone vers la racine */}
+        {/* Breadcrumb avec support drag & drop */}
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 pb-3">
-          <div className="flex items-center gap-2 text-sm">
+          <div className="flex items-center gap-1.5 text-sm flex-wrap">
             <button
               type="button"
               onClick={() => onSelectProject(undefined)}
@@ -124,30 +317,82 @@ export function ProjectFolderView({
                 setDragOverRoot(true);
               }}
               onDragLeave={() => setDragOverRoot(false)}
-              onDrop={(e) => handleModelDrop(null, e)}
+              onDrop={(e) => handleDrop(null, e)}
               className={cn(
-                "flex items-center gap-1.5 px-2.5 py-1 rounded-md transition-all text-muted-foreground hover:text-foreground hover:bg-muted font-medium",
+                "flex items-center gap-1 px-2 py-1 rounded-md transition-all text-muted-foreground hover:text-foreground hover:bg-muted font-medium",
                 dragOverRoot && "ring-2 ring-primary bg-primary/10 text-primary font-semibold scale-105",
               )}
             >
-              <ArrowLeftIcon className="size-3.5" />
+              <ArrowLeftIcon className="size-3.5 mr-0.5" />
               <span>Bibliothèque</span>
               {dragOverRoot && (
                 <Badge variant="default" className="text-[10px] ml-1 py-0 px-1.5">
-                  Déposer pour sortir du dossier
+                  Déposer à la racine
                 </Badge>
               )}
             </button>
 
-            <span className="text-muted-foreground">/</span>
+            {ancestors.map((anc) => {
+              const AncIcon = getProjectIcon(anc.icon);
+              const isOverAnc = dragOverProjectId === anc.id;
+              return (
+                <div key={anc.id} className="flex items-center gap-1.5">
+                  <span className="text-muted-foreground/60">/</span>
+                  <button
+                    type="button"
+                    onClick={() => onSelectProject(anc.id)}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = "move";
+                      setDragOverProjectId(anc.id);
+                    }}
+                    onDragLeave={() => setDragOverProjectId(null)}
+                    onDrop={(e) => handleDrop(anc.id, e)}
+                    className={cn(
+                      "flex items-center gap-1.5 px-2 py-1 rounded-md transition-all text-muted-foreground hover:text-foreground hover:bg-muted font-medium text-xs",
+                      isOverAnc && "ring-2 ring-primary bg-primary/10 text-primary font-semibold scale-105",
+                    )}
+                  >
+                    <AncIcon className="size-3.5" />
+                    <span>{anc.name}</span>
+                  </button>
+                </div>
+              );
+            })}
 
-            <div className="flex items-center gap-2 font-semibold text-foreground">
-              <FolderIcon className={cn("size-4", style.icon)} />
+            <span className="text-muted-foreground/60">/</span>
+
+            <div className="flex items-center gap-2 font-semibold text-foreground px-1.5 py-1">
+              <ActiveIcon className={cn("size-4", style.icon)} />
               <span>{activeProject.name}</span>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => downloadProjectZip(activeProject)}
+              className="gap-1.5 h-8 text-xs"
+              title="Télécharger tous les fichiers du projet en .zip"
+            >
+              <DownloadIcon className="size-3.5" />
+              <span>Télécharger (.zip)</span>
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setCreateDialogParentId(activeProject.id);
+                setCreateDialogOpen(true);
+              }}
+              className="gap-1.5 h-8 text-xs"
+            >
+              <FolderPlusIcon className="size-3.5" />
+              <span>Sous-dossier</span>
+            </Button>
             <Button
               type="button"
               variant="outline"
@@ -171,11 +416,27 @@ export function ProjectFolderView({
           </div>
         </div>
 
-        {/* Bannière de résumé du projet */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-xl border border-border/60 bg-muted/20">
+        {/* Bannière de résumé du projet avec zone de drop globale pour ce dossier */}
+        <div
+          onDragOver={(e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "copy";
+            setDragOverProjectId(activeProject.id);
+          }}
+          onDragLeave={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+              setDragOverProjectId(null);
+            }
+          }}
+          onDrop={(e) => handleDrop(activeProject.id, e)}
+          className={cn(
+            "relative flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-xl border border-border/60 bg-muted/20 transition-all",
+            dragOverProjectId === activeProject.id && "border-primary bg-primary/10 ring-2 ring-primary",
+          )}
+        >
           <div className="flex items-start gap-3 min-w-0">
             <div className="p-2.5 rounded-xl bg-background border border-border/80 shadow-xs shrink-0">
-              <FolderIcon className={cn("size-6", style.icon)} />
+              <ActiveIcon className={cn("size-6", style.icon)} />
             </div>
             <div className="space-y-1 min-w-0">
               <h2 className="text-base font-semibold truncate text-foreground">{activeProject.name}</h2>
@@ -188,6 +449,12 @@ export function ProjectFolderView({
                 <span className="font-mono">
                   {activeProject.total_quantity_printed} / {activeProject.total_quantity_target} pièce{activeProject.total_quantity_target > 1 ? "s" : ""} imprimée{activeProject.total_quantity_printed > 1 ? "s" : ""}
                 </span>
+                {subProjects.length > 0 && (
+                  <>
+                    <span>•</span>
+                    <span>{subProjects.length} sous-dossier{subProjects.length > 1 ? "s" : ""}</span>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -208,8 +475,35 @@ export function ProjectFolderView({
           </div>
         </div>
 
-        {/* Drop zone vide si aucun modèle dans ce dossier */}
-        {totalModelsInView === 0 && (
+        {/* Section sous-dossiers si existants */}
+        {subProjects.length > 0 && (
+          <div className="space-y-2 pt-1">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Sous-dossiers ({subProjects.length})
+              </span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setCreateDialogParentId(activeProject.id);
+                  setCreateDialogOpen(true);
+                }}
+                className="gap-1 h-6 text-xs text-muted-foreground hover:text-foreground"
+              >
+                <PlusIcon className="size-3" />
+                Nouveau sous-dossier
+              </Button>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+              {subProjects.map((sub) => renderFolderCard(sub))}
+            </div>
+          </div>
+        )}
+
+        {/* Drop zone vide si aucun modèle ni sous-dossier dans ce dossier */}
+        {totalModelsInView === 0 && subProjects.length === 0 && (
           <div
             onDragOver={(e) => {
               e.preventDefault();
@@ -217,7 +511,7 @@ export function ProjectFolderView({
               setDragOverProjectId(activeProject.id);
             }}
             onDragLeave={() => setDragOverProjectId(null)}
-            onDrop={(e) => handleModelDrop(activeProject.id, e)}
+            onDrop={(e) => handleDrop(activeProject.id, e)}
             className={cn(
               "flex flex-col items-center justify-center p-8 border-2 border-dashed rounded-xl transition-all text-center gap-2",
               dragOverProjectId === activeProject.id
@@ -228,12 +522,21 @@ export function ProjectFolderView({
             <FolderOpenIcon className={cn("size-10", style.icon)} />
             <h3 className="font-semibold text-sm">Ce dossier est vide</h3>
             <p className="text-xs text-muted-foreground max-w-sm">
-              Glissez-déposez des modèles ici depuis la bibliothèque pour les organiser dans ce projet.
+              Glissez-déposez des modèles depuis la bibliothèque, ou déposez directement des fichiers .stl / .3mf depuis Windows pour les importer ici.
             </p>
           </div>
         )}
 
-        {/* Modales d'édition et de confirmation */}
+        {/* Modales de création / édition / suppression */}
+        <ProjectDialog
+          open={createDialogOpen}
+          onOpenChange={setCreateDialogOpen}
+          defaultParentId={createDialogParentId}
+          onSuccess={(created) => {
+            onSelectProject(created.id);
+          }}
+        />
+
         {editingProject && (
           <ProjectDialog
             open={Boolean(editingProject)}
@@ -253,7 +556,7 @@ export function ProjectFolderView({
               deleteProject.mutate(deletingProject.id, {
                 onSuccess: () => {
                   toast.success(`Dossier "${deletingProject.name}" supprimé`);
-                  onSelectProject(undefined);
+                  onSelectProject(activeProject.parent_id ?? undefined);
                 },
               });
             }}
@@ -263,21 +566,26 @@ export function ProjectFolderView({
     );
   }
 
-  // --- Vue racine : Grille des dossiers de projets ---
+  // --- Vue racine : Grille des dossiers de projets (parent_id == null) ---
+  const rootProjects = projects.filter((p) => p.parent_id == null);
+
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <FolderIcon className="size-4 text-muted-foreground" />
+          <FolderOpenIcon className="size-4 text-muted-foreground" />
           <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-            Dossiers & Projets {projects.length > 0 && `(${projects.length})`}
+            Dossiers & Projets {rootProjects.length > 0 && `(${rootProjects.length})`}
           </h2>
         </div>
         <Button
           type="button"
           variant="outline"
           size="sm"
-          onClick={() => setCreateDialogOpen(true)}
+          onClick={() => {
+            setCreateDialogParentId(null);
+            setCreateDialogOpen(true);
+          }}
           className="gap-1.5 h-7 text-xs"
         >
           <FolderPlusIcon className="size-3.5" />
@@ -286,114 +594,15 @@ export function ProjectFolderView({
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3.5">
-        {projects.map((proj) => {
-          const style = folderColorStyle(proj.color);
-          const isOver = dragOverProjectId === proj.id;
-          const hasTarget = proj.total_quantity_target > 0;
-          return (
-            <Card
-              key={proj.id}
-              onClick={() => onSelectProject(proj.id)}
-              onDragOver={(e) => {
-                e.preventDefault();
-                e.dataTransfer.dropEffect = "move";
-                setDragOverProjectId(proj.id);
-              }}
-              onDragLeave={(e) => {
-                if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-                  setDragOverProjectId(null);
-                }
-              }}
-              onDrop={(e) => handleModelDrop(proj.id, e)}
-              className={cn(
-                "group relative cursor-pointer p-3.5 flex flex-col justify-between gap-2.5 transition-all duration-150 border select-none rounded-xl min-h-[105px]",
-                isOver
-                  ? "border-primary bg-primary/10 ring-2 ring-primary shadow-md scale-[1.02]"
-                  : "hover:border-primary/40 hover:shadow-xs hover:bg-muted/30",
-              )}
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                  <div className="p-2 rounded-lg bg-background border border-border/80 shadow-2xs shrink-0 group-hover:scale-105 transition-transform">
-                    <FolderIcon className={cn("size-5", style.icon)} />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <h3 className="text-sm font-semibold truncate text-foreground leading-tight" title={proj.name}>
-                      {proj.name}
-                    </h3>
-                    <p className="text-[11px] text-muted-foreground mt-0.5">
-                      {proj.model_count} modèle{proj.model_count > 1 ? "s" : ""}
-                    </p>
-                  </div>
-                </div>
-
-                <div onClick={(e) => e.stopPropagation()} className="shrink-0">
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <button
-                        type="button"
-                        aria-label="Options du dossier"
-                        className="p-1 rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-                      >
-                        <MoreVerticalIcon className="size-3.5" />
-                      </button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-36">
-                      <DropdownMenuItem onClick={() => setEditingProject(proj)}>
-                        <PencilIcon className="size-3.5 mr-1.5" />
-                        Modifier
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onClick={() => setDeletingProject(proj)}
-                        className="text-destructive focus:text-destructive"
-                      >
-                        <Trash2Icon className="size-3.5 mr-1.5" />
-                        Supprimer
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-              </div>
-
-              {/* Barre de progression des pièces (uniquement si un objectif est défini) */}
-              {hasTarget ? (
-                <div className="space-y-1.5 pt-1.5 border-t border-border/40">
-                  <div className="flex items-center justify-between text-[11px] font-mono text-muted-foreground">
-                    <span>{proj.total_quantity_printed}/{proj.total_quantity_target} imprimé{proj.total_quantity_target > 1 ? "s" : ""}</span>
-                    <span className={cn(proj.progress_pct === 100 && "text-emerald-500 font-semibold")}>
-                      {Math.round(proj.progress_pct)}%
-                    </span>
-                  </div>
-                  <div className="w-full h-1.5 rounded-full bg-muted overflow-hidden">
-                    <div
-                      className={cn("h-full transition-all duration-300", style.progress)}
-                      style={{ width: `${Math.min(100, Math.max(0, proj.progress_pct))}%` }}
-                    />
-                  </div>
-                </div>
-              ) : (
-                <div className="pt-1 border-t border-border/40 flex items-center justify-between text-[11px] text-muted-foreground/80">
-                  <span>Dossier</span>
-                  <span className="text-[10px] uppercase font-mono tracking-wider text-muted-foreground/60">Projet</span>
-                </div>
-              )}
-
-              {/* Message au survol du drag & drop */}
-              {isOver && (
-                <div className="absolute inset-0 bg-primary/15 backdrop-blur-[1px] rounded-xl flex items-center justify-center p-2 text-center pointer-events-none">
-                  <span className="text-xs font-semibold text-primary bg-background/90 px-2.5 py-1 rounded-full shadow-xs">
-                    Déposer pour ranger ici
-                  </span>
-                </div>
-              )}
-            </Card>
-          );
-        })}
+        {rootProjects.map((proj) => renderFolderCard(proj))}
 
         {/* Bouton "+ Nouveau dossier" rapide dans la grille */}
         <button
           type="button"
-          onClick={() => setCreateDialogOpen(true)}
+          onClick={() => {
+            setCreateDialogParentId(null);
+            setCreateDialogOpen(true);
+          }}
           className="flex flex-col items-center justify-center gap-2 p-4 rounded-xl border border-dashed border-border/70 text-muted-foreground hover:text-foreground hover:border-primary/50 hover:bg-muted/30 transition-all min-h-[105px] text-xs font-medium"
         >
           <div className="p-1.5 rounded-full bg-muted shrink-0 text-muted-foreground">
@@ -407,6 +616,7 @@ export function ProjectFolderView({
       <ProjectDialog
         open={createDialogOpen}
         onOpenChange={setCreateDialogOpen}
+        defaultParentId={createDialogParentId}
         onSuccess={(created) => {
           onSelectProject(created.id);
         }}

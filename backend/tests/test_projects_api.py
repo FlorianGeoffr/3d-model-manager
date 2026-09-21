@@ -192,3 +192,38 @@ async def test_filter_models_project_root_vs_assigned(
     all_names = [m["name"] for m in search_resp.json()["items"]]
     assert "Part In Folder" in all_names
     assert "Part At Root" in all_names
+
+
+async def test_subprojects_and_icons(authenticated_client: httpx.AsyncClient) -> None:
+    # 1. Create parent project with icon
+    parent = (
+        await authenticated_client.post(
+            "/api/projects",
+            json={"name": "Printer Build", "color": "blue", "icon": "bot"},
+        )
+    ).json()
+    assert parent["icon"] == "bot"
+    assert parent["parent_id"] is None
+
+    # 2. Create subproject referencing parent_id
+    child = (
+        await authenticated_client.post(
+            "/api/projects",
+            json={"name": "Z Axis", "color": "indigo", "icon": "cog", "parent_id": parent["id"]},
+        )
+    ).json()
+    assert child["icon"] == "cog"
+    assert child["parent_id"] == parent["id"]
+
+    # 3. Prevent self-parenting cycle
+    self_cycle_resp = await authenticated_client.patch(
+        f"/api/projects/{child['id']}",
+        json={"parent_id": child["id"]},
+    )
+    assert self_cycle_resp.status_code == 400
+
+    # 4. Download project zip
+    zip_resp = await authenticated_client.get(f"/api/projects/{parent['id']}/zip")
+    assert zip_resp.status_code == 200
+    assert zip_resp.headers["content-type"] == "application/zip"
+

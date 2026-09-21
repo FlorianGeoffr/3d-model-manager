@@ -60,6 +60,8 @@ async def list_projects(db: AsyncSession) -> list[ProjectOut]:
                 slug=project.slug,
                 description=project.description,
                 color=project.color,
+                icon=project.icon,
+                parent_id=project.parent_id,
                 created_at=project.created_at,
                 updated_at=project.updated_at,
                 model_count=count,
@@ -99,6 +101,8 @@ async def get_project(db: AsyncSession, project_id: int) -> ProjectOut:
         slug=project.slug,
         description=project.description,
         color=project.color,
+        icon=project.icon,
+        parent_id=project.parent_id,
         created_at=project.created_at,
         updated_at=project.updated_at,
         model_count=count,
@@ -114,9 +118,18 @@ async def create_project(
     name: str,
     description: str | None = None,
     color: str | None = None,
+    icon: str | None = None,
+    parent_id: int | None = None,
 ) -> ProjectOut:
+    if parent_id is not None:
+        parent = await db.get(Project, parent_id)
+        if parent is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"parent project {parent_id} not found")
+
     slug = await _unique_project_slug(db, name)
-    project = Project(name=name, slug=slug, description=description, color=color)
+    project = Project(
+        name=name, slug=slug, description=description, color=color, icon=icon, parent_id=parent_id
+    )
     db.add(project)
     try:
         await db.commit()
@@ -129,6 +142,8 @@ async def create_project(
         slug=project.slug,
         description=project.description,
         color=project.color,
+        icon=project.icon,
+        parent_id=project.parent_id,
         created_at=project.created_at,
         updated_at=project.updated_at,
         model_count=0,
@@ -150,6 +165,21 @@ async def update_project(
         project.description = changes["description"]  # type: ignore[assignment]
     if "color" in changes:
         project.color = changes["color"]  # type: ignore[assignment]
+    if "icon" in changes:
+        project.icon = changes["icon"]  # type: ignore[assignment]
+    if "parent_id" in changes:
+        new_parent_id = changes["parent_id"]
+        if new_parent_id is not None:
+            if new_parent_id == project_id:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST, "A project cannot be its own parent"
+                )
+            parent = await db.get(Project, new_parent_id)
+            if parent is None:
+                raise HTTPException(
+                    status.HTTP_404_NOT_FOUND, f"parent project {new_parent_id} not found"
+                )
+        project.parent_id = new_parent_id  # type: ignore[assignment]
 
     try:
         await db.commit()

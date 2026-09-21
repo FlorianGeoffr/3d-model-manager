@@ -36,6 +36,8 @@ export interface ModelProjectOut {
   name: string;
   slug: string;
   color: TagColor | null;
+  icon?: string | null;
+  parent_id?: number | null;
 }
 
 // -- models (backend/app/schemas/library.py) -------------------------------
@@ -43,6 +45,7 @@ export interface ModelProjectOut {
 export interface ModelCreate {
   name: string;
   description?: string | null;
+  project_id?: number | null;
 }
 
 export interface ModelPatch {
@@ -386,6 +389,8 @@ export interface ProjectOut {
   slug: string;
   description: string | null;
   color: TagColor | null;
+  icon: string | null;
+  parent_id: number | null;
   created_at: string;
   updated_at: string;
   model_count: number;
@@ -398,12 +403,16 @@ export interface ProjectCreate {
   name: string;
   description?: string | null;
   color?: TagColor | null;
+  icon?: string | null;
+  parent_id?: number | null;
 }
 
 export interface ProjectPatch {
   name?: string;
   description?: string | null;
   color?: TagColor | null;
+  icon?: string | null;
+  parent_id?: number | null;
 }
 
 // -- uploads (backend/app/schemas/uploads.py) --------------------------------

@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from zipstream import ZipStream
 
 from app.config import Settings
-from app.models import Blob, File, FollowedCollection, Model
+from app.models import Blob, File, FollowedCollection, Model, Project
 from app.models.enums import BlobFormat
 from app.services import layout
 from app.services.storage_backends import resolve_backend_for_file
@@ -229,3 +229,63 @@ async def iter_collection_zip(
             yield chunk
     for chunk in zs.footer():
         yield chunk
+
+
+async def _get_project_tree(
+    db: AsyncSession, root_project: Project
+) -> list[tuple[Project, str]]:
+    all_projects = (await db.execute(select(Project))).scalars().all()
+    by_parent: dict[int | None, list[Project]] = {}
+    for p in all_projects:
+        by_parent.setdefault(p.parent_id, []).append(p)
+
+    results: list[tuple[Project, str]] = []
+
+    def _traverse(proj: Project, current_prefix: str) -> None:
+        results.append((proj, current_prefix))
+        for child in by_parent.get(proj.id, []):
+            child_seg = _safe_path_segment(child.name, fallback=f"project-{child.id}")
+            _traverse(child, f"{current_prefix}/{child_seg}")
+
+    root_seg = _safe_path_segment(root_project.name, fallback=f"project-{root_project.id}")
+    _traverse(root_project, root_seg)
+    return results
+
+
+async def iter_project_zip(
+    db: AsyncSession, settings: Settings, project: Project
+) -> AsyncIterator[bytes]:
+    """Stream a zip nesting every model in this project and its subprojects
+    as `<project>/[<subproject>/.../]<model-slug>/...`. Models with zero
+    current-revision files are silently skipped; an empty project still
+    streams a valid zip.
+    """
+    tree = await _get_project_tree(db, project)
+    zs = ZipStream()
+
+    for proj, prefix in tree:
+        stmt = (
+            select(Model)
+            .where(Model.project_id == proj.id)
+            .order_by(Model.name, Model.id)
+        )
+        models = (await db.execute(stmt)).scalars().all()
+        for model in models:
+            files = await _current_revision_files(db, model)
+            if not files:
+                continue
+            used_names: set[str] = set()
+            async for chunk in _add_model_entries(
+                zs,
+                db,
+                settings,
+                model,
+                files,
+                prefix=f"{prefix}/{model.slug}",
+                used_names=used_names,
+            ):
+                yield chunk
+
+    for chunk in zs.footer():
+        yield chunk
+

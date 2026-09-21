@@ -165,7 +165,11 @@ async def _recent_models(db: AsyncSession, settings: Settings) -> list[ModelSumm
     uses -- not a hand-rolled second summary shape."""
     stmt = (
         select(Model)
-        .options(selectinload(Model.tags), selectinload(Model.category))
+        .options(
+            selectinload(Model.tags),
+            selectinload(Model.category),
+            selectinload(Model.project),
+        )
         .order_by(Model.created_at.desc(), Model.id.desc())
         .limit(10)
     )

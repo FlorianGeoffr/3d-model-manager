@@ -5,6 +5,7 @@ import {
   ArchiveIcon,
   BookmarkIcon,
   CheckCircle2Icon,
+  FileIcon,
   FolderIcon,
   FolderTreeIcon,
   LayoutGridIcon,
@@ -660,46 +661,71 @@ export function LibraryPage() {
         )}
 
         {viewMode !== "folders" && (
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-          <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter by format">
-            <FilterChip active={!activeFormat} onClick={() => setActiveFormat(undefined)}>
-              All
-            </FilterChip>
-            {BLOB_FORMATS.map((format) => (
-              <FilterChip
-                key={format}
-                active={activeFormat === format}
-                onClick={() => setActiveFormat(activeFormat === format ? undefined : format)}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Format (File type) Popover */}
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant={activeFormat ? "default" : "outline"}
+                size="sm"
+                className="h-8 gap-1.5 text-xs"
+                aria-label="Filter by format"
               >
-                {FORMAT_LABELS[format]}
-              </FilterChip>
-            ))}
-          </div>
-
-          <div className="hidden h-5 w-px bg-border sm:block" />
-
-          <Label className="flex items-center gap-2 text-sm font-normal">
-            <Checkbox
-              checked={slicedOnly}
-              onCheckedChange={(checked) => setSlicedOnly(checked === true)}
-            />
-            Sliced only
-          </Label>
-
-          <FilterChip active={favoritesOnly} onClick={() => setFavoritesOnly((prev) => !prev)}>
-            <StarIcon className={favoritesOnly ? "fill-current" : undefined} />
-            Favorites
-          </FilterChip>
-
-          <FilterChip active={archivedOnly} onClick={() => setArchivedOnly((prev) => !prev)}>
-            <ArchiveIcon />
-            Include archived
-          </FilterChip>
+                <FileIcon className="size-3.5" />
+                <span>{activeFormat ? `Format: ${FORMAT_LABELS[activeFormat]}` : "Format"}</span>
+                {activeFormat && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setActiveFormat(undefined);
+                    }}
+                    className="ml-0.5 rounded-full p-0.5 hover:bg-background/20"
+                    aria-label="Clear format filter"
+                  >
+                    <XIcon className="size-3" />
+                  </span>
+                )}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-64 p-3">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-xs font-medium text-muted-foreground pb-1.5 border-b border-border/50">
+                  <span>Type de fichier</span>
+                  {activeFormat && (
+                    <button
+                      type="button"
+                      onClick={() => setActiveFormat(undefined)}
+                      className="text-[11px] text-primary hover:underline"
+                    >
+                      Effacer
+                    </button>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter by format">
+                  <FilterChip active={!activeFormat} onClick={() => setActiveFormat(undefined)}>
+                    All
+                  </FilterChip>
+                  {BLOB_FORMATS.map((format) => (
+                    <FilterChip
+                      key={format}
+                      active={activeFormat === format}
+                      onClick={() => setActiveFormat(activeFormat === format ? undefined : format)}
+                    >
+                      {FORMAT_LABELS[format]}
+                    </FilterChip>
+                  ))}
+                </div>
+              </div>
+            </PopoverContent>
+          </Popover>
 
           <Popover>
             <PopoverTrigger asChild>
-              <Button type="button" variant="outline" size="sm">
-                <TagIcon /> {activeTag ? `Tag: ${activeTag}` : "Tags"}
+              <Button type="button" variant={activeTag ? "default" : "outline"} size="sm" className="h-8 gap-1.5 text-xs">
+                <TagIcon className="size-3.5" /> {activeTag ? `Tag: ${activeTag}` : "Tags"}
               </Button>
             </PopoverTrigger>
             <PopoverContent align="start" className="w-64">
@@ -756,6 +782,26 @@ export function LibraryPage() {
               </div>
             </PopoverContent>
           </Popover>
+
+          <div className="hidden h-5 w-px bg-border sm:block" />
+
+          <Label className="flex items-center gap-2 text-sm font-normal cursor-pointer">
+            <Checkbox
+              checked={slicedOnly}
+              onCheckedChange={(checked) => setSlicedOnly(checked === true)}
+            />
+            Sliced only
+          </Label>
+
+          <FilterChip active={favoritesOnly} onClick={() => setFavoritesOnly((prev) => !prev)}>
+            <StarIcon className={favoritesOnly ? "fill-current" : undefined} />
+            Favorites
+          </FilterChip>
+
+          <FilterChip active={archivedOnly} onClick={() => setArchivedOnly((prev) => !prev)}>
+            <ArchiveIcon />
+            Include archived
+          </FilterChip>
         </div>
         )}
       </div>

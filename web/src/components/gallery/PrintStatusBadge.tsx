@@ -58,21 +58,21 @@ export function PrintStatusBadge({
     <Badge
       variant="outline"
       className={cn(
-        "gap-1 font-normal transition-colors text-[11px] py-0 px-2 h-5.5 select-none shrink-0",
+        "gap-1 font-normal transition-colors text-[10px] py-0 px-1.5 h-5 select-none shrink-0",
         meta.badgeClass,
-        interactive && onChangeStatus && "cursor-pointer hover:opacity-80",
+        interactive && onChangeStatus && "cursor-pointer hover:opacity-85",
         className,
       )}
     >
       <span aria-hidden="true" className={cn("size-1.5 rounded-full shrink-0", meta.dotClass)} />
-      <span className="truncate max-w-[85px]">{meta.label}</span>
+      <span className="truncate">{meta.label}</span>
       {showQuantity && (
         <span
           className={cn(
-            "ml-0.5 tabular-mono font-medium px-1 py-0 rounded text-[10px]",
+            "ml-0.5 tabular-mono font-medium px-1 py-0 rounded text-[9px]",
             isCompleted
-              ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300"
-              : "bg-background/60 text-foreground/80",
+              ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 font-semibold"
+              : "bg-muted text-foreground/80",
           )}
           title={`Imprimé ${quantityPrinted} sur ${quantityTarget}`}
         >
@@ -112,13 +112,13 @@ export function PrintStatusBadge({
       </DropdownMenu>
 
       {showQuantity && onChangeQuantity && (
-        <div className="inline-flex items-center rounded border border-border bg-background/80 shadow-2xs shrink-0">
+        <div className="inline-flex items-center rounded border border-border bg-background/80 shadow-2xs shrink-0 h-5">
           <button
             type="button"
             disabled={quantityPrinted <= 0}
             onClick={handleDecrement}
             aria-label="Diminuer quantité imprimée"
-            className="p-0.5 px-1 hover:bg-muted rounded-l disabled:opacity-30 transition-colors"
+            className="p-0.5 px-1 h-full flex items-center hover:bg-muted rounded-l disabled:opacity-30 transition-colors"
           >
             <MinusIcon className="size-2.5" />
           </button>
@@ -126,7 +126,7 @@ export function PrintStatusBadge({
             type="button"
             onClick={handleIncrement}
             aria-label="Augmenter quantité imprimée"
-            className="p-0.5 px-1 hover:bg-muted rounded-r transition-colors"
+            className="p-0.5 px-1 h-full flex items-center hover:bg-muted rounded-r transition-colors"
           >
             <PlusIcon className="size-2.5" />
           </button>

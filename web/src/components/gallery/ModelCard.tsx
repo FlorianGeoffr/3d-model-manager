@@ -153,7 +153,7 @@ export function ModelCard({
       onPointerEnter={onIntent}
       onFocus={onIntent}
     >
-      <Card className="h-full gap-3 overflow-hidden py-0 pb-4 transition-shadow hover:shadow-md">
+      <Card className="h-full flex flex-col gap-0 overflow-hidden py-0 pb-0 transition-shadow hover:shadow-md">
         <div className="relative aspect-[4/3] overflow-hidden bg-muted">
           {showCover ? (
             <>
@@ -291,69 +291,87 @@ export function ModelCard({
             </div>
           )}
         </div>
-        <CardContent className="flex flex-col gap-2 px-3.5 py-3">
-          <div className="flex flex-col gap-1 min-w-0">
-            <h3 className="line-clamp-1 text-sm font-semibold leading-snug text-foreground" title={model.name}>
-              {model.name}
-            </h3>
-            {(model.project || model.category) && (
+        <CardContent className="flex flex-col flex-1 justify-between gap-2 px-3.5 pt-2.5 pb-3">
+          <div className="flex flex-col gap-1.5 min-w-0">
+            <div className="flex flex-col gap-1 min-w-0">
+              <h3 className="line-clamp-1 text-sm font-semibold leading-snug text-foreground" title={model.name}>
+                {model.name}
+              </h3>
+              {(model.project || model.category) && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {model.project && (
+                    <Badge
+                      variant="outline"
+                      className="shrink-0 gap-1 text-[10px] px-1.5 py-0 h-4.5 font-normal max-w-[130px]"
+                      data-testid="project-badge"
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={cn("size-1.5 rounded-full shrink-0", tagColorClass(model.project.color) ?? "bg-muted-foreground")}
+                      />
+                      <span className="truncate">{model.project.name}</span>
+                    </Badge>
+                  )}
+                  {model.category && (
+                    <Badge
+                      variant="outline"
+                      className="shrink-0 gap-1 text-[10px] px-1.5 py-0 h-4.5 font-normal text-muted-foreground max-w-[110px]"
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={cn("size-1.5 rounded-full shrink-0", tagColorClass(model.category.color) ?? "bg-muted-foreground")}
+                      />
+                      <span className="truncate">{model.category.name}</span>
+                    </Badge>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <SpecRow data-testid="model-spec" items={specItems} />
+
+            {(visibleTags.length > 0 || visibleFormats.length > 0) && (
               <div className="flex flex-wrap items-center gap-1">
-                {model.project && (
+                {visibleTags.map((tag) => (
                   <Badge
-                    variant="outline"
-                    className="shrink-0 gap-1 text-[10px] px-1.5 py-0 h-4.5 font-normal max-w-[140px]"
-                    data-testid="project-badge"
+                    key={tag}
+                    variant="secondary"
+                    className={cn("text-[10px] h-4.5 px-1.5 py-0 font-normal", tagColorClass(tagColors[tag]))}
                   >
-                    <span
-                      aria-hidden="true"
-                      className={cn("size-1.5 rounded-full shrink-0", tagColorClass(model.project.color) ?? "bg-muted-foreground")}
-                    />
-                    <span className="truncate">{model.project.name}</span>
+                    {tag}
+                  </Badge>
+                ))}
+                {overflowCount > 0 && (
+                  <Badge variant="outline" className="text-[10px] h-4.5 px-1 py-0 font-normal">
+                    +{overflowCount}
                   </Badge>
                 )}
-                {model.category && (
-                  <Badge
-                    variant="outline"
-                    className="shrink-0 gap-1 text-[10px] px-1.5 py-0 h-4.5 font-normal text-muted-foreground max-w-[120px]"
-                  >
-                    <span
-                      aria-hidden="true"
-                      className={cn("size-1.5 rounded-full shrink-0", tagColorClass(model.category.color) ?? "bg-muted-foreground")}
-                    />
-                    <span className="truncate">{model.category.name}</span>
-                  </Badge>
-                )}
+
+                <div className="inline-flex flex-wrap items-center gap-1" data-testid="format-badges">
+                  {visibleFormats.map((format) => {
+                    const ChipIcon = formatIcon(format);
+                    return (
+                      <Badge
+                        key={format}
+                        variant="outline"
+                        className="gap-1 text-[10px] h-4.5 px-1.5 py-0 font-mono font-normal text-muted-foreground border-border/70"
+                      >
+                        <ChipIcon className="size-2.5" />
+                        {FORMAT_LABELS[format]}
+                      </Badge>
+                    );
+                  })}
+                  {formatOverflowCount > 0 && (
+                    <Badge variant="outline" className="text-[10px] h-4.5 px-1 py-0 font-normal">
+                      +{formatOverflowCount}
+                    </Badge>
+                  )}
+                </div>
               </div>
             )}
           </div>
 
-          <SpecRow data-testid="model-spec" items={specItems} />
-
-          {visibleTags.length > 0 && (
-            <div className="flex min-h-5 flex-wrap gap-1">
-              {visibleTags.map((tag) => (
-                <Badge key={tag} variant="secondary" className={tagColorClass(tagColors[tag])}>
-                  {tag}
-                </Badge>
-              ))}
-              {overflowCount > 0 && <Badge variant="outline">+{overflowCount}</Badge>}
-            </div>
-          )}
-
-          <div className="flex flex-wrap gap-1" data-testid="format-badges">
-            {visibleFormats.map((format) => {
-              const ChipIcon = formatIcon(format);
-              return (
-                <Badge key={format} variant="outline" className="gap-1">
-                  <ChipIcon className="size-3" />
-                  {FORMAT_LABELS[format]}
-                </Badge>
-              );
-            })}
-            {formatOverflowCount > 0 && <Badge variant="outline">+{formatOverflowCount}</Badge>}
-          </div>
-
-          <div className="flex items-center justify-between gap-2 pt-2 border-t border-border/40 min-w-0">
+          <div className="flex items-center justify-between gap-1.5 pt-2 border-t border-border/50 min-w-0">
             <span className="contents" onClick={stopCardNavigation}>
               <PrintStatusBadge
                 status={model.print_status}
@@ -365,7 +383,10 @@ export function ModelCard({
                 }
               />
             </span>
-            <p className="font-mono text-[10px] text-muted-foreground shrink-0 truncate">
+            <p
+              className="font-mono text-[10px] text-muted-foreground truncate shrink min-w-0 text-right"
+              title={`Updated ${formatDate(model.updated_at)}`}
+            >
               Updated {formatDate(model.updated_at)}
             </p>
           </div>

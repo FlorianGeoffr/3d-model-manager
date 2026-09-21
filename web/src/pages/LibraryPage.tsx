@@ -250,6 +250,14 @@ export function LibraryPage() {
   const activeCollectionTitle = collections.find((collection) => collection.id === activeCollection)?.title;
   const categoriesQuery = useCategories();
   const categories = categoriesQuery.data ?? [];
+  const projectsQuery = useProjects();
+  const projects = projectsQuery.data ?? [];
+
+  const isSearching = Boolean(debouncedSearch.trim());
+  // When not searching and no project folder is open, only show root models (project: 0).
+  // When searching, search across all folders (project: undefined).
+  // When inside a folder, show models in that folder (project: activeProject).
+  const effectiveProject = activeProject !== undefined ? activeProject : (isSearching ? undefined : 0);
 
   const filters = useMemo(
     () => ({
@@ -259,7 +267,7 @@ export function LibraryPage() {
       has_sliced: slicedOnly || undefined,
       collection: activeCollection,
       category: activeCategory,
-      project: activeProject,
+      project: effectiveProject,
       print_status: activePrintStatus,
       favorite: favoritesOnly || undefined,
       archived: archivedOnly || undefined,
@@ -274,7 +282,7 @@ export function LibraryPage() {
       archivedOnly,
       activeCollection,
       activeCategory,
-      activeProject,
+      effectiveProject,
       activePrintStatus,
       sort,
     ],
@@ -636,17 +644,23 @@ export function LibraryPage() {
           </div>
         </Card>
       ) : isEmpty ? (
-        <Card className="mx-auto mt-12 max-w-md">
-          <CardHeader className="items-center text-center">
-            <CardTitle>No models yet</CardTitle>
-            <CardDescription>Upload your first 3D model to get started.</CardDescription>
-          </CardHeader>
-          <div className="flex justify-center pb-4">
-            <Button asChild>
-              <Link to="/add">Add a model</Link>
-            </Button>
-          </div>
-        </Card>
+        activeProject !== undefined ? null : (
+          <Card className="mx-auto mt-8 max-w-md">
+            <CardHeader className="items-center text-center">
+              <CardTitle>{projects.length > 0 && !isSearching ? "Aucun modèle à la racine" : "No models yet"}</CardTitle>
+              <CardDescription>
+                {projects.length > 0 && !isSearching
+                  ? "Tous vos modèles sont organisés dans les dossiers ci-dessus. Glissez-en ici pour les sortir d'un dossier, ou ajoutez-en de nouveaux."
+                  : "Upload your first 3D model to get started."}
+              </CardDescription>
+            </CardHeader>
+            <div className="flex justify-center pb-4">
+              <Button asChild>
+                <Link to="/add">Add a model</Link>
+              </Button>
+            </div>
+          </Card>
+        )
       ) : (
         <>
           <div ref={gridRef} className="relative w-full" style={{ height: rowVirtualizer.getTotalSize() }}>

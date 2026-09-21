@@ -285,28 +285,39 @@ export function ModelCard({
             </div>
           )}
         </div>
-        <CardContent className="flex flex-col gap-2 px-4">
-          <div className="flex items-center gap-1.5">
-            <h3 className="truncate text-sm font-medium" title={model.name}>
+        <CardContent className="flex flex-col gap-2 px-3.5 py-3">
+          <div className="flex flex-col gap-1 min-w-0">
+            <h3 className="line-clamp-1 text-sm font-semibold leading-snug text-foreground" title={model.name}>
               {model.name}
             </h3>
-            {model.project && (
-              <Badge variant="outline" className="shrink-0 gap-1" data-testid="project-badge">
-                <span
-                  aria-hidden="true"
-                  className={cn("size-1.5 rounded-full", tagColorClass(model.project.color) ?? "bg-muted-foreground")}
-                />
-                {model.project.name}
-              </Badge>
-            )}
-            {model.category && (
-              <Badge variant="outline" className="shrink-0 gap-1">
-                <span
-                  aria-hidden="true"
-                  className={cn("size-1.5 rounded-full", tagColorClass(model.category.color) ?? "bg-muted-foreground")}
-                />
-                {model.category.name}
-              </Badge>
+            {(model.project || model.category) && (
+              <div className="flex flex-wrap items-center gap-1">
+                {model.project && (
+                  <Badge
+                    variant="outline"
+                    className="shrink-0 gap-1 text-[10px] px-1.5 py-0 h-4.5 font-normal max-w-[140px]"
+                    data-testid="project-badge"
+                  >
+                    <span
+                      aria-hidden="true"
+                      className={cn("size-1.5 rounded-full shrink-0", tagColorClass(model.project.color) ?? "bg-muted-foreground")}
+                    />
+                    <span className="truncate">{model.project.name}</span>
+                  </Badge>
+                )}
+                {model.category && (
+                  <Badge
+                    variant="outline"
+                    className="shrink-0 gap-1 text-[10px] px-1.5 py-0 h-4.5 font-normal text-muted-foreground max-w-[120px]"
+                  >
+                    <span
+                      aria-hidden="true"
+                      className={cn("size-1.5 rounded-full shrink-0", tagColorClass(model.category.color) ?? "bg-muted-foreground")}
+                    />
+                    <span className="truncate">{model.category.name}</span>
+                  </Badge>
+                )}
+              </div>
             )}
           </div>
 
@@ -336,7 +347,7 @@ export function ModelCard({
             {formatOverflowCount > 0 && <Badge variant="outline">+{formatOverflowCount}</Badge>}
           </div>
 
-          <div className="flex items-center justify-between gap-2 pt-1 border-t border-border/40">
+          <div className="flex items-center justify-between gap-2 pt-2 border-t border-border/40 min-w-0">
             <span className="contents" onClick={stopCardNavigation}>
               <PrintStatusBadge
                 status={model.print_status}
@@ -348,7 +359,7 @@ export function ModelCard({
                 }
               />
             </span>
-            <p className="font-mono text-[11px] text-muted-foreground shrink-0">
+            <p className="font-mono text-[10px] text-muted-foreground shrink-0 truncate">
               Updated {formatDate(model.updated_at)}
             </p>
           </div>

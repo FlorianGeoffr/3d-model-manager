@@ -216,7 +216,7 @@ export function AppSidebar({
       <aside
         className={cn(
           "fixed inset-y-0 left-0 z-50 flex w-64 shrink-0 flex-col border-r border-border bg-card transition-transform duration-150",
-          "lg:static lg:z-auto lg:w-auto lg:translate-x-0 lg:transition-[width]",
+          "lg:static lg:z-auto lg:w-auto lg:h-svh lg:translate-x-0 lg:transition-[width]",
           mobileOpen ? "translate-x-0" : "-translate-x-full",
           collapsed && "lg:w-14",
           !collapsed && "lg:w-56",
@@ -253,7 +253,7 @@ export function AppSidebar({
         </Button>
       </div>
       <ScanChip collapsed={collapsed} />
-      <nav className="flex flex-1 flex-col gap-4 overflow-y-auto px-2 pb-2">
+      <nav className="flex flex-1 min-h-0 flex-col gap-4 overflow-y-auto px-2 pb-2">
         {visibleGroups.map((group) => (
           <div key={group.label} className="flex flex-col gap-1">
             {!collapsed && (

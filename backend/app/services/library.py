@@ -1319,7 +1319,10 @@ async def list_models(
     if category is not None:
         stmt = stmt.where(Model.category_id == category)
     if project is not None:
-        stmt = stmt.where(Model.project_id == project)
+        if project <= 0:
+            stmt = stmt.where(Model.project_id.is_(None))
+        else:
+            stmt = stmt.where(Model.project_id == project)
     if print_status:
         stmt = stmt.where(Model.print_status == print_status)
 

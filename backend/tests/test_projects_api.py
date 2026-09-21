@@ -152,3 +152,43 @@ async def test_model_project_assignment_and_progress_tracking(
     assert refreshed_a["quantity_target"] == 4
     assert refreshed_a["quantity_printed"] == 2
     assert refreshed_a["print_status"] == "printing"
+
+
+async def test_filter_models_project_root_vs_assigned(
+    authenticated_client: httpx.AsyncClient,
+) -> None:
+    project = (
+        await authenticated_client.post(
+            "/api/projects", json={"name": "Root Test Project", "color": "teal"}
+        )
+    ).json()
+    proj_id = project["id"]
+
+    model_in_project = await _create_model(authenticated_client, "Part In Folder")
+    model_at_root = await _create_model(authenticated_client, "Part At Root")
+
+    await authenticated_client.patch(
+        f"/api/models/{model_in_project['slug']}",
+        json={"project_id": proj_id},
+    )
+
+    # 1. project=0 returns ONLY root models (project_id is None)
+    root_resp = await authenticated_client.get("/api/models?project=0")
+    assert root_resp.status_code == 200
+    root_names = [m["name"] for m in root_resp.json()["items"]]
+    assert "Part At Root" in root_names
+    assert "Part In Folder" not in root_names
+
+    # 2. project=proj_id returns ONLY project models
+    proj_resp = await authenticated_client.get(f"/api/models?project={proj_id}")
+    assert proj_resp.status_code == 200
+    proj_names = [m["name"] for m in proj_resp.json()["items"]]
+    assert "Part In Folder" in proj_names
+    assert "Part At Root" not in proj_names
+
+    # 3. Search query without project filter searches across all models
+    search_resp = await authenticated_client.get("/api/models?q=Part")
+    assert search_resp.status_code == 200
+    all_names = [m["name"] for m in search_resp.json()["items"]]
+    assert "Part In Folder" in all_names
+    assert "Part At Root" in all_names

@@ -285,10 +285,11 @@ export function ProjectFolderView({
         </Button>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3.5">
         {projects.map((proj) => {
           const style = folderColorStyle(proj.color);
           const isOver = dragOverProjectId === proj.id;
+          const hasTarget = proj.total_quantity_target > 0;
           return (
             <Card
               key={proj.id}
@@ -305,34 +306,34 @@ export function ProjectFolderView({
               }}
               onDrop={(e) => handleModelDrop(proj.id, e)}
               className={cn(
-                "group relative cursor-pointer p-3.5 flex flex-col gap-2.5 transition-all duration-150 border select-none",
+                "group relative cursor-pointer p-3.5 flex flex-col justify-between gap-2.5 transition-all duration-150 border select-none rounded-xl min-h-[105px]",
                 isOver
                   ? "border-primary bg-primary/10 ring-2 ring-primary shadow-md scale-[1.02]"
-                  : "hover:border-border hover:shadow-xs hover:bg-muted/30",
+                  : "hover:border-primary/40 hover:shadow-xs hover:bg-muted/30",
               )}
             >
               <div className="flex items-start justify-between gap-2">
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <div className="p-2 rounded-lg bg-background border border-border/60 shadow-2xs shrink-0 group-hover:scale-105 transition-transform">
+                <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                  <div className="p-2 rounded-lg bg-background border border-border/80 shadow-2xs shrink-0 group-hover:scale-105 transition-transform">
                     <FolderIcon className={cn("size-5", style.icon)} />
                   </div>
-                  <div className="min-w-0">
-                    <h3 className="text-sm font-medium truncate text-foreground leading-tight" title={proj.name}>
+                  <div className="min-w-0 flex-1">
+                    <h3 className="text-sm font-semibold truncate text-foreground leading-tight" title={proj.name}>
                       {proj.name}
                     </h3>
-                    <p className="text-[11px] text-muted-foreground truncate">
+                    <p className="text-[11px] text-muted-foreground mt-0.5">
                       {proj.model_count} modèle{proj.model_count > 1 ? "s" : ""}
                     </p>
                   </div>
                 </div>
 
-                <div onClick={(e) => e.stopPropagation()}>
+                <div onClick={(e) => e.stopPropagation()} className="shrink-0">
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <button
                         type="button"
                         aria-label="Options du dossier"
-                        className="p-1 rounded text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-muted hover:text-foreground transition-opacity"
+                        className="p-1 rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
                       >
                         <MoreVerticalIcon className="size-3.5" />
                       </button>
@@ -354,21 +355,28 @@ export function ProjectFolderView({
                 </div>
               </div>
 
-              {/* Barre de progression des pièces */}
-              <div className="space-y-1 pt-1 border-t border-border/40">
-                <div className="flex items-center justify-between text-[11px] font-mono text-muted-foreground">
-                  <span>{proj.total_quantity_printed}/{proj.total_quantity_target} pièces</span>
-                  <span className={cn(proj.progress_pct === 100 && "text-emerald-500 font-semibold")}>
-                    {Math.round(proj.progress_pct)}%
-                  </span>
+              {/* Barre de progression des pièces (uniquement si un objectif est défini) */}
+              {hasTarget ? (
+                <div className="space-y-1.5 pt-1.5 border-t border-border/40">
+                  <div className="flex items-center justify-between text-[11px] font-mono text-muted-foreground">
+                    <span>{proj.total_quantity_printed}/{proj.total_quantity_target} imprimé{proj.total_quantity_target > 1 ? "s" : ""}</span>
+                    <span className={cn(proj.progress_pct === 100 && "text-emerald-500 font-semibold")}>
+                      {Math.round(proj.progress_pct)}%
+                    </span>
+                  </div>
+                  <div className="w-full h-1.5 rounded-full bg-muted overflow-hidden">
+                    <div
+                      className={cn("h-full transition-all duration-300", style.progress)}
+                      style={{ width: `${Math.min(100, Math.max(0, proj.progress_pct))}%` }}
+                    />
+                  </div>
                 </div>
-                <div className="w-full h-1.5 rounded-full bg-muted overflow-hidden">
-                  <div
-                    className={cn("h-full transition-all duration-300", style.progress)}
-                    style={{ width: `${Math.min(100, Math.max(0, proj.progress_pct))}%` }}
-                  />
+              ) : (
+                <div className="pt-1 border-t border-border/40 flex items-center justify-between text-[11px] text-muted-foreground/80">
+                  <span>Dossier</span>
+                  <span className="text-[10px] uppercase font-mono tracking-wider text-muted-foreground/60">Projet</span>
                 </div>
-              </div>
+              )}
 
               {/* Message au survol du drag & drop */}
               {isOver && (
@@ -386,9 +394,9 @@ export function ProjectFolderView({
         <button
           type="button"
           onClick={() => setCreateDialogOpen(true)}
-          className="flex flex-col items-center justify-center gap-1.5 p-4 rounded-xl border border-dashed border-border/70 text-muted-foreground hover:text-foreground hover:border-primary/50 hover:bg-muted/30 transition-all min-h-[96px] text-xs font-medium"
+          className="flex flex-col items-center justify-center gap-2 p-4 rounded-xl border border-dashed border-border/70 text-muted-foreground hover:text-foreground hover:border-primary/50 hover:bg-muted/30 transition-all min-h-[105px] text-xs font-medium"
         >
-          <div className="p-1.5 rounded-full bg-muted shrink-0">
+          <div className="p-1.5 rounded-full bg-muted shrink-0 text-muted-foreground">
             <PlusIcon className="size-4" />
           </div>
           <span>Nouveau dossier</span>

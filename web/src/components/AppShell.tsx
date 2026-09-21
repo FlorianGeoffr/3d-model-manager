@@ -28,7 +28,7 @@ export function AppShell() {
 
   return (
     <EventsProvider>
-      <div className="flex min-h-svh">
+      <div className="flex h-svh w-full overflow-hidden">
         {/* Collapsed icon-rail nav renders Tooltips; Radix throws without a provider. */}
         <TooltipProvider delayDuration={200}>
           <AppSidebar
@@ -42,7 +42,7 @@ export function AppShell() {
             should not be constrained by the sidebar width when collapsed"
             is really "don't let a wide child force the layout back open",
             which a flex-1 + min-w-0 column already prevents. */}
-        <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex min-w-0 flex-1 flex-col h-svh overflow-hidden">
           <TopBar onOpenPalette={() => setPaletteOpen(true)} onOpenMobileNav={() => setMobileNavOpen(true)} />
           <main className="flex-1 overflow-y-auto p-6">
             <Outlet />

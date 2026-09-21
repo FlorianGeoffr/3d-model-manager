@@ -60,6 +60,7 @@ vi.mock("@/api/projects", () => ({
 vi.mock("@/api/library", () => ({
   useModelSearchQuery: () => ({ data: undefined }),
   useBulkUpdateModels: () => ({ mutate: vi.fn(), isPending: false }),
+  useCreateModel: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 
 // AppShell wraps its children in the app-wide SSE `EventsProvider`, which

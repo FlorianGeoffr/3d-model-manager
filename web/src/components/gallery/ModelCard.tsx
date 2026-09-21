@@ -129,8 +129,9 @@ export function ModelCard({
       selected && selectedIds && selectedIds.size > 0
         ? Array.from(selectedIds)
         : [model.id];
-    e.dataTransfer.setData("application/json", JSON.stringify({ ids }));
-    e.dataTransfer.setData("text/plain", `${ids.length} model(s)`);
+    const payload = JSON.stringify({ ids });
+    e.dataTransfer.setData("application/json", payload);
+    e.dataTransfer.setData("text/plain", payload);
     e.dataTransfer.effectAllowed = "move";
     setIsDragging(true);
   }
@@ -162,7 +163,8 @@ export function ModelCard({
                 loading="lazy"
                 decoding="async"
                 fetchPriority="low"
-                className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.04] motion-reduce:transition-none motion-reduce:group-hover:scale-100"
+                draggable={false}
+                className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.04] motion-reduce:transition-none motion-reduce:group-hover:scale-100 pointer-events-none"
                 onError={() => setCoverErrored(true)}
               />
               {showRenderHover && (
@@ -174,7 +176,11 @@ export function ModelCard({
                   loading="lazy"
                   decoding="async"
                   fetchPriority="low"
-                  className="absolute inset-0 h-full w-full object-cover opacity-0 transition-opacity duration-300 group-hover:opacity-100 motion-reduce:transition-none"
+                  draggable={false}
+                  className={cn(
+                    "absolute inset-0 h-full w-full object-cover transition-opacity duration-300 motion-reduce:transition-none pointer-events-none",
+                    hovered ? "opacity-100" : "opacity-0",
+                  )}
                   onError={() => setRenderErrored(true)}
                 />
               )}

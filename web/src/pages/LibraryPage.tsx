@@ -16,16 +16,25 @@ import {
   StarIcon,
   TagIcon,
   Trash2Icon,
+  UploadCloudIcon,
   XIcon,
 } from "lucide-react";
 import { toast } from "sonner";
+import { useQueryClient } from "@tanstack/react-query";
 
 import { useCategories } from "@/api/categories";
 import { useFollowedCollections } from "@/api/collections";
-import { useBulkDeleteModels, useBulkUpdateModels, useModelsQuery, useTags } from "@/api/library";
+import {
+  useBulkDeleteModels,
+  useBulkUpdateModels,
+  useCreateModel,
+  useModelsQuery,
+  useTags,
+} from "@/api/library";
 import { useProjects } from "@/api/projects";
 import { useEnqueueModel } from "@/api/queue";
 import { useTriggerScan } from "@/api/scan";
+import { uploadFile } from "@/api/upload";
 import { ApiError } from "@/api/client";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { FolderBrowser } from "@/components/gallery/FolderBrowser";
@@ -424,8 +433,140 @@ export function LibraryPage() {
   const isEmpty = !modelsQuery.isLoading && items.length === 0;
   const tags = tagsQuery.data ?? [];
 
+  const dragCounter = useRef(0);
+  const [isDraggingFiles, setIsDraggingFiles] = useState(false);
+  const createModel = useCreateModel();
+  const queryClient = useQueryClient();
+
+  const currentProject = useMemo(() => {
+    return projects.find((p) => p.id === activeProject);
+  }, [projects, activeProject]);
+
+  useEffect(() => {
+    function onWindowDragOver(e: DragEvent) {
+      if (e.dataTransfer?.types?.includes("Files")) {
+        e.preventDefault();
+      }
+    }
+    function onWindowDrop(e: DragEvent) {
+      if (e.dataTransfer?.types?.includes("Files")) {
+        e.preventDefault();
+      }
+    }
+    window.addEventListener("dragover", onWindowDragOver);
+    window.addEventListener("drop", onWindowDrop);
+    return () => {
+      window.removeEventListener("dragover", onWindowDragOver);
+      window.removeEventListener("drop", onWindowDrop);
+    };
+  }, []);
+
+  async function uploadDroppedFiles(files: File[], targetProjectId: number | null) {
+    const targetProj = projects.find((p) => p.id === targetProjectId);
+    const targetName = targetProj ? `"${targetProj.name}"` : "la bibliothèque générale";
+    const toastId = toast.loading(
+      `Importation de ${files.length} fichier${files.length > 1 ? "s" : ""} dans ${targetName}...`,
+    );
+    let successCount = 0;
+
+    for (const file of files) {
+      try {
+        const modelName = file.name.replace(/\.[^/.]+$/, "");
+        const model = await createModel.mutateAsync({
+          name: modelName,
+          project_id: targetProjectId ?? undefined,
+        });
+        if (model.current_revision) {
+          await uploadFile({
+            modelId: model.id,
+            revisionId: model.current_revision.id,
+            relPath: file.name,
+            file,
+          });
+          successCount++;
+        }
+      } catch (err) {
+        console.error("Erreur lors de l'upload du fichier:", err);
+      }
+    }
+
+    await queryClient.invalidateQueries({ queryKey: ["models"] });
+    await queryClient.invalidateQueries({ queryKey: ["projects"] });
+
+    if (successCount > 0) {
+      toast.success(
+        `${successCount} fichier${successCount > 1 ? "s" : ""} importé${successCount > 1 ? "s" : ""} dans ${targetName}`,
+        { id: toastId },
+      );
+    } else {
+      toast.error("Échec de l'importation des fichiers", { id: toastId });
+    }
+  }
+
+  function handlePageDragEnter(e: React.DragEvent) {
+    e.preventDefault();
+    if (e.dataTransfer.types?.includes("Files")) {
+      dragCounter.current += 1;
+      setIsDraggingFiles(true);
+    }
+  }
+
+  function handlePageDragOver(e: React.DragEvent) {
+    e.preventDefault();
+    if (e.dataTransfer.types?.includes("Files")) {
+      e.dataTransfer.dropEffect = "copy";
+    }
+  }
+
+  function handlePageDragLeave(e: React.DragEvent) {
+    e.preventDefault();
+    if (e.dataTransfer.types?.includes("Files")) {
+      dragCounter.current -= 1;
+      if (dragCounter.current <= 0) {
+        dragCounter.current = 0;
+        setIsDraggingFiles(false);
+      }
+    }
+  }
+
+  async function handlePageDrop(e: React.DragEvent) {
+    e.preventDefault();
+    dragCounter.current = 0;
+    setIsDraggingFiles(false);
+
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const files = Array.from(e.dataTransfer.files);
+      await uploadDroppedFiles(files, activeProject ?? null);
+    }
+  }
+
   return (
-    <div className="space-y-5">
+    <div
+      className="relative space-y-5 min-h-[calc(100vh-8rem)]"
+      onDragEnter={handlePageDragEnter}
+      onDragOver={handlePageDragOver}
+      onDragLeave={handlePageDragLeave}
+      onDrop={handlePageDrop}
+    >
+      {isDraggingFiles && (
+        <div className="fixed inset-0 z-50 bg-background/80 backdrop-blur-xs flex flex-col items-center justify-center p-6 text-center animate-in fade-in pointer-events-none">
+          <div className="flex flex-col items-center gap-4 max-w-lg p-10 rounded-2xl border-2 border-dashed border-primary bg-primary/10 shadow-2xl scale-105 transition-all">
+            <div className="p-4 rounded-full bg-primary/20 text-primary">
+              <UploadCloudIcon className="size-12 animate-bounce" />
+            </div>
+            <div className="space-y-1.5">
+              <h3 className="text-xl font-bold text-foreground">
+                {currentProject
+                  ? `Déposer pour importer dans "${currentProject.name}"`
+                  : "Déposer pour importer dans la bibliothèque"}
+              </h3>
+              <p className="text-sm text-muted-foreground">
+                Fichiers .stl, .3mf, .obj, .step déposés n'importe où dans la page seront importés automatiquement.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative max-w-sm flex-1">

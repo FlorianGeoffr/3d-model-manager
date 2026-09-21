@@ -140,6 +140,7 @@ export function ProjectFolderView({
 
   async function handleDrop(targetProjectId: number | null, event: React.DragEvent) {
     event.preventDefault();
+    event.stopPropagation();
     setDragOverProjectId(null);
     setDragOverRoot(false);
 
@@ -152,10 +153,23 @@ export function ProjectFolderView({
 
     // Otherwise, handle moving internal models
     try {
-      const rawData = event.dataTransfer.getData("application/json");
-      if (!rawData) return;
-      const data = JSON.parse(rawData);
-      const ids: number[] = Array.isArray(data.ids) ? data.ids : [];
+      let ids: number[] = [];
+      const rawJson = event.dataTransfer.getData("application/json");
+      if (rawJson) {
+        try {
+          const data = JSON.parse(rawJson);
+          if (Array.isArray(data.ids)) ids = data.ids;
+        } catch {}
+      }
+      if (ids.length === 0) {
+        const rawText = event.dataTransfer.getData("text/plain");
+        if (rawText) {
+          try {
+            const data = JSON.parse(rawText);
+            if (Array.isArray(data.ids)) ids = data.ids;
+          } catch {}
+        }
+      }
       if (ids.length === 0) return;
 
       const targetProject = projects.find((p) => p.id === targetProjectId);

@@ -78,8 +78,9 @@ export function ModelRow({
       selected && selectedIds && selectedIds.size > 0
         ? Array.from(selectedIds)
         : [model.id];
-    e.dataTransfer.setData("application/json", JSON.stringify({ ids }));
-    e.dataTransfer.setData("text/plain", `${ids.length} model(s)`);
+    const payload = JSON.stringify({ ids });
+    e.dataTransfer.setData("application/json", payload);
+    e.dataTransfer.setData("text/plain", payload);
     e.dataTransfer.effectAllowed = "move";
     setIsDragging(true);
   }
@@ -125,7 +126,8 @@ export function ModelRow({
             loading="lazy"
             decoding="async"
             fetchPriority="low"
-            className="size-full object-cover"
+            draggable={false}
+            className="size-full object-cover pointer-events-none"
             onError={() => setCoverErrored(true)}
           />
         ) : (

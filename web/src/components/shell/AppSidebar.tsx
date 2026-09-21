@@ -11,16 +11,19 @@ import {
 
 import { toast } from "sonner";
 
+import { useQueryClient } from "@tanstack/react-query";
 import { useAuth, useLogout } from "@/api/auth";
 import { useCategories } from "@/api/categories";
 import { useFeatures } from "@/api/features";
 import { useFollowedCollections } from "@/api/collections";
 import { useFailedImportsCount } from "@/api/imports";
-import { useBulkUpdateModels } from "@/api/library";
+import { useBulkUpdateModels, useCreateModel } from "@/api/library";
 import { useProjects } from "@/api/projects";
 import { useScanRuns } from "@/api/scan";
+import { uploadFile } from "@/api/upload";
 import type { ScanRunOut } from "@/api/types";
 import { ProjectDialog } from "@/components/projects/ProjectDialog";
+import { getProjectIcon } from "@/lib/projectIcons";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -179,6 +182,48 @@ export function AppSidebar({
   const [dragOverProjectId, setDragOverProjectId] = useState<number | null>(null);
   const [collapsed, setCollapsed] = useSidebarCollapsed();
 
+  const createModel = useCreateModel();
+  const queryClient = useQueryClient();
+
+  async function uploadFilesToProject(files: File[], targetProjectId: number | null) {
+    const targetProject = (projects.data ?? []).find((p) => p.id === targetProjectId);
+    const targetName = targetProject ? targetProject.name : "la bibliothèque générale";
+    const toastId = toast.loading(
+      `Importation de ${files.length} fichier${files.length > 1 ? "s" : ""} dans "${targetName}"...`,
+    );
+    let successCount = 0;
+    for (const file of files) {
+      try {
+        const modelName = file.name.replace(/\.[^/.]+$/, "");
+        const model = await createModel.mutateAsync({
+          name: modelName,
+          project_id: targetProjectId ?? undefined,
+        });
+        if (model.current_revision) {
+          await uploadFile({
+            modelId: model.id,
+            revisionId: model.current_revision.id,
+            relPath: file.name,
+            file,
+          });
+          successCount++;
+        }
+      } catch (err) {
+        console.error("Erreur lors de l'upload:", err);
+      }
+    }
+    await queryClient.invalidateQueries({ queryKey: ["models"] });
+    await queryClient.invalidateQueries({ queryKey: ["projects"] });
+    if (successCount > 0) {
+      toast.success(
+        `${successCount} fichier${successCount > 1 ? "s" : ""} importé${successCount > 1 ? "s" : ""} dans "${targetName}"`,
+        { id: toastId },
+      );
+    } else {
+      toast.error("Échec de l'importation des fichiers", { id: toastId });
+    }
+  }
+
   useEffect(() => {
     if (!mobileOpen) return;
     function onKeyDown(event: KeyboardEvent) {
@@ -218,8 +263,7 @@ export function AppSidebar({
           "fixed inset-y-0 left-0 z-50 flex w-64 shrink-0 flex-col border-r border-border bg-card transition-transform duration-150",
           "lg:static lg:z-auto lg:w-auto lg:h-svh lg:translate-x-0 lg:transition-[width]",
           mobileOpen ? "translate-x-0" : "-translate-x-full",
-          collapsed && "lg:w-14",
-          !collapsed && "lg:w-56",
+          collapsed ? "lg:w-16" : "lg:w-64",
         )}
         onClick={(event) => {
           // Close the drawer on any nav click (an <a> inside) below `lg` --
@@ -227,23 +271,23 @@ export function AppSidebar({
           if ((event.target as HTMLElement).closest("a")) onCloseMobile();
         }}
       >
-        <div
-        className={cn(
-          "flex items-center justify-between gap-1 px-4 py-4",
-          collapsed && "justify-center px-2",
-        )}
-      >
-        {!collapsed && <span className="truncate text-base font-semibold tracking-tight">3D Model Manager</span>}
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          onClick={() => setCollapsed((prev) => !prev)}
-        >
-          <ChevronsLeftIcon className={cn("size-4 transition-transform", collapsed && "rotate-180")} />
-        </Button>
-      </div>
+        <div className="flex h-14 items-center justify-between px-4">
+          <div className="flex items-center gap-2">
+            <span className="flex size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground font-bold text-base shadow-xs">
+              3D
+            </span>
+            {!collapsed && <span className="font-semibold text-foreground">Model Manager</span>}
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            onClick={() => setCollapsed((prev) => !prev)}
+          >
+            <ChevronsLeftIcon className={cn("size-4 transition-transform", collapsed && "rotate-180")} />
+          </Button>
+        </div>
       <div className={cn("px-2 pb-2", collapsed && "px-1.5")}>
         <Button asChild className={cn("w-full gap-2", collapsed ? "justify-center px-0" : "justify-start")}>
           <Link to="/add" title={collapsed ? "Add to library" : undefined}>
@@ -313,6 +357,7 @@ export function AppSidebar({
             </div>
             {(projects.data ?? []).map((proj) => {
               const isOver = dragOverProjectId === proj.id;
+              const ProjIcon = getProjectIcon(proj.icon);
               return (
                 <Link
                   key={proj.id}
@@ -324,14 +369,34 @@ export function AppSidebar({
                     setDragOverProjectId(proj.id);
                   }}
                   onDragLeave={() => setDragOverProjectId(null)}
-                  onDrop={(e) => {
+                  onDrop={async (e) => {
                     e.preventDefault();
+                    e.stopPropagation();
                     setDragOverProjectId(null);
+
+                    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                      await uploadFilesToProject(Array.from(e.dataTransfer.files), proj.id);
+                      return;
+                    }
+
                     try {
-                      const raw = e.dataTransfer.getData("application/json");
-                      if (!raw) return;
-                      const data = JSON.parse(raw);
-                      const ids: number[] = Array.isArray(data.ids) ? data.ids : [];
+                      let ids: number[] = [];
+                      const rawJson = e.dataTransfer.getData("application/json");
+                      if (rawJson) {
+                        try {
+                          const data = JSON.parse(rawJson);
+                          if (Array.isArray(data.ids)) ids = data.ids;
+                        } catch {}
+                      }
+                      if (ids.length === 0) {
+                        const rawText = e.dataTransfer.getData("text/plain");
+                        if (rawText) {
+                          try {
+                            const data = JSON.parse(rawText);
+                            if (Array.isArray(data.ids)) ids = data.ids;
+                          } catch {}
+                        }
+                      }
                       if (ids.length > 0) {
                         bulkUpdate.mutate(
                           { ids, project_id: proj.id },
@@ -353,9 +418,10 @@ export function AppSidebar({
                   activeProps={{ className: "bg-muted font-medium text-foreground" }}
                 >
                   <div className="flex items-center gap-2">
+                    <ProjIcon className="size-3.5 shrink-0 text-muted-foreground group-hover:text-foreground" />
                     <span
                       aria-hidden="true"
-                      className={cn("size-2 shrink-0 rounded-full", tagColorClass(proj.color) ?? "bg-muted-foreground")}
+                      className={cn("size-1.5 shrink-0 rounded-full", tagColorClass(proj.color) ?? "bg-muted-foreground")}
                     />
                     <span className="truncate">{proj.name}</span>
                     <span className="ml-auto text-xs tabular-mono text-muted-foreground">

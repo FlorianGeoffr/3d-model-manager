@@ -28,6 +28,7 @@ export function ModelRow({
   index,
   selected = false,
   selectedIds,
+  selectMode = false,
   onSelectChange,
   onModifiedClick,
 }: {
@@ -38,6 +39,8 @@ export function ModelRow({
   selected?: boolean;
   /** All currently selected IDs for dragging multi-selection */
   selectedIds?: Set<number>;
+  /** Explicit selection mode active */
+  selectMode?: boolean;
   onSelectChange?: (id: number, next: boolean) => void;
   /** Ctrl/Cmd/Shift+click range/toggle select (R9-A item 6): fired instead
    * of navigating when the card's `<Link>` is clicked with a modifier held. */
@@ -70,6 +73,11 @@ export function ModelRow({
     if (onModifiedClick && (event.shiftKey || event.metaKey || event.ctrlKey)) {
       event.preventDefault();
       onModifiedClick(event, index ?? 0);
+      return;
+    }
+    if ((selectedIds && selectedIds.size > 0) || selectMode) {
+      event.preventDefault();
+      onSelectChange?.(model.id, !selected);
     }
   }
 
@@ -97,8 +105,9 @@ export function ModelRow({
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
       className={cn(
-        "group flex items-center gap-3 rounded-lg border border-transparent px-2 hover:border-border hover:bg-muted/50 transition-opacity",
+        "group flex items-center gap-3 rounded-lg border border-transparent px-2 hover:border-border hover:bg-muted/50 transition-all",
         isDragging && "opacity-40",
+        selected && "ring-2 ring-primary border-primary bg-primary/5",
       )}
       style={{ height: LIST_ROW_HEIGHT_PX }}
       preload="intent"
@@ -113,7 +122,9 @@ export function ModelRow({
           aria-label={`Select ${model.name}`}
           className={cn(
             "shrink-0 transition-opacity",
-            selected ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
+            selected || selectMode
+              ? "opacity-100 ring-2 ring-primary/40"
+              : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
           )}
         />
       </span>

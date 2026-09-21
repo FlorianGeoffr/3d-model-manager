@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeftIcon,
@@ -15,7 +16,7 @@ import { toast } from "sonner";
 
 import { useBulkUpdateModels, useCreateModel } from "@/api/library";
 import { useDeleteProject, useProjects } from "@/api/projects";
-import { uploadFile } from "@/api/upload";
+import { uploadFilesWithDuplicateHandling } from "@/lib/uploadHelper";
 import type { ProjectOut, TagColor } from "@/api/types";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ProjectDialog } from "@/components/projects/ProjectDialog";
@@ -68,6 +69,7 @@ export function ProjectFolderView({
   onSelectProject,
   totalModelsInView = 0,
 }: ProjectFolderViewProps) {
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const projectsQuery = useProjects();
   const projects = projectsQuery.data ?? [];
@@ -100,43 +102,14 @@ export function ProjectFolderView({
   }
 
   async function uploadLocalFiles(files: File[], targetProjectId: number | null) {
-    const targetProject = projects.find((p) => p.id === targetProjectId);
-    const targetName = targetProject ? targetProject.name : "la bibliothèque générale";
-    const toastId = toast.loading(`Importation de ${files.length} fichier${files.length > 1 ? "s" : ""} dans "${targetName}"...`);
-    let successCount = 0;
-
-    for (const file of files) {
-      try {
-        const modelName = file.name.replace(/\.[^/.]+$/, "");
-        const model = await createModel.mutateAsync({
-          name: modelName,
-          project_id: targetProjectId ?? undefined,
-        });
-        if (model.current_revision) {
-          await uploadFile({
-            modelId: model.id,
-            revisionId: model.current_revision.id,
-            relPath: file.name,
-            file,
-          });
-          successCount++;
-        }
-      } catch (err) {
-        console.error("Erreur lors de l'upload du fichier:", err);
-      }
-    }
-
-    await queryClient.invalidateQueries({ queryKey: ["models"] });
-    await queryClient.invalidateQueries({ queryKey: ["projects"] });
-
-    if (successCount > 0) {
-      toast.success(
-        `${successCount} fichier${successCount > 1 ? "s" : ""} importé${successCount > 1 ? "s" : ""} dans "${targetName}"`,
-        { id: toastId },
-      );
-    } else {
-      toast.error("Échec de l'importation des fichiers", { id: toastId });
-    }
+    await uploadFilesWithDuplicateHandling({
+      files,
+      targetProjectId,
+      projects,
+      createModel: (data) => createModel.mutateAsync(data),
+      queryClient,
+      onNavigate: (slug) => void navigate({ to: "/models/$slug", params: { slug } }),
+    });
   }
 
   async function handleDrop(targetProjectId: number | null, event: React.DragEvent) {

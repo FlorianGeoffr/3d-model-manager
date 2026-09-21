@@ -5,8 +5,9 @@ import {
   ArchiveIcon,
   BookmarkIcon,
   CheckCircle2Icon,
+  CheckSquareIcon,
   FileIcon,
-  FolderIcon,
+  FolderInputIcon,
   FolderTreeIcon,
   LayoutGridIcon,
   ListIcon,
@@ -35,7 +36,7 @@ import {
 import { useProjects } from "@/api/projects";
 import { useEnqueueModel } from "@/api/queue";
 import { useTriggerScan } from "@/api/scan";
-import { uploadFile } from "@/api/upload";
+import { uploadFilesWithDuplicateHandling } from "@/lib/uploadHelper";
 import { ApiError } from "@/api/client";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { FolderBrowser } from "@/components/gallery/FolderBrowser";
@@ -43,6 +44,7 @@ import { ModelCard } from "@/components/gallery/ModelCard";
 import { ModelRow } from "@/components/gallery/ModelRow";
 import { NewModelDialog } from "@/components/gallery/NewModelDialog";
 import { ProjectFolderView } from "@/components/gallery/ProjectFolderView";
+import { getProjectIcon } from "@/lib/projectIcons";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -211,9 +213,9 @@ export function LibraryPage() {
     });
   }
 
-  // Selection is implicit (no select-mode toggle button): per-visit UI
-  // state only, same as the facets above -- never persisted, never written
-  // to the URL.
+  // Selection state: can be triggered via explicit "Sélectionner" button or
+  // by modifier clicks / checkbox clicks.
+  const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   // R9-A item 6: the anchor for shift+click range selection -- the index of
   // the most recently (modified-)clicked card, cleared whenever selection is
@@ -227,6 +229,7 @@ export function LibraryPage() {
   function clearSelection() {
     setSelectedIds(new Set());
     setLastSelectedIndex(null);
+    setSelectMode(false);
   }
 
   function toggleSelected(id: number, next: boolean) {
@@ -463,45 +466,14 @@ export function LibraryPage() {
   }, []);
 
   async function uploadDroppedFiles(files: File[], targetProjectId: number | null) {
-    const targetProj = projects.find((p) => p.id === targetProjectId);
-    const targetName = targetProj ? `"${targetProj.name}"` : "la bibliothèque générale";
-    const toastId = toast.loading(
-      `Importation de ${files.length} fichier${files.length > 1 ? "s" : ""} dans ${targetName}...`,
-    );
-    let successCount = 0;
-
-    for (const file of files) {
-      try {
-        const modelName = file.name.replace(/\.[^/.]+$/, "");
-        const model = await createModel.mutateAsync({
-          name: modelName,
-          project_id: targetProjectId ?? undefined,
-        });
-        if (model.current_revision) {
-          await uploadFile({
-            modelId: model.id,
-            revisionId: model.current_revision.id,
-            relPath: file.name,
-            file,
-          });
-          successCount++;
-        }
-      } catch (err) {
-        console.error("Erreur lors de l'upload du fichier:", err);
-      }
-    }
-
-    await queryClient.invalidateQueries({ queryKey: ["models"] });
-    await queryClient.invalidateQueries({ queryKey: ["projects"] });
-
-    if (successCount > 0) {
-      toast.success(
-        `${successCount} fichier${successCount > 1 ? "s" : ""} importé${successCount > 1 ? "s" : ""} dans ${targetName}`,
-        { id: toastId },
-      );
-    } else {
-      toast.error("Échec de l'importation des fichiers", { id: toastId });
-    }
+    await uploadFilesWithDuplicateHandling({
+      files,
+      targetProjectId,
+      projects,
+      createModel: (data) => createModel.mutateAsync(data),
+      queryClient,
+      onNavigate: (slug) => void navigate({ to: "/models/$slug", params: { slug } }),
+    });
   }
 
   function handlePageDragEnter(e: React.DragEvent) {
@@ -594,6 +566,22 @@ export function LibraryPage() {
             </SelectContent>
           </Select>
           <div className="flex-1" />
+          <Button
+            type="button"
+            variant={selectMode || selectedIds.size > 0 ? "secondary" : "outline"}
+            className="gap-1.5"
+            onClick={() => {
+              if (selectMode || selectedIds.size > 0) {
+                clearSelection();
+              } else {
+                setSelectMode(true);
+              }
+            }}
+            title="Activer le mode sélection pour sélectionner, supprimer ou déplacer rapidement"
+          >
+            <CheckSquareIcon className={cn("size-4", (selectMode || selectedIds.size > 0) && "text-primary")} />
+            <span>{selectMode || selectedIds.size > 0 ? "Annuler sélection" : "Sélectionner"}</span>
+          </Button>
           <ViewModeToggle value={viewMode} onChange={handleViewModeChange} />
           <Button type="button" variant="outline" disabled={triggerScan.isPending} onClick={startScan}>
             <RefreshCwIcon className={triggerScan.isPending ? "animate-spin" : undefined} />
@@ -869,6 +857,7 @@ export function LibraryPage() {
                       index={virtualRow.index}
                       selected={selectedIds.has(model.id)}
                       selectedIds={selectedIds}
+                      selectMode={selectMode || selectedIds.size > 0}
                       onSelectChange={toggleSelected}
                       onModifiedClick={handleModifiedClick}
                     />
@@ -900,6 +889,7 @@ export function LibraryPage() {
                       index={virtualRow.index * columns + columnIndex}
                       selected={selectedIds.has(model.id)}
                       selectedIds={selectedIds}
+                      selectMode={selectMode || selectedIds.size > 0}
                       onSelectChange={toggleSelected}
                       onModifiedClick={handleModifiedClick}
                     />
@@ -917,6 +907,8 @@ export function LibraryPage() {
       {selectedItems.length > 0 && (
         <SelectionActionBar
           selectedItems={selectedItems}
+          totalAvailable={items.length}
+          onSelectAll={selectAll}
           onDone={clearSelection}
           deleteConfirmOpen={deleteConfirmOpen}
           onDeleteConfirmOpenChange={setDeleteConfirmOpen}
@@ -933,11 +925,15 @@ export function LibraryPage() {
  * through `useBulkDeleteModels` (`POST /models/bulk-delete`, Round 11 T1). */
 function SelectionActionBar({
   selectedItems,
+  totalAvailable,
+  onSelectAll,
   onDone,
   deleteConfirmOpen,
   onDeleteConfirmOpenChange,
 }: {
   selectedItems: ModelSummary[];
+  totalAvailable?: number;
+  onSelectAll?: () => void;
   onDone: () => void;
   deleteConfirmOpen: boolean;
   onDeleteConfirmOpenChange: (open: boolean) => void;
@@ -1097,9 +1093,22 @@ function SelectionActionBar({
 
   return (
     <Card className="fixed inset-x-0 bottom-6 z-40 mx-auto w-fit flex-row items-center gap-3 px-4 py-2.5 shadow-lg">
-      <span className="text-sm font-medium">
-        {selectedItems.length} selected
-      </span>
+      <div className="flex items-center gap-2 pr-1 border-r border-border">
+        <span className="text-sm font-semibold">
+          {selectedItems.length} selected
+        </span>
+        {totalAvailable !== undefined && totalAvailable > 0 && onSelectAll && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            className="h-6 text-xs text-muted-foreground hover:text-foreground px-1.5"
+            onClick={selectedItems.length >= totalAvailable ? onDone : onSelectAll}
+          >
+            {selectedItems.length >= totalAvailable ? "Désélectionner" : `Tout (${totalAvailable})`}
+          </Button>
+        )}
+      </div>
 
       <Popover open={addTagOpen} onOpenChange={setAddTagOpen}>
         <PopoverTrigger asChild>
@@ -1158,27 +1167,31 @@ function SelectionActionBar({
 
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button type="button" variant="outline" size="sm" disabled={busy}>
-            <FolderIcon className="size-3.5" /> Project
+          <Button type="button" variant="outline" size="sm" disabled={busy} title="Déplacer vers un dossier">
+            <FolderInputIcon className="size-3.5" /> Project
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="center" className="w-48">
+        <DropdownMenuContent align="center" className="w-56">
           <DropdownMenuItem onClick={() => assignProject(null)}>
-            <span className="flex items-center gap-1.5 text-muted-foreground">
-              <XIcon className="size-3.5" /> None (Unassign)
+            <span className="flex items-center gap-2 text-muted-foreground">
+              <XIcon className="size-3.5" /> None (Unassign / Racine)
             </span>
           </DropdownMenuItem>
-          {projects.map((project) => (
-            <DropdownMenuItem key={project.id} onClick={() => assignProject(project.id)}>
-              <span className="flex items-center gap-2">
-                <span
-                  aria-hidden="true"
-                  className={cn("size-2 rounded-full", tagColorClass(project.color) ?? "bg-muted-foreground")}
-                />
-                <span className="truncate">{project.name}</span>
-              </span>
-            </DropdownMenuItem>
-          ))}
+          {projects.map((project) => {
+            const ProjIcon = getProjectIcon(project.icon);
+            return (
+              <DropdownMenuItem key={project.id} onClick={() => assignProject(project.id)}>
+                <span className="flex items-center gap-2">
+                  <ProjIcon className="size-3.5 text-muted-foreground shrink-0" />
+                  <span
+                    aria-hidden="true"
+                    className={cn("size-2 rounded-full shrink-0", tagColorClass(project.color) ?? "bg-muted-foreground")}
+                  />
+                  <span className="truncate">{project.name}</span>
+                </span>
+              </DropdownMenuItem>
+            );
+          })}
         </DropdownMenuContent>
       </DropdownMenu>
 

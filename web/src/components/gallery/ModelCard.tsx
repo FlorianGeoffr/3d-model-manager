@@ -34,6 +34,7 @@ export function ModelCard({
   index,
   selected = false,
   selectedIds,
+  selectMode = false,
   onSelectChange,
   onModifiedClick,
 }: {
@@ -47,6 +48,8 @@ export function ModelCard({
   selected?: boolean;
   /** All currently selected IDs for dragging multi-selection */
   selectedIds?: Set<number>;
+  /** Explicit selection mode active */
+  selectMode?: boolean;
   onSelectChange?: (id: number, next: boolean) => void;
   /** Ctrl/Cmd/Shift+click range/toggle select (R9-A item 6): fired instead
    * of navigating when the card's `<Link>` is clicked with a modifier held. */
@@ -121,6 +124,11 @@ export function ModelCard({
     if (onModifiedClick && (event.shiftKey || event.metaKey || event.ctrlKey)) {
       event.preventDefault();
       onModifiedClick(event, index ?? 0);
+      return;
+    }
+    if ((selectedIds && selectedIds.size > 0) || selectMode) {
+      event.preventDefault();
+      onSelectChange?.(model.id, !selected);
     }
   }
 
@@ -153,7 +161,12 @@ export function ModelCard({
       onPointerEnter={onIntent}
       onFocus={onIntent}
     >
-      <Card className="h-full flex flex-col gap-0 overflow-hidden py-0 pb-0 transition-shadow hover:shadow-md">
+      <Card
+        className={cn(
+          "h-full flex flex-col gap-0 overflow-hidden py-0 pb-0 transition-all hover:shadow-md",
+          selected && "ring-2 ring-primary border-primary",
+        )}
+      >
         <div className="relative aspect-[4/3] overflow-hidden bg-muted">
           {showCover ? (
             <>
@@ -211,7 +224,9 @@ export function ModelCard({
                 aria-label={`Select ${model.name}`}
                 className={cn(
                   "bg-background/80 backdrop-blur-sm transition-opacity",
-                  selected ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
+                  selected || selectMode
+                    ? "opacity-100 ring-2 ring-primary/40"
+                    : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
                 )}
               />
             </span>

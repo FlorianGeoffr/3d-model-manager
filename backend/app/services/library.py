@@ -37,7 +37,18 @@ from app.config import Settings
 from app.importers.base import SiteImporter
 from app.importers.registry import get_importer
 from app.models.enums import BlobFormat, BlobKind, DerivativeKind, DerivativeStatus, ImportSite
-from app.models.library import Blob, Category, File, Model, Note, Print, Revision, Tag, model_tags
+from app.models.library import (
+    Blob,
+    Category,
+    File,
+    Model,
+    Note,
+    Print,
+    Project,
+    Revision,
+    Tag,
+    model_tags,
+)
 from app.models.processing import AssemblyThumb, BlobMeta, Derivative
 from app.models.storage import FileLocation, StorageBackendRow
 from app.models.system import Job
@@ -51,6 +62,7 @@ from app.schemas.library import (
     ModelBackendOut,
     ModelCategoryOut,
     ModelDetail,
+    ModelProjectOut,
     ModelSummary,
     NoteOut,
     PlateOut,
@@ -242,6 +254,7 @@ async def create_model(
         description=description,
         tags=[],
         category=None,
+        project=None,
         source_url=source_url,
         source_site=source_site,
         source_author=source_author,
@@ -323,6 +336,7 @@ def create_imported_model_sync(
         description=description,
         tags=[],
         category=None,
+        project=None,
         source_url=source_url,
         source_site=source_site,
         source_author=source_author,
@@ -421,7 +435,11 @@ async def get_model_by_slug(db: AsyncSession, slug: str) -> Model:
     stmt = (
         select(Model)
         .where(Model.slug == slug)
-        .options(selectinload(Model.tags), selectinload(Model.category))
+        .options(
+            selectinload(Model.tags),
+            selectinload(Model.category),
+            selectinload(Model.project),
+        )
     )
     model = (await db.execute(stmt)).scalar_one_or_none()
     if model is None:
@@ -459,6 +477,43 @@ async def patch_model(
                     status.HTTP_422_UNPROCESSABLE_CONTENT, detail="unknown category_id"
                 )
 
+    if "project_id" in changes:
+        new_project_id = changes["project_id"]
+        if new_project_id is not None:  # None clears the project; only validate non-None
+            project = await db.get(Project, new_project_id)
+            if project is None:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_CONTENT, detail="unknown project_id"
+                )
+
+    if "print_status" in changes:
+        new_status = changes["print_status"]
+        if new_status is not None and new_status not in (
+            "idle",
+            "to_print",
+            "printing",
+            "printed",
+            "finishing",
+            "failed",
+        ):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"invalid print_status {new_status!r}"
+            )
+
+    if "quantity_target" in changes:
+        target = changes["quantity_target"]
+        if target is not None and (not isinstance(target, int) or target < 1):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, detail="quantity_target must be >= 1"
+            )
+
+    if "quantity_printed" in changes:
+        printed = changes["quantity_printed"]
+        if printed is not None and (not isinstance(printed, int) or printed < 0):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, detail="quantity_printed must be >= 0"
+            )
+
     new_name = changes.get("name")
     name_changing = "name" in changes and new_name != model.name
     if name_changing:
@@ -477,6 +532,10 @@ async def patch_model(
         "favorite",
         "is_archived",
         "category_id",
+        "project_id",
+        "print_status",
+        "quantity_target",
+        "quantity_printed",
         "print_tips",
     ):
         if field in changes:
@@ -486,13 +545,13 @@ async def patch_model(
     if "metadata" in changes:
         model.metadata_json = changes["metadata"]
     await db.commit()
+    refresh_fields = []
     if "category_id" in changes:
-        # `expire_on_commit=False` (app.db.get_sessionmaker) means the
-        # already-loaded `category` relationship would otherwise keep
-        # pointing at the OLD row after `category_id` changes above --
-        # refresh it explicitly so `build_model_detail`'s `model.category`
-        # read reflects the new FK.
-        await db.refresh(model, ["category"])
+        refresh_fields.append("category")
+    if "project_id" in changes:
+        refresh_fields.append("project")
+    if refresh_fields:
+        await db.refresh(model, refresh_fields)
     return model
 
 
@@ -707,22 +766,12 @@ async def bulk_update_models(
     add_tags: list[str] | None,
     remove_tags: list[str] | None,
     favorite: bool | None,
+    project_id: int | None = None,
+    print_status: str | None = None,
 ) -> int:
-    """``POST /models/bulk`` (Branch 4 Task 1): apply the same tag/favorite
+    """``POST /models/bulk`` (Branch 4 Task 1): apply the same tag/favorite/project
     changes to every id in one go. Every id is validated to exist BEFORE any
     mutation runs, so an unknown id 404s with NOTHING applied.
-
-    Branch 4 fix-review F1: unlike the single-model ``POST .../tags``/
-    ``DELETE .../tags/{name}`` endpoints, tag membership here is applied
-    SET-BASED (bulk INSERT/DELETE straight against ``model_tags``) instead of
-    looping ``add_tag_to_model``/``remove_tag_from_model`` per model, and the
-    whole op -- add-tags, remove-tags, favorite -- commits ONCE at the end.
-    This matters most for remove: the UI's remove-tag popover offers the
-    UNION of tags across the selection, so "some of the selected models don't
-    have this tag" is the NORMAL case, not an error. A DELETE that just
-    matches zero rows for a given model is silently a no-op (no 404), and
-    nothing before it in the batch is left half-committed if a later step
-    were to fail.
     """
     unique_ids = list(dict.fromkeys(ids))  # de-dupe, preserve order
     models_by_id = {
@@ -774,6 +823,29 @@ async def bulk_update_models(
     if favorite is not None:
         for model_id in unique_ids:
             models_by_id[model_id].favorite = favorite
+
+    if project_id is not None:
+        if project_id <= 0:
+            for model_id in unique_ids:
+                models_by_id[model_id].project_id = None
+                touched_ids.add(model_id)
+        else:
+            project = await db.get(Project, project_id)
+            if project is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, f"project {project_id} not found")
+            for model_id in unique_ids:
+                models_by_id[model_id].project_id = project_id
+                touched_ids.add(model_id)
+
+    if print_status is not None:
+        if print_status not in ("idle", "to_print", "printing", "printed", "finishing", "failed"):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"invalid print_status {print_status!r}",
+            )
+        for model_id in unique_ids:
+            models_by_id[model_id].print_status = print_status
+            touched_ids.add(model_id)
 
     # Backlog fold: see `finalize_upload`'s matching comment -- neither a
     # model_tags-only insert/delete nor a same-value `favorite` assignment
@@ -1144,6 +1216,20 @@ async def build_model_summaries(
                     if m.category is not None
                     else None
                 ),
+                project_id=m.project_id,
+                project=(
+                    ModelProjectOut(
+                        id=m.project.id,
+                        name=m.project.name,
+                        slug=m.project.slug,
+                        color=m.project.color,
+                    )
+                    if m.project is not None
+                    else None
+                ),
+                print_status=m.print_status,
+                quantity_target=m.quantity_target,
+                quantity_printed=m.quantity_printed,
             )
         )
     return items
@@ -1160,6 +1246,8 @@ async def list_models(
     collection: int | None,
     favorite: bool | None,
     category: int | None,
+    project: int | None = None,
+    print_status: str | None = None,
     sort: str,
     archived: bool,
     limit: int,
@@ -1172,7 +1260,8 @@ async def list_models(
     ``favorite`` filter -- ``favorite=true`` narrows to starred models,
     ``false``/omitted apply no filter at all (never hides favorites); R13b
     adds the ``category`` filter -- a plain equality on ``Model.category_id``,
-    same shape as ``collection``).
+    same shape as ``collection``; project and print_status filters support
+    project/folder organization and manufacturing workflow tracking).
     """
     is_desc = sort.startswith("-")
     field_name = sort[1:] if is_desc else sort
@@ -1181,7 +1270,11 @@ async def list_models(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"invalid sort field: {field_name!r}")
     sort_column, parse_cursor_value, extract_sort_value = sort_field
 
-    stmt = select(Model).options(selectinload(Model.tags), selectinload(Model.category))
+    stmt = select(Model).options(
+        selectinload(Model.tags),
+        selectinload(Model.category),
+        selectinload(Model.project),
+    )
     if not archived:
         stmt = stmt.where(Model.is_archived.is_(False))
     if q:
@@ -1225,6 +1318,10 @@ async def list_models(
         stmt = stmt.where(Model.favorite.is_(True))
     if category is not None:
         stmt = stmt.where(Model.category_id == category)
+    if project is not None:
+        stmt = stmt.where(Model.project_id == project)
+    if print_status:
+        stmt = stmt.where(Model.print_status == print_status)
 
     order_col = sort_column.desc() if is_desc else sort_column.asc()
     order_id = Model.id.desc() if is_desc else Model.id.asc()
@@ -1446,6 +1543,20 @@ async def build_model_detail(db: AsyncSession, model: Model, settings: Settings)
             if model.category is not None
             else None
         ),
+        project_id=model.project_id,
+        project=(
+            ModelProjectOut(
+                id=model.project.id,
+                name=model.project.name,
+                slug=model.project.slug,
+                color=model.project.color,
+            )
+            if model.project is not None
+            else None
+        ),
+        print_status=model.print_status,
+        quantity_target=model.quantity_target,
+        quantity_printed=model.quantity_printed,
         metadata=model.metadata_json,
         print_tips=model.print_tips,
     )

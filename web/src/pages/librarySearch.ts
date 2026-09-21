@@ -13,6 +13,8 @@
 export interface LibrarySearch {
   collection?: number;
   category?: number;
+  project?: number;
+  print_status?: string;
   path?: string;
 }
 
@@ -28,10 +30,14 @@ export interface LibrarySearch {
 export function parseLibrarySearch(search: Record<string, unknown>): LibrarySearch {
   const collection = search.collection;
   const category = search.category;
+  const project = search.project;
+  const print_status = search.print_status;
   const path = search.path;
   return {
     collection: typeof collection === "number" ? collection : undefined,
     category: typeof category === "number" ? category : undefined,
+    project: typeof project === "number" ? project : undefined,
+    print_status: typeof print_status === "string" ? print_status : undefined,
     path: typeof path === "string" ? path : undefined,
   };
 }

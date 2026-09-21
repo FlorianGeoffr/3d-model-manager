@@ -5,6 +5,7 @@ import { ClockIcon, FileStackIcon, StarIcon, XIcon } from "lucide-react";
 
 import { modelQueryOptions, usePatchModel, useTagColorMap } from "@/api/library";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { PrintStatusBadge } from "@/components/gallery/PrintStatusBadge";
 import { OpenInSlicerButton } from "@/components/model-detail/OpenInSlicerButton";
 import { SendToPrinterButton } from "@/components/model-detail/SendToPrinterButton";
 import { Badge } from "@/components/ui/badge";
@@ -267,6 +268,15 @@ export function ModelCard({
             <h3 className="truncate text-sm font-medium" title={model.name}>
               {model.name}
             </h3>
+            {model.project && (
+              <Badge variant="outline" className="shrink-0 gap-1" data-testid="project-badge">
+                <span
+                  aria-hidden="true"
+                  className={cn("size-1.5 rounded-full", tagColorClass(model.project.color) ?? "bg-muted-foreground")}
+                />
+                {model.project.name}
+              </Badge>
+            )}
             {model.category && (
               <Badge variant="outline" className="shrink-0 gap-1">
                 <span
@@ -304,9 +314,22 @@ export function ModelCard({
             {formatOverflowCount > 0 && <Badge variant="outline">+{formatOverflowCount}</Badge>}
           </div>
 
-          <p className="font-mono text-xs text-muted-foreground">
-            Updated {formatDate(model.updated_at)}
-          </p>
+          <div className="flex items-center justify-between gap-2 pt-1 border-t border-border/40">
+            <span className="contents" onClick={stopCardNavigation}>
+              <PrintStatusBadge
+                status={model.print_status}
+                quantityTarget={model.quantity_target}
+                quantityPrinted={model.quantity_printed}
+                onChangeStatus={(nextStatus) => patchModel.mutate({ print_status: nextStatus })}
+                onChangeQuantity={(printed, target) =>
+                  patchModel.mutate({ quantity_printed: printed, quantity_target: target })
+                }
+              />
+            </span>
+            <p className="font-mono text-[11px] text-muted-foreground shrink-0">
+              Updated {formatDate(model.updated_at)}
+            </p>
+          </div>
         </CardContent>
       </Card>
     </Link>

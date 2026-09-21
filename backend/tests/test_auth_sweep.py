@@ -71,6 +71,8 @@ _PATH_PARAM_VALUES = {
     "print_id": "1",
     # R13b: categories.
     "category_id": "1",
+    # Projects:
+    "project_id": "1",
     # R13c: materials.
     "material_id": "1",
     # Signed download route token

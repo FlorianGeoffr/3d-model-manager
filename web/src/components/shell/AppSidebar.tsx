@@ -14,8 +14,10 @@ import { useCategories } from "@/api/categories";
 import { useFeatures } from "@/api/features";
 import { useFollowedCollections } from "@/api/collections";
 import { useFailedImportsCount } from "@/api/imports";
+import { useProjects } from "@/api/projects";
 import { useScanRuns } from "@/api/scan";
 import type { ScanRunOut } from "@/api/types";
+import { ProjectDialog } from "@/components/projects/ProjectDialog";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -168,6 +170,8 @@ export function AppSidebar({
   const failedImports = useFailedImportsCount();
   const followed = useFollowedCollections();
   const categories = useCategories();
+  const projects = useProjects();
+  const [createProjectOpen, setCreateProjectOpen] = useState(false);
   const [collapsed, setCollapsed] = useSidebarCollapsed();
 
   useEffect(() => {
@@ -286,6 +290,53 @@ export function AppSidebar({
             ))}
           </div>
         ))}
+        {/* Projects section */}
+        {!collapsed && (
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center justify-between px-2.5 pb-1">
+              <span className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+                Projects
+              </span>
+              <button
+                type="button"
+                aria-label="Create project"
+                onClick={() => setCreateProjectOpen(true)}
+                className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+              >
+                <Plus className="size-3.5" />
+              </button>
+            </div>
+            {(projects.data ?? []).map((proj) => (
+              <Link
+                key={proj.id}
+                to="/"
+                search={(prev: LibrarySearch) => ({ ...prev, project: proj.id })}
+                className="group flex flex-col gap-1 rounded-lg px-2.5 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
+                activeProps={{ className: "bg-muted font-medium text-foreground" }}
+              >
+                <div className="flex items-center gap-2">
+                  <span
+                    aria-hidden="true"
+                    className={cn("size-2 shrink-0 rounded-full", tagColorClass(proj.color) ?? "bg-muted-foreground")}
+                  />
+                  <span className="truncate">{proj.name}</span>
+                  <span className="ml-auto text-xs tabular-mono text-muted-foreground">
+                    {proj.total_quantity_printed}/{proj.total_quantity_target}
+                  </span>
+                </div>
+                {proj.total_quantity_target > 0 && (
+                  <div className="h-1 w-full overflow-hidden rounded-full bg-muted-foreground/20">
+                    <div
+                      className="h-full bg-primary rounded-full transition-all duration-300"
+                      style={{ width: `${proj.progress_pct}%` }}
+                    />
+                  </div>
+                )}
+              </Link>
+            ))}
+          </div>
+        )}
+
         {/* Categories (R13b): NOT one of `navItems.ts`'s pages -- a
             dynamic, data-driven list like the Collections sublist above,
             just always visible (no parent nav item to nest under) rather
@@ -351,6 +402,8 @@ export function AppSidebar({
         </div>
       </div>
       </aside>
+
+      <ProjectDialog open={createProjectOpen} onOpenChange={setCreateProjectOpen} />
     </>
   );
 }

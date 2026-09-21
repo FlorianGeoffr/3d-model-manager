@@ -29,6 +29,15 @@ export type BlobFormat = (typeof BLOB_FORMATS)[number];
 
 export type BlobKind = "mesh" | "cad" | "sliced" | "gcode" | "image" | "doc" | "other";
 
+export type PrintStatus = "idle" | "to_print" | "printing" | "printed" | "finishing" | "failed";
+
+export interface ModelProjectOut {
+  id: number;
+  name: string;
+  slug: string;
+  color: TagColor | null;
+}
+
 // -- models (backend/app/schemas/library.py) -------------------------------
 
 export interface ModelCreate {
@@ -48,6 +57,11 @@ export interface ModelPatch {
   is_archived?: boolean;
   // R13b: single category assignment -- `null` clears it.
   category_id?: number | null;
+  // Project assignment and manufacturing workflow tracking
+  project_id?: number | null;
+  print_status?: PrintStatus | null;
+  quantity_target?: number;
+  quantity_printed?: number;
   // R13c: freeform key/value custom fields (`MetadataEditor`) and a
   // freeform print-tips note -- both `null` clear the field entirely.
   metadata?: Record<string, string> | null;
@@ -70,6 +84,8 @@ export interface ModelBulkIn {
   add_tags?: string[];
   remove_tags?: string[];
   favorite?: boolean;
+  project_id?: number | null;
+  print_status?: PrintStatus | null;
 }
 
 export interface ModelBulkOut {
@@ -131,6 +147,12 @@ export interface ModelSummary {
   // the same backend join and always agree.
   category_id?: number | null;
   category?: CategoryOut | null;
+  // Project assignment and manufacturing workflow tracking
+  project_id?: number | null;
+  project?: ModelProjectOut | null;
+  print_status?: PrintStatus | null;
+  quantity_target?: number;
+  quantity_printed?: number;
 }
 
 export interface GalleryPage {
@@ -276,6 +298,12 @@ export interface ModelDetail {
   // R13b (categories): mirrors `ModelSummary.category`/`category_id` above.
   category_id?: number | null;
   category?: CategoryOut | null;
+  // Project assignment and manufacturing workflow tracking
+  project_id?: number | null;
+  project?: ModelProjectOut | null;
+  print_status?: PrintStatus | null;
+  quantity_target?: number;
+  quantity_printed?: number;
   // R13c: freeform key/value custom fields + a freeform print-tips note.
   metadata: Record<string, string> | null;
   print_tips: string | null;
@@ -347,6 +375,34 @@ export interface CategoryCreate {
 
 export interface CategoryPatch {
   name?: string;
+  color?: TagColor | null;
+}
+
+// -- projects --------------------------------------------------------
+
+export interface ProjectOut {
+  id: number;
+  name: string;
+  slug: string;
+  description: string | null;
+  color: TagColor | null;
+  created_at: string;
+  updated_at: string;
+  model_count: number;
+  total_quantity_target: number;
+  total_quantity_printed: number;
+  progress_pct: number;
+}
+
+export interface ProjectCreate {
+  name: string;
+  description?: string | null;
+  color?: TagColor | null;
+}
+
+export interface ProjectPatch {
+  name?: string;
+  description?: string | null;
   color?: TagColor | null;
 }
 

@@ -30,7 +30,7 @@ import redis
 from sqlalchemy import select
 
 from app.config import Settings, get_settings
-from app.models import Printer, PrintJob
+from app.models import File, Model, Printer, PrintJob, Revision
 from app.models.enums import PrintJobState
 from app.printers.base import PrinterAdapter, PrinterPublicState, command_channel, state_key
 from app.printers.connection import connection_from_printer
@@ -110,12 +110,37 @@ class PrinterWorker:
             now = datetime.now(UTC)
             if new_state == PrintJobState.PRINTING and job.started_at is None:
                 job.started_at = now
+                file = session.get(File, job.file_id)
+                if file and file.revision_id:
+                    rev = session.get(Revision, file.revision_id)
+                    if rev and rev.model_id:
+                        m = session.get(Model, rev.model_id)
+                        if m and (m.print_status is None or m.print_status in ("idle", "to_print")):
+                            m.print_status = "printing"
             if new_state in _TERMINAL:
                 job.finished_at = now
             if new_state == PrintJobState.FINISHED:
                 from app.services.camera_snapshot import capture_and_save_finish_snapshot
 
                 capture_and_save_finish_snapshot(self.settings, session, job, self.adapter)
+
+                file = session.get(File, job.file_id)
+                if file and file.revision_id:
+                    rev = session.get(Revision, file.revision_id)
+                    if rev and rev.model_id:
+                        m = session.get(Model, rev.model_id)
+                        if m:
+                            m.quantity_printed += 1
+                            if m.quantity_printed >= m.quantity_target:
+                                m.print_status = "printed"
+            elif new_state == PrintJobState.FAILED:
+                file = session.get(File, job.file_id)
+                if file and file.revision_id:
+                    rev = session.get(Revision, file.revision_id)
+                    if rev and rev.model_id:
+                        m = session.get(Model, rev.model_id)
+                        if m and m.print_status == "printing":
+                            m.print_status = "failed"
             job_id = job.id
             session.commit()
         publish_print_job_event_sync(

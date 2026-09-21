@@ -41,6 +41,22 @@ def _validate_metadata(value: dict[str, str] | None) -> dict[str, str] | None:
     return value
 
 
+# -- tags & projects types ----------------------------------------------
+
+TagColor = Literal[
+    "slate", "red", "orange", "amber", "green", "teal", "blue", "indigo", "violet", "pink"
+]
+
+PrintStatus = Literal["idle", "to_print", "printing", "printed", "finishing", "failed"]
+
+
+class ModelProjectOut(BaseModel):
+    id: int
+    name: str
+    slug: str
+    color: str | None = None
+
+
 # -- models -------------------------------------------------------------
 
 
@@ -70,6 +86,11 @@ class ModelPatch(BaseModel):
     # R13b: single-valued category assignment; explicit `null` clears it
     # (unlike `name`, `category_id` is genuinely nullable at the DB level).
     category_id: int | None = None
+    # Project assignment and manufacturing workflow tracking
+    project_id: int | None = None
+    print_status: PrintStatus | None = None
+    quantity_target: int | None = None
+    quantity_printed: int | None = None
     # R13c: free-form key/value metadata (maps to `Model.metadata_json`;
     # the API field is named `metadata` -- `metadata` itself is reserved on
     # SQLAlchemy's declarative `Base`, hence the column's different name).
@@ -114,6 +135,8 @@ class ModelBulkIn(BaseModel):
     add_tags: list[str] | None = None
     remove_tags: list[str] | None = None
     favorite: bool | None = None
+    project_id: int | None = None
+    print_status: PrintStatus | None = None
 
 
 class ModelBulkOut(BaseModel):
@@ -183,6 +206,12 @@ class ModelSummary(BaseModel):
     # R13b: single-valued category assignment (None = uncategorized).
     category_id: int | None = None
     category: ModelCategoryOut | None = None
+    # Project assignment and manufacturing workflow tracking
+    project_id: int | None = None
+    project: ModelProjectOut | None = None
+    print_status: str | None = None
+    quantity_target: int = 1
+    quantity_printed: int = 0
 
 
 class GalleryPage(BaseModel):
@@ -432,6 +461,12 @@ class ModelDetail(BaseModel):
     # R13b: single-valued category assignment (None = uncategorized).
     category_id: int | None = None
     category: ModelCategoryOut | None = None
+    # Project assignment and manufacturing workflow tracking
+    project_id: int | None = None
+    project: ModelProjectOut | None = None
+    print_status: str | None = None
+    quantity_target: int = 1
+    quantity_printed: int = 0
     # R13c: free-form key/value metadata + a plain-text print-tips note.
     metadata: dict[str, str] | None = None
     print_tips: str | None = None
@@ -459,10 +494,6 @@ class DiffResponse(BaseModel):
 
 
 # -- tags -------------------------------------------------------------
-
-TagColor = Literal[
-    "slate", "red", "orange", "amber", "green", "teal", "blue", "indigo", "violet", "pink"
-]
 
 
 class TagCreate(BaseModel):

@@ -4,6 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { FileStackIcon, StarIcon } from "lucide-react";
 
 import { modelQueryOptions, usePatchModel, useTagColorMap } from "@/api/library";
+import { PrintStatusBadge } from "@/components/gallery/PrintStatusBadge";
 import { OpenInSlicerButton } from "@/components/model-detail/OpenInSlicerButton";
 import { SendToPrinterButton } from "@/components/model-detail/SendToPrinterButton";
 import { Badge } from "@/components/ui/badge";
@@ -112,6 +113,15 @@ export function ModelRow({
           <h3 className="truncate text-sm font-medium" title={model.name}>
             {model.name}
           </h3>
+          {model.project && (
+            <Badge variant="outline" className="shrink-0 gap-1" data-testid="project-badge">
+              <span
+                aria-hidden="true"
+                className={cn("size-1.5 rounded-full", tagColorClass(model.project.color) ?? "bg-muted-foreground")}
+              />
+              {model.project.name}
+            </Badge>
+          )}
           {model.category && (
             <Badge variant="outline" className="shrink-0 gap-1">
               <span
@@ -136,6 +146,18 @@ export function ModelRow({
           ))}
         </div>
       </div>
+
+      <span className="contents" onClick={stopRowNavigation}>
+        <PrintStatusBadge
+          status={model.print_status}
+          quantityTarget={model.quantity_target}
+          quantityPrinted={model.quantity_printed}
+          onChangeStatus={(nextStatus) => patchModel.mutate({ print_status: nextStatus })}
+          onChangeQuantity={(printed, target) =>
+            patchModel.mutate({ quantity_printed: printed, quantity_target: target })
+          }
+        />
+      </span>
 
       <div className="hidden shrink-0 items-center gap-1 text-xs text-muted-foreground sm:flex" data-testid="model-row-meta">
         <FileStackIcon className="size-3" />

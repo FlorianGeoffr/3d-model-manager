@@ -132,6 +132,13 @@ function mergeDetailIntoSummary(item: ModelSummary, detail: ModelDetail): ModelS
     favorite: detail.favorite,
     review_state: detail.review_state,
     tags: detail.tags,
+    category_id: detail.category_id,
+    category: detail.category,
+    project_id: detail.project_id,
+    project: detail.project,
+    print_status: detail.print_status,
+    quantity_target: detail.quantity_target,
+    quantity_printed: detail.quantity_printed,
   };
 }
 
@@ -150,6 +157,8 @@ export interface GalleryFilters {
   // R13b: single-select category facet -- ANDed with every other filter,
   // same as `collection`.
   category?: number;
+  project?: number;
+  print_status?: string;
   sort: string;
 }
 
@@ -167,6 +176,8 @@ function buildModelsUrl(filters: Partial<GalleryFilters>, cursor?: string, limit
   if (filters.favorite) params.set("favorite", "true");
   if (filters.archived) params.set("archived", "true");
   if (filters.category !== undefined) params.set("category", String(filters.category));
+  if (filters.project !== undefined) params.set("project", String(filters.project));
+  if (filters.print_status) params.set("print_status", filters.print_status);
   if (filters.sort) params.set("sort", filters.sort);
   params.set("limit", String(limit));
   if (cursor) params.set("cursor", cursor);
@@ -274,6 +285,7 @@ export function usePatchModel(slug: string) {
       // A patch can change fields the folder browser's tree strip shows
       // (name, category, tags) -- keep it from going stale too.
       void queryClient.invalidateQueries({ queryKey: ["storage"] });
+      void queryClient.invalidateQueries({ queryKey: ["projects"] });
     },
   });
 }
@@ -325,6 +337,7 @@ export function useBulkUpdateModels() {
       void queryClient.invalidateQueries({ queryKey: LIST_QUERY_KEY });
       for (const [key] of context?.detailSnapshots ?? []) void queryClient.invalidateQueries({ queryKey: key });
       void queryClient.invalidateQueries({ queryKey: ["storage"] });
+      void queryClient.invalidateQueries({ queryKey: ["projects"] });
     },
   });
 }

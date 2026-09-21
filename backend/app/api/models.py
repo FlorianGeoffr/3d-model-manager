@@ -70,6 +70,8 @@ async def list_models(
     collection: int | None = None,
     favorite: bool | None = None,
     category: int | None = None,
+    project: int | None = None,
+    print_status: str | None = None,
     sort: str = "-updated_at",
     archived: bool = False,
     limit: int = Query(20, ge=1, le=100),
@@ -87,6 +89,8 @@ async def list_models(
         collection=collection,
         favorite=favorite,
         category=category,
+        project=project,
+        print_status=print_status,
         sort=sort,
         archived=archived,
         limit=limit,
@@ -109,6 +113,8 @@ async def bulk_update_models(
         add_tags=payload.add_tags,
         remove_tags=payload.remove_tags,
         favorite=payload.favorite,
+        project_id=payload.project_id,
+        print_status=payload.print_status,
     )
     return ModelBulkOut(updated=updated)
 

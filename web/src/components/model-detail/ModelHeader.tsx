@@ -17,6 +17,8 @@ import { toast } from "sonner";
 import { useArchiveModel, useDeleteModel, usePatchModel, useRedownloadModel } from "@/api/library";
 import { useEnqueueModel } from "@/api/queue";
 import { CategoryPicker } from "@/components/gallery/CategoryPicker";
+import { ProjectPicker } from "@/components/gallery/ProjectPicker";
+import { PrintStatusBadge } from "@/components/gallery/PrintStatusBadge";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { InlineEdit } from "@/components/InlineEdit";
 import { useHotkeys } from "@/hooks/useHotkeys";
@@ -175,20 +177,65 @@ export function ModelHeader({
           </h1>
           <div className="flex flex-wrap items-center gap-2">
             {editMode ? (
-              <CategoryPicker
-                value={model.category_id ?? null}
-                onChange={(categoryId) => patchModel.mutate({ category_id: categoryId })}
-              />
-            ) : model.category ? (
-              <Badge variant="outline" className="gap-1">
-                <span
-                  aria-hidden="true"
-                  className="size-1.5 rounded-full"
-                  style={{ backgroundColor: model.category.color ?? undefined }}
+              <>
+                <CategoryPicker
+                  value={model.category_id ?? null}
+                  onChange={(categoryId) => patchModel.mutate({ category_id: categoryId })}
                 />
-                {model.category.name}
-              </Badge>
-            ) : null}
+                <ProjectPicker
+                  value={model.project_id ?? null}
+                  onChange={(projectId) => patchModel.mutate({ project_id: projectId })}
+                />
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground border border-input rounded-md px-2 h-8 bg-background">
+                  <span>À imprimer :</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={9999}
+                    value={model.quantity_target}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value, 10);
+                      if (!isNaN(val) && val > 0) {
+                        patchModel.mutate({ quantity_target: val });
+                      }
+                    }}
+                    className="w-12 text-center text-xs font-medium text-foreground bg-transparent focus:outline-none"
+                  />
+                </div>
+              </>
+            ) : (
+              <>
+                {model.project ? (
+                  <Badge variant="outline" className="gap-1">
+                    <span
+                      aria-hidden="true"
+                      className="size-1.5 rounded-full"
+                      style={{ backgroundColor: model.project.color ?? undefined }}
+                    />
+                    {model.project.name}
+                  </Badge>
+                ) : null}
+                {model.category ? (
+                  <Badge variant="outline" className="gap-1">
+                    <span
+                      aria-hidden="true"
+                      className="size-1.5 rounded-full"
+                      style={{ backgroundColor: model.category.color ?? undefined }}
+                    />
+                    {model.category.name}
+                  </Badge>
+                ) : null}
+              </>
+            )}
+            <PrintStatusBadge
+              status={model.print_status}
+              quantityTarget={model.quantity_target}
+              quantityPrinted={model.quantity_printed}
+              onChangeStatus={(nextStatus) => patchModel.mutate({ print_status: nextStatus })}
+              onChangeQuantity={(printed, target) =>
+                patchModel.mutate({ quantity_printed: printed, quantity_target: target })
+              }
+            />
             {model.is_archived ? <Badge variant="outline">Archived</Badge> : null}
             {needsReview ? (
               <Badge variant="secondary" className="gap-1 pr-1" data-testid="review-badge">

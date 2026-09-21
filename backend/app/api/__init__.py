@@ -48,6 +48,7 @@ from app.api import (
     print_jobs,
     printers,
     prints,
+    projects,
     queue,
     reports,
     revisions,
@@ -92,6 +93,7 @@ protected_router.include_router(queue.router)
 protected_router.include_router(reports.router)
 protected_router.include_router(stats.router)
 protected_router.include_router(categories.router)
+protected_router.include_router(projects.router)
 protected_router.include_router(materials.router)
 protected_router.include_router(storage_tree.router)
 

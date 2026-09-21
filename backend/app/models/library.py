@@ -144,6 +144,13 @@ class Model(Base):
     # layer (`app.schemas.library.ModelPatch`), not here.
     metadata_json: Mapped[dict[str, str] | None] = mapped_column(JSONB)
     print_tips: Mapped[str | None] = mapped_column(Text)
+    # Manufacturing and project organization
+    project_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("projects.id", ondelete="SET NULL"), index=True
+    )
+    print_status: Mapped[str | None] = mapped_column(String, index=True)
+    quantity_target: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
+    quantity_printed: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         server_default=func.now(), onupdate=func.now(), nullable=False
@@ -156,6 +163,25 @@ class Model(Base):
     tags: Mapped[list["Tag"]] = relationship(secondary=model_tags)
     notes: Mapped[list["Note"]] = relationship()
     category: Mapped["Category | None"] = relationship()
+    project: Mapped["Project | None"] = relationship(back_populates="models")
+
+
+class Project(Base):
+    """A user-defined project for grouping models/parts with manufacturing progress tracking."""
+
+    __tablename__ = "projects"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    slug: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    color: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    models: Mapped[list["Model"]] = relationship(back_populates="project")
 
 
 class Category(Base):

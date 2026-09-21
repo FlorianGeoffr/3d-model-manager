@@ -4,6 +4,8 @@ import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import {
   ArchiveIcon,
   BookmarkIcon,
+  CheckCircle2Icon,
+  FolderIcon,
   FolderTreeIcon,
   LayoutGridIcon,
   ListIcon,
@@ -21,6 +23,7 @@ import { toast } from "sonner";
 import { useCategories } from "@/api/categories";
 import { useFollowedCollections } from "@/api/collections";
 import { useBulkDeleteModels, useBulkUpdateModels, useModelsQuery, useTags } from "@/api/library";
+import { useProjects } from "@/api/projects";
 import { useEnqueueModel } from "@/api/queue";
 import { useTriggerScan } from "@/api/scan";
 import { ApiError } from "@/api/client";
@@ -33,6 +36,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -41,8 +50,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useHotkeys } from "@/hooks/useHotkeys";
 import { chunkIntoRows, columnsForWidth, estimateListRowHeight, estimateRowHeight } from "@/lib/grid";
 import { useDebouncedValue } from "@/lib/format";
-import { BLOB_FORMATS, type BlobFormat, type ModelSummary } from "@/api/types";
+import { BLOB_FORMATS, type BlobFormat, type ModelSummary, type PrintStatus } from "@/api/types";
 import { FORMAT_LABELS } from "@/lib/formatMeta";
+import { ALL_PRINT_STATUSES, getPrintStatusMeta } from "@/lib/printStatus";
 import { tagColorClass } from "@/lib/tagColors";
 import { cn } from "@/lib/utils";
 import type { LibrarySearch } from "@/pages/librarySearch";
@@ -149,9 +159,19 @@ export function LibraryPage() {
   // below) rather than local state, which is what makes the sidebar's own
   // links (and the browser back button) agree with these chips.
   const activeCategory = search.category;
+  const activeProject = search.project;
+  const activePrintStatus = search.print_status;
 
   function goToCategory(next: number | undefined) {
     void navigate({ to: "/", search: (prev: LibrarySearch) => ({ ...prev, category: next }) });
+  }
+
+  function goToProject(next: number | undefined) {
+    void navigate({ to: "/", search: (prev: LibrarySearch) => ({ ...prev, project: next }) });
+  }
+
+  function goToPrintStatus(next: string | undefined) {
+    void navigate({ to: "/", search: (prev: LibrarySearch) => ({ ...prev, print_status: next }) });
   }
   const [sort, setSort] = useState<string>("-updated_at");
   const [viewMode, setViewMode] = useState<ViewMode>(loadViewMode);
@@ -229,6 +249,8 @@ export function LibraryPage() {
   const activeCollectionTitle = collections.find((collection) => collection.id === activeCollection)?.title;
   const categoriesQuery = useCategories();
   const categories = categoriesQuery.data ?? [];
+  const projectsQuery = useProjects();
+  const projects = projectsQuery.data ?? [];
 
   const filters = useMemo(
     () => ({
@@ -238,6 +260,8 @@ export function LibraryPage() {
       has_sliced: slicedOnly || undefined,
       collection: activeCollection,
       category: activeCategory,
+      project: activeProject,
+      print_status: activePrintStatus,
       favorite: favoritesOnly || undefined,
       archived: archivedOnly || undefined,
       sort,
@@ -251,6 +275,8 @@ export function LibraryPage() {
       archivedOnly,
       activeCollection,
       activeCategory,
+      activeProject,
+      activePrintStatus,
       sort,
     ],
   );
@@ -432,6 +458,53 @@ export function LibraryPage() {
             }
           />
         </div>
+
+        {/* Projects facet */}
+        {projects.length > 0 && viewMode !== "folders" && (
+          <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter by project">
+            <FilterChip active={!activeProject} onClick={() => goToProject(undefined)}>
+              All projects
+            </FilterChip>
+            {projects.map((proj) => (
+              <FilterChip
+                key={proj.id}
+                active={activeProject === proj.id}
+                onClick={() => goToProject(activeProject === proj.id ? undefined : proj.id)}
+              >
+                <span
+                  aria-hidden="true"
+                  className={cn("size-1.5 rounded-full", tagColorClass(proj.color) ?? "bg-muted-foreground")}
+                />
+                {proj.name}
+                <span className="text-xs opacity-70 ml-1 font-mono">
+                  ({proj.total_quantity_printed}/{proj.total_quantity_target})
+                </span>
+              </FilterChip>
+            ))}
+          </div>
+        )}
+
+        {/* Manufacturing status facet */}
+        {viewMode !== "folders" && (
+          <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter by manufacturing status">
+            <FilterChip active={!activePrintStatus} onClick={() => goToPrintStatus(undefined)}>
+              All statuses
+            </FilterChip>
+            {ALL_PRINT_STATUSES.map((st) => {
+              const meta = getPrintStatusMeta(st);
+              return (
+                <FilterChip
+                  key={st}
+                  active={activePrintStatus === st}
+                  onClick={() => goToPrintStatus(activePrintStatus === st ? undefined : st)}
+                >
+                  <span aria-hidden="true" className={cn("size-1.5 rounded-full", meta.dotClass)} />
+                  {meta.label}
+                </FilterChip>
+              );
+            })}
+          </div>
+        )}
 
         {categories.length > 0 && viewMode !== "folders" && (
           <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter by category">
@@ -784,6 +857,39 @@ function SelectionActionBar({
     }
   }
 
+  const projectsQuery = useProjects();
+  const projects = projectsQuery.data ?? [];
+
+  function assignProject(projectId: number | null) {
+    if (!claim()) return;
+    bulkUpdate.mutate(
+      { ids, project_id: projectId ?? 0 },
+      {
+        onSettled: release,
+        onSuccess: (result) => {
+          toast.success(
+            projectId
+              ? `Assigned ${result.updated} model${result.updated === 1 ? "" : "s"} to project`
+              : `Removed ${result.updated} model${result.updated === 1 ? "" : "s"} from project`,
+          );
+        },
+      },
+    );
+  }
+
+  function assignStatus(status: PrintStatus) {
+    if (!claim()) return;
+    bulkUpdate.mutate(
+      { ids, print_status: status },
+      {
+        onSettled: release,
+        onSuccess: (result) => {
+          toast.success(`Updated status of ${result.updated} model${result.updated === 1 ? "" : "s"}`);
+        },
+      },
+    );
+  }
+
   function deleteSelection() {
     if (!claim()) return;
     // No local onError: queryClient.ts's global MutationCache.onError
@@ -863,6 +969,53 @@ function SelectionActionBar({
           )}
         </PopoverContent>
       </Popover>
+
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button type="button" variant="outline" size="sm" disabled={busy}>
+            <FolderIcon className="size-3.5" /> Project
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="center" className="w-48">
+          <DropdownMenuItem onClick={() => assignProject(null)}>
+            <span className="flex items-center gap-1.5 text-muted-foreground">
+              <XIcon className="size-3.5" /> None (Unassign)
+            </span>
+          </DropdownMenuItem>
+          {projects.map((project) => (
+            <DropdownMenuItem key={project.id} onClick={() => assignProject(project.id)}>
+              <span className="flex items-center gap-2">
+                <span
+                  aria-hidden="true"
+                  className={cn("size-2 rounded-full", tagColorClass(project.color) ?? "bg-muted-foreground")}
+                />
+                <span className="truncate">{project.name}</span>
+              </span>
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button type="button" variant="outline" size="sm" disabled={busy}>
+            <CheckCircle2Icon className="size-3.5" /> Status
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="center" className="w-44">
+          {ALL_PRINT_STATUSES.map((st) => {
+            const meta = getPrintStatusMeta(st);
+            return (
+              <DropdownMenuItem key={st} onClick={() => assignStatus(st)}>
+                <span className="flex items-center gap-2">
+                  <span aria-hidden="true" className={cn("size-2 rounded-full", meta.dotClass)} />
+                  {meta.label}
+                </span>
+              </DropdownMenuItem>
+            );
+          })}
+        </DropdownMenuContent>
+      </DropdownMenu>
 
       <Button type="button" variant="outline" size="sm" disabled={busy} onClick={favoriteSelection}>
         <StarIcon /> Favorite

@@ -156,6 +156,8 @@ export interface ModelSummary {
   print_status?: PrintStatus | null;
   quantity_target?: number;
   quantity_printed?: number;
+  // R13c: free-form key/value metadata (e.g. plate_index, parent_model_slug for exploded models)
+  metadata?: Record<string, string> | null;
 }
 
 export interface GalleryPage {

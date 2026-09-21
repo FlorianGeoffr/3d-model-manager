@@ -538,6 +538,14 @@ export function LibraryPage() {
     dragCounter.current = 0;
     setIsDraggingFiles(false);
 
+    // If the drop was already handled by a child element (folder card, model card merge),
+    // the child called e.stopPropagation() which sets nativeEvent.cancelBubble = true.
+    // React synthetic events still bubble, but we can detect this via the nativeEvent.
+    if ((e.nativeEvent as Event & { cancelBubble?: boolean }).cancelBubble) return;
+
+    // Ignore internal card-to-card drag (not OS files)
+    if (e.dataTransfer.types.includes("application/json")) return;
+
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       const files = Array.from(e.dataTransfer.files);
       await uploadDroppedFiles(files, activeProject ?? null);

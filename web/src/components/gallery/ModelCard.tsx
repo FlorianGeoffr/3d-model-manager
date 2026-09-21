@@ -132,11 +132,10 @@ export function ModelCard({
     }
     if ((selectedIds && selectedIds.size > 0) || selectMode) {
       event.preventDefault();
-      if (onModifiedClick) {
-        onModifiedClick(event, index ?? 0);
-      } else {
-        onSelectChange?.(model.id, !selected);
-      }
+      // Plain click in select mode: just toggle this card -- don't delegate
+      // to handleModifiedClick which would set the lastSelectedIndex anchor
+      // and is intended for modifier clicks only.
+      onSelectChange?.(model.id, !selected);
     }
   }
 
@@ -190,10 +189,14 @@ export function ModelCard({
     } catch {}
   }
 
+  // If this model was created by explode-plates, land directly on its G-code tab + plate.
+  const plateIndex = model.metadata?.plate_index ? Number(model.metadata.plate_index) : undefined;
+
   return (
     <Link
       to="/models/$slug"
       params={{ slug: model.slug }}
+      search={plateIndex !== undefined ? { tab: "gcode", plate: plateIndex } : undefined}
       draggable
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}

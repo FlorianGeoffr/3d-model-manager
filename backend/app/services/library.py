@@ -1360,6 +1360,7 @@ async def build_model_summaries(
                 print_status=m.print_status,
                 quantity_target=m.quantity_target,
                 quantity_printed=m.quantity_printed,
+                metadata=m.metadata_json,
             )
         )
     return items

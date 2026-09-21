@@ -1,4 +1,5 @@
 import { lazy, Suspense, useState } from "react";
+import { useNavigate } from "@tanstack/react-router";
 import { ImageIcon, LayersIcon, LoaderCircleIcon, PrinterIcon } from "lucide-react";
 
 import { useAppSettings } from "@/api/appSettings";
@@ -154,10 +155,13 @@ function PlateCard({
 export function PlatePanel({
   file,
   modelSlug,
+  projectId,
   compact = false,
 }: {
   file: FileOut;
   modelSlug?: string;
+  /** Project ID of the parent model, used to navigate to the folder after exploding plates */
+  projectId?: number | null;
   compact?: boolean;
 }) {
   const plates = file.meta?.plates ?? [];
@@ -166,6 +170,7 @@ export function PlatePanel({
   const [previewOpen, setPreviewOpen] = useState(false);
   const [selectedPlate, setSelectedPlate] = useState<number | undefined>(plates[0]?.index);
   const [printDialogPlate, setPrintDialogPlate] = useState<number | null>(null);
+  const navigate = useNavigate();
 
   const features = useFeatures();
   const printerEnabled = !!features.data?.printer_enabled;
@@ -214,8 +219,14 @@ export function PlatePanel({
                   explodePlatesMutation.mutate(modelSlug, {
                     onSuccess: (exploded) => {
                       toast.success(
-                        `${exploded.length} plateaux éclatés en pièces individuelles dans le projet !`,
+                        `${exploded.length} plateaux éclatés en pièces individuelles !`,
                       );
+                      // Navigate to the project folder so the user sees the exploded plates
+                      if (projectId != null) {
+                        void navigate({ to: "/", search: { project: projectId } });
+                      } else {
+                        void navigate({ to: "/" });
+                      }
                     },
                     onError: () => {
                       toast.error("Échec de l'éclatement des plateaux");

@@ -222,6 +222,8 @@ class ModelSummary(BaseModel):
     print_status: str | None = None
     quantity_target: int = 1
     quantity_printed: int = 0
+    # R13c: free-form key/value metadata (e.g. plate_index for exploded models)
+    metadata: dict[str, str] | None = None
 
 
 class GalleryPage(BaseModel):

@@ -81,11 +81,8 @@ export function ModelRow({
     }
     if ((selectedIds && selectedIds.size > 0) || selectMode) {
       event.preventDefault();
-      if (onModifiedClick) {
-        onModifiedClick(event, index ?? 0);
-      } else {
-        onSelectChange?.(model.id, !selected);
-      }
+      // Plain click in select mode: just toggle -- modifier clicks call onModifiedClick.
+      onSelectChange?.(model.id, !selected);
     }
   }
 

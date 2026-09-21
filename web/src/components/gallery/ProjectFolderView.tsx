@@ -114,7 +114,7 @@ export function ProjectFolderView({
 
   async function handleDrop(targetProjectId: number | null, event: React.DragEvent) {
     event.preventDefault();
-    event.stopPropagation();
+    event.stopPropagation(); // prevent LibraryPage from also handling this drop
     setDragOverProjectId(null);
     setDragOverRoot(false);
 

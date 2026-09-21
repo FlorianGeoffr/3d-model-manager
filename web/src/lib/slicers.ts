@@ -21,19 +21,29 @@ const ELIGIBLE_FORMATS: ReadonlySet<BlobFormat> = new Set<BlobFormat>([
   "step",
   "obj",
   "iges",
+  "gcode_3mf",
+  "gcode",
 ]);
 
-/** Raw-geometry formats a desktop slicer can open -- excludes sliced
- * outputs (`gcode`, `gcode_3mf`) and non-model files (images, `other`). */
+/** Raw-geometry and sliced formats a desktop slicer can open -- excludes
+ * non-model files (images, `other`). */
 export function isSlicerEligible(file: FileOut): boolean {
   return ELIGIBLE_FORMATS.has(file.format);
 }
 
 /** Preference order for the header's single "Open in slicer" target when
  * multiple eligible files exist on the current revision -- a `3mf` (already
- * project-shaped) beats a bare `step`, which beats `obj`/`iges`. Ties within
- * a format break on `rel_path` for a deterministic pick. */
-export const SLICER_FORMAT_PRIORITY: readonly BlobFormat[] = ["3mf", "step", "obj", "stl", "iges"];
+ * project-shaped) beats a bare `step`, which beats `obj`/`iges`/`gcode_3mf`/`gcode`.
+ * Ties within a format break on `rel_path` for a deterministic pick. */
+export const SLICER_FORMAT_PRIORITY: readonly BlobFormat[] = [
+  "3mf",
+  "step",
+  "obj",
+  "stl",
+  "iges",
+  "gcode_3mf",
+  "gcode",
+];
 
 /** Picks the single best slicer-eligible, verified file on a revision's file
  * list -- `SLICER_FORMAT_PRIORITY` order, then `rel_path` to break ties.

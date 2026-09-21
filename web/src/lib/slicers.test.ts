@@ -22,14 +22,14 @@ function file(overrides: Partial<FileOut> & { id: number; format: BlobFormat }):
 }
 
 describe("isSlicerEligible", () => {
-  it("accepts stl/3mf/step/obj/iges", () => {
-    for (const format of ["stl", "3mf", "step", "obj", "iges"] as const) {
+  it("accepts stl/3mf/step/obj/iges/gcode_3mf/gcode", () => {
+    for (const format of ["stl", "3mf", "step", "obj", "iges", "gcode_3mf", "gcode"] as const) {
       expect(isSlicerEligible(file({ id: 1, format }))).toBe(true);
     }
   });
 
-  it("rejects sliced/gcode/other formats", () => {
-    for (const format of ["gcode", "gcode_3mf", "png", "jpg", "other"] as const) {
+  it("rejects non-slicer formats", () => {
+    for (const format of ["png", "jpg", "other"] as const) {
       expect(isSlicerEligible(file({ id: 1, format }))).toBe(false);
     }
   });
@@ -37,7 +37,7 @@ describe("isSlicerEligible", () => {
 
 describe("pickBestSlicerFile", () => {
   it("returns undefined when nothing is eligible", () => {
-    expect(pickBestSlicerFile([file({ id: 1, format: "gcode" })])).toBeUndefined();
+    expect(pickBestSlicerFile([file({ id: 1, format: "png" })])).toBeUndefined();
   });
 
   it("skips unverified files even if otherwise eligible", () => {

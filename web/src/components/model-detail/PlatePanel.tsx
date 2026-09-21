@@ -10,6 +10,7 @@ import { humanizeDuration } from "@/lib/format";
 import { estimatePrintCost, formatPrintCost } from "@/lib/printCost";
 import { cn } from "@/lib/utils";
 import type { AppSettings, FileOut, PlateOut } from "@/api/types";
+import { OpenInSlicerButton } from "@/components/model-detail/OpenInSlicerButton";
 import { SendToPrinterDialog } from "@/components/model-detail/SendToPrinterButton";
 import { toast } from "sonner";
 
@@ -200,6 +201,7 @@ export function PlatePanel({
           </div>
         ) : (
           <div className="flex flex-wrap items-center gap-2">
+            <OpenInSlicerButton file={file} size="default" />
             <Button variant="outline" size="sm" onClick={() => setPreviewOpen(true)}>
               <LayersIcon className="size-4" />
               Preview layers {selectedPlate !== undefined && plates.length > 1 ? `(Plate ${selectedPlate})` : ""}

@@ -892,6 +892,8 @@ _SLICER_FORMAT_PRIORITY = {
     BlobFormat.OBJ: 2,
     BlobFormat.STL: 3,
     BlobFormat.IGES: 4,
+    BlobFormat.GCODE_3MF: 5,
+    BlobFormat.GCODE: 6,
 }
 
 

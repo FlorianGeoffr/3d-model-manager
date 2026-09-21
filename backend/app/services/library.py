@@ -21,7 +21,7 @@ import contextlib
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Literal
 
 import anyio
@@ -665,6 +665,109 @@ async def hard_delete_model(
 
     await db.execute(sa_delete(Model).where(Model.id == model.id))
     await db.commit()
+
+
+async def merge_models(
+    db: AsyncSession,
+    backend: StorageBackend,
+    settings: Settings,
+    target: Model,
+    sources: list[Model],
+) -> Model:
+    """Merge one or more source models into target.
+    Transfers/copies all files to target's current revision,
+    merges tags, adopts cover if target has none, and cleanly
+    deletes source models.
+    """
+    target_rev_id = target.current_revision_id
+    if target_rev_id is None:
+        rev_stmt = (
+            select(Revision)
+            .where(Revision.model_id == target.id)
+            .order_by(Revision.number.desc())
+        )
+        rev = (await db.execute(rev_stmt)).scalars().first()
+        if rev is None:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Target model has no revision")
+        target_rev_id = rev.id
+        target.current_revision_id = target_rev_id
+
+    target_rev = await db.get(Revision, target_rev_id)
+    if target_rev is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Target revision not found")
+
+    target_files = list(
+        (await db.execute(select(File).where(File.revision_id == target_rev.id))).scalars()
+    )
+    existing_paths = {f.rel_path: f for f in target_files}
+
+    for source in sources:
+        if source.id == target.id:
+            continue
+
+        source_files = list(
+            (
+                await db.execute(
+                    select(File)
+                    .join(Revision, File.revision_id == Revision.id)
+                    .where(Revision.model_id == source.id)
+                )
+            ).scalars()
+        )
+
+        for sf in source_files:
+            dest_rel_path = sf.rel_path
+            if dest_rel_path in existing_paths:
+                existing = existing_paths[dest_rel_path]
+                if existing.blob_hash == sf.blob_hash:
+                    continue
+                # Disambiguate filename
+                if dest_rel_path.lower().endswith(".gcode.3mf"):
+                    stem = dest_rel_path[:-10]
+                    dest_rel_path = f"{stem}_{source.slug[:6]}.gcode.3mf"
+                else:
+                    p = Path(dest_rel_path)
+                    dest_rel_path = f"{p.stem}_{source.slug[:6]}{p.suffix}"
+
+            dest_storage_key = layout.file_key(target.slug, target_rev.dir_name, dest_rel_path)
+            try:
+                await anyio.to_thread.run_sync(
+                    lambda: backend.copy(sf.storage_path, dest_storage_key)
+                )
+            except Exception:
+                dest_storage_key = sf.storage_path
+
+            new_file = File(
+                revision_id=target_rev.id,
+                blob_hash=sf.blob_hash,
+                rel_path=dest_rel_path,
+                storage_path=dest_storage_key,
+                backend_id=sf.backend_id,
+                verified_at=func.now(),
+            )
+            db.add(new_file)
+            existing_paths[dest_rel_path] = new_file
+
+        # Merge tags
+        target_tags = {t.name for t in target.tags}
+        for t in source.tags:
+            if t.name not in target_tags:
+                target.tags.append(t)
+                target_tags.add(t.name)
+
+        # Adopt cover if target has none
+        if not target.cover_blob_hash and source.cover_blob_hash:
+            target.cover_blob_hash = source.cover_blob_hash
+
+        # Delete source model cleanly
+        await hard_delete_model(db, backend, settings, source)
+
+    await anyio.to_thread.run_sync(
+        lambda: layout.write_sidecar(backend, target.id, target.slug, target.name)
+    )
+    await db.commit()
+    await db.refresh(target)
+    return target
 
 
 async def bulk_hard_delete_models(

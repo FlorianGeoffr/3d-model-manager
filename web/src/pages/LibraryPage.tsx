@@ -30,6 +30,7 @@ import {
   useBulkDeleteModels,
   useBulkUpdateModels,
   useCreateModel,
+  useMergeModels,
   useModelsQuery,
   useTags,
 } from "@/api/library";
@@ -171,8 +172,8 @@ export function LibraryPage() {
   // see the update. Setting it writes back to the URL (`goToCategory`
   // below) rather than local state, which is what makes the sidebar's own
   // links (and the browser back button) agree with these chips.
-  const activeCategory = search.category;
-  const activeProject = search.project;
+  const activeCategory = search.category !== undefined ? Number(search.category) : undefined;
+  const activeProject = search.project !== undefined ? Number(search.project) : undefined;
   const activePrintStatus = search.print_status;
 
   function goToCategory(next: number | undefined) {
@@ -226,6 +227,36 @@ export function LibraryPage() {
   // focus is inside the selection bar -- can open it.
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
 
+  // Model merge dialog state
+  const mergeModels = useMergeModels();
+  const [mergeConfirmState, setMergeConfirmState] = useState<{
+    target: ModelSummary;
+    sources: ModelSummary[];
+  } | null>(null);
+
+  function handleMergeModels(target: ModelSummary, sourceIds: number[]) {
+    const sources = items.filter((m) => sourceIds.includes(m.id) && m.id !== target.id);
+    if (sources.length === 0) return;
+    setMergeConfirmState({ target, sources });
+  }
+
+  async function confirmMerge() {
+    if (!mergeConfirmState) return;
+    const { target, sources } = mergeConfirmState;
+    try {
+      await mergeModels.mutateAsync({
+        targetSlug: target.slug,
+        sourceSlugs: sources.map((s) => s.slug),
+      });
+      toast.success(`Fichiers fusionnés dans "${target.name}" avec succès !`);
+      clearSelection();
+    } catch {
+      toast.error("Impossible de fusionner les modèles");
+    } finally {
+      setMergeConfirmState(null);
+    }
+  }
+
   function clearSelection() {
     setSelectedIds(new Set());
     setLastSelectedIndex(null);
@@ -246,7 +277,7 @@ export function LibraryPage() {
    * index, adding to the existing selection rather than replacing it. */
   function handleModifiedClick(event: React.MouseEvent, index: number) {
     if (event.shiftKey) {
-      const anchor = lastSelectedIndex ?? index;
+      const anchor = lastSelectedIndex !== null ? lastSelectedIndex : index;
       const [lo, hi] = anchor <= index ? [anchor, index] : [index, anchor];
       const rangeIds = items.slice(lo, hi + 1).map((model) => model.id);
       setSelectedIds((prev) => new Set([...prev, ...rangeIds]));
@@ -860,6 +891,7 @@ export function LibraryPage() {
                       selectMode={selectMode || selectedIds.size > 0}
                       onSelectChange={toggleSelected}
                       onModifiedClick={handleModifiedClick}
+                      onMergeModels={handleMergeModels}
                     />
                   </div>
                 );
@@ -892,6 +924,7 @@ export function LibraryPage() {
                       selectMode={selectMode || selectedIds.size > 0}
                       onSelectChange={toggleSelected}
                       onModifiedClick={handleModifiedClick}
+                      onMergeModels={handleMergeModels}
                     />
                   ))}
                 </div>
@@ -912,6 +945,19 @@ export function LibraryPage() {
           onDone={clearSelection}
           deleteConfirmOpen={deleteConfirmOpen}
           onDeleteConfirmOpenChange={setDeleteConfirmOpen}
+        />
+      )}
+
+      {mergeConfirmState && (
+        <ConfirmDialog
+          open={Boolean(mergeConfirmState)}
+          onOpenChange={(open) => {
+            if (!open) setMergeConfirmState(null);
+          }}
+          title={`Fusionner dans "${mergeConfirmState.target.name}" ?`}
+          description={`Tous les fichiers de ${mergeConfirmState.sources.map((s) => `"${s.name}"`).join(", ")} seront regroupés dans "${mergeConfirmState.target.name}". ${mergeConfirmState.sources.length === 1 ? "Le modèle source sera supprimé." : "Les modèles sources seront supprimés."}`}
+          confirmLabel="Fusionner"
+          onConfirm={confirmMerge}
         />
       )}
     </div>

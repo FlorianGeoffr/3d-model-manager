@@ -37,6 +37,7 @@ export function ModelCard({
   selectMode = false,
   onSelectChange,
   onModifiedClick,
+  onMergeModels,
 }: {
   model: ModelSummary;
   /** This card's position in the gallery's flat item list -- used only for
@@ -54,10 +55,13 @@ export function ModelCard({
   /** Ctrl/Cmd/Shift+click range/toggle select (R9-A item 6): fired instead
    * of navigating when the card's `<Link>` is clicked with a modifier held. */
   onModifiedClick?: (event: React.MouseEvent, index: number) => void;
+  /** Callback fired when other model cards are dropped on this card to merge */
+  onMergeModels?: (target: ModelSummary, sourceIds: number[]) => void;
 }) {
   const [coverErrored, setCoverErrored] = useState(false);
   const [renderErrored, setRenderErrored] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [isDragOverCard, setIsDragOverCard] = useState(false);
   // R9-A item 1: the hover-render `<img>` only gets a `src` once the card's
   // actually been hovered -- until then it stays mounted (so the opacity
   // crossfade still works once it does) but src-less, so the browser never
@@ -121,14 +125,18 @@ export function ModelCard({
   // R9-A item 6: a modified click selects instead of navigating. Any
   // modified click auto-enters select mode via the parent's handler.
   function onLinkClick(event: React.MouseEvent) {
-    if (onModifiedClick && (event.shiftKey || event.metaKey || event.ctrlKey)) {
+    if (event.shiftKey || event.metaKey || event.ctrlKey) {
       event.preventDefault();
-      onModifiedClick(event, index ?? 0);
+      onModifiedClick?.(event, index ?? 0);
       return;
     }
     if ((selectedIds && selectedIds.size > 0) || selectMode) {
       event.preventDefault();
-      onSelectChange?.(model.id, !selected);
+      if (onModifiedClick) {
+        onModifiedClick(event, index ?? 0);
+      } else {
+        onSelectChange?.(model.id, !selected);
+      }
     }
   }
 
@@ -137,7 +145,7 @@ export function ModelCard({
       selected && selectedIds && selectedIds.size > 0
         ? Array.from(selectedIds)
         : [model.id];
-    const payload = JSON.stringify({ ids });
+    const payload = JSON.stringify({ ids, sourceModelId: model.id, sourceSlug: model.slug });
     e.dataTransfer.setData("application/json", payload);
     e.dataTransfer.setData("text/plain", payload);
     e.dataTransfer.effectAllowed = "move";
@@ -148,6 +156,40 @@ export function ModelCard({
     setIsDragging(false);
   }
 
+  function handleCardDragOver(e: React.DragEvent) {
+    if (e.dataTransfer.types.includes("application/json")) {
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = "move";
+      setIsDragOverCard(true);
+    }
+  }
+
+  function handleCardDragLeave(e: React.DragEvent) {
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setIsDragOverCard(false);
+    }
+  }
+
+  function handleCardDrop(e: React.DragEvent) {
+    setIsDragOverCard(false);
+    const raw = e.dataTransfer.getData("application/json");
+    if (!raw) return;
+    try {
+      const data = JSON.parse(raw);
+      let ids: number[] = [];
+      if (Array.isArray(data.ids)) ids = data.ids;
+      else if (data.sourceModelId) ids = [data.sourceModelId];
+
+      const otherIds = ids.filter((id) => id !== model.id);
+      if (otherIds.length > 0) {
+        e.preventDefault();
+        e.stopPropagation();
+        onMergeModels?.(model, otherIds);
+      }
+    } catch {}
+  }
+
   return (
     <Link
       to="/models/$slug"
@@ -155,6 +197,9 @@ export function ModelCard({
       draggable
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
+      onDragOver={handleCardDragOver}
+      onDragLeave={handleCardDragLeave}
+      onDrop={handleCardDrop}
       className={cn("group block transition-opacity", isDragging && "opacity-40")}
       preload="intent"
       onClick={onLinkClick}
@@ -163,10 +208,18 @@ export function ModelCard({
     >
       <Card
         className={cn(
-          "h-full flex flex-col gap-0 overflow-hidden py-0 pb-0 transition-all hover:shadow-md",
+          "relative h-full flex flex-col gap-0 overflow-hidden py-0 pb-0 transition-all hover:shadow-md",
           selected && "ring-2 ring-primary border-primary",
+          isDragOverCard && "ring-2 ring-primary border-primary scale-[1.02]",
         )}
       >
+        {isDragOverCard && (
+          <div className="absolute inset-0 z-30 bg-primary/20 backdrop-blur-[2px] border-2 border-dashed border-primary rounded-xl flex flex-col items-center justify-center p-3 text-center pointer-events-none animate-in fade-in">
+            <div className="bg-background/95 border border-border text-foreground font-semibold text-xs px-3 py-1.5 rounded-full shadow-lg flex items-center gap-1.5">
+              <span>Fusionner dans {model.name}</span>
+            </div>
+          </div>
+        )}
         <div className="relative aspect-[4/3] overflow-hidden bg-muted">
           {showCover ? (
             <>
@@ -217,10 +270,20 @@ export function ModelCard({
                 the card body is a whole-surface `<Link>`, and Radix's
                 checkbox click would otherwise bubble up and navigate away
                 instead of toggling selection. */}
-            <span className="contents" onClick={stopCardNavigation}>
+            <span
+              className="contents"
+              onClick={(e) => {
+                stopCardNavigation(e);
+                if (e.shiftKey || e.ctrlKey || e.metaKey) {
+                  onModifiedClick?.(e, index ?? 0);
+                } else {
+                  onSelectChange?.(model.id, !selected);
+                  if (onModifiedClick) onModifiedClick(e, index ?? 0);
+                }
+              }}
+            >
               <Checkbox
                 checked={selected}
-                onCheckedChange={(checked) => onSelectChange?.(model.id, checked === true)}
                 aria-label={`Select ${model.name}`}
                 className={cn(
                   "bg-background/80 backdrop-blur-sm transition-opacity",

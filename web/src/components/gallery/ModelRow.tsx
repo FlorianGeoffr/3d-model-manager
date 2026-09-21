@@ -31,6 +31,7 @@ export function ModelRow({
   selectMode = false,
   onSelectChange,
   onModifiedClick,
+  onMergeModels,
 }: {
   model: ModelSummary;
   /** Position in the gallery's flat item list -- ctrl/cmd/shift+click range
@@ -45,9 +46,12 @@ export function ModelRow({
   /** Ctrl/Cmd/Shift+click range/toggle select (R9-A item 6): fired instead
    * of navigating when the card's `<Link>` is clicked with a modifier held. */
   onModifiedClick?: (event: React.MouseEvent, index: number) => void;
+  /** Callback fired when other model cards/rows are dropped on this row to merge */
+  onMergeModels?: (target: ModelSummary, sourceIds: number[]) => void;
 }) {
   const [coverErrored, setCoverErrored] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [isDragOverRow, setIsDragOverRow] = useState(false);
   const patchModel = usePatchModel(model.slug);
   const queryClient = useQueryClient();
   const tagColors = useTagColorMap();
@@ -70,14 +74,18 @@ export function ModelRow({
   }
 
   function onLinkClick(event: React.MouseEvent) {
-    if (onModifiedClick && (event.shiftKey || event.metaKey || event.ctrlKey)) {
+    if (event.shiftKey || event.metaKey || event.ctrlKey) {
       event.preventDefault();
-      onModifiedClick(event, index ?? 0);
+      onModifiedClick?.(event, index ?? 0);
       return;
     }
     if ((selectedIds && selectedIds.size > 0) || selectMode) {
       event.preventDefault();
-      onSelectChange?.(model.id, !selected);
+      if (onModifiedClick) {
+        onModifiedClick(event, index ?? 0);
+      } else {
+        onSelectChange?.(model.id, !selected);
+      }
     }
   }
 
@@ -86,7 +94,7 @@ export function ModelRow({
       selected && selectedIds && selectedIds.size > 0
         ? Array.from(selectedIds)
         : [model.id];
-    const payload = JSON.stringify({ ids });
+    const payload = JSON.stringify({ ids, sourceModelId: model.id, sourceSlug: model.slug });
     e.dataTransfer.setData("application/json", payload);
     e.dataTransfer.setData("text/plain", payload);
     e.dataTransfer.effectAllowed = "move";
@@ -97,6 +105,40 @@ export function ModelRow({
     setIsDragging(false);
   }
 
+  function handleRowDragOver(e: React.DragEvent) {
+    if (e.dataTransfer.types.includes("application/json")) {
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = "move";
+      setIsDragOverRow(true);
+    }
+  }
+
+  function handleRowDragLeave(e: React.DragEvent) {
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setIsDragOverRow(false);
+    }
+  }
+
+  function handleRowDrop(e: React.DragEvent) {
+    setIsDragOverRow(false);
+    const raw = e.dataTransfer.getData("application/json");
+    if (!raw) return;
+    try {
+      const data = JSON.parse(raw);
+      let ids: number[] = [];
+      if (Array.isArray(data.ids)) ids = data.ids;
+      else if (data.sourceModelId) ids = [data.sourceModelId];
+
+      const otherIds = ids.filter((id) => id !== model.id);
+      if (otherIds.length > 0) {
+        e.preventDefault();
+        e.stopPropagation();
+        onMergeModels?.(model, otherIds);
+      }
+    } catch {}
+  }
+
   return (
     <Link
       to="/models/$slug"
@@ -104,10 +146,14 @@ export function ModelRow({
       draggable
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
+      onDragOver={handleRowDragOver}
+      onDragLeave={handleRowDragLeave}
+      onDrop={handleRowDrop}
       className={cn(
-        "group flex items-center gap-3 rounded-lg border border-transparent px-2 hover:border-border hover:bg-muted/50 transition-all",
+        "group relative flex items-center gap-3 rounded-lg border border-transparent px-2 hover:border-border hover:bg-muted/50 transition-all",
         isDragging && "opacity-40",
         selected && "ring-2 ring-primary border-primary bg-primary/5",
+        isDragOverRow && "ring-2 ring-primary border-primary bg-primary/15",
       )}
       style={{ height: LIST_ROW_HEIGHT_PX }}
       preload="intent"
@@ -115,10 +161,20 @@ export function ModelRow({
       onPointerEnter={onIntent}
       onFocus={onIntent}
     >
-      <span className="contents" onClick={stopRowNavigation}>
+      <span
+        className="contents"
+        onClick={(e) => {
+          stopRowNavigation(e);
+          if (e.shiftKey || e.ctrlKey || e.metaKey) {
+            onModifiedClick?.(e, index ?? 0);
+          } else {
+            onSelectChange?.(model.id, !selected);
+            if (onModifiedClick) onModifiedClick(e, index ?? 0);
+          }
+        }}
+      >
         <Checkbox
           checked={selected}
-          onCheckedChange={(checked) => onSelectChange?.(model.id, checked === true)}
           aria-label={`Select ${model.name}`}
           className={cn(
             "shrink-0 transition-opacity",

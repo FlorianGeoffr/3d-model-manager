@@ -106,6 +106,13 @@ class ModelPatch(BaseModel):
         return _validate_metadata(value)
 
 
+class ModelMergeIn(BaseModel):
+    """Payload for merging one or more models into a target model."""
+
+    source_slug: str | None = None
+    source_slugs: list[str] = []
+
+
 class ModelRedownloadIn(BaseModel):
     """``POST /models/{slug}/redownload`` payload (feat/import-fidelity T3):
     dispatches ``app.tasks.importing.redownload_model`` to re-fetch this

@@ -381,6 +381,21 @@ export function useBulkDeleteModels() {
   });
 }
 
+export function useMergeModels() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ targetSlug, sourceSlugs }: { targetSlug: string; sourceSlugs: string[] }) =>
+      api.post<ModelDetail>(`/models/${encodeURIComponent(targetSlug)}/merge`, {
+        source_slugs: sourceSlugs,
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["models"] });
+      void queryClient.invalidateQueries({ queryKey: ["projects"] });
+      void queryClient.invalidateQueries({ queryKey: ["storage"] });
+    },
+  });
+}
+
 /** Archives/unarchives a model (feat/import-fidelity T3: `PATCH
  * {is_archived}` -- reversible, and no longer what `DELETE /models/{slug}`
  * does). Takes the target `is_archived` value as the mutate argument so the

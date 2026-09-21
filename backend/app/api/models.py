@@ -28,6 +28,7 @@ from app.schemas.library import (
     ModelBulkOut,
     ModelCreate,
     ModelDetail,
+    ModelMergeIn,
     ModelPatch,
     ModelRedownloadIn,
     ModelRelocateIn,
@@ -494,7 +495,7 @@ async def explode_plates(
 
         # Attach file reference to child revision
         if child.current_revision_id is not None:
-            dest_storage_path = layout.file_storage_path(
+            dest_storage_path = layout.file_key(
                 child.slug,
                 layout.revision_dir_name(1, "initial"),
                 target_file.rel_path,
@@ -534,4 +535,39 @@ async def explode_plates(
     )
     loaded_children = (await db.execute(stmt)).scalars().all()
     return await library.build_model_summaries(db, settings, loaded_children)
+
+
+@router.post("/{slug}/merge", response_model=ModelDetail)
+async def merge_models_endpoint(
+    slug: str,
+    payload: ModelMergeIn,
+    db: AsyncSession = Depends(get_db),
+    backend: StorageBackend = Depends(get_storage_backend),
+    settings: Settings = Depends(get_settings),
+) -> ModelDetail:
+    target = await library.get_model_by_slug(db, slug)
+    if target is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Model '{slug}' not found")
+
+    slugs = list(payload.source_slugs)
+    if payload.source_slug and payload.source_slug not in slugs:
+        slugs.append(payload.source_slug)
+
+    if not slugs:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No source models provided to merge")
+
+    sources: list[Model] = []
+    for s_slug in slugs:
+        if s_slug == slug:
+            continue
+        src = await library.get_model_by_slug(db, s_slug)
+        if src is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"Source model '{s_slug}' not found")
+        sources.append(src)
+
+    if not sources:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Cannot merge model into itself")
+
+    merged = await library.merge_models(db, backend, settings, target, sources)
+    return await library.build_model_detail(db, merged, settings)
 

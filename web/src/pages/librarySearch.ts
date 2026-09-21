@@ -27,16 +27,25 @@ export interface LibrarySearch {
  * so it drops to undefined instead of being trusted. `path` is expected to
  * already be a plain string (folder names, not JSON-shaped), so anything else
  * drops the same way. */
+function parseOptionalInt(val: unknown): number | undefined {
+  if (typeof val === "number" && !isNaN(val)) return val;
+  if (typeof val === "string" && val.trim() !== "") {
+    const parsed = parseInt(val, 10);
+    if (!isNaN(parsed)) return parsed;
+  }
+  return undefined;
+}
+
 export function parseLibrarySearch(search: Record<string, unknown>): LibrarySearch {
-  const collection = search.collection;
-  const category = search.category;
-  const project = search.project;
+  const collection = parseOptionalInt(search.collection);
+  const category = parseOptionalInt(search.category);
+  const project = parseOptionalInt(search.project);
   const print_status = search.print_status;
   const path = search.path;
   return {
-    collection: typeof collection === "number" ? collection : undefined,
-    category: typeof category === "number" ? category : undefined,
-    project: typeof project === "number" ? project : undefined,
+    collection,
+    category,
+    project,
     print_status: typeof print_status === "string" ? print_status : undefined,
     path: typeof path === "string" ? path : undefined,
   };

@@ -1762,3 +1762,38 @@ async def test_patch_model_print_tips_roundtrip(authenticated_client: httpx.Asyn
 
     detail = await authenticated_client.get(f"/api/models/{created['slug']}")
     assert detail.json()["print_tips"] == "Use a brim, print slow."
+
+
+async def test_merge_models_moves_files_and_deletes_source(
+    authenticated_client: httpx.AsyncClient, backend: LocalStorageBackend
+) -> None:
+    target = await _create_model(authenticated_client, "Target Model")
+    source = await _create_model(authenticated_client, "Source Model")
+
+    # Upload file to source
+    await _upload(
+        authenticated_client,
+        model_id=source["id"],
+        revision_id=source["current_revision"]["id"],
+        rel_path="plate_1.gcode.3mf",
+        content=b"dummy-gcode-content",
+    )
+
+    response = await authenticated_client.post(
+        f"/api/models/{target['slug']}/merge",
+        json={"source_slug": source["slug"]},
+    )
+    assert response.status_code == 200, response.text
+    detail = response.json()
+    assert detail["slug"] == target["slug"]
+
+    # Verify source model is gone
+    get_source = await authenticated_client.get(f"/api/models/{source['slug']}")
+    assert get_source.status_code == 404
+
+    # Verify target model now has the file
+    rev_files = await authenticated_client.get(f"/api/revisions/{target['current_revision']['id']}")
+    assert rev_files.status_code == 200
+    files = rev_files.json()["files"]
+    assert any(f["rel_path"] == "plate_1.gcode.3mf" for f in files)
+

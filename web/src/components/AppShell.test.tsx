@@ -50,8 +50,16 @@ vi.mock("@/api/printers", () => ({
   usePrinterStatus: () => ({ data: undefined }),
 }));
 
+vi.mock("@/api/projects", () => ({
+  useProjects: () => ({ data: [] }),
+  useCreateProject: () => ({ mutate: vi.fn(), isPending: false }),
+  useUpdateProject: () => ({ mutate: vi.fn(), isPending: false }),
+  useDeleteProject: () => ({ mutate: vi.fn(), isPending: false }),
+}));
+
 vi.mock("@/api/library", () => ({
   useModelSearchQuery: () => ({ data: undefined }),
+  useBulkUpdateModels: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 // AppShell wraps its children in the app-wide SSE `EventsProvider`, which

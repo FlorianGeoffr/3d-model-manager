@@ -32,6 +32,7 @@ import { FolderBrowser } from "@/components/gallery/FolderBrowser";
 import { ModelCard } from "@/components/gallery/ModelCard";
 import { ModelRow } from "@/components/gallery/ModelRow";
 import { NewModelDialog } from "@/components/gallery/NewModelDialog";
+import { ProjectFolderView } from "@/components/gallery/ProjectFolderView";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -249,8 +250,6 @@ export function LibraryPage() {
   const activeCollectionTitle = collections.find((collection) => collection.id === activeCollection)?.title;
   const categoriesQuery = useCategories();
   const categories = categoriesQuery.data ?? [];
-  const projectsQuery = useProjects();
-  const projects = projectsQuery.data ?? [];
 
   const filters = useMemo(
     () => ({
@@ -459,29 +458,13 @@ export function LibraryPage() {
           />
         </div>
 
-        {/* Projects facet */}
-        {projects.length > 0 && viewMode !== "folders" && (
-          <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter by project">
-            <FilterChip active={!activeProject} onClick={() => goToProject(undefined)}>
-              All projects
-            </FilterChip>
-            {projects.map((proj) => (
-              <FilterChip
-                key={proj.id}
-                active={activeProject === proj.id}
-                onClick={() => goToProject(activeProject === proj.id ? undefined : proj.id)}
-              >
-                <span
-                  aria-hidden="true"
-                  className={cn("size-1.5 rounded-full", tagColorClass(proj.color) ?? "bg-muted-foreground")}
-                />
-                {proj.name}
-                <span className="text-xs opacity-70 ml-1 font-mono">
-                  ({proj.total_quantity_printed}/{proj.total_quantity_target})
-                </span>
-              </FilterChip>
-            ))}
-          </div>
+        {/* Project Folders & Drag-and-drop management */}
+        {viewMode !== "folders" && (
+          <ProjectFolderView
+            activeProjectId={activeProject}
+            onSelectProject={goToProject}
+            totalModelsInView={items.length}
+          />
         )}
 
         {/* Manufacturing status facet */}
@@ -684,6 +667,7 @@ export function LibraryPage() {
                       model={model}
                       index={virtualRow.index}
                       selected={selectedIds.has(model.id)}
+                      selectedIds={selectedIds}
                       onSelectChange={toggleSelected}
                       onModifiedClick={handleModifiedClick}
                     />
@@ -714,6 +698,7 @@ export function LibraryPage() {
                       model={model}
                       index={virtualRow.index * columns + columnIndex}
                       selected={selectedIds.has(model.id)}
+                      selectedIds={selectedIds}
                       onSelectChange={toggleSelected}
                       onModifiedClick={handleModifiedClick}
                     />

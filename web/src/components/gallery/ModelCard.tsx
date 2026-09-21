@@ -33,6 +33,7 @@ export function ModelCard({
   model,
   index,
   selected = false,
+  selectedIds,
   onSelectChange,
   onModifiedClick,
 }: {
@@ -44,6 +45,8 @@ export function ModelCard({
   /** Selection is implicit (no separate select-mode toggle): the checkbox
    * always exists, shown on hover or once `selected`. */
   selected?: boolean;
+  /** All currently selected IDs for dragging multi-selection */
+  selectedIds?: Set<number>;
   onSelectChange?: (id: number, next: boolean) => void;
   /** Ctrl/Cmd/Shift+click range/toggle select (R9-A item 6): fired instead
    * of navigating when the card's `<Link>` is clicked with a modifier held. */
@@ -51,6 +54,7 @@ export function ModelCard({
 }) {
   const [coverErrored, setCoverErrored] = useState(false);
   const [renderErrored, setRenderErrored] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
   // R9-A item 1: the hover-render `<img>` only gets a `src` once the card's
   // actually been hovered -- until then it stays mounted (so the opacity
   // crossfade still works once it does) but src-less, so the browser never
@@ -120,11 +124,29 @@ export function ModelCard({
     }
   }
 
+  function handleDragStart(e: React.DragEvent) {
+    const ids =
+      selected && selectedIds && selectedIds.size > 0
+        ? Array.from(selectedIds)
+        : [model.id];
+    e.dataTransfer.setData("application/json", JSON.stringify({ ids }));
+    e.dataTransfer.setData("text/plain", `${ids.length} model(s)`);
+    e.dataTransfer.effectAllowed = "move";
+    setIsDragging(true);
+  }
+
+  function handleDragEnd() {
+    setIsDragging(false);
+  }
+
   return (
     <Link
       to="/models/$slug"
       params={{ slug: model.slug }}
-      className="group block"
+      draggable
+      onDragStart={handleDragStart}
+      onDragEnd={handleDragEnd}
+      className={cn("group block transition-opacity", isDragging && "opacity-40")}
       preload="intent"
       onClick={onLinkClick}
       onPointerEnter={onIntent}

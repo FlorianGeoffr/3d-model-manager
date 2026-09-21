@@ -27,6 +27,7 @@ export function ModelRow({
   model,
   index,
   selected = false,
+  selectedIds,
   onSelectChange,
   onModifiedClick,
 }: {
@@ -35,10 +36,15 @@ export function ModelRow({
    * selection, same contract as `ModelCard`. */
   index?: number;
   selected?: boolean;
+  /** All currently selected IDs for dragging multi-selection */
+  selectedIds?: Set<number>;
   onSelectChange?: (id: number, next: boolean) => void;
+  /** Ctrl/Cmd/Shift+click range/toggle select (R9-A item 6): fired instead
+   * of navigating when the card's `<Link>` is clicked with a modifier held. */
   onModifiedClick?: (event: React.MouseEvent, index: number) => void;
 }) {
   const [coverErrored, setCoverErrored] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
   const patchModel = usePatchModel(model.slug);
   const queryClient = useQueryClient();
   const tagColors = useTagColorMap();
@@ -67,11 +73,32 @@ export function ModelRow({
     }
   }
 
+  function handleDragStart(e: React.DragEvent) {
+    const ids =
+      selected && selectedIds && selectedIds.size > 0
+        ? Array.from(selectedIds)
+        : [model.id];
+    e.dataTransfer.setData("application/json", JSON.stringify({ ids }));
+    e.dataTransfer.setData("text/plain", `${ids.length} model(s)`);
+    e.dataTransfer.effectAllowed = "move";
+    setIsDragging(true);
+  }
+
+  function handleDragEnd() {
+    setIsDragging(false);
+  }
+
   return (
     <Link
       to="/models/$slug"
       params={{ slug: model.slug }}
-      className="group flex items-center gap-3 rounded-lg border border-transparent px-2 hover:border-border hover:bg-muted/50"
+      draggable
+      onDragStart={handleDragStart}
+      onDragEnd={handleDragEnd}
+      className={cn(
+        "group flex items-center gap-3 rounded-lg border border-transparent px-2 hover:border-border hover:bg-muted/50 transition-opacity",
+        isDragging && "opacity-40",
+      )}
       style={{ height: LIST_ROW_HEIGHT_PX }}
       preload="intent"
       onClick={onLinkClick}

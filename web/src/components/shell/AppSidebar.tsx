@@ -9,11 +9,14 @@ import {
   TriangleAlertIcon,
 } from "lucide-react";
 
+import { toast } from "sonner";
+
 import { useAuth, useLogout } from "@/api/auth";
 import { useCategories } from "@/api/categories";
 import { useFeatures } from "@/api/features";
 import { useFollowedCollections } from "@/api/collections";
 import { useFailedImportsCount } from "@/api/imports";
+import { useBulkUpdateModels } from "@/api/library";
 import { useProjects } from "@/api/projects";
 import { useScanRuns } from "@/api/scan";
 import type { ScanRunOut } from "@/api/types";
@@ -171,7 +174,9 @@ export function AppSidebar({
   const followed = useFollowedCollections();
   const categories = useCategories();
   const projects = useProjects();
+  const bulkUpdate = useBulkUpdateModels();
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
+  const [dragOverProjectId, setDragOverProjectId] = useState<number | null>(null);
   const [collapsed, setCollapsed] = useSidebarCollapsed();
 
   useEffect(() => {
@@ -306,34 +311,68 @@ export function AppSidebar({
                 <Plus className="size-3.5" />
               </button>
             </div>
-            {(projects.data ?? []).map((proj) => (
-              <Link
-                key={proj.id}
-                to="/"
-                search={(prev: LibrarySearch) => ({ ...prev, project: proj.id })}
-                className="group flex flex-col gap-1 rounded-lg px-2.5 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
-                activeProps={{ className: "bg-muted font-medium text-foreground" }}
-              >
-                <div className="flex items-center gap-2">
-                  <span
-                    aria-hidden="true"
-                    className={cn("size-2 shrink-0 rounded-full", tagColorClass(proj.color) ?? "bg-muted-foreground")}
-                  />
-                  <span className="truncate">{proj.name}</span>
-                  <span className="ml-auto text-xs tabular-mono text-muted-foreground">
-                    {proj.total_quantity_printed}/{proj.total_quantity_target}
-                  </span>
-                </div>
-                {proj.total_quantity_target > 0 && (
-                  <div className="h-1 w-full overflow-hidden rounded-full bg-muted-foreground/20">
-                    <div
-                      className="h-full bg-primary rounded-full transition-all duration-300"
-                      style={{ width: `${proj.progress_pct}%` }}
+            {(projects.data ?? []).map((proj) => {
+              const isOver = dragOverProjectId === proj.id;
+              return (
+                <Link
+                  key={proj.id}
+                  to="/"
+                  search={(prev: LibrarySearch) => ({ ...prev, project: proj.id })}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
+                    setDragOverProjectId(proj.id);
+                  }}
+                  onDragLeave={() => setDragOverProjectId(null)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setDragOverProjectId(null);
+                    try {
+                      const raw = e.dataTransfer.getData("application/json");
+                      if (!raw) return;
+                      const data = JSON.parse(raw);
+                      const ids: number[] = Array.isArray(data.ids) ? data.ids : [];
+                      if (ids.length > 0) {
+                        bulkUpdate.mutate(
+                          { ids, project_id: proj.id },
+                          {
+                            onSuccess: (res) => {
+                              toast.success(
+                                `${res.updated} modèle${res.updated > 1 ? "s" : ""} déplacé${res.updated > 1 ? "s" : ""} vers ${proj.name}`,
+                              );
+                            },
+                          },
+                        );
+                      }
+                    } catch {}
+                  }}
+                  className={cn(
+                    "group flex flex-col gap-1 rounded-lg px-2.5 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground transition-all",
+                    isOver && "ring-2 ring-primary bg-primary/10 text-primary font-medium scale-[1.02]",
+                  )}
+                  activeProps={{ className: "bg-muted font-medium text-foreground" }}
+                >
+                  <div className="flex items-center gap-2">
+                    <span
+                      aria-hidden="true"
+                      className={cn("size-2 shrink-0 rounded-full", tagColorClass(proj.color) ?? "bg-muted-foreground")}
                     />
+                    <span className="truncate">{proj.name}</span>
+                    <span className="ml-auto text-xs tabular-mono text-muted-foreground">
+                      {proj.total_quantity_printed}/{proj.total_quantity_target}
+                    </span>
                   </div>
-                )}
-              </Link>
-            ))}
+                  {proj.total_quantity_target > 0 && (
+                    <div className="h-1 w-full overflow-hidden rounded-full bg-muted-foreground/20">
+                      <div
+                        className="h-full bg-primary rounded-full transition-all duration-300"
+                        style={{ width: `${proj.progress_pct}%` }}
+                      />
+                    </div>
+                  )}
+                </Link>
+              );
+            })}
           </div>
         )}
 

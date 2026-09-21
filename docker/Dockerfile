@@ -89,7 +89,7 @@ COPY backend/ .
 COPY --from=web-build /web/dist ./static
 
 COPY docker/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
 
 # Version stamp. CI passes --build-arg APP_VERSION=<semver> on release
 # builds and APP_VERSION=edge-<short sha> on every other push to main; a

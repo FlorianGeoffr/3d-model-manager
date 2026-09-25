@@ -120,11 +120,13 @@ export function InlineEdit({
     );
   }
 
+  const Container = multiline ? "div" : "span";
+
   return (
-    <span className="flex items-start gap-1.5 w-full">
-      <span className={cn(!value && "text-muted-foreground", displayClassName, "flex-1 min-w-0")}>
+    <Container className="flex items-start gap-1.5 w-full">
+      <Container className={cn(!value && "text-muted-foreground", displayClassName, "flex-1 min-w-0")}>
         {renderDisplay ? renderDisplay(value) : (value || placeholder)}
-      </span>
+      </Container>
       <Button
         ref={triggerRef}
         type="button"
@@ -136,6 +138,6 @@ export function InlineEdit({
       >
         <PencilIcon />
       </Button>
-    </span>
+    </Container>
   );
 }

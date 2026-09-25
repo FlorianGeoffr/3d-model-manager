@@ -449,7 +449,7 @@ export function ProjectFolderView({
             <div className="space-y-1 min-w-0">
               <h2 className="text-base font-semibold truncate text-foreground">{activeProject.name}</h2>
               {activeProject.description && (
-                <p className="text-xs text-muted-foreground line-clamp-2">{activeProject.description}</p>
+                <p className="text-xs text-muted-foreground whitespace-pre-line leading-relaxed">{activeProject.description}</p>
               )}
               <div className="flex items-center gap-2 pt-0.5 text-xs text-muted-foreground">
                 <span>{activeProject.model_count} modèle{activeProject.model_count > 1 ? "s" : ""}</span>

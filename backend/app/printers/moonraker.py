@@ -40,6 +40,8 @@ _MOONRAKER_STATE_MAP = {
     "paused": "PAUSE",
     "complete": "FINISH",
     "error": "FAILED",
+    "cancelled": "CANCELED",
+    "canceled": "CANCELED",
 }
 
 _GCODE_STATE_TO_JOB = {
@@ -48,6 +50,7 @@ _GCODE_STATE_TO_JOB = {
     "PAUSE": PrintJobState.PAUSED,
     "FINISH": PrintJobState.FINISHED,
     "FAILED": PrintJobState.FAILED,
+    "CANCELED": PrintJobState.CANCELED,
 }
 
 

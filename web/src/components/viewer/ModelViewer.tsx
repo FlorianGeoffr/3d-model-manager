@@ -65,7 +65,7 @@ import {
   type ReactNode,
 } from "react";
 import * as THREE from "three";
-import { Canvas, useThree } from "@react-three/fiber";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import {
   Bounds,
   Center,
@@ -78,7 +78,6 @@ import {
   OrthographicCamera,
   Resize,
   useBounds,
-  useGizmoContext,
   useGLTF,
 } from "@react-three/drei";
 import { explodeLayout } from "@/components/viewer/explode";
@@ -431,7 +430,8 @@ function BoundsRefitter({
 // Front). `iso` normalizes to the same evenly-weighted corner direction the
 // default `OrthographicCamera` position (`[1.2, 1.2, 1.2]`) already sits on,
 // so picking it lands on the familiar default three-quarter framing.
-// For top, a tiny Z epsilon avoids gimbal lock / collinearity with default up=(0,1,0).
+// World-space direction FROM the model TOWARD the camera for each preset.
+// Y-up, Z-front. For top, a tiny Z epsilon avoids collinearity with up=(0,1,0).
 const CAMERA_PRESET_DIRECTIONS: Record<Exclude<CameraPreset, null>, THREE.Vector3> = {
   iso: new THREE.Vector3(1, 1, 1).normalize(),
   top: new THREE.Vector3(0, 1, 0.0001).normalize(),
@@ -439,48 +439,64 @@ const CAMERA_PRESET_DIRECTIONS: Record<Exclude<CameraPreset, null>, THREE.Vector
   side: new THREE.Vector3(1, 0, 0),
 };
 
-// How long after starting a preset's orientation tween (drei's `GizmoHelper`
-// animates at `turnRate = 2*PI rad/s`, so even a 180° turn finishes well
-// inside this) to also refit distance to the current bounds -- see
-// `CameraPresetTween`'s doc comment for why this can't just fire both at
-// once.
-const CAMERA_PRESET_REFIT_DELAY_MS = 550;
-
 /**
- * R10 camera presets: reorients the camera along `preset`'s direction using
- * the SAME `tweenCamera` the `GizmoViewcube`'s face/edge/corner clicks
- * already use (`useGizmoContext`, only available from inside `<GizmoHelper>`
- * -- this must be mounted as its child, alongside `GizmoViewcube` below).
- * That tween preserves the camera's CURRENT distance from the target and
- * only changes orientation, so it's paired with a follow-up bump of
- * `onSettled` (wired to `BoundsRefitter`'s `fitSignal` by the caller) that
- * refits the distance for the new orientation via the exact same
- * refit machinery every other "Fit view" trigger uses -- reusing rather
- * than re-deriving that fit math.
- *
- * The two can't run concurrently: `GizmoHelper`'s tween writes
- * `camera.position` every frame from its own quaternion slerp, and
- * `Bounds`'s `fit()` animation writes it every frame too, from a SEPARATE
- * origin/goal interpolation captured from wherever the camera was when
- * `fit()` was called -- running both at once would have them fight over
- * the same property every frame. `onSettled` fires on a delay instead of a
- * real "tween finished" callback (`GizmoHelper` doesn't expose one), long
- * enough for the largest possible reorientation (up to 180°) to finish.
+ * Smooth camera preset transition for Iso, Top, Front, and Side views.
+ * Works seamlessly with OrbitControls without gimbal locks or Bounds collisions.
  */
-function CameraPresetTween({ preset, onSettled }: { preset: CameraPreset; onSettled: () => void }) {
-  const context = useGizmoContext() as { tweenCamera?: (direction: THREE.Vector3) => void };
+function CameraPresetController({ preset }: { preset: CameraPreset }) {
+  const { camera, controls, invalidate } = useThree();
+  const animating = useRef(false);
+  const startPos = useRef(new THREE.Vector3());
+  const goalPos = useRef(new THREE.Vector3());
+  const target = useRef(new THREE.Vector3());
+  const progress = useRef(0);
   const lastPreset = useRef<CameraPreset>(null);
 
   useEffect(() => {
-    if (preset && preset !== lastPreset.current) {
-      context.tweenCamera?.(CAMERA_PRESET_DIRECTIONS[preset]);
-      const id = window.setTimeout(onSettled, CAMERA_PRESET_REFIT_DELAY_MS);
-      lastPreset.current = preset;
-      return () => window.clearTimeout(id);
+    if (!preset) {
+      lastPreset.current = null;
+      return;
     }
+    const ctrl = controls as any;
+    const t = ctrl?.target ? ctrl.target.clone() : new THREE.Vector3(0, 0, 0);
+    target.current.copy(t);
+    const dist = Math.max(camera.position.distanceTo(t), 0.5);
+    const dir = CAMERA_PRESET_DIRECTIONS[preset];
+    goalPos.current.copy(t).addScaledVector(dir, dist);
+    startPos.current.copy(camera.position);
+    progress.current = 0;
+    animating.current = true;
     lastPreset.current = preset;
-    return undefined;
-  }, [preset, context, onSettled]);
+    invalidate();
+  }, [preset, camera, controls, invalidate]);
+
+  useFrame((_, delta) => {
+    if (!animating.current) return;
+    progress.current += delta * 4; // ~250ms smooth transition
+    const ctrl = controls as any;
+    if (progress.current >= 1) {
+      camera.position.copy(goalPos.current);
+      camera.up.set(0, 1, 0);
+      camera.lookAt(target.current);
+      if (ctrl) {
+        ctrl.target.copy(target.current);
+        ctrl.update();
+      }
+      animating.current = false;
+      invalidate();
+    } else {
+      // Cubic ease-out
+      const t = 1 - Math.pow(1 - progress.current, 3);
+      camera.position.lerpVectors(startPos.current, goalPos.current, t);
+      camera.up.set(0, 1, 0);
+      camera.lookAt(target.current);
+      if (ctrl) {
+        ctrl.target.copy(target.current);
+        ctrl.update();
+      }
+      invalidate();
+    }
+  });
 
   return null;
 }
@@ -732,14 +748,6 @@ export default function ModelViewer({
     onExplodeModeChange(explodeMode);
   }, [explodeMode, onExplodeModeChange]);
 
-  // R10 camera presets: bumped by `CameraPresetTween.onSettled` once a
-  // preset's reorientation has had time to finish, so `BoundsRefitter` runs
-  // an extra refit for the new orientation without needing its own copy of
-  // the fit machinery -- see `CameraPresetTween`'s doc comment for why the
-  // two can't just fire together. Folded into `fitSignal` below (added, not
-  // replacing it) so either trigger still registers as a distinct change.
-  const [presetFitBump, setPresetFitBump] = useState(0);
-  const handlePresetSettled = useCallback(() => setPresetFitBump((prev) => prev + 1), []);
 
   // Reports the combined mm-scale bounding box + triangle count of every
   // currently VISIBLE, loaded part -- "how big is this print?" for
@@ -890,7 +898,7 @@ export default function ModelViewer({
         </Resize>
         <BoundsRefitter
           loadedCount={loadedCount}
-          fitSignal={fitSignal + presetFitBump}
+          fitSignal={fitSignal}
           getVisibleBox={getVisibleBox}
         />
       </Bounds>
@@ -910,33 +918,7 @@ export default function ModelViewer({
       {/* A render-target soft shadow, not a shadow map -- `<Canvas>` has no
           `shadows` prop and no light here has `castShadow`. Adding either
           would double up with this and need shadow-acne tuning for no
-          visual gain.
-
-          Deliberately NO `key` prop -- this used to be keyed on
-          `loadedCount` + the visible id set to force a remount (and so a
-          fresh `frames={1}` bake) on every part load/checkbox toggle, but
-          drei 10.7.7's `ContactShadows` allocates two `WebGLRenderTarget`s
-          plus depth/blur `ShaderMaterial`s imperatively in a `useMemo` with
-          NO dispose path (no cleanup effect anywhere in
-          `@react-three/drei/core/ContactShadows.js`, and the targets never
-          appear in its JSX tree, so R3F can't auto-dispose them either) --
-          every remount leaked ~2MB of GPU memory into this deliberately
-          long-lived WebGL context, unbounded across checkbox toggles.
-
-          Re-bakes still happen without the key: drei declares its bake
-          frame counter as `let count = 0` in the component BODY (same
-          file), so ANY re-render of `ContactShadows` resets it and the next
-          invalidated frame re-runs the one-shot bake. Every event the key
-          used to encode (a part load -> `loadedParts` state change; a
-          visibility toggle -> `parts` prop change) re-renders `ModelViewer`
-          and therefore this component, and the R3F prop commit invalidates
-          a frame -- so the bake re-runs exactly when it must, with zero
-          remounts. Stray re-renders re-baking too is harmless (a cheap
-          one-shot 512^2 pass). If a drei upgrade ever memoizes that counter
-          or moves it into a ref/state (i.e. "fixes" the body-reset quirk we
-          intentionally rely on), stale shadows after a toggle are the
-          symptom -- solve it with an explicit `frames` bump or a fixed
-          upstream API then, NOT by re-adding a `key`. */}
+          visual gain. */}
       {lighting.contactShadow && (
         <ContactShadows
           position={[0, -0.001, 0]}
@@ -950,6 +932,7 @@ export default function ModelViewer({
       )}
 
       <OrbitControls makeDefault enablePan autoRotate={tools.autoRotate} autoRotateSpeed={1.5} />
+      <CameraPresetController preset={tools.cameraPreset} />
 
       {/* `renderPriority={2}`, NOT drei's default of 1 -- with the
           `EffectComposer` active (`ViewerEffects` below, also a
@@ -963,7 +946,6 @@ export default function ModelViewer({
           step, so this works under `frameloop="demand"` unmodified. */}
       <GizmoHelper alignment="bottom-left" margin={[64, 64]} renderPriority={2}>
         <GizmoViewcube />
-        <CameraPresetTween preset={tools.cameraPreset} onSettled={handlePresetSettled} />
       </GizmoHelper>
 
       {/* Task 5 cross-section: N8AO off while sectioning -- ambient

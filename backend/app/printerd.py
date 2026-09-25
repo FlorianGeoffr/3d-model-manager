@@ -98,6 +98,7 @@ class PrinterWorker:
             return
         with base.sync_session() as session:
             job = self._active_job(session)
+            created = False
             if job is None:
                 active_states = (
                     PrintJobState.PRINTING,
@@ -134,11 +135,32 @@ class PrinterWorker:
                         )
                         session.add(job)
                         session.flush()
+                        created = True
                 else:
                     return
 
-            if job is None or job.state == new_state.value:
+            if job is None:
                 return
+
+            if not created and job.state == new_state.value:
+                changed = False
+                if job.progress_pct != public.mc_percent:
+                    job.progress_pct = public.mc_percent
+                    changed = True
+                if job.remaining_min != public.mc_remaining_time:
+                    job.remaining_min = public.mc_remaining_time
+                    changed = True
+                if job.layer != public.layer_num:
+                    job.layer = public.layer_num
+                    changed = True
+                if job.total_layers != public.total_layer_num:
+                    job.total_layers = public.total_layer_num
+                    changed = True
+                if changed:
+                    job.raw_status = self._merged
+                    session.commit()
+                return
+
             job.state = new_state.value
             job.progress_pct = public.mc_percent
             job.remaining_min = public.mc_remaining_time
@@ -172,7 +194,7 @@ class PrinterWorker:
                             m.quantity_printed += 1
                             if m.quantity_printed >= m.quantity_target:
                                 m.print_status = "printed"
-            elif new_state == PrintJobState.FAILED:
+            elif new_state in (PrintJobState.FAILED, PrintJobState.CANCELED):
                 file = session.get(File, job.file_id)
                 if file and file.revision_id:
                     rev = session.get(Revision, file.revision_id)

@@ -21,11 +21,19 @@ export function DescriptionCard({ model, editMode }: { model: ModelDetail; editM
         {editMode ? (
           <InlineEdit
             value={model.description ?? ""}
-            placeholder="Add a description…"
+            placeholder="Add a description… (markdown supported)"
             aria-label="description"
             multiline
             onSave={(description) => patchModel.mutate({ description: description || null })}
-            displayClassName="text-sm text-muted-foreground"
+            displayClassName="text-sm text-muted-foreground w-full"
+            renderDisplay={(val) =>
+              val ? (
+                <div
+                  className={cn("text-muted-foreground", MARKDOWN_CLASSNAME)}
+                  dangerouslySetInnerHTML={{ __html: renderMarkdown(val) }}
+                />
+              ) : null
+            }
           />
         ) : model.description ? (
           <div

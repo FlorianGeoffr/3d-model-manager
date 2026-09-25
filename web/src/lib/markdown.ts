@@ -3,13 +3,17 @@
  * sanitize, no larger markdown/editor dependency).
  */
 import DOMPurify from "dompurify";
-import { marked } from "marked";
+import { Marked } from "marked";
 
-marked.setOptions({ gfm: true, breaks: true });
+const markedInstance = new Marked({
+  gfm: true,
+  breaks: true,
+});
 
 /** Render markdown to sanitized HTML safe to drop into `dangerouslySetInnerHTML`. */
-export function renderMarkdown(source: string): string {
-  const html = marked.parse(source, { async: false });
+export function renderMarkdown(source: string | null | undefined): string {
+  if (!source || !source.trim()) return "";
+  const html = markedInstance.parse(source, { async: false }) as string;
   return DOMPurify.sanitize(html);
 }
 

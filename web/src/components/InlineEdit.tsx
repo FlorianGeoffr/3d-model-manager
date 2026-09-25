@@ -15,6 +15,7 @@ interface InlineEditProps {
   displayClassName?: string;
   "aria-label"?: string;
   saveOnBlur?: boolean;
+  renderDisplay?: (value: string) => React.ReactNode;
 }
 
 /** Explicit-commit click-to-edit text (name/description in `ModelHeader`,
@@ -35,6 +36,7 @@ export function InlineEdit({
   displayClassName,
   "aria-label": ariaLabel,
   saveOnBlur = false,
+  renderDisplay,
 }: InlineEditProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -119,9 +121,9 @@ export function InlineEdit({
   }
 
   return (
-    <span className="flex items-start gap-1.5">
-      <span className={cn(!value && "text-muted-foreground", displayClassName)}>
-        {value || placeholder}
+    <span className="flex items-start gap-1.5 w-full">
+      <span className={cn(!value && "text-muted-foreground", displayClassName, "flex-1 min-w-0")}>
+        {renderDisplay ? renderDisplay(value) : (value || placeholder)}
       </span>
       <Button
         ref={triggerRef}

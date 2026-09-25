@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useState, useEffect, type FormEvent } from "react";
 import { useCreateProject, useProjects, useUpdateProject } from "@/api/projects";
 import { ApiError } from "@/api/client";
 import type { ProjectOut, TagColor } from "@/api/types";
@@ -143,6 +143,18 @@ export function ProjectDialog({
   const [color, setColor] = useState<TagColor>(project?.color ?? DEFAULT_COLOR);
   const [icon, setIcon] = useState<string>(project?.icon ?? DEFAULT_ICON);
   const [parentId, setParentId] = useState<number | null>(project?.parent_id ?? defaultParentId ?? null);
+
+  useEffect(() => {
+    if (open) {
+      setName(project?.name ?? "");
+      setDescription(project?.description ?? "");
+      setColor(project?.color ?? DEFAULT_COLOR);
+      setIcon(project?.icon ?? DEFAULT_ICON);
+      setParentId(project?.parent_id ?? defaultParentId ?? null);
+      createProject.reset();
+      updateProject.reset();
+    }
+  }, [open, project, defaultParentId]);
 
   const projectsQuery = useProjects();
   const allProjects = projectsQuery.data ?? [];

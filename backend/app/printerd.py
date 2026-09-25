@@ -98,6 +98,45 @@ class PrinterWorker:
             return
         with base.sync_session() as session:
             job = self._active_job(session)
+            if job is None:
+                active_states = (
+                    PrintJobState.PRINTING,
+                    PrintJobState.STARTING,
+                    PrintJobState.PAUSED,
+                )
+                if new_state in active_states:
+                    matched_file = None
+                    if public.subtask_name:
+                        matched_file = (
+                            session.execute(
+                                select(File)
+                                .where(
+                                    (File.rel_path == public.subtask_name)
+                                    | File.storage_path.like(f"%{public.subtask_name}")
+                                )
+                                .order_by(File.id.desc())
+                            )
+                            .scalars()
+                            .first()
+                        )
+                    if matched_file is None:
+                        matched_file = (
+                            session.execute(select(File).order_by(File.id.desc())).scalars().first()
+                        )
+
+                    if matched_file is not None:
+                        job = PrintJob(
+                            printer_id=self.printer_id,
+                            file_id=matched_file.id,
+                            subtask_name=public.subtask_name or matched_file.rel_path,
+                            state=new_state.value,
+                            started_at=datetime.now(UTC),
+                        )
+                        session.add(job)
+                        session.flush()
+                else:
+                    return
+
             if job is None or job.state == new_state.value:
                 return
             job.state = new_state.value
@@ -159,10 +198,16 @@ class PrinterWorker:
             self.adapter.stop()
         elif command in ("toggle_light", "light_on", "light_off"):
             if command == "toggle_light":
-                curr = self._merged.get("light_on")
-                self.adapter.set_light(not curr if curr is not None else True)
+                curr = self._merged.get("light_on") if self._merged else None
+                next_val = not curr if curr is not None else True
             else:
-                self.adapter.set_light(command == "light_on")
+                next_val = command == "light_on"
+            self.adapter.set_light(next_val)
+            if self._merged is None:
+                self._merged = {}
+            self._merged["light_on"] = next_val
+            public = self.adapter.public_state(self._merged)
+            self.redis.set(state_key(self.printer_id), json.dumps(dataclasses.asdict(public)))
         else:
             log.warning("printerd: unknown command %r for printer %s", command, self.printer_id)
 

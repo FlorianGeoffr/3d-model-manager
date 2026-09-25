@@ -268,6 +268,10 @@ export function LibraryPage() {
       const updated = new Set(prev);
       if (next) updated.add(id);
       else updated.delete(id);
+      if (updated.size === 0) {
+        setSelectMode(false);
+        setLastSelectedIndex(null);
+      }
       return updated;
     });
   }

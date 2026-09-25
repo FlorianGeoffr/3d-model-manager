@@ -48,6 +48,8 @@ function StudioWorkspaceGeneration({
         otherFiles={others}
         stageProps={stageProps}
         onSelectAssembly={onSelectAssembly}
+        modelSlug={model.slug}
+        projectId={model.project_id}
       />
     </div>
   );

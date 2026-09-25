@@ -682,9 +682,7 @@ async def merge_models(
     target_rev_id = target.current_revision_id
     if target_rev_id is None:
         rev_stmt = (
-            select(Revision)
-            .where(Revision.model_id == target.id)
-            .order_by(Revision.number.desc())
+            select(Revision).where(Revision.model_id == target.id).order_by(Revision.number.desc())
         )
         rev = (await db.execute(rev_stmt)).scalars().first()
         if rev is None:
@@ -732,7 +730,7 @@ async def merge_models(
             dest_storage_key = layout.file_key(target.slug, target_rev.dir_name, dest_rel_path)
             try:
                 await anyio.to_thread.run_sync(
-                    lambda: backend.copy(sf.storage_path, dest_storage_key)
+                    lambda src=sf.storage_path, dst=dest_storage_key: backend.copy(src, dst)
                 )
             except Exception:
                 dest_storage_key = sf.storage_path

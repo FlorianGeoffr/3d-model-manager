@@ -11,8 +11,18 @@ const GcodePreview = lazy(() => import("@/components/viewer/GcodePreview"));
 
 type StageProps = Omit<ViewerStageProps, "variant" | "showWindowButtons">;
 
-function FileState({ file }: { file: FileOut }) {
-  if (file.kind === "sliced") return <PlatePanel file={file} />;
+function FileState({
+  file,
+  modelSlug,
+  projectId,
+}: {
+  file: FileOut;
+  modelSlug?: string;
+  projectId?: number | null;
+}) {
+  if (file.kind === "sliced") {
+    return <PlatePanel file={file} modelSlug={modelSlug} projectId={projectId} />;
+  }
 
   if (file.format === "gcode") {
     return (
@@ -80,6 +90,8 @@ export function StudioSurface({
   otherFiles,
   stageProps,
   onSelectAssembly,
+  modelSlug,
+  projectId,
 }: {
   selection: StudioSelection | undefined;
   hasGlb: boolean;
@@ -89,6 +101,8 @@ export function StudioSurface({
    * assembly view. Only rendered as a chip when a single file is selected
    * AND the model actually has an assembly to go back to. */
   onSelectAssembly: () => void;
+  modelSlug?: string;
+  projectId?: number | null;
 }) {
   if (!selection) {
     return (
@@ -129,7 +143,7 @@ export function StudioSurface({
           Back to assembly
         </button>
       )}
-      <FileState file={file} />
+      <FileState file={file} modelSlug={modelSlug} projectId={projectId} />
     </div>
   );
 }

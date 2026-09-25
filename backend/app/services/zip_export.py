@@ -231,9 +231,7 @@ async def iter_collection_zip(
         yield chunk
 
 
-async def _get_project_tree(
-    db: AsyncSession, root_project: Project
-) -> list[tuple[Project, str]]:
+async def _get_project_tree(db: AsyncSession, root_project: Project) -> list[tuple[Project, str]]:
     all_projects = (await db.execute(select(Project))).scalars().all()
     by_parent: dict[int | None, list[Project]] = {}
     for p in all_projects:
@@ -264,11 +262,7 @@ async def iter_project_zip(
     zs = ZipStream()
 
     for proj, prefix in tree:
-        stmt = (
-            select(Model)
-            .where(Model.project_id == proj.id)
-            .order_by(Model.name, Model.id)
-        )
+        stmt = select(Model).where(Model.project_id == proj.id).order_by(Model.name, Model.id)
         models = (await db.execute(stmt)).scalars().all()
         for model in models:
             files = await _current_revision_files(db, model)
@@ -288,4 +282,3 @@ async def iter_project_zip(
 
     for chunk in zs.footer():
         yield chunk
-

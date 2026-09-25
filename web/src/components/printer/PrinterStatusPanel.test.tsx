@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { PrinterOut, PrinterStatusOut } from "@/api/types";
@@ -118,13 +118,15 @@ describe("PrinterStatusPanel", () => {
 
     renderPanel();
 
-    const cameraButton = await screen.findByRole("button", { name: /Camera/i });
-    expect(screen.queryByAltText("Qidi Cam")).not.toBeInTheDocument();
-
-    cameraButton.click();
-
     expect(await screen.findByAltText("Qidi Cam")).toBeInTheDocument();
     expect(screen.getByText("LIVE")).toBeInTheDocument();
+
+    const cameraButton = await screen.findByRole("button", { name: /Camera/i });
+    fireEvent.click(cameraButton);
+
+    await waitFor(() => {
+      expect(screen.queryByAltText("Qidi Cam")).not.toBeInTheDocument();
+    });
   });
 });
 

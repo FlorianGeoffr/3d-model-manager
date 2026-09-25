@@ -97,6 +97,8 @@ export function SendToPrinterDialog({
   const start = useStartPrint(printerId);
   const plates = file.meta?.plates ?? [];
 
+  const [copies, setCopies] = useState(1);
+
   function submit() {
     start.mutate(
       {
@@ -149,13 +151,23 @@ export function SendToPrinterDialog({
                 <SelectContent>
                   {plates.map((pl) => (
                     <SelectItem key={pl.index} value={String(pl.index)}>
-                      Plate {pl.index}
+                      {pl.name ? `${pl.name} (Plate ${pl.index})` : `Plate ${pl.index}`}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </label>
           ) : null}
+          <label className="block text-sm">
+            Nombre à imprimer (copies)
+            <input
+              type="number"
+              min={1}
+              value={copies}
+              onChange={(e) => setCopies(Math.max(1, parseInt(e.target.value) || 1))}
+              className="mt-1 block w-full rounded-md border border-input bg-transparent px-3 py-1.5 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            />
+          </label>
           {!isMoonraker ? (
             <>
               <label className="flex items-center gap-2 text-sm">

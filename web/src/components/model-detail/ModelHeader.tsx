@@ -166,8 +166,21 @@ export function ModelHeader({
               <InlineEdit
                 value={model.name}
                 aria-label="name"
+                saveOnBlur
                 onSave={(name) => {
-                  if (name) patchModel.mutate({ name });
+                  if (name) {
+                    patchModel.mutate(
+                      { name },
+                      {
+                        onSuccess: () => {
+                          toast.success("Nom mis à jour");
+                        },
+                        onError: () => {
+                          toast.error("Échec de la modification du nom");
+                        },
+                      },
+                    );
+                  }
                 }}
                 className="text-2xl font-semibold"
               />

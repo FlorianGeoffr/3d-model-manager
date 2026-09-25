@@ -176,6 +176,7 @@ export interface PlateFilamentOut {
 
 export interface PlateOut {
   index: number;
+  name?: string | null;
   prediction_s: number | null;
   weight_g: number | null;
   thumbnail_available: boolean;

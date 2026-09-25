@@ -3,7 +3,7 @@ services:
     image: 3d-model-manager:local
     pull_policy: never
     ports:
-      - "8085:8080"
+      - "8080:8080"
     environment:
       ROLE: api
       WATCH_DIR: /watch
@@ -18,6 +18,8 @@ services:
     volumes:
       - tdmm_data:/data
       - ./library:/library
+      - ./backend/app:/app/app
+      - ./backend/alembic:/app/alembic
     depends_on:
       db:
         condition: service_healthy
@@ -50,6 +52,8 @@ services:
       - tdmm_data:/data
       - ./library:/library
       - ${WATCH_HOST_DIR:-./slicer-watch}:/watch
+      - ./backend/app:/app/app
+      - ./backend/alembic:/app/alembic
     depends_on:
       db:
         condition: service_healthy
@@ -80,6 +84,8 @@ services:
     volumes:
       - tdmm_data:/data
       - ./library:/library
+      - ./backend/app:/app/app
+      - ./backend/alembic:/app/alembic
     depends_on:
       db:
         condition: service_healthy
@@ -101,6 +107,8 @@ services:
       DATA_DIR: /data
       DATABASE_URL: postgresql+asyncpg://tdmm:tdmm_secret@db:5432/tdmm
       REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./backend/app:/app/app
     depends_on:
       redis:
         condition: service_healthy
@@ -118,6 +126,7 @@ services:
       REDIS_URL: redis://redis:6379/0
     volumes:
       - tdmm_data:/data
+      - ./backend/app:/app/app
     depends_on:
       db:
         condition: service_healthy

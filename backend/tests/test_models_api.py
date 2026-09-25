@@ -1796,4 +1796,3 @@ async def test_merge_models_moves_files_and_deletes_source(
     assert rev_files.status_code == 200
     files = rev_files.json()["files"]
     assert any(f["rel_path"] == "plate_1.gcode.3mf" for f in files)
-

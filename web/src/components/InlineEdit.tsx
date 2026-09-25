@@ -14,12 +14,13 @@ interface InlineEditProps {
   className?: string;
   displayClassName?: string;
   "aria-label"?: string;
+  saveOnBlur?: boolean;
 }
 
 /** Explicit-commit click-to-edit text (name/description in `ModelHeader`,
  * mounted only while the page is in edit mode). Resting state shows the
  * value plus a small pencil affordance; opening it reveals an input/textarea
- * with explicit Save/Cancel actions. Blur does NOT save -- only Save (or
+ * with explicit Save/Cancel actions. Blur does NOT save by default -- only Save (or
  * Enter on single-line, Cmd/Ctrl+Enter on multiline) commits; Cancel or
  * Escape reverts without saving.
  *
@@ -33,6 +34,7 @@ export function InlineEdit({
   className,
   displayClassName,
   "aria-label": ariaLabel,
+  saveOnBlur = false,
 }: InlineEditProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -95,6 +97,14 @@ export function InlineEdit({
             }
           }}
           className={className}
+          onBlur={(e) => {
+            if (!saveOnBlur) return;
+            const container = e.currentTarget.parentElement;
+            if (container && container.contains(e.relatedTarget as Node)) {
+              return;
+            }
+            commit();
+          }}
         />
         <span className="flex gap-2">
           <Button type="button" size="sm" onClick={commit}>

@@ -165,7 +165,7 @@ async def test_filter_models_project_root_vs_assigned(
     proj_id = project["id"]
 
     model_in_project = await _create_model(authenticated_client, "Part In Folder")
-    model_at_root = await _create_model(authenticated_client, "Part At Root")
+    await _create_model(authenticated_client, "Part At Root")
 
     await authenticated_client.patch(
         f"/api/models/{model_in_project['slug']}",
@@ -226,4 +226,3 @@ async def test_subprojects_and_icons(authenticated_client: httpx.AsyncClient) ->
     zip_resp = await authenticated_client.get(f"/api/projects/{parent['id']}/zip")
     assert zip_resp.status_code == 200
     assert zip_resp.headers["content-type"] == "application/zip"
-

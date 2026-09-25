@@ -257,6 +257,7 @@ class PlateFilamentOut(BaseModel):
 
 class PlateOut(BaseModel):
     index: int
+    name: str | None = None
     prediction_s: int | None
     weight_g: float | None
     thumbnail_available: bool
@@ -266,6 +267,7 @@ class PlateOut(BaseModel):
     def from_raw(cls, raw: dict, *, thumbnail_available: bool) -> PlateOut:
         return cls(
             index=raw["index"],
+            name=raw.get("name"),
             prediction_s=raw.get("prediction_s"),
             weight_g=raw.get("weight_g"),
             thumbnail_available=thumbnail_available,

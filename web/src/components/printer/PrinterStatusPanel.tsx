@@ -22,10 +22,11 @@ export function PrinterStatusPanel({ printer }: { printer: PrinterOut }) {
   const status = usePrinterStatus(printer.id);
   const command = usePrinterCommand(printer.id);
   const toggleLight = useTogglePrinterLight(printer.id);
-  const [cameraOpen, setCameraOpen] = useState(false);
+  const [cameraOpen, setCameraOpen] = useState(true);
   const [streamKey, setStreamKey] = useState(0);
   const [streamError, setStreamError] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [optimisticLight, setOptimisticLight] = useState<boolean | null>(null);
   const videoContainerRef = useRef<HTMLDivElement>(null);
 
   const camera = usePrinterCamera(printer.id, { enabled: cameraOpen });
@@ -53,7 +54,13 @@ export function PrinterStatusPanel({ printer }: { printer: PrinterOut }) {
   const printing = gs === "RUNNING";
   const paused = gs === "PAUSE";
   const hasLight = Boolean(s?.online && (s.light_on != null || printer.kind === "moonraker"));
-  const isLightOn = Boolean(s?.light_on);
+  const isLightOn = optimisticLight !== null ? optimisticLight : Boolean(s?.light_on);
+
+  useEffect(() => {
+    if (s?.light_on !== undefined && s?.light_on !== null) {
+      setOptimisticLight(null);
+    }
+  }, [s?.light_on]);
 
   return (
     <Card className="overflow-hidden">
@@ -74,7 +81,11 @@ export function PrinterStatusPanel({ printer }: { printer: PrinterOut }) {
                 className={`h-7 gap-1.5 text-xs ${isLightOn ? "border-amber-500/40 text-amber-600 dark:text-amber-400 bg-amber-500/10" : ""}`}
                 onClick={(e) => {
                   e.stopPropagation();
-                  toggleLight.mutate(!isLightOn);
+                  const next = !isLightOn;
+                  setOptimisticLight(next);
+                  toggleLight.mutate(next, {
+                    onError: () => setOptimisticLight(null),
+                  });
                 }}
                 disabled={toggleLight.isPending}
                 title={isLightOn ? "Turn chamber light off" : "Turn chamber light on"}

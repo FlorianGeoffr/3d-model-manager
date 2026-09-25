@@ -48,9 +48,7 @@ async def download_project_zip(
     `<project>/[<subproject>/.../]<model-slug>/...`.
     """
     project = await projects_service._get_project_or_404(db, project_id)
-    _chunk, body = await zip_export.first_chunk(
-        zip_export.iter_project_zip(db, settings, project)
-    )
+    _chunk, body = await zip_export.first_chunk(zip_export.iter_project_zip(db, settings, project))
 
     return StreamingResponse(
         body,
@@ -71,4 +69,3 @@ async def update_project(
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_project(project_id: int, db: AsyncSession = Depends(get_db)) -> None:
     await projects_service.delete_project(db, project_id)
-

@@ -34,8 +34,8 @@ from app.schemas.library import (
     ModelRelocateIn,
     ModelSummary,
 )
-from app.services import derivatives, jobs as jobs_service
-from app.services import layout, library, spool, zip_export
+from app.services import derivatives, layout, library, spool, zip_export
+from app.services import jobs as jobs_service
 from app.services import projects as projects_service
 from app.services import storage_backends as storage_backends_service
 from app.services.http_names import content_disposition_attachment
@@ -412,7 +412,13 @@ async def explode_plates(
         await db.commit()
         project_id = proj.id
     else:
-        project_id = model.project_id
+        proj = await projects_service.create_project(
+            db,
+            name=model.name,
+            description=f"Plateaux extraits de {model.name}",
+            parent_id=model.project_id,
+        )
+        project_id = proj.id
 
     created_models: list[Model] = []
     for plate in plates:
@@ -502,7 +508,9 @@ async def explode_plates(
             )
             try:
                 await anyio.to_thread.run_sync(
-                    lambda: backend.copy(target_file.storage_path, dest_storage_path)
+                    lambda src=target_file.storage_path, dst=dest_storage_path: backend.copy(
+                        src, dst
+                    )
                 )
             except Exception:
                 dest_storage_path = target_file.storage_path
@@ -570,4 +578,3 @@ async def merge_models_endpoint(
 
     merged = await library.merge_models(db, backend, settings, target, sources)
     return await library.build_model_detail(db, merged, settings)
-

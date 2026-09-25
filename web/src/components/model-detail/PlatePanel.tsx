@@ -57,7 +57,7 @@ function plateCaption(plate: PlateOut, settings: AppSettings | undefined): strin
     ? estimatePrintCost({ filament_g: plate.weight_g, duration_s: plate.prediction_s }, settings)
     : null;
   const parts = [
-    `Plate ${plate.index}`,
+    plate.name ? `${plate.name} (P${plate.index})` : `Plate ${plate.index}`,
     plate.prediction_s !== null ? humanizeDuration(plate.prediction_s) : null,
     plate.weight_g !== null ? `${Math.round(plate.weight_g)} g` : null,
     cost !== null ? `Est. cost: ${formatPrintCost(cost)}` : null,
@@ -94,14 +94,14 @@ function PlateCard({
         {plate.thumbnail_available ? (
           <img
             src={`/api/blobs/${blobHash}/plates/${plate.index}/thumb`}
-            alt={`Plate ${plate.index}`}
+            alt={plate.name ? `${plate.name} (Plate ${plate.index})` : `Plate ${plate.index}`}
             className="h-full w-full object-cover"
           />
         ) : (
           <ImageIcon className="size-8 text-muted-foreground" />
         )}
         <div className="absolute top-1.5 left-1.5 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white shadow-xs">
-          Plate {plate.index}
+          {plate.name ? `${plate.name} (P${plate.index})` : `Plate ${plate.index}`}
         </div>
       </div>
       <p className="text-xs text-muted-foreground">{plateCaption(plate, settings.data)}</p>
@@ -136,7 +136,7 @@ function PlateCard({
             }}
           >
             <PrinterIcon className="size-3" />
-            <span>Print Plate {plate.index}</span>
+            <span>Print {plate.name ? plate.name : `Plate ${plate.index}`}</span>
           </Button>
         </div>
       ) : null}
@@ -222,8 +222,9 @@ export function PlatePanel({
                         `${exploded.length} plateaux éclatés en pièces individuelles !`,
                       );
                       // Navigate to the project folder so the user sees the exploded plates
-                      if (projectId != null) {
-                        void navigate({ to: "/", search: { project: projectId } });
+                      const targetProject = exploded[0]?.project_id ?? projectId;
+                      if (targetProject != null) {
+                        void navigate({ to: "/", search: { project: targetProject } });
                       } else {
                         void navigate({ to: "/" });
                       }

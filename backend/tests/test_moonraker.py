@@ -1,0 +1,181 @@
+import io
+import zipfile
+from pathlib import Path
+
+import httpx
+
+from app.models.enums import PrinterKind, PrintJobState
+from app.printers.base import PrinterConnection, PrintSpec
+from app.printers.moonraker import (
+    MoonrakerAdapter,
+    extract_gcode_bytes,
+    normalize_base_url,
+)
+from app.printers.registry import build_adapter
+
+_ORIG_CLIENT = httpx.Client
+
+CONN = PrinterConnection(host="192.168.1.100:7125", serial="QIDIQ201", access_code="my-api-key")
+
+
+def test_normalize_base_url():
+    assert normalize_base_url("192.168.1.50") == "http://192.168.1.50"
+    assert normalize_base_url("192.168.1.50:7125") == "http://192.168.1.50:7125"
+    assert normalize_base_url("http://192.168.1.50:7125/") == "http://192.168.1.50:7125"
+    assert normalize_base_url("https://printer.local") == "https://printer.local"
+
+
+def test_moonraker_adapter_instantiation():
+    adapter = build_adapter(PrinterKind.MOONRAKER, CONN)
+    assert isinstance(adapter, MoonrakerAdapter)
+    assert adapter.base_url == "http://192.168.1.100:7125"
+    assert adapter._get_headers() == {"X-Api-Key": "my-api-key"}
+
+
+def test_extract_gcode_bytes_raw(tmp_path: Path):
+    gcode_file = tmp_path / "test.gcode"
+    gcode_file.write_bytes(b"G28\nG1 X10 Y10\n")
+    name, data = extract_gcode_bytes(gcode_file)
+    assert name == "test.gcode"
+    assert data == b"G28\nG1 X10 Y10\n"
+
+
+def test_extract_gcode_bytes_3mf(tmp_path: Path):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("Metadata/plate_1.gcode", b"; Plate 1 gcode\nM104 S200\n")
+        zf.writestr("3D/3dmodel.model", b"<model/>")
+    archive = tmp_path / "model.gcode.3mf"
+    archive.write_bytes(buf.getvalue())
+
+    name, data = extract_gcode_bytes(archive, plate=1)
+    assert name.endswith(".gcode")
+    assert data == b"; Plate 1 gcode\nM104 S200\n"
+
+
+def test_test_connection_success(monkeypatch):
+    adapter = MoonrakerAdapter(CONN)
+
+    def handler(request: httpx.Request):
+        if request.url.path == "/server/info":
+            return httpx.Response(200, json={"result": {"moonraker_version": "0.8.0"}})
+        if request.url.path == "/printer/info":
+            return httpx.Response(200, json={"result": {"state": "ready"}})
+        if request.url.path == "/printer/objects/query":
+            return httpx.Response(
+                200, json={"result": {"status": {"print_stats": {"state": "standby"}}}}
+            )
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(httpx, "Client", lambda **kw: _ORIG_CLIENT(transport=transport, **kw))
+
+    result = adapter.test_connection()
+    assert result.ok is True
+    assert "Moonraker v0.8.0" in result.detail
+    assert result.gcode_state == "IDLE"
+
+
+def test_test_connection_auth_failure(monkeypatch):
+    adapter = MoonrakerAdapter(CONN)
+
+    def handler(request: httpx.Request):
+        return httpx.Response(401, text="Unauthorized")
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(httpx, "Client", lambda **kw: _ORIG_CLIENT(transport=transport, **kw))
+
+    result = adapter.test_connection()
+    assert result.ok is False
+    assert "API Key required" in result.detail
+
+
+def test_request_full_status(monkeypatch):
+    adapter = MoonrakerAdapter(CONN)
+
+    status_data = {
+        "print_stats": {
+            "state": "printing",
+            "filename": "qidi_cube.gcode",
+            "print_duration": 300.0,
+            "info": {"current_layer": 15, "total_layer": 100},
+        },
+        "display_status": {"progress": 0.25},
+        "extruder": {"temperature": 220.5, "target": 220.0},
+        "heater_bed": {"temperature": 60.0, "target": 60.0},
+    }
+
+    def handler(request: httpx.Request):
+        return httpx.Response(200, json={"result": {"status": status_data}})
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(httpx, "Client", lambda **kw: _ORIG_CLIENT(transport=transport, **kw))
+
+    reports = []
+    adapter.set_report_handler(reports.append)
+    adapter.request_full_status()
+
+    assert len(reports) == 1
+    snap = reports[0]
+    assert snap["gcode_state"] == "RUNNING"
+    assert snap["mc_percent"] == 25
+    assert snap["layer_num"] == 15
+    assert snap["total_layer_num"] == 100
+    assert snap["nozzle_temper"] == 220.5
+    assert snap["bed_temper"] == 60.0
+    assert snap["subtask_name"] == "qidi_cube.gcode"
+
+    pub = adapter.public_state(snap)
+    assert pub.gcode_state == "RUNNING"
+    assert pub.mc_percent == 25
+
+    job_st = adapter.job_state(pub)
+    assert job_st == PrintJobState.PRINTING
+
+
+def test_pause_resume_stop(monkeypatch):
+    adapter = MoonrakerAdapter(CONN)
+    calls = []
+
+    def handler(request: httpx.Request):
+        calls.append(request.url.path)
+        return httpx.Response(200, json={"result": "ok"})
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(httpx, "Client", lambda **kw: _ORIG_CLIENT(transport=transport, **kw))
+
+    adapter.pause()
+    adapter.resume()
+    adapter.stop()
+
+    assert calls == [
+        "/printer/print/pause",
+        "/printer/print/resume",
+        "/printer/print/cancel",
+    ]
+
+
+def test_upload_and_start(tmp_path: Path, monkeypatch):
+    adapter = MoonrakerAdapter(CONN)
+    gcode = tmp_path / "print.gcode"
+    gcode.write_bytes(b"G28\n")
+
+    uploaded = {}
+
+    def handler(request: httpx.Request):
+        if request.url.path == "/server/files/upload":
+            uploaded["content_type"] = request.headers.get("content-type", "")
+            return httpx.Response(201, json={"result": {"print_started": True}})
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(httpx, "Client", lambda **kw: _ORIG_CLIENT(transport=transport, **kw))
+
+    spec = PrintSpec(
+        source_path=gcode,
+        remote_name="qidi.gcode",
+        plate=1,
+        subtask_name="print.gcode",
+    )
+    adapter.upload_and_start(spec)
+    assert "multipart/form-data" in uploaded["content_type"]

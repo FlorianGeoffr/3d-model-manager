@@ -10,8 +10,10 @@ set -euo pipefail
 if [[ -z "${PRIVDROP_DONE:-}" && ( -n "${PUID:-}" || -n "${PGID:-}" ) ]]; then
   PUID="${PUID:-1000}"; PGID="${PGID:-1000}"
   groupmod -o -g "$PGID" tdmm 2>/dev/null || groupadd -o -g "$PGID" tdmm
-  usermod  -o -u "$PUID" -g "$PGID" tdmm 2>/dev/null || useradd -o -u "$PUID" -g "$PGID" -M -s /usr/sbin/nologin tdmm
-  chown -R tdmm:tdmm /data /library 2>/dev/null || true
+  usermod  -o -u "$PUID" -g "$PGID" tdmm 2>/dev/null || useradd -o -u "$PUID" -g "$PGID" -m -d /home/tdmm -s /usr/sbin/nologin tdmm
+  mkdir -p /home/tdmm/.cache /tmp/.cache
+  chmod 1777 /tmp/.cache
+  chown -R tdmm:tdmm /home/tdmm /data /library 2>/dev/null || true
   export PRIVDROP_DONE=1
   exec gosu tdmm:tdmm "$0" "$@"
 fi

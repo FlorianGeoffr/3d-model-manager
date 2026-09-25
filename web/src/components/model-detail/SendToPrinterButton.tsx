@@ -13,7 +13,7 @@
  * it just now owns the `open` state itself and renders its trigger button
  * as a plain sibling instead of a `DialogTrigger`.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { PrinterIcon } from "lucide-react";
 
 import { ApiError } from "@/api/client";
@@ -24,13 +24,20 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
-export function SendToPrinterButton({ file }: { file: FileOut }) {
+export function SendToPrinterButton({
+  file,
+  initialPlate,
+}: {
+  file: FileOut;
+  initialPlate?: number;
+}) {
   const features = useFeatures();
   const enabled = !!features.data?.printer_enabled;
   const printers = usePrinters({ enabled });
   const [open, setOpen] = useState(false);
 
-  if (!enabled || file.format !== "gcode_3mf" || !printers.data || printers.data.length === 0) return null;
+  const isPrintable = file.format === "gcode_3mf" || file.format === "gcode";
+  if (!enabled || !isPrintable || !printers.data || printers.data.length === 0) return null;
   return (
     <>
       <Button
@@ -42,12 +49,18 @@ export function SendToPrinterButton({ file }: { file: FileOut }) {
       >
         <PrinterIcon className="size-4" />
       </Button>
-      <SendToPrinterDialog file={file} printers={printers.data} open={open} onOpenChange={setOpen} />
+      <SendToPrinterDialog
+        file={file}
+        printers={printers.data}
+        open={open}
+        onOpenChange={setOpen}
+        initialPlate={initialPlate}
+      />
     </>
   );
 }
 
-/** `{ file, printers, open, onOpenChange, onSuccess? }` -- the plate/AMS
+/** `{ file, printers, open, onOpenChange, onSuccess?, initialPlate? }` -- the plate/AMS
  * form + submit mutation are unchanged from before the extraction.
  * `onSuccess` fires (in addition to closing the dialog) after a successful
  * start-print mutation, letting a caller react to "this file is now on its
@@ -58,32 +71,44 @@ export function SendToPrinterDialog({
   open,
   onOpenChange,
   onSuccess,
+  initialPlate,
 }: {
   file: FileOut;
   printers: PrinterOut[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSuccess?: () => void;
+  initialPlate?: number;
 }) {
   const [printerId, setPrinterId] = useState(printers[0].id);
-  const [plate, setPlate] = useState(file.meta?.plates?.[0]?.index ?? 1);
+  const [plate, setPlate] = useState(initialPlate ?? file.meta?.plates?.[0]?.index ?? 1);
   const [useAms, setUseAms] = useState(false);
   const [bedLevelling, setBedLevelling] = useState(true);
   const [flowCali, setFlowCali] = useState(true);
   const [timelapse, setTimelapse] = useState(false);
+
+  useEffect(() => {
+    if (initialPlate !== undefined) {
+      setPlate(initialPlate);
+    }
+  }, [initialPlate, open]);
+  const selectedPrinter = printers.find((p) => p.id === printerId);
+  const isMoonraker = selectedPrinter?.kind === "moonraker";
   const start = useStartPrint(printerId);
   const plates = file.meta?.plates ?? [];
+
+  const [copies, setCopies] = useState(1);
 
   function submit() {
     start.mutate(
       {
         file_id: file.id,
         plate,
-        use_ams: useAms,
+        use_ams: isMoonraker ? false : useAms,
         ams_mapping: [0],
-        bed_levelling: bedLevelling,
-        flow_cali: flowCali,
-        timelapse,
+        bed_levelling: isMoonraker ? false : bedLevelling,
+        flow_cali: isMoonraker ? false : flowCali,
+        timelapse: isMoonraker ? false : timelapse,
       },
       {
         onSuccess: () => {
@@ -110,7 +135,7 @@ export function SendToPrinterDialog({
               <SelectContent>
                 {printers.map((p) => (
                   <SelectItem key={p.id} value={String(p.id)}>
-                    {p.name}
+                    {p.name} {p.kind === "moonraker" ? "(Klipper)" : ""}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -126,27 +151,42 @@ export function SendToPrinterDialog({
                 <SelectContent>
                   {plates.map((pl) => (
                     <SelectItem key={pl.index} value={String(pl.index)}>
-                      Plate {pl.index}
+                      {pl.name ? `${pl.name} (Plate ${pl.index})` : `Plate ${pl.index}`}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </label>
           ) : null}
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={useAms} onChange={(e) => setUseAms(e.target.checked)} /> Use AMS
+          <label className="block text-sm">
+            Nombre à imprimer (copies)
+            <input
+              type="number"
+              min={1}
+              value={copies}
+              onChange={(e) => setCopies(Math.max(1, parseInt(e.target.value) || 1))}
+              className="mt-1 block w-full rounded-md border border-input bg-transparent px-3 py-1.5 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            />
           </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={bedLevelling} onChange={(e) => setBedLevelling(e.target.checked)} /> Bed
-            levelling
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={flowCali} onChange={(e) => setFlowCali(e.target.checked)} /> Flow
-            calibration
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={timelapse} onChange={(e) => setTimelapse(e.target.checked)} /> Timelapse
-          </label>
+          {!isMoonraker ? (
+            <>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={useAms} onChange={(e) => setUseAms(e.target.checked)} /> Use AMS
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={bedLevelling} onChange={(e) => setBedLevelling(e.target.checked)} /> Bed
+                levelling
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={flowCali} onChange={(e) => setFlowCali(e.target.checked)} /> Flow
+                calibration
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={timelapse} onChange={(e) => setTimelapse(e.target.checked)} /> Timelapse
+              </label>
+            </>
+          ) : null}
+
           {start.isError ? (
             <p role="alert" className="text-sm text-destructive">
               {start.error instanceof ApiError ? start.error.detail : "Could not start print"}

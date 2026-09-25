@@ -61,6 +61,9 @@ def file_key(slug: str, dir_name: str, rel_path: str) -> str:
     return f"{slug}/{dir_name}/{rel_path}"
 
 
+file_storage_path = file_key
+
+
 def sidecar_key(slug: str) -> str:
     """Storage key for a model's ``.3dmm.json`` sidecar."""
     return f"{slug}/{SIDECAR_NAME}"

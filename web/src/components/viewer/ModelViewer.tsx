@@ -431,9 +431,10 @@ function BoundsRefitter({
 // Front). `iso` normalizes to the same evenly-weighted corner direction the
 // default `OrthographicCamera` position (`[1.2, 1.2, 1.2]`) already sits on,
 // so picking it lands on the familiar default three-quarter framing.
+// For top, a tiny Z epsilon avoids gimbal lock / collinearity with default up=(0,1,0).
 const CAMERA_PRESET_DIRECTIONS: Record<Exclude<CameraPreset, null>, THREE.Vector3> = {
   iso: new THREE.Vector3(1, 1, 1).normalize(),
-  top: new THREE.Vector3(0, 1, 0),
+  top: new THREE.Vector3(0, 1, 0.0001).normalize(),
   front: new THREE.Vector3(0, 0, 1),
   side: new THREE.Vector3(1, 0, 0),
 };

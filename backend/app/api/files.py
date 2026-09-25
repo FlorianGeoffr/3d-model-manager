@@ -227,8 +227,22 @@ async def _download_file(
     blob = await db.get(Blob, file.blob_hash)
 
     if member == "gcode":
-        if blob is None or blob.format is not BlobFormat.GCODE_3MF:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "member=gcode needs a gcode_3mf file")
+        if blob is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "blob not found")
+        if blob.format is BlobFormat.GCODE:
+            try:
+                iterator = await anyio.to_thread.run_sync(backend.read, file.storage_path)
+            except StorageKeyNotFound as exc:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "file missing from storage") from exc
+            return StreamingResponse(
+                iterate_in_threadpool(iterator),
+                media_type="text/x-gcode",
+                headers={"Content-Length": str(blob.size)},
+            )
+        if blob.format is not BlobFormat.GCODE_3MF:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, "member=gcode needs a gcode or gcode_3mf file"
+            )
         try:
             tmp_path = await anyio.to_thread.run_sync(
                 _spool_to_temp_file, backend, file.storage_path
@@ -332,6 +346,37 @@ async def download_file_with_filename(
     )
 
 
+@public_router.get("/{file_id}/download/{token}/{filename}")
+async def download_file_with_token_and_filename(
+    file_id: int,
+    token: str,
+    filename: str,
+    member: str | None = Query(None, description="'gcode' extracts a .gcode.3mf's embedded gcode"),
+    plate: int | None = Query(None, description="Plate index for member=gcode; default lowest"),
+    inline: bool = Query(
+        False, description="R13c: render pdf/txt/md inline instead of downloading"
+    ),
+    tdmm_session: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> StreamingResponse:
+    """Token-in-path variant for desktop slicers (OrcaSlicer, BambuStudio)
+    that extract the downloaded file extension strictly from the end of the URL
+    path without stripping query strings.
+    """
+    return await _download_file(
+        file_id,
+        url_filename=filename,
+        member=member,
+        plate=plate,
+        token=token,
+        inline=inline,
+        tdmm_session=tdmm_session,
+        db=db,
+        settings=settings,
+    )
+
+
 class SlicerLinkResponse(BaseModel):
     url: str
     expires_at: datetime
@@ -383,5 +428,5 @@ async def create_slicer_link(
     expires_at = datetime.now(UTC) + timedelta(seconds=signed_urls.DEFAULT_TTL_S)
     origin = _absolute_origin(request, settings)
     filename = quote(PurePosixPath(file.rel_path).name, safe="")
-    url = f"{origin}/api/files/{file_id}/download/{filename}?token={quote(token, safe='')}"
+    url = f"{origin}/api/files/{file_id}/download/{quote(token, safe='')}/{filename}"
     return SlicerLinkResponse(url=url, expires_at=expires_at)

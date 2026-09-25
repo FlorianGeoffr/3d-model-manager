@@ -29,11 +29,23 @@ export type BlobFormat = (typeof BLOB_FORMATS)[number];
 
 export type BlobKind = "mesh" | "cad" | "sliced" | "gcode" | "image" | "doc" | "other";
 
+export type PrintStatus = "idle" | "to_print" | "printing" | "printed" | "finishing" | "failed";
+
+export interface ModelProjectOut {
+  id: number;
+  name: string;
+  slug: string;
+  color: TagColor | null;
+  icon?: string | null;
+  parent_id?: number | null;
+}
+
 // -- models (backend/app/schemas/library.py) -------------------------------
 
 export interface ModelCreate {
   name: string;
   description?: string | null;
+  project_id?: number | null;
 }
 
 export interface ModelPatch {
@@ -48,6 +60,11 @@ export interface ModelPatch {
   is_archived?: boolean;
   // R13b: single category assignment -- `null` clears it.
   category_id?: number | null;
+  // Project assignment and manufacturing workflow tracking
+  project_id?: number | null;
+  print_status?: PrintStatus | null;
+  quantity_target?: number;
+  quantity_printed?: number;
   // R13c: freeform key/value custom fields (`MetadataEditor`) and a
   // freeform print-tips note -- both `null` clear the field entirely.
   metadata?: Record<string, string> | null;
@@ -70,6 +87,8 @@ export interface ModelBulkIn {
   add_tags?: string[];
   remove_tags?: string[];
   favorite?: boolean;
+  project_id?: number | null;
+  print_status?: PrintStatus | null;
 }
 
 export interface ModelBulkOut {
@@ -131,6 +150,14 @@ export interface ModelSummary {
   // the same backend join and always agree.
   category_id?: number | null;
   category?: CategoryOut | null;
+  // Project assignment and manufacturing workflow tracking
+  project_id?: number | null;
+  project?: ModelProjectOut | null;
+  print_status?: PrintStatus | null;
+  quantity_target?: number;
+  quantity_printed?: number;
+  // R13c: free-form key/value metadata (e.g. plate_index, parent_model_slug for exploded models)
+  metadata?: Record<string, string> | null;
 }
 
 export interface GalleryPage {
@@ -149,6 +176,7 @@ export interface PlateFilamentOut {
 
 export interface PlateOut {
   index: number;
+  name?: string | null;
   prediction_s: number | null;
   weight_g: number | null;
   thumbnail_available: boolean;
@@ -276,6 +304,12 @@ export interface ModelDetail {
   // R13b (categories): mirrors `ModelSummary.category`/`category_id` above.
   category_id?: number | null;
   category?: CategoryOut | null;
+  // Project assignment and manufacturing workflow tracking
+  project_id?: number | null;
+  project?: ModelProjectOut | null;
+  print_status?: PrintStatus | null;
+  quantity_target?: number;
+  quantity_printed?: number;
   // R13c: freeform key/value custom fields + a freeform print-tips note.
   metadata: Record<string, string> | null;
   print_tips: string | null;
@@ -348,6 +382,40 @@ export interface CategoryCreate {
 export interface CategoryPatch {
   name?: string;
   color?: TagColor | null;
+}
+
+// -- projects --------------------------------------------------------
+
+export interface ProjectOut {
+  id: number;
+  name: string;
+  slug: string;
+  description: string | null;
+  color: TagColor | null;
+  icon: string | null;
+  parent_id: number | null;
+  created_at: string;
+  updated_at: string;
+  model_count: number;
+  total_quantity_target: number;
+  total_quantity_printed: number;
+  progress_pct: number;
+}
+
+export interface ProjectCreate {
+  name: string;
+  description?: string | null;
+  color?: TagColor | null;
+  icon?: string | null;
+  parent_id?: number | null;
+}
+
+export interface ProjectPatch {
+  name?: string;
+  description?: string | null;
+  color?: TagColor | null;
+  icon?: string | null;
+  parent_id?: number | null;
 }
 
 // -- uploads (backend/app/schemas/uploads.py) --------------------------------
@@ -571,7 +639,7 @@ export interface StatsOut {
   material_usage: { material_id: number | null; name: string; grams: number; prints: number }[];
 }
 
-export type PrinterKind = "bambu_lan";
+export type PrinterKind = "bambu_lan" | "moonraker";
 
 export interface PrinterOut {
   id: number;
@@ -590,13 +658,14 @@ export interface PrinterCreate {
   name: string;
   kind?: PrinterKind;
   host: string;
-  serial: string;
-  access_code: string;
+  serial?: string;
+  access_code?: string;
   model?: string | null;
   enabled?: boolean;
   options?: Record<string, unknown>;
   build_volume_mm?: { x: number; y: number; z: number } | null;
 }
+
 
 export interface PrinterUpdate {
   name?: string;
@@ -636,6 +705,15 @@ export interface AmsTray {
   material: string | null;
 }
 
+export interface PrinterCameraOut {
+  available: boolean;
+  name: string;
+  stream_url: string | null;
+  snapshot_url: string | null;
+  aspect_ratio: string | null;
+  direct_stream_url: string | null;
+}
+
 export interface PrinterStatusOut {
   online: boolean;
   gcode_state: string | null;
@@ -649,6 +727,7 @@ export interface PrinterStatusOut {
   subtask_name: string | null;
   wifi_signal: string | null;
   trays: AmsTray[];
+  light_on?: boolean | null;
 }
 
 export type PrintJobState =

@@ -69,13 +69,10 @@ class DerivativeStatus(StrEnum):
 
 
 class PrinterKind(StrEnum):
-    """Discriminates ``PrinterAdapter`` implementations (SPEC ``printers.kind``).
-
-    Only ``bambu_lan`` ships in v1; future adapters (Moonraker/Klipper,
-    OctoPrint, PrusaLink) add members here without core changes.
-    """
+    """Discriminates ``PrinterAdapter`` implementations (SPEC ``printers.kind``)."""
 
     BAMBU_LAN = "bambu_lan"
+    MOONRAKER = "moonraker"
 
 
 class PrintJobState(StrEnum):

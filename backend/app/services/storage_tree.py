@@ -101,7 +101,11 @@ async def get_storage_tree(db: AsyncSession, settings: Settings, path: str) -> S
             await db.execute(
                 select(Model)
                 .where(Model.slug == first_segment)
-                .options(selectinload(Model.tags), selectinload(Model.category))
+                .options(
+                    selectinload(Model.tags),
+                    selectinload(Model.category),
+                    selectinload(Model.project),
+                )
             )
         ).scalar_one_or_none()
         if model_row is not None:

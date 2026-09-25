@@ -75,6 +75,7 @@ class PrinterPublicState:
     # "material": str|None}]. Plain dicts (not a nested dataclass) so
     # `dataclasses.asdict` -> `json.dumps` round-trips them into Redis unchanged.
     trays: list[dict] = field(default_factory=list)
+    light_on: bool | None = None
 
 
 def state_key(printer_id: int) -> str:
@@ -115,3 +116,11 @@ class PrinterAdapter(ABC):
     def public_state(self, merged: dict) -> PrinterPublicState: ...
     @abstractmethod
     def job_state(self, public: PrinterPublicState) -> PrintJobState | None: ...
+
+    def get_camera_urls(self) -> dict[str, str | None]:
+        """Return camera info {'name': str, 'stream_url': str, ...} if supported."""
+        return {}
+
+    def set_light(self, on: bool) -> None:  # noqa: B027
+        """Control enclosure/chamber light if supported."""
+        pass

@@ -5,6 +5,7 @@ import { ClockIcon, FileStackIcon, StarIcon, XIcon } from "lucide-react";
 
 import { modelQueryOptions, usePatchModel, useTagColorMap } from "@/api/library";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { PrintStatusBadge } from "@/components/gallery/PrintStatusBadge";
 import { OpenInSlicerButton } from "@/components/model-detail/OpenInSlicerButton";
 import { SendToPrinterButton } from "@/components/model-detail/SendToPrinterButton";
 import { Badge } from "@/components/ui/badge";
@@ -32,8 +33,11 @@ export function ModelCard({
   model,
   index,
   selected = false,
+  selectedIds,
+  selectMode = false,
   onSelectChange,
   onModifiedClick,
+  onMergeModels,
 }: {
   model: ModelSummary;
   /** This card's position in the gallery's flat item list -- used only for
@@ -43,13 +47,21 @@ export function ModelCard({
   /** Selection is implicit (no separate select-mode toggle): the checkbox
    * always exists, shown on hover or once `selected`. */
   selected?: boolean;
+  /** All currently selected IDs for dragging multi-selection */
+  selectedIds?: Set<number>;
+  /** Explicit selection mode active */
+  selectMode?: boolean;
   onSelectChange?: (id: number, next: boolean) => void;
   /** Ctrl/Cmd/Shift+click range/toggle select (R9-A item 6): fired instead
    * of navigating when the card's `<Link>` is clicked with a modifier held. */
   onModifiedClick?: (event: React.MouseEvent, index: number) => void;
+  /** Callback fired when other model cards are dropped on this card to merge */
+  onMergeModels?: (target: ModelSummary, sourceIds: number[]) => void;
 }) {
   const [coverErrored, setCoverErrored] = useState(false);
   const [renderErrored, setRenderErrored] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const [isDragOverCard, setIsDragOverCard] = useState(false);
   // R9-A item 1: the hover-render `<img>` only gets a `src` once the card's
   // actually been hovered -- until then it stays mounted (so the opacity
   // crossfade still works once it does) but src-less, so the browser never
@@ -113,23 +125,104 @@ export function ModelCard({
   // R9-A item 6: a modified click selects instead of navigating. Any
   // modified click auto-enters select mode via the parent's handler.
   function onLinkClick(event: React.MouseEvent) {
-    if (onModifiedClick && (event.shiftKey || event.metaKey || event.ctrlKey)) {
+    if (event.shiftKey || event.metaKey || event.ctrlKey) {
       event.preventDefault();
-      onModifiedClick(event, index ?? 0);
+      onModifiedClick?.(event, index ?? 0);
+      return;
+    }
+    if ((selectedIds && selectedIds.size > 0) || selectMode) {
+      event.preventDefault();
+      // Plain click in select mode: just toggle this card -- don't delegate
+      // to handleModifiedClick which would set the lastSelectedIndex anchor
+      // and is intended for modifier clicks only.
+      onSelectChange?.(model.id, !selected);
     }
   }
+
+  function handleDragStart(e: React.DragEvent) {
+    const ids =
+      selected && selectedIds && selectedIds.size > 0
+        ? Array.from(selectedIds)
+        : [model.id];
+    const payload = JSON.stringify({ ids, sourceModelId: model.id, sourceSlug: model.slug });
+    e.dataTransfer.setData("application/json", payload);
+    e.dataTransfer.setData("text/plain", payload);
+    e.dataTransfer.effectAllowed = "move";
+    setIsDragging(true);
+  }
+
+  function handleDragEnd() {
+    setIsDragging(false);
+  }
+
+  function handleCardDragOver(e: React.DragEvent) {
+    if (e.dataTransfer.types.includes("application/json")) {
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = "move";
+      setIsDragOverCard(true);
+    }
+  }
+
+  function handleCardDragLeave(e: React.DragEvent) {
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setIsDragOverCard(false);
+    }
+  }
+
+  function handleCardDrop(e: React.DragEvent) {
+    setIsDragOverCard(false);
+    const raw = e.dataTransfer.getData("application/json");
+    if (!raw) return;
+    try {
+      const data = JSON.parse(raw);
+      let ids: number[] = [];
+      if (Array.isArray(data.ids)) ids = data.ids;
+      else if (data.sourceModelId) ids = [data.sourceModelId];
+
+      const otherIds = ids.filter((id) => id !== model.id);
+      if (otherIds.length > 0) {
+        e.preventDefault();
+        e.stopPropagation();
+        onMergeModels?.(model, otherIds);
+      }
+    } catch {}
+  }
+
+  // If this model was created by explode-plates, land directly on its G-code tab + plate.
+  const plateIndex = model.metadata?.plate_index ? Number(model.metadata.plate_index) : undefined;
 
   return (
     <Link
       to="/models/$slug"
       params={{ slug: model.slug }}
-      className="group block"
+      search={plateIndex !== undefined ? { tab: "gcode", plate: plateIndex } : undefined}
+      draggable
+      onDragStart={handleDragStart}
+      onDragEnd={handleDragEnd}
+      onDragOver={handleCardDragOver}
+      onDragLeave={handleCardDragLeave}
+      onDrop={handleCardDrop}
+      className={cn("group block transition-opacity", isDragging && "opacity-40")}
       preload="intent"
       onClick={onLinkClick}
       onPointerEnter={onIntent}
       onFocus={onIntent}
     >
-      <Card className="h-full gap-3 overflow-hidden py-0 pb-4 transition-shadow hover:shadow-md">
+      <Card
+        className={cn(
+          "relative h-full flex flex-col gap-0 overflow-hidden py-0 pb-0 transition-all hover:shadow-md",
+          selected && "ring-2 ring-primary border-primary",
+          isDragOverCard && "ring-2 ring-primary border-primary scale-[1.02]",
+        )}
+      >
+        {isDragOverCard && (
+          <div className="absolute inset-0 z-30 bg-primary/20 backdrop-blur-[2px] border-2 border-dashed border-primary rounded-xl flex flex-col items-center justify-center p-3 text-center pointer-events-none animate-in fade-in">
+            <div className="bg-background/95 border border-border text-foreground font-semibold text-xs px-3 py-1.5 rounded-full shadow-lg flex items-center gap-1.5">
+              <span>Fusionner dans {model.name}</span>
+            </div>
+          </div>
+        )}
         <div className="relative aspect-[4/3] overflow-hidden bg-muted">
           {showCover ? (
             <>
@@ -139,7 +232,8 @@ export function ModelCard({
                 loading="lazy"
                 decoding="async"
                 fetchPriority="low"
-                className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.04] motion-reduce:transition-none motion-reduce:group-hover:scale-100"
+                draggable={false}
+                className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.04] motion-reduce:transition-none motion-reduce:group-hover:scale-100 pointer-events-none"
                 onError={() => setCoverErrored(true)}
               />
               {showRenderHover && (
@@ -151,7 +245,11 @@ export function ModelCard({
                   loading="lazy"
                   decoding="async"
                   fetchPriority="low"
-                  className="absolute inset-0 h-full w-full object-cover opacity-0 transition-opacity duration-300 group-hover:opacity-100 motion-reduce:transition-none"
+                  draggable={false}
+                  className={cn(
+                    "absolute inset-0 h-full w-full object-cover transition-opacity duration-300 motion-reduce:transition-none pointer-events-none",
+                    hovered ? "opacity-100" : "opacity-0",
+                  )}
                   onError={() => setRenderErrored(true)}
                 />
               )}
@@ -175,14 +273,26 @@ export function ModelCard({
                 the card body is a whole-surface `<Link>`, and Radix's
                 checkbox click would otherwise bubble up and navigate away
                 instead of toggling selection. */}
-            <span className="contents" onClick={stopCardNavigation}>
+            <span
+              className="contents"
+              onClick={(e) => {
+                stopCardNavigation(e);
+                if (e.shiftKey || e.ctrlKey || e.metaKey) {
+                  onModifiedClick?.(e, index ?? 0);
+                } else {
+                  onSelectChange?.(model.id, !selected);
+                  if (onModifiedClick) onModifiedClick(e, index ?? 0);
+                }
+              }}
+            >
               <Checkbox
                 checked={selected}
-                onCheckedChange={(checked) => onSelectChange?.(model.id, checked === true)}
                 aria-label={`Select ${model.name}`}
                 className={cn(
                   "bg-background/80 backdrop-blur-sm transition-opacity",
-                  selected ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
+                  selected || selectMode
+                    ? "opacity-100 ring-2 ring-primary/40"
+                    : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
                 )}
               />
             </span>
@@ -262,51 +372,105 @@ export function ModelCard({
             </div>
           )}
         </div>
-        <CardContent className="flex flex-col gap-2 px-4">
-          <div className="flex items-center gap-1.5">
-            <h3 className="truncate text-sm font-medium" title={model.name}>
-              {model.name}
-            </h3>
-            {model.category && (
-              <Badge variant="outline" className="shrink-0 gap-1">
-                <span
-                  aria-hidden="true"
-                  className={cn("size-1.5 rounded-full", tagColorClass(model.category.color) ?? "bg-muted-foreground")}
-                />
-                {model.category.name}
-              </Badge>
+        <CardContent className="flex flex-col flex-1 justify-between gap-2 px-3.5 pt-2.5 pb-3">
+          <div className="flex flex-col gap-1.5 min-w-0">
+            <div className="flex flex-col gap-1 min-w-0">
+              <h3 className="line-clamp-1 text-sm font-semibold leading-snug text-foreground" title={model.name}>
+                {model.name}
+              </h3>
+              {(model.project || model.category) && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {model.project && (
+                    <Badge
+                      variant="outline"
+                      className="shrink-0 gap-1 text-[10px] px-1.5 py-0 h-4.5 font-normal max-w-[130px]"
+                      data-testid="project-badge"
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={cn("size-1.5 rounded-full shrink-0", tagColorClass(model.project.color) ?? "bg-muted-foreground")}
+                      />
+                      <span className="truncate">{model.project.name}</span>
+                    </Badge>
+                  )}
+                  {model.category && (
+                    <Badge
+                      variant="outline"
+                      className="shrink-0 gap-1 text-[10px] px-1.5 py-0 h-4.5 font-normal text-muted-foreground max-w-[110px]"
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={cn("size-1.5 rounded-full shrink-0", tagColorClass(model.category.color) ?? "bg-muted-foreground")}
+                      />
+                      <span className="truncate">{model.category.name}</span>
+                    </Badge>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <SpecRow data-testid="model-spec" items={specItems} />
+
+            {(visibleTags.length > 0 || visibleFormats.length > 0) && (
+              <div className="flex flex-wrap items-center gap-1">
+                {visibleTags.map((tag) => (
+                  <Badge
+                    key={tag}
+                    variant="secondary"
+                    className={cn("text-[10px] h-4.5 px-1.5 py-0 font-normal", tagColorClass(tagColors[tag]))}
+                  >
+                    {tag}
+                  </Badge>
+                ))}
+                {overflowCount > 0 && (
+                  <Badge variant="outline" className="text-[10px] h-4.5 px-1 py-0 font-normal">
+                    +{overflowCount}
+                  </Badge>
+                )}
+
+                <div className="inline-flex flex-wrap items-center gap-1" data-testid="format-badges">
+                  {visibleFormats.map((format) => {
+                    const ChipIcon = formatIcon(format);
+                    return (
+                      <Badge
+                        key={format}
+                        variant="outline"
+                        className="gap-1 text-[10px] h-4.5 px-1.5 py-0 font-mono font-normal text-muted-foreground border-border/70"
+                      >
+                        <ChipIcon className="size-2.5" />
+                        {FORMAT_LABELS[format]}
+                      </Badge>
+                    );
+                  })}
+                  {formatOverflowCount > 0 && (
+                    <Badge variant="outline" className="text-[10px] h-4.5 px-1 py-0 font-normal">
+                      +{formatOverflowCount}
+                    </Badge>
+                  )}
+                </div>
+              </div>
             )}
           </div>
 
-          <SpecRow data-testid="model-spec" items={specItems} />
-
-          {visibleTags.length > 0 && (
-            <div className="flex min-h-5 flex-wrap gap-1">
-              {visibleTags.map((tag) => (
-                <Badge key={tag} variant="secondary" className={tagColorClass(tagColors[tag])}>
-                  {tag}
-                </Badge>
-              ))}
-              {overflowCount > 0 && <Badge variant="outline">+{overflowCount}</Badge>}
-            </div>
-          )}
-
-          <div className="flex flex-wrap gap-1" data-testid="format-badges">
-            {visibleFormats.map((format) => {
-              const ChipIcon = formatIcon(format);
-              return (
-                <Badge key={format} variant="outline" className="gap-1">
-                  <ChipIcon className="size-3" />
-                  {FORMAT_LABELS[format]}
-                </Badge>
-              );
-            })}
-            {formatOverflowCount > 0 && <Badge variant="outline">+{formatOverflowCount}</Badge>}
+          <div className="flex items-center justify-between gap-1.5 pt-2 border-t border-border/50 min-w-0">
+            <span className="contents" onClick={stopCardNavigation}>
+              <PrintStatusBadge
+                status={model.print_status}
+                quantityTarget={model.quantity_target}
+                quantityPrinted={model.quantity_printed}
+                onChangeStatus={(nextStatus) => patchModel.mutate({ print_status: nextStatus })}
+                onChangeQuantity={(printed, target) =>
+                  patchModel.mutate({ quantity_printed: printed, quantity_target: target })
+                }
+              />
+            </span>
+            <p
+              className="font-mono text-[10px] text-muted-foreground truncate shrink min-w-0 text-right"
+              title={`Updated ${formatDate(model.updated_at)}`}
+            >
+              Updated {formatDate(model.updated_at)}
+            </p>
           </div>
-
-          <p className="font-mono text-xs text-muted-foreground">
-            Updated {formatDate(model.updated_at)}
-          </p>
         </CardContent>
       </Card>
     </Link>

@@ -165,14 +165,7 @@ def _parse_slice_info(data: bytes | None) -> list[dict]:
 
 def parse_model_settings(data: bytes | None) -> dict[int, dict[str, str | None]]:
     """Parse ``model_settings.config``'s per-plate ``plater_id`` ->
-    ``{gcode_file, thumbnail_file}`` mapping.
-
-    Public (unlike this module's other parse helpers) because
-    ``app.pipeline.thumbs``' ``extract_embedded_thumbs`` step reuses it
-    directly to resolve per-plate thumbnail paths, independent of
-    ``slice_info.config`` (which a plain, unsliced project ``3mf`` never
-    has) -- see ``parse_gcode_3mf`` below for the sliced ``gcode_3mf`` case
-    that joins this same mapping against ``slice_info.config``'s plates.
+    ``{gcode_file, thumbnail_file, name}`` mapping.
     """
     if data is None:
         return {}
@@ -190,6 +183,7 @@ def parse_model_settings(data: bytes | None) -> dict[int, dict[str, str | None]]
         result[plater_id] = {
             "gcode_file": meta.get("gcode_file"),
             "thumbnail_file": meta.get("thumbnail_file"),
+            "name": meta.get("plater_name") or meta.get("name"),
         }
     return result
 
@@ -222,9 +216,11 @@ def parse_gcode_3mf(path: Path) -> SlicedMeta:
     for info in plate_infos:
         index = info["index"]
         files = plate_files.get(index, {}) if index is not None else {}
+        plate_name = files.get("name") or info.get("name")
         plates.append(
             {
                 "index": index,
+                "name": plate_name,
                 "prediction_s": info["prediction_s"],
                 "weight_g": info["weight_g"],
                 "gcode_file": files.get("gcode_file"),

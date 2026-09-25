@@ -11,6 +11,7 @@ import { api } from "@/api/client";
 import type {
   DetectSerialIn,
   DetectSerialOut,
+  PrinterCameraOut,
   PrinterCreate,
   PrinterOut,
   PrinterStatusOut,
@@ -112,6 +113,14 @@ export function usePrinterCommand(id: number) {
   });
 }
 
+export function useTogglePrinterLight(id: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (on?: boolean) => api.post<void>(`/printers/${id}/light`, on !== undefined ? { on } : {}),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["printers", id, "status"] }),
+  });
+}
+
 /** Polls `GET /print-jobs`, stopping once every job in the current page has
  * reached a terminal state (mirrors `useJob`'s terminal-state stop). */
 export function usePrintJobs(printerId?: number) {
@@ -129,3 +138,13 @@ export function useStartPrint(printerId: number) {
     onSuccess: () => void qc.invalidateQueries({ queryKey: ["print-jobs"] }),
   });
 }
+
+export function usePrinterCamera(id: number, options?: { enabled?: boolean }) {
+  return useQuery({
+    queryKey: ["printers", id, "camera"] as const,
+    queryFn: () => api.get<PrinterCameraOut>(`/printers/${id}/camera`),
+    enabled: options?.enabled ?? true,
+    staleTime: 30000,
+  });
+}
+

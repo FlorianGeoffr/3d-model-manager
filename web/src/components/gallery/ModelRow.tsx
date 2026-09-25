@@ -4,6 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { FileStackIcon, StarIcon } from "lucide-react";
 
 import { modelQueryOptions, usePatchModel, useTagColorMap } from "@/api/library";
+import { PrintStatusBadge } from "@/components/gallery/PrintStatusBadge";
 import { OpenInSlicerButton } from "@/components/model-detail/OpenInSlicerButton";
 import { SendToPrinterButton } from "@/components/model-detail/SendToPrinterButton";
 import { Badge } from "@/components/ui/badge";
@@ -26,18 +27,31 @@ export function ModelRow({
   model,
   index,
   selected = false,
+  selectedIds,
+  selectMode = false,
   onSelectChange,
   onModifiedClick,
+  onMergeModels,
 }: {
   model: ModelSummary;
   /** Position in the gallery's flat item list -- ctrl/cmd/shift+click range
    * selection, same contract as `ModelCard`. */
   index?: number;
   selected?: boolean;
+  /** All currently selected IDs for dragging multi-selection */
+  selectedIds?: Set<number>;
+  /** Explicit selection mode active */
+  selectMode?: boolean;
   onSelectChange?: (id: number, next: boolean) => void;
+  /** Ctrl/Cmd/Shift+click range/toggle select (R9-A item 6): fired instead
+   * of navigating when the card's `<Link>` is clicked with a modifier held. */
   onModifiedClick?: (event: React.MouseEvent, index: number) => void;
+  /** Callback fired when other model cards/rows are dropped on this row to merge */
+  onMergeModels?: (target: ModelSummary, sourceIds: number[]) => void;
 }) {
   const [coverErrored, setCoverErrored] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const [isDragOverRow, setIsDragOverRow] = useState(false);
   const patchModel = usePatchModel(model.slug);
   const queryClient = useQueryClient();
   const tagColors = useTagColorMap();
@@ -60,31 +74,110 @@ export function ModelRow({
   }
 
   function onLinkClick(event: React.MouseEvent) {
-    if (onModifiedClick && (event.shiftKey || event.metaKey || event.ctrlKey)) {
+    if (event.shiftKey || event.metaKey || event.ctrlKey) {
       event.preventDefault();
-      onModifiedClick(event, index ?? 0);
+      onModifiedClick?.(event, index ?? 0);
+      return;
     }
+    if ((selectedIds && selectedIds.size > 0) || selectMode) {
+      event.preventDefault();
+      // Plain click in select mode: just toggle -- modifier clicks call onModifiedClick.
+      onSelectChange?.(model.id, !selected);
+    }
+  }
+
+  function handleDragStart(e: React.DragEvent) {
+    const ids =
+      selected && selectedIds && selectedIds.size > 0
+        ? Array.from(selectedIds)
+        : [model.id];
+    const payload = JSON.stringify({ ids, sourceModelId: model.id, sourceSlug: model.slug });
+    e.dataTransfer.setData("application/json", payload);
+    e.dataTransfer.setData("text/plain", payload);
+    e.dataTransfer.effectAllowed = "move";
+    setIsDragging(true);
+  }
+
+  function handleDragEnd() {
+    setIsDragging(false);
+  }
+
+  function handleRowDragOver(e: React.DragEvent) {
+    if (e.dataTransfer.types.includes("application/json")) {
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = "move";
+      setIsDragOverRow(true);
+    }
+  }
+
+  function handleRowDragLeave(e: React.DragEvent) {
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setIsDragOverRow(false);
+    }
+  }
+
+  function handleRowDrop(e: React.DragEvent) {
+    setIsDragOverRow(false);
+    const raw = e.dataTransfer.getData("application/json");
+    if (!raw) return;
+    try {
+      const data = JSON.parse(raw);
+      let ids: number[] = [];
+      if (Array.isArray(data.ids)) ids = data.ids;
+      else if (data.sourceModelId) ids = [data.sourceModelId];
+
+      const otherIds = ids.filter((id) => id !== model.id);
+      if (otherIds.length > 0) {
+        e.preventDefault();
+        e.stopPropagation();
+        onMergeModels?.(model, otherIds);
+      }
+    } catch {}
   }
 
   return (
     <Link
       to="/models/$slug"
       params={{ slug: model.slug }}
-      className="group flex items-center gap-3 rounded-lg border border-transparent px-2 hover:border-border hover:bg-muted/50"
+      draggable
+      onDragStart={handleDragStart}
+      onDragEnd={handleDragEnd}
+      onDragOver={handleRowDragOver}
+      onDragLeave={handleRowDragLeave}
+      onDrop={handleRowDrop}
+      className={cn(
+        "group relative flex items-center gap-3 rounded-lg border border-transparent px-2 hover:border-border hover:bg-muted/50 transition-all",
+        isDragging && "opacity-40",
+        selected && "ring-2 ring-primary border-primary bg-primary/5",
+        isDragOverRow && "ring-2 ring-primary border-primary bg-primary/15",
+      )}
       style={{ height: LIST_ROW_HEIGHT_PX }}
       preload="intent"
       onClick={onLinkClick}
       onPointerEnter={onIntent}
       onFocus={onIntent}
     >
-      <span className="contents" onClick={stopRowNavigation}>
+      <span
+        className="contents"
+        onClick={(e) => {
+          stopRowNavigation(e);
+          if (e.shiftKey || e.ctrlKey || e.metaKey) {
+            onModifiedClick?.(e, index ?? 0);
+          } else {
+            onSelectChange?.(model.id, !selected);
+            if (onModifiedClick) onModifiedClick(e, index ?? 0);
+          }
+        }}
+      >
         <Checkbox
           checked={selected}
-          onCheckedChange={(checked) => onSelectChange?.(model.id, checked === true)}
           aria-label={`Select ${model.name}`}
           className={cn(
             "shrink-0 transition-opacity",
-            selected ? "opacity-100" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
+            selected || selectMode
+              ? "opacity-100 ring-2 ring-primary/40"
+              : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
           )}
         />
       </span>
@@ -97,7 +190,8 @@ export function ModelRow({
             loading="lazy"
             decoding="async"
             fetchPriority="low"
-            className="size-full object-cover"
+            draggable={false}
+            className="size-full object-cover pointer-events-none"
             onError={() => setCoverErrored(true)}
           />
         ) : (
@@ -112,6 +206,15 @@ export function ModelRow({
           <h3 className="truncate text-sm font-medium" title={model.name}>
             {model.name}
           </h3>
+          {model.project && (
+            <Badge variant="outline" className="shrink-0 gap-1" data-testid="project-badge">
+              <span
+                aria-hidden="true"
+                className={cn("size-1.5 rounded-full", tagColorClass(model.project.color) ?? "bg-muted-foreground")}
+              />
+              {model.project.name}
+            </Badge>
+          )}
           {model.category && (
             <Badge variant="outline" className="shrink-0 gap-1">
               <span
@@ -136,6 +239,18 @@ export function ModelRow({
           ))}
         </div>
       </div>
+
+      <span className="contents" onClick={stopRowNavigation}>
+        <PrintStatusBadge
+          status={model.print_status}
+          quantityTarget={model.quantity_target}
+          quantityPrinted={model.quantity_printed}
+          onChangeStatus={(nextStatus) => patchModel.mutate({ print_status: nextStatus })}
+          onChangeQuantity={(printed, target) =>
+            patchModel.mutate({ quantity_printed: printed, quantity_target: target })
+          }
+        />
+      </span>
 
       <div className="hidden shrink-0 items-center gap-1 text-xs text-muted-foreground sm:flex" data-testid="model-row-meta">
         <FileStackIcon className="size-3" />

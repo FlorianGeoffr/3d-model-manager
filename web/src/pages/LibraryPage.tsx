@@ -4,6 +4,10 @@ import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import {
   ArchiveIcon,
   BookmarkIcon,
+  CheckCircle2Icon,
+  CheckSquareIcon,
+  FileIcon,
+  FolderInputIcon,
   FolderTreeIcon,
   LayoutGridIcon,
   ListIcon,
@@ -14,25 +18,44 @@ import {
   StarIcon,
   TagIcon,
   Trash2Icon,
+  UploadCloudIcon,
   XIcon,
 } from "lucide-react";
 import { toast } from "sonner";
+import { useQueryClient } from "@tanstack/react-query";
 
 import { useCategories } from "@/api/categories";
 import { useFollowedCollections } from "@/api/collections";
-import { useBulkDeleteModels, useBulkUpdateModels, useModelsQuery, useTags } from "@/api/library";
+import {
+  useBulkDeleteModels,
+  useBulkUpdateModels,
+  useCreateModel,
+  useMergeModels,
+  useModelsQuery,
+  useTags,
+} from "@/api/library";
+import { useProjects } from "@/api/projects";
 import { useEnqueueModel } from "@/api/queue";
 import { useTriggerScan } from "@/api/scan";
+import { uploadFilesWithDuplicateHandling } from "@/lib/uploadHelper";
 import { ApiError } from "@/api/client";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { FolderBrowser } from "@/components/gallery/FolderBrowser";
 import { ModelCard } from "@/components/gallery/ModelCard";
 import { ModelRow } from "@/components/gallery/ModelRow";
 import { NewModelDialog } from "@/components/gallery/NewModelDialog";
+import { ProjectFolderView } from "@/components/gallery/ProjectFolderView";
+import { getProjectIcon } from "@/lib/projectIcons";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -41,8 +64,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useHotkeys } from "@/hooks/useHotkeys";
 import { chunkIntoRows, columnsForWidth, estimateListRowHeight, estimateRowHeight } from "@/lib/grid";
 import { useDebouncedValue } from "@/lib/format";
-import { BLOB_FORMATS, type BlobFormat, type ModelSummary } from "@/api/types";
+import { BLOB_FORMATS, type BlobFormat, type ModelSummary, type PrintStatus } from "@/api/types";
 import { FORMAT_LABELS } from "@/lib/formatMeta";
+import { ALL_PRINT_STATUSES, getPrintStatusMeta } from "@/lib/printStatus";
 import { tagColorClass } from "@/lib/tagColors";
 import { cn } from "@/lib/utils";
 import type { LibrarySearch } from "@/pages/librarySearch";
@@ -148,10 +172,20 @@ export function LibraryPage() {
   // see the update. Setting it writes back to the URL (`goToCategory`
   // below) rather than local state, which is what makes the sidebar's own
   // links (and the browser back button) agree with these chips.
-  const activeCategory = search.category;
+  const activeCategory = search.category !== undefined ? Number(search.category) : undefined;
+  const activeProject = search.project !== undefined ? Number(search.project) : undefined;
+  const activePrintStatus = search.print_status;
 
   function goToCategory(next: number | undefined) {
     void navigate({ to: "/", search: (prev: LibrarySearch) => ({ ...prev, category: next }) });
+  }
+
+  function goToProject(next: number | undefined) {
+    void navigate({ to: "/", search: (prev: LibrarySearch) => ({ ...prev, project: next }) });
+  }
+
+  function goToPrintStatus(next: string | undefined) {
+    void navigate({ to: "/", search: (prev: LibrarySearch) => ({ ...prev, print_status: next }) });
   }
   const [sort, setSort] = useState<string>("-updated_at");
   const [viewMode, setViewMode] = useState<ViewMode>(loadViewMode);
@@ -180,9 +214,9 @@ export function LibraryPage() {
     });
   }
 
-  // Selection is implicit (no select-mode toggle button): per-visit UI
-  // state only, same as the facets above -- never persisted, never written
-  // to the URL.
+  // Selection state: can be triggered via explicit "Sélectionner" button or
+  // by modifier clicks / checkbox clicks.
+  const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   // R9-A item 6: the anchor for shift+click range selection -- the index of
   // the most recently (modified-)clicked card, cleared whenever selection is
@@ -193,9 +227,40 @@ export function LibraryPage() {
   // focus is inside the selection bar -- can open it.
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
 
+  // Model merge dialog state
+  const mergeModels = useMergeModels();
+  const [mergeConfirmState, setMergeConfirmState] = useState<{
+    target: ModelSummary;
+    sources: ModelSummary[];
+  } | null>(null);
+
+  function handleMergeModels(target: ModelSummary, sourceIds: number[]) {
+    const sources = items.filter((m) => sourceIds.includes(m.id) && m.id !== target.id);
+    if (sources.length === 0) return;
+    setMergeConfirmState({ target, sources });
+  }
+
+  async function confirmMerge() {
+    if (!mergeConfirmState) return;
+    const { target, sources } = mergeConfirmState;
+    try {
+      await mergeModels.mutateAsync({
+        targetSlug: target.slug,
+        sourceSlugs: sources.map((s) => s.slug),
+      });
+      toast.success(`Fichiers fusionnés dans "${target.name}" avec succès !`);
+      clearSelection();
+    } catch {
+      toast.error("Impossible de fusionner les modèles");
+    } finally {
+      setMergeConfirmState(null);
+    }
+  }
+
   function clearSelection() {
     setSelectedIds(new Set());
     setLastSelectedIndex(null);
+    setSelectMode(false);
   }
 
   function toggleSelected(id: number, next: boolean) {
@@ -203,6 +268,10 @@ export function LibraryPage() {
       const updated = new Set(prev);
       if (next) updated.add(id);
       else updated.delete(id);
+      if (updated.size === 0) {
+        setSelectMode(false);
+        setLastSelectedIndex(null);
+      }
       return updated;
     });
   }
@@ -212,7 +281,7 @@ export function LibraryPage() {
    * index, adding to the existing selection rather than replacing it. */
   function handleModifiedClick(event: React.MouseEvent, index: number) {
     if (event.shiftKey) {
-      const anchor = lastSelectedIndex ?? index;
+      const anchor = lastSelectedIndex !== null ? lastSelectedIndex : index;
       const [lo, hi] = anchor <= index ? [anchor, index] : [index, anchor];
       const rangeIds = items.slice(lo, hi + 1).map((model) => model.id);
       setSelectedIds((prev) => new Set([...prev, ...rangeIds]));
@@ -229,6 +298,14 @@ export function LibraryPage() {
   const activeCollectionTitle = collections.find((collection) => collection.id === activeCollection)?.title;
   const categoriesQuery = useCategories();
   const categories = categoriesQuery.data ?? [];
+  const projectsQuery = useProjects();
+  const projects = projectsQuery.data ?? [];
+
+  const isSearching = Boolean(debouncedSearch.trim());
+  // When not searching and no project folder is open, only show root models (project: 0).
+  // When searching, search across all folders (project: undefined).
+  // When inside a folder, show models in that folder (project: activeProject).
+  const effectiveProject = activeProject !== undefined ? activeProject : (isSearching ? undefined : 0);
 
   const filters = useMemo(
     () => ({
@@ -238,6 +315,8 @@ export function LibraryPage() {
       has_sliced: slicedOnly || undefined,
       collection: activeCollection,
       category: activeCategory,
+      project: effectiveProject,
+      print_status: activePrintStatus,
       favorite: favoritesOnly || undefined,
       archived: archivedOnly || undefined,
       sort,
@@ -251,6 +330,8 @@ export function LibraryPage() {
       archivedOnly,
       activeCollection,
       activeCategory,
+      effectiveProject,
+      activePrintStatus,
       sort,
     ],
   );
@@ -391,8 +472,117 @@ export function LibraryPage() {
   const isEmpty = !modelsQuery.isLoading && items.length === 0;
   const tags = tagsQuery.data ?? [];
 
+  const dragCounter = useRef(0);
+  const [isDraggingFiles, setIsDraggingFiles] = useState(false);
+  const createModel = useCreateModel();
+  const queryClient = useQueryClient();
+
+  const currentProject = useMemo(() => {
+    return projects.find((p) => p.id === activeProject);
+  }, [projects, activeProject]);
+
+  useEffect(() => {
+    function onWindowDragOver(e: DragEvent) {
+      if (e.dataTransfer?.types?.includes("Files")) {
+        e.preventDefault();
+      }
+    }
+    function onWindowDrop(e: DragEvent) {
+      if (e.dataTransfer?.types?.includes("Files")) {
+        e.preventDefault();
+      }
+    }
+    window.addEventListener("dragover", onWindowDragOver);
+    window.addEventListener("drop", onWindowDrop);
+    return () => {
+      window.removeEventListener("dragover", onWindowDragOver);
+      window.removeEventListener("drop", onWindowDrop);
+    };
+  }, []);
+
+  async function uploadDroppedFiles(files: File[], targetProjectId: number | null) {
+    await uploadFilesWithDuplicateHandling({
+      files,
+      targetProjectId,
+      projects,
+      createModel: (data) => createModel.mutateAsync(data),
+      queryClient,
+      onNavigate: (slug) => void navigate({ to: "/models/$slug", params: { slug } }),
+    });
+  }
+
+  function handlePageDragEnter(e: React.DragEvent) {
+    e.preventDefault();
+    if (e.dataTransfer.types?.includes("Files")) {
+      dragCounter.current += 1;
+      setIsDraggingFiles(true);
+    }
+  }
+
+  function handlePageDragOver(e: React.DragEvent) {
+    e.preventDefault();
+    if (e.dataTransfer.types?.includes("Files")) {
+      e.dataTransfer.dropEffect = "copy";
+    }
+  }
+
+  function handlePageDragLeave(e: React.DragEvent) {
+    e.preventDefault();
+    if (e.dataTransfer.types?.includes("Files")) {
+      dragCounter.current -= 1;
+      if (dragCounter.current <= 0) {
+        dragCounter.current = 0;
+        setIsDraggingFiles(false);
+      }
+    }
+  }
+
+  async function handlePageDrop(e: React.DragEvent) {
+    e.preventDefault();
+    dragCounter.current = 0;
+    setIsDraggingFiles(false);
+
+    // If the drop was already handled by a child element (folder card, model card merge),
+    // the child called e.stopPropagation() which sets nativeEvent.cancelBubble = true.
+    // React synthetic events still bubble, but we can detect this via the nativeEvent.
+    if ((e.nativeEvent as Event & { cancelBubble?: boolean }).cancelBubble) return;
+
+    // Ignore internal card-to-card drag (not OS files)
+    if (e.dataTransfer.types.includes("application/json")) return;
+
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const files = Array.from(e.dataTransfer.files);
+      await uploadDroppedFiles(files, activeProject ?? null);
+    }
+  }
+
   return (
-    <div className="space-y-5">
+    <div
+      className="relative space-y-5 min-h-[calc(100vh-8rem)]"
+      onDragEnter={handlePageDragEnter}
+      onDragOver={handlePageDragOver}
+      onDragLeave={handlePageDragLeave}
+      onDrop={handlePageDrop}
+    >
+      {isDraggingFiles && (
+        <div className="fixed inset-0 z-50 bg-background/80 backdrop-blur-xs flex flex-col items-center justify-center p-6 text-center animate-in fade-in pointer-events-none">
+          <div className="flex flex-col items-center gap-4 max-w-lg p-10 rounded-2xl border-2 border-dashed border-primary bg-primary/10 shadow-2xl scale-105 transition-all">
+            <div className="p-4 rounded-full bg-primary/20 text-primary">
+              <UploadCloudIcon className="size-12 animate-bounce" />
+            </div>
+            <div className="space-y-1.5">
+              <h3 className="text-xl font-bold text-foreground">
+                {currentProject
+                  ? `Déposer pour importer dans "${currentProject.name}"`
+                  : "Déposer pour importer dans la bibliothèque"}
+              </h3>
+              <p className="text-sm text-muted-foreground">
+                Fichiers .stl, .3mf, .obj, .step déposés n'importe où dans la page seront importés automatiquement.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative max-w-sm flex-1">
@@ -419,6 +609,22 @@ export function LibraryPage() {
             </SelectContent>
           </Select>
           <div className="flex-1" />
+          <Button
+            type="button"
+            variant={selectMode || selectedIds.size > 0 ? "secondary" : "outline"}
+            className="gap-1.5"
+            onClick={() => {
+              if (selectMode || selectedIds.size > 0) {
+                clearSelection();
+              } else {
+                setSelectMode(true);
+              }
+            }}
+            title="Activer le mode sélection pour sélectionner, supprimer ou déplacer rapidement"
+          >
+            <CheckSquareIcon className={cn("size-4", (selectMode || selectedIds.size > 0) && "text-primary")} />
+            <span>{selectMode || selectedIds.size > 0 ? "Annuler sélection" : "Sélectionner"}</span>
+          </Button>
           <ViewModeToggle value={viewMode} onChange={handleViewModeChange} />
           <Button type="button" variant="outline" disabled={triggerScan.isPending} onClick={startScan}>
             <RefreshCwIcon className={triggerScan.isPending ? "animate-spin" : undefined} />
@@ -432,6 +638,37 @@ export function LibraryPage() {
             }
           />
         </div>
+
+        {/* Project Folders & Drag-and-drop management */}
+        {viewMode !== "folders" && (
+          <ProjectFolderView
+            activeProjectId={activeProject}
+            onSelectProject={goToProject}
+            totalModelsInView={items.length}
+          />
+        )}
+
+        {/* Manufacturing status facet */}
+        {viewMode !== "folders" && (
+          <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter by manufacturing status">
+            <FilterChip active={!activePrintStatus} onClick={() => goToPrintStatus(undefined)}>
+              All statuses
+            </FilterChip>
+            {ALL_PRINT_STATUSES.map((st) => {
+              const meta = getPrintStatusMeta(st);
+              return (
+                <FilterChip
+                  key={st}
+                  active={activePrintStatus === st}
+                  onClick={() => goToPrintStatus(activePrintStatus === st ? undefined : st)}
+                >
+                  <span aria-hidden="true" className={cn("size-1.5 rounded-full", meta.dotClass)} />
+                  {meta.label}
+                </FilterChip>
+              );
+            })}
+          </div>
+        )}
 
         {categories.length > 0 && viewMode !== "folders" && (
           <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter by category">
@@ -455,46 +692,71 @@ export function LibraryPage() {
         )}
 
         {viewMode !== "folders" && (
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-          <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter by format">
-            <FilterChip active={!activeFormat} onClick={() => setActiveFormat(undefined)}>
-              All
-            </FilterChip>
-            {BLOB_FORMATS.map((format) => (
-              <FilterChip
-                key={format}
-                active={activeFormat === format}
-                onClick={() => setActiveFormat(activeFormat === format ? undefined : format)}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Format (File type) Popover */}
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant={activeFormat ? "default" : "outline"}
+                size="sm"
+                className="h-8 gap-1.5 text-xs"
+                aria-label="Filter by format"
               >
-                {FORMAT_LABELS[format]}
-              </FilterChip>
-            ))}
-          </div>
-
-          <div className="hidden h-5 w-px bg-border sm:block" />
-
-          <Label className="flex items-center gap-2 text-sm font-normal">
-            <Checkbox
-              checked={slicedOnly}
-              onCheckedChange={(checked) => setSlicedOnly(checked === true)}
-            />
-            Sliced only
-          </Label>
-
-          <FilterChip active={favoritesOnly} onClick={() => setFavoritesOnly((prev) => !prev)}>
-            <StarIcon className={favoritesOnly ? "fill-current" : undefined} />
-            Favorites
-          </FilterChip>
-
-          <FilterChip active={archivedOnly} onClick={() => setArchivedOnly((prev) => !prev)}>
-            <ArchiveIcon />
-            Include archived
-          </FilterChip>
+                <FileIcon className="size-3.5" />
+                <span>{activeFormat ? `Format: ${FORMAT_LABELS[activeFormat]}` : "Format"}</span>
+                {activeFormat && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setActiveFormat(undefined);
+                    }}
+                    className="ml-0.5 rounded-full p-0.5 hover:bg-background/20"
+                    aria-label="Clear format filter"
+                  >
+                    <XIcon className="size-3" />
+                  </span>
+                )}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-64 p-3">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-xs font-medium text-muted-foreground pb-1.5 border-b border-border/50">
+                  <span>Type de fichier</span>
+                  {activeFormat && (
+                    <button
+                      type="button"
+                      onClick={() => setActiveFormat(undefined)}
+                      className="text-[11px] text-primary hover:underline"
+                    >
+                      Effacer
+                    </button>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter by format">
+                  <FilterChip active={!activeFormat} onClick={() => setActiveFormat(undefined)}>
+                    All
+                  </FilterChip>
+                  {BLOB_FORMATS.map((format) => (
+                    <FilterChip
+                      key={format}
+                      active={activeFormat === format}
+                      onClick={() => setActiveFormat(activeFormat === format ? undefined : format)}
+                    >
+                      {FORMAT_LABELS[format]}
+                    </FilterChip>
+                  ))}
+                </div>
+              </div>
+            </PopoverContent>
+          </Popover>
 
           <Popover>
             <PopoverTrigger asChild>
-              <Button type="button" variant="outline" size="sm">
-                <TagIcon /> {activeTag ? `Tag: ${activeTag}` : "Tags"}
+              <Button type="button" variant={activeTag ? "default" : "outline"} size="sm" className="h-8 gap-1.5 text-xs">
+                <TagIcon className="size-3.5" /> {activeTag ? `Tag: ${activeTag}` : "Tags"}
               </Button>
             </PopoverTrigger>
             <PopoverContent align="start" className="w-64">
@@ -551,6 +813,26 @@ export function LibraryPage() {
               </div>
             </PopoverContent>
           </Popover>
+
+          <div className="hidden h-5 w-px bg-border sm:block" />
+
+          <Label className="flex items-center gap-2 text-sm font-normal cursor-pointer">
+            <Checkbox
+              checked={slicedOnly}
+              onCheckedChange={(checked) => setSlicedOnly(checked === true)}
+            />
+            Sliced only
+          </Label>
+
+          <FilterChip active={favoritesOnly} onClick={() => setFavoritesOnly((prev) => !prev)}>
+            <StarIcon className={favoritesOnly ? "fill-current" : undefined} />
+            Favorites
+          </FilterChip>
+
+          <FilterChip active={archivedOnly} onClick={() => setArchivedOnly((prev) => !prev)}>
+            <ArchiveIcon />
+            Include archived
+          </FilterChip>
         </div>
         )}
       </div>
@@ -580,17 +862,23 @@ export function LibraryPage() {
           </div>
         </Card>
       ) : isEmpty ? (
-        <Card className="mx-auto mt-12 max-w-md">
-          <CardHeader className="items-center text-center">
-            <CardTitle>No models yet</CardTitle>
-            <CardDescription>Upload your first 3D model to get started.</CardDescription>
-          </CardHeader>
-          <div className="flex justify-center pb-4">
-            <Button asChild>
-              <Link to="/add">Add a model</Link>
-            </Button>
-          </div>
-        </Card>
+        activeProject !== undefined ? null : (
+          <Card className="mx-auto mt-8 max-w-md">
+            <CardHeader className="items-center text-center">
+              <CardTitle>{projects.length > 0 && !isSearching ? "Aucun modèle à la racine" : "No models yet"}</CardTitle>
+              <CardDescription>
+                {projects.length > 0 && !isSearching
+                  ? "Tous vos modèles sont organisés dans les dossiers ci-dessus. Glissez-en ici pour les sortir d'un dossier, ou ajoutez-en de nouveaux."
+                  : "Upload your first 3D model to get started."}
+              </CardDescription>
+            </CardHeader>
+            <div className="flex justify-center pb-4">
+              <Button asChild>
+                <Link to="/add">Add a model</Link>
+              </Button>
+            </div>
+          </Card>
+        )
       ) : (
         <>
           <div ref={gridRef} className="relative w-full" style={{ height: rowVirtualizer.getTotalSize() }}>
@@ -611,8 +899,11 @@ export function LibraryPage() {
                       model={model}
                       index={virtualRow.index}
                       selected={selectedIds.has(model.id)}
+                      selectedIds={selectedIds}
+                      selectMode={selectMode || selectedIds.size > 0}
                       onSelectChange={toggleSelected}
                       onModifiedClick={handleModifiedClick}
+                      onMergeModels={handleMergeModels}
                     />
                   </div>
                 );
@@ -641,8 +932,11 @@ export function LibraryPage() {
                       model={model}
                       index={virtualRow.index * columns + columnIndex}
                       selected={selectedIds.has(model.id)}
+                      selectedIds={selectedIds}
+                      selectMode={selectMode || selectedIds.size > 0}
                       onSelectChange={toggleSelected}
                       onModifiedClick={handleModifiedClick}
+                      onMergeModels={handleMergeModels}
                     />
                   ))}
                 </div>
@@ -658,9 +952,24 @@ export function LibraryPage() {
       {selectedItems.length > 0 && (
         <SelectionActionBar
           selectedItems={selectedItems}
+          totalAvailable={items.length}
+          onSelectAll={selectAll}
           onDone={clearSelection}
           deleteConfirmOpen={deleteConfirmOpen}
           onDeleteConfirmOpenChange={setDeleteConfirmOpen}
+        />
+      )}
+
+      {mergeConfirmState && (
+        <ConfirmDialog
+          open={Boolean(mergeConfirmState)}
+          onOpenChange={(open) => {
+            if (!open) setMergeConfirmState(null);
+          }}
+          title={`Fusionner dans "${mergeConfirmState.target.name}" ?`}
+          description={`Tous les fichiers de ${mergeConfirmState.sources.map((s) => `"${s.name}"`).join(", ")} seront regroupés dans "${mergeConfirmState.target.name}". ${mergeConfirmState.sources.length === 1 ? "Le modèle source sera supprimé." : "Les modèles sources seront supprimés."}`}
+          confirmLabel="Fusionner"
+          onConfirm={confirmMerge}
         />
       )}
     </div>
@@ -674,11 +983,15 @@ export function LibraryPage() {
  * through `useBulkDeleteModels` (`POST /models/bulk-delete`, Round 11 T1). */
 function SelectionActionBar({
   selectedItems,
+  totalAvailable,
+  onSelectAll,
   onDone,
   deleteConfirmOpen,
   onDeleteConfirmOpenChange,
 }: {
   selectedItems: ModelSummary[];
+  totalAvailable?: number;
+  onSelectAll?: () => void;
   onDone: () => void;
   deleteConfirmOpen: boolean;
   onDeleteConfirmOpenChange: (open: boolean) => void;
@@ -784,6 +1097,39 @@ function SelectionActionBar({
     }
   }
 
+  const projectsQuery = useProjects();
+  const projects = projectsQuery.data ?? [];
+
+  function assignProject(projectId: number | null) {
+    if (!claim()) return;
+    bulkUpdate.mutate(
+      { ids, project_id: projectId ?? 0 },
+      {
+        onSettled: release,
+        onSuccess: (result) => {
+          toast.success(
+            projectId
+              ? `Assigned ${result.updated} model${result.updated === 1 ? "" : "s"} to project`
+              : `Removed ${result.updated} model${result.updated === 1 ? "" : "s"} from project`,
+          );
+        },
+      },
+    );
+  }
+
+  function assignStatus(status: PrintStatus) {
+    if (!claim()) return;
+    bulkUpdate.mutate(
+      { ids, print_status: status },
+      {
+        onSettled: release,
+        onSuccess: (result) => {
+          toast.success(`Updated status of ${result.updated} model${result.updated === 1 ? "" : "s"}`);
+        },
+      },
+    );
+  }
+
   function deleteSelection() {
     if (!claim()) return;
     // No local onError: queryClient.ts's global MutationCache.onError
@@ -805,9 +1151,22 @@ function SelectionActionBar({
 
   return (
     <Card className="fixed inset-x-0 bottom-6 z-40 mx-auto w-fit flex-row items-center gap-3 px-4 py-2.5 shadow-lg">
-      <span className="text-sm font-medium">
-        {selectedItems.length} selected
-      </span>
+      <div className="flex items-center gap-2 pr-1 border-r border-border">
+        <span className="text-sm font-semibold">
+          {selectedItems.length} selected
+        </span>
+        {totalAvailable !== undefined && totalAvailable > 0 && onSelectAll && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            className="h-6 text-xs text-muted-foreground hover:text-foreground px-1.5"
+            onClick={selectedItems.length >= totalAvailable ? onDone : onSelectAll}
+          >
+            {selectedItems.length >= totalAvailable ? "Désélectionner" : `Tout (${totalAvailable})`}
+          </Button>
+        )}
+      </div>
 
       <Popover open={addTagOpen} onOpenChange={setAddTagOpen}>
         <PopoverTrigger asChild>
@@ -863,6 +1222,57 @@ function SelectionActionBar({
           )}
         </PopoverContent>
       </Popover>
+
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button type="button" variant="outline" size="sm" disabled={busy} title="Déplacer vers un dossier">
+            <FolderInputIcon className="size-3.5" /> Project
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="center" className="w-56">
+          <DropdownMenuItem onClick={() => assignProject(null)}>
+            <span className="flex items-center gap-2 text-muted-foreground">
+              <XIcon className="size-3.5" /> None (Unassign / Racine)
+            </span>
+          </DropdownMenuItem>
+          {projects.map((project) => {
+            const ProjIcon = getProjectIcon(project.icon);
+            return (
+              <DropdownMenuItem key={project.id} onClick={() => assignProject(project.id)}>
+                <span className="flex items-center gap-2">
+                  <ProjIcon className="size-3.5 text-muted-foreground shrink-0" />
+                  <span
+                    aria-hidden="true"
+                    className={cn("size-2 rounded-full shrink-0", tagColorClass(project.color) ?? "bg-muted-foreground")}
+                  />
+                  <span className="truncate">{project.name}</span>
+                </span>
+              </DropdownMenuItem>
+            );
+          })}
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button type="button" variant="outline" size="sm" disabled={busy}>
+            <CheckCircle2Icon className="size-3.5" /> Status
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="center" className="w-44">
+          {ALL_PRINT_STATUSES.map((st) => {
+            const meta = getPrintStatusMeta(st);
+            return (
+              <DropdownMenuItem key={st} onClick={() => assignStatus(st)}>
+                <span className="flex items-center gap-2">
+                  <span aria-hidden="true" className={cn("size-2 rounded-full", meta.dotClass)} />
+                  {meta.label}
+                </span>
+              </DropdownMenuItem>
+            );
+          })}
+        </DropdownMenuContent>
+      </DropdownMenu>
 
       <Button type="button" variant="outline" size="sm" disabled={busy} onClick={favoriteSelection}>
         <StarIcon /> Favorite

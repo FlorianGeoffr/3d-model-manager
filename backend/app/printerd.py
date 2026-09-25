@@ -30,7 +30,7 @@ import redis
 from sqlalchemy import select
 
 from app.config import Settings, get_settings
-from app.models import Printer, PrintJob
+from app.models import File, Model, Printer, PrintJob, Revision
 from app.models.enums import PrintJobState
 from app.printers.base import PrinterAdapter, PrinterPublicState, command_channel, state_key
 from app.printers.connection import connection_from_printer
@@ -98,6 +98,45 @@ class PrinterWorker:
             return
         with base.sync_session() as session:
             job = self._active_job(session)
+            if job is None:
+                active_states = (
+                    PrintJobState.PRINTING,
+                    PrintJobState.STARTING,
+                    PrintJobState.PAUSED,
+                )
+                if new_state in active_states:
+                    matched_file = None
+                    if public.subtask_name:
+                        matched_file = (
+                            session.execute(
+                                select(File)
+                                .where(
+                                    (File.rel_path == public.subtask_name)
+                                    | File.storage_path.like(f"%{public.subtask_name}")
+                                )
+                                .order_by(File.id.desc())
+                            )
+                            .scalars()
+                            .first()
+                        )
+                    if matched_file is None:
+                        matched_file = (
+                            session.execute(select(File).order_by(File.id.desc())).scalars().first()
+                        )
+
+                    if matched_file is not None:
+                        job = PrintJob(
+                            printer_id=self.printer_id,
+                            file_id=matched_file.id,
+                            subtask_name=public.subtask_name or matched_file.rel_path,
+                            state=new_state.value,
+                            started_at=datetime.now(UTC),
+                        )
+                        session.add(job)
+                        session.flush()
+                else:
+                    return
+
             if job is None or job.state == new_state.value:
                 return
             job.state = new_state.value
@@ -110,8 +149,37 @@ class PrinterWorker:
             now = datetime.now(UTC)
             if new_state == PrintJobState.PRINTING and job.started_at is None:
                 job.started_at = now
+                file = session.get(File, job.file_id)
+                if file and file.revision_id:
+                    rev = session.get(Revision, file.revision_id)
+                    if rev and rev.model_id:
+                        m = session.get(Model, rev.model_id)
+                        if m and (m.print_status is None or m.print_status in ("idle", "to_print")):
+                            m.print_status = "printing"
             if new_state in _TERMINAL:
                 job.finished_at = now
+            if new_state == PrintJobState.FINISHED:
+                from app.services.camera_snapshot import capture_and_save_finish_snapshot
+
+                capture_and_save_finish_snapshot(self.settings, session, job, self.adapter)
+
+                file = session.get(File, job.file_id)
+                if file and file.revision_id:
+                    rev = session.get(Revision, file.revision_id)
+                    if rev and rev.model_id:
+                        m = session.get(Model, rev.model_id)
+                        if m:
+                            m.quantity_printed += 1
+                            if m.quantity_printed >= m.quantity_target:
+                                m.print_status = "printed"
+            elif new_state == PrintJobState.FAILED:
+                file = session.get(File, job.file_id)
+                if file and file.revision_id:
+                    rev = session.get(Revision, file.revision_id)
+                    if rev and rev.model_id:
+                        m = session.get(Model, rev.model_id)
+                        if m and m.print_status == "printing":
+                            m.print_status = "failed"
             job_id = job.id
             session.commit()
         publish_print_job_event_sync(
@@ -128,6 +196,18 @@ class PrinterWorker:
             self.adapter.resume()
         elif command == "stop":
             self.adapter.stop()
+        elif command in ("toggle_light", "light_on", "light_off"):
+            if command == "toggle_light":
+                curr = self._merged.get("light_on") if self._merged else None
+                next_val = not curr if curr is not None else True
+            else:
+                next_val = command == "light_on"
+            self.adapter.set_light(next_val)
+            if self._merged is None:
+                self._merged = {}
+            self._merged["light_on"] = next_val
+            public = self.adapter.public_state(self._merged)
+            self.redis.set(state_key(self.printer_id), json.dumps(dataclasses.asdict(public)))
         else:
             log.warning("printerd: unknown command %r for printer %s", command, self.printer_id)
 

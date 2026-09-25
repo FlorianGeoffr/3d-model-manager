@@ -21,7 +21,6 @@ staging temp file before the atomic replace.
 
 from __future__ import annotations
 
-import fcntl
 import os
 import shutil
 import tempfile
@@ -41,13 +40,15 @@ _READ_CHUNK_SIZE = 1024 * 1024  # 1 MiB
 # behind) and so they're easy to recognize/clean up by hand.
 _TMP_PREFIX = ".tdmm-tmp-"
 
-# ``fcntl`` doesn't expose FICLONE as a named constant on every Python
-# build (CPython's fcntl module only wraps a fixed constant list). It's a
-# fixed Linux ioctl request code (see <linux/fs.h>: `_IOW(0x94, 9, int)`),
-# identical across x86_64/aarch64, so fall back to the literal value.
 try:
-    _FICLONE = fcntl.FICLONE
-except AttributeError:  # pragma: no cover - depends on platform/python build
+    import fcntl
+
+    try:
+        _FICLONE = fcntl.FICLONE
+    except AttributeError:  # pragma: no cover - depends on platform/python build
+        _FICLONE = 0x40049409
+except ImportError:  # pragma: no cover - Windows fallback
+    fcntl = None
     _FICLONE = 0x40049409
 
 
@@ -128,7 +129,8 @@ class LocalStorageBackend:
             # requirement 3 explicitly wants a "human-readable tree" a host
             # operator can inspect/back up directly -- so relax this back to
             # a normal 0644 before the atomic replace below publishes it).
-            os.fchmod(tmp_fd, 0o644)
+            if hasattr(os, "fchmod"):
+                os.fchmod(tmp_fd, 0o644)
             hasher = blake3()
             size = 0
             with os.fdopen(tmp_fd, "wb") as tmp_file:
@@ -217,7 +219,8 @@ class LocalStorageBackend:
         )
         # See the matching comment in write(): mkstemp forces 0600 regardless
         # of umask; relax it back to 0644 before this temp file is published.
-        os.fchmod(tmp_fd, 0o644)
+        if hasattr(os, "fchmod"):
+            os.fchmod(tmp_fd, 0o644)
         os.close(tmp_fd)
         tmp_path = Path(tmp_name)
         try:
@@ -243,6 +246,8 @@ class LocalStorageBackend:
         caller's atomic replace), ``False`` if the filesystem doesn't
         support it (caller falls back to a byte-for-byte copy).
         """
+        if fcntl is None:
+            return False
         with open(src_path, "rb") as src_f, open(tmp_path, "wb") as dst_f:
             try:
                 fcntl.ioctl(dst_f.fileno(), _FICLONE, src_f.fileno())

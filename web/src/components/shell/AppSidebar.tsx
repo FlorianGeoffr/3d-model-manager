@@ -9,13 +9,21 @@ import {
   TriangleAlertIcon,
 } from "lucide-react";
 
+import { toast } from "sonner";
+
+import { useQueryClient } from "@tanstack/react-query";
 import { useAuth, useLogout } from "@/api/auth";
 import { useCategories } from "@/api/categories";
 import { useFeatures } from "@/api/features";
 import { useFollowedCollections } from "@/api/collections";
 import { useFailedImportsCount } from "@/api/imports";
+import { useBulkUpdateModels, useCreateModel } from "@/api/library";
+import { useProjects } from "@/api/projects";
 import { useScanRuns } from "@/api/scan";
+import { uploadFilesWithDuplicateHandling } from "@/lib/uploadHelper";
 import type { ScanRunOut } from "@/api/types";
+import { ProjectDialog } from "@/components/projects/ProjectDialog";
+import { getProjectIcon } from "@/lib/projectIcons";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -168,7 +176,25 @@ export function AppSidebar({
   const failedImports = useFailedImportsCount();
   const followed = useFollowedCollections();
   const categories = useCategories();
+  const projects = useProjects();
+  const bulkUpdate = useBulkUpdateModels();
+  const [createProjectOpen, setCreateProjectOpen] = useState(false);
+  const [dragOverProjectId, setDragOverProjectId] = useState<number | null>(null);
   const [collapsed, setCollapsed] = useSidebarCollapsed();
+
+  const createModel = useCreateModel();
+  const queryClient = useQueryClient();
+
+  async function uploadFilesToProject(files: File[], targetProjectId: number | null) {
+    await uploadFilesWithDuplicateHandling({
+      files,
+      targetProjectId,
+      projects: projects.data ?? [],
+      createModel: (data) => createModel.mutateAsync(data),
+      queryClient,
+      onNavigate: (slug) => void navigate({ to: "/models/$slug", params: { slug } }),
+    });
+  }
 
   useEffect(() => {
     if (!mobileOpen) return;
@@ -207,10 +233,9 @@ export function AppSidebar({
       <aside
         className={cn(
           "fixed inset-y-0 left-0 z-50 flex w-64 shrink-0 flex-col border-r border-border bg-card transition-transform duration-150",
-          "lg:static lg:z-auto lg:w-auto lg:translate-x-0 lg:transition-[width]",
+          "lg:static lg:z-auto lg:w-auto lg:h-svh lg:translate-x-0 lg:transition-[width]",
           mobileOpen ? "translate-x-0" : "-translate-x-full",
-          collapsed && "lg:w-14",
-          !collapsed && "lg:w-56",
+          collapsed ? "lg:w-16" : "lg:w-64",
         )}
         onClick={(event) => {
           // Close the drawer on any nav click (an <a> inside) below `lg` --
@@ -218,23 +243,23 @@ export function AppSidebar({
           if ((event.target as HTMLElement).closest("a")) onCloseMobile();
         }}
       >
-        <div
-        className={cn(
-          "flex items-center justify-between gap-1 px-4 py-4",
-          collapsed && "justify-center px-2",
-        )}
-      >
-        {!collapsed && <span className="truncate text-base font-semibold tracking-tight">3D Model Manager</span>}
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          onClick={() => setCollapsed((prev) => !prev)}
-        >
-          <ChevronsLeftIcon className={cn("size-4 transition-transform", collapsed && "rotate-180")} />
-        </Button>
-      </div>
+        <div className="flex h-14 items-center justify-between px-4">
+          <div className="flex items-center gap-2">
+            <span className="flex size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground font-bold text-base shadow-xs">
+              3D
+            </span>
+            {!collapsed && <span className="font-semibold text-foreground">Model Manager</span>}
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            onClick={() => setCollapsed((prev) => !prev)}
+          >
+            <ChevronsLeftIcon className={cn("size-4 transition-transform", collapsed && "rotate-180")} />
+          </Button>
+        </div>
       <div className={cn("px-2 pb-2", collapsed && "px-1.5")}>
         <Button asChild className={cn("w-full gap-2", collapsed ? "justify-center px-0" : "justify-start")}>
           <Link to="/add" title={collapsed ? "Add to library" : undefined}>
@@ -244,7 +269,7 @@ export function AppSidebar({
         </Button>
       </div>
       <ScanChip collapsed={collapsed} />
-      <nav className="flex flex-1 flex-col gap-4 overflow-y-auto px-2 pb-2">
+      <nav className="flex flex-1 min-h-0 flex-col gap-4 overflow-y-auto px-2 pb-2">
         {visibleGroups.map((group) => (
           <div key={group.label} className="flex flex-col gap-1">
             {!collapsed && (
@@ -286,6 +311,109 @@ export function AppSidebar({
             ))}
           </div>
         ))}
+        {/* Projects section */}
+        {!collapsed && (
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center justify-between px-2.5 pb-1">
+              <span className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+                Projects
+              </span>
+              <button
+                type="button"
+                aria-label="Create project"
+                onClick={() => setCreateProjectOpen(true)}
+                className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+              >
+                <Plus className="size-3.5" />
+              </button>
+            </div>
+            {(projects.data ?? []).map((proj) => {
+              const isOver = dragOverProjectId === proj.id;
+              const ProjIcon = getProjectIcon(proj.icon);
+              return (
+                <Link
+                  key={proj.id}
+                  to="/"
+                  search={(prev: LibrarySearch) => ({ ...prev, project: proj.id })}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
+                    setDragOverProjectId(proj.id);
+                  }}
+                  onDragLeave={() => setDragOverProjectId(null)}
+                  onDrop={async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setDragOverProjectId(null);
+
+                    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                      await uploadFilesToProject(Array.from(e.dataTransfer.files), proj.id);
+                      return;
+                    }
+
+                    try {
+                      let ids: number[] = [];
+                      const rawJson = e.dataTransfer.getData("application/json");
+                      if (rawJson) {
+                        try {
+                          const data = JSON.parse(rawJson);
+                          if (Array.isArray(data.ids)) ids = data.ids;
+                        } catch {}
+                      }
+                      if (ids.length === 0) {
+                        const rawText = e.dataTransfer.getData("text/plain");
+                        if (rawText) {
+                          try {
+                            const data = JSON.parse(rawText);
+                            if (Array.isArray(data.ids)) ids = data.ids;
+                          } catch {}
+                        }
+                      }
+                      if (ids.length > 0) {
+                        bulkUpdate.mutate(
+                          { ids, project_id: proj.id },
+                          {
+                            onSuccess: (res) => {
+                              toast.success(
+                                `${res.updated} modèle${res.updated > 1 ? "s" : ""} déplacé${res.updated > 1 ? "s" : ""} vers ${proj.name}`,
+                              );
+                            },
+                          },
+                        );
+                      }
+                    } catch {}
+                  }}
+                  className={cn(
+                    "group flex flex-col gap-1 rounded-lg px-2.5 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground transition-all",
+                    isOver && "ring-2 ring-primary bg-primary/10 text-primary font-medium scale-[1.02]",
+                  )}
+                  activeProps={{ className: "bg-muted font-medium text-foreground" }}
+                >
+                  <div className="flex items-center gap-2">
+                    <ProjIcon className="size-3.5 shrink-0 text-muted-foreground group-hover:text-foreground" />
+                    <span
+                      aria-hidden="true"
+                      className={cn("size-1.5 shrink-0 rounded-full", tagColorClass(proj.color) ?? "bg-muted-foreground")}
+                    />
+                    <span className="truncate">{proj.name}</span>
+                    <span className="ml-auto text-xs tabular-mono text-muted-foreground">
+                      {proj.total_quantity_printed}/{proj.total_quantity_target}
+                    </span>
+                  </div>
+                  {proj.total_quantity_target > 0 && (
+                    <div className="h-1 w-full overflow-hidden rounded-full bg-muted-foreground/20">
+                      <div
+                        className="h-full bg-primary rounded-full transition-all duration-300"
+                        style={{ width: `${proj.progress_pct}%` }}
+                      />
+                    </div>
+                  )}
+                </Link>
+              );
+            })}
+          </div>
+        )}
+
         {/* Categories (R13b): NOT one of `navItems.ts`'s pages -- a
             dynamic, data-driven list like the Collections sublist above,
             just always visible (no parent nav item to nest under) rather
@@ -351,6 +479,8 @@ export function AppSidebar({
         </div>
       </div>
       </aside>
+
+      <ProjectDialog open={createProjectOpen} onOpenChange={setCreateProjectOpen} />
     </>
   );
 }

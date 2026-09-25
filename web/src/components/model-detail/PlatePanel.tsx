@@ -1,11 +1,19 @@
 import { lazy, Suspense, useState } from "react";
-import { ImageIcon, LayersIcon, LoaderCircleIcon } from "lucide-react";
+import { useNavigate } from "@tanstack/react-router";
+import { ImageIcon, LayersIcon, LoaderCircleIcon, PrinterIcon } from "lucide-react";
 
 import { useAppSettings } from "@/api/appSettings";
+import { useExplodePlates } from "@/api/library";
+import { useFeatures } from "@/api/features";
+import { usePrinters } from "@/api/printers";
 import { Button } from "@/components/ui/button";
 import { humanizeDuration } from "@/lib/format";
 import { estimatePrintCost, formatPrintCost } from "@/lib/printCost";
+import { cn } from "@/lib/utils";
 import type { AppSettings, FileOut, PlateOut } from "@/api/types";
+import { OpenInSlicerButton } from "@/components/model-detail/OpenInSlicerButton";
+import { SendToPrinterDialog } from "@/components/model-detail/SendToPrinterButton";
+import { toast } from "sonner";
 
 // `gcode-preview` drives its own three.js/WebGL renderer (Global Constraints
 // "BUNDLE RULE") — loaded only once someone actually asks to preview layers.
@@ -49,7 +57,7 @@ function plateCaption(plate: PlateOut, settings: AppSettings | undefined): strin
     ? estimatePrintCost({ filament_g: plate.weight_g, duration_s: plate.prediction_s }, settings)
     : null;
   const parts = [
-    `Plate ${plate.index}`,
+    plate.name ? `${plate.name} (P${plate.index})` : `Plate ${plate.index}`,
     plate.prediction_s !== null ? humanizeDuration(plate.prediction_s) : null,
     plate.weight_g !== null ? `${Math.round(plate.weight_g)} g` : null,
     cost !== null ? `Est. cost: ${formatPrintCost(cost)}` : null,
@@ -57,20 +65,44 @@ function plateCaption(plate: PlateOut, settings: AppSettings | undefined): strin
   return parts.filter((part): part is string => part !== null).join(" · ");
 }
 
-function PlateCard({ blobHash, plate }: { blobHash: string; plate: PlateOut }) {
+function PlateCard({
+  blobHash,
+  plate,
+  isSelected,
+  onSelect,
+  onPrint,
+  canPrint,
+}: {
+  blobHash: string;
+  plate: PlateOut;
+  isSelected?: boolean;
+  onSelect?: () => void;
+  onPrint?: () => void;
+  canPrint?: boolean;
+}) {
   const settings = useAppSettings();
   return (
-    <div className="w-48 shrink-0 space-y-2 rounded-lg border border-border p-3">
-      <div className="flex aspect-square items-center justify-center overflow-hidden rounded bg-muted">
+    <div
+      className={cn(
+        "w-48 shrink-0 space-y-2 rounded-lg border p-3 transition-all",
+        isSelected ? "border-primary ring-1 ring-primary bg-primary/5" : "border-border hover:border-muted-foreground/40",
+        onSelect && "cursor-pointer",
+      )}
+      onClick={onSelect}
+    >
+      <div className="relative flex aspect-square items-center justify-center overflow-hidden rounded bg-muted">
         {plate.thumbnail_available ? (
           <img
             src={`/api/blobs/${blobHash}/plates/${plate.index}/thumb`}
-            alt={`Plate ${plate.index}`}
+            alt={plate.name ? `${plate.name} (Plate ${plate.index})` : `Plate ${plate.index}`}
             className="h-full w-full object-cover"
           />
         ) : (
           <ImageIcon className="size-8 text-muted-foreground" />
         )}
+        <div className="absolute top-1.5 left-1.5 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium text-white shadow-xs">
+          {plate.name ? `${plate.name} (P${plate.index})` : `Plate ${plate.index}`}
+        </div>
       </div>
       <p className="text-xs text-muted-foreground">{plateCaption(plate, settings.data)}</p>
       {plate.filaments.length > 0 && (
@@ -92,6 +124,22 @@ function PlateCard({ blobHash, plate }: { blobHash: string; plate: PlateOut }) {
           ))}
         </div>
       )}
+      {canPrint && onPrint ? (
+        <div className="pt-1">
+          <Button
+            size="sm"
+            variant="outline"
+            className="w-full h-7 text-xs gap-1.5"
+            onClick={(e) => {
+              e.stopPropagation();
+              onPrint();
+            }}
+          >
+            <PrinterIcon className="size-3" />
+            <span>Print {plate.name ? plate.name : `Plate ${plate.index}`}</span>
+          </Button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -104,11 +152,31 @@ function PlateCard({ blobHash, plate }: { blobHash: string; plate: PlateOut }) {
  * `StudioSurface` shows beneath the assembly viewer when the model has both
  * ready GLB parts AND sliced files, so neither view has to hide behind the
  * other. */
-export function PlatePanel({ file, compact = false }: { file: FileOut; compact?: boolean }) {
+export function PlatePanel({
+  file,
+  modelSlug,
+  projectId,
+  compact = false,
+}: {
+  file: FileOut;
+  modelSlug?: string;
+  /** Project ID of the parent model, used to navigate to the folder after exploding plates */
+  projectId?: number | null;
+  compact?: boolean;
+}) {
   const plates = file.meta?.plates ?? [];
   const header = headerLine(file);
   const meta = metaLine(file);
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [selectedPlate, setSelectedPlate] = useState<number | undefined>(plates[0]?.index);
+  const [printDialogPlate, setPrintDialogPlate] = useState<number | null>(null);
+  const navigate = useNavigate();
+
+  const features = useFeatures();
+  const printerEnabled = !!features.data?.printer_enabled;
+  const printers = usePrinters({ enabled: printerEnabled });
+  const canPrint = printerEnabled && !!printers.data && printers.data.length > 0;
+  const explodePlatesMutation = useExplodePlates();
 
   return (
     <div className="space-y-3">
@@ -116,21 +184,69 @@ export function PlatePanel({ file, compact = false }: { file: FileOut; compact?:
       {!compact && meta ? <p className="text-sm text-muted-foreground">{meta}</p> : null}
       {!compact &&
         (previewOpen ? (
-          <Suspense
-            fallback={
-              <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
-                <LoaderCircleIcon className="size-4 animate-spin" />
-                Loading g-code preview…
-              </div>
-            }
-          >
-            <GcodePreview fileId={file.id} />
-          </Suspense>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-foreground">
+                G-code preview {selectedPlate !== undefined ? `— Plate ${selectedPlate}` : ""}
+              </span>
+              <Button variant="ghost" size="xs" onClick={() => setPreviewOpen(false)}>
+                Close preview
+              </Button>
+            </div>
+            <Suspense
+              fallback={
+                <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
+                  <LoaderCircleIcon className="size-4 animate-spin" />
+                  Loading g-code preview…
+                </div>
+              }
+            >
+              <GcodePreview fileId={file.id} plate={selectedPlate} />
+            </Suspense>
+          </div>
         ) : (
-          <Button variant="outline" size="sm" onClick={() => setPreviewOpen(true)}>
-            <LayersIcon className="size-4" />
-            Preview layers
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <OpenInSlicerButton file={file} size="default" />
+            <Button variant="outline" size="sm" onClick={() => setPreviewOpen(true)}>
+              <LayersIcon className="size-4" />
+              Preview layers {selectedPlate !== undefined && plates.length > 1 ? `(Plate ${selectedPlate})` : ""}
+            </Button>
+            {modelSlug && plates.length > 1 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  explodePlatesMutation.mutate(modelSlug, {
+                    onSuccess: (exploded) => {
+                      toast.success(
+                        `${exploded.length} plateaux éclatés en pièces individuelles !`,
+                      );
+                      // Navigate to the project folder so the user sees the exploded plates
+                      const targetProject = exploded[0]?.project_id ?? projectId;
+                      if (targetProject != null) {
+                        void navigate({ to: "/", search: { project: targetProject } });
+                      } else {
+                        void navigate({ to: "/" });
+                      }
+                    },
+                    onError: () => {
+                      toast.error("Échec de l'éclatement des plateaux");
+                    },
+                  });
+                }}
+                disabled={explodePlatesMutation.isPending}
+                className="gap-1.5"
+                title="Créer une entrée distincte par plateau dans le dossier du projet avec sa miniature et ses métriques"
+              >
+                <LayersIcon className="size-3.5 text-primary" />
+                <span>
+                  {explodePlatesMutation.isPending
+                    ? "Éclatement…"
+                    : `Éclater les plateaux (${plates.length})`}
+                </span>
+              </Button>
+            )}
+          </div>
         ))}
       {plates.length === 0 ? (
         !compact && (
@@ -139,10 +255,30 @@ export function PlatePanel({ file, compact = false }: { file: FileOut; compact?:
       ) : (
         <div className="flex gap-3 overflow-x-auto pb-2">
           {plates.map((plate) => (
-            <PlateCard key={plate.index} blobHash={file.blob_hash} plate={plate} />
+            <PlateCard
+              key={plate.index}
+              blobHash={file.blob_hash}
+              plate={plate}
+              isSelected={selectedPlate === plate.index}
+              onSelect={() => setSelectedPlate(plate.index)}
+              canPrint={canPrint}
+              onPrint={() => setPrintDialogPlate(plate.index)}
+            />
           ))}
         </div>
       )}
+
+      {canPrint && printers.data && printDialogPlate !== null ? (
+        <SendToPrinterDialog
+          file={file}
+          printers={printers.data}
+          open={printDialogPlate !== null}
+          onOpenChange={(open) => {
+            if (!open) setPrintDialogPlate(null);
+          }}
+          initialPlate={printDialogPlate}
+        />
+      ) : null}
     </div>
   );
 }

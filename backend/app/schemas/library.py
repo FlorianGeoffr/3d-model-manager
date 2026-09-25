@@ -41,12 +41,31 @@ def _validate_metadata(value: dict[str, str] | None) -> dict[str, str] | None:
     return value
 
 
+# -- tags & projects types ----------------------------------------------
+
+TagColor = Literal[
+    "slate", "red", "orange", "amber", "green", "teal", "blue", "indigo", "violet", "pink"
+]
+
+PrintStatus = Literal["idle", "to_print", "printing", "printed", "finishing", "failed"]
+
+
+class ModelProjectOut(BaseModel):
+    id: int
+    name: str
+    slug: str
+    color: str | None = None
+    icon: str | None = None
+    parent_id: int | None = None
+
+
 # -- models -------------------------------------------------------------
 
 
 class ModelCreate(BaseModel):
     name: NonEmptyStr
     description: str | None = None
+    project_id: int | None = None
 
 
 class ModelPatch(BaseModel):
@@ -70,6 +89,11 @@ class ModelPatch(BaseModel):
     # R13b: single-valued category assignment; explicit `null` clears it
     # (unlike `name`, `category_id` is genuinely nullable at the DB level).
     category_id: int | None = None
+    # Project assignment and manufacturing workflow tracking
+    project_id: int | None = None
+    print_status: PrintStatus | None = None
+    quantity_target: int | None = None
+    quantity_printed: int | None = None
     # R13c: free-form key/value metadata (maps to `Model.metadata_json`;
     # the API field is named `metadata` -- `metadata` itself is reserved on
     # SQLAlchemy's declarative `Base`, hence the column's different name).
@@ -80,6 +104,13 @@ class ModelPatch(BaseModel):
     @classmethod
     def _check_metadata(cls, value: dict[str, str] | None) -> dict[str, str] | None:
         return _validate_metadata(value)
+
+
+class ModelMergeIn(BaseModel):
+    """Payload for merging one or more models into a target model."""
+
+    source_slug: str | None = None
+    source_slugs: list[str] = []
 
 
 class ModelRedownloadIn(BaseModel):
@@ -114,6 +145,8 @@ class ModelBulkIn(BaseModel):
     add_tags: list[str] | None = None
     remove_tags: list[str] | None = None
     favorite: bool | None = None
+    project_id: int | None = None
+    print_status: PrintStatus | None = None
 
 
 class ModelBulkOut(BaseModel):
@@ -183,6 +216,14 @@ class ModelSummary(BaseModel):
     # R13b: single-valued category assignment (None = uncategorized).
     category_id: int | None = None
     category: ModelCategoryOut | None = None
+    # Project assignment and manufacturing workflow tracking
+    project_id: int | None = None
+    project: ModelProjectOut | None = None
+    print_status: str | None = None
+    quantity_target: int = 1
+    quantity_printed: int = 0
+    # R13c: free-form key/value metadata (e.g. plate_index for exploded models)
+    metadata: dict[str, str] | None = None
 
 
 class GalleryPage(BaseModel):
@@ -216,6 +257,7 @@ class PlateFilamentOut(BaseModel):
 
 class PlateOut(BaseModel):
     index: int
+    name: str | None = None
     prediction_s: int | None
     weight_g: float | None
     thumbnail_available: bool
@@ -225,6 +267,7 @@ class PlateOut(BaseModel):
     def from_raw(cls, raw: dict, *, thumbnail_available: bool) -> PlateOut:
         return cls(
             index=raw["index"],
+            name=raw.get("name"),
             prediction_s=raw.get("prediction_s"),
             weight_g=raw.get("weight_g"),
             thumbnail_available=thumbnail_available,
@@ -432,6 +475,12 @@ class ModelDetail(BaseModel):
     # R13b: single-valued category assignment (None = uncategorized).
     category_id: int | None = None
     category: ModelCategoryOut | None = None
+    # Project assignment and manufacturing workflow tracking
+    project_id: int | None = None
+    project: ModelProjectOut | None = None
+    print_status: str | None = None
+    quantity_target: int = 1
+    quantity_printed: int = 0
     # R13c: free-form key/value metadata + a plain-text print-tips note.
     metadata: dict[str, str] | None = None
     print_tips: str | None = None
@@ -459,10 +508,6 @@ class DiffResponse(BaseModel):
 
 
 # -- tags -------------------------------------------------------------
-
-TagColor = Literal[
-    "slate", "red", "orange", "amber", "green", "teal", "blue", "indigo", "violet", "pink"
-]
 
 
 class TagCreate(BaseModel):

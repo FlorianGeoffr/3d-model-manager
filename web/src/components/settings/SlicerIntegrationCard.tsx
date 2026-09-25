@@ -67,7 +67,36 @@ export function SlicerIntegrationCard() {
         </div>
 
         <div className="space-y-4 border-t border-border pt-4 text-sm">
-          <div className="space-y-1">
+          <div className="space-y-2">
+            <h3 className="font-medium text-foreground">OrcaSlicer (Automatic upload)</h3>
+            <p className="text-muted-foreground">
+              OrcaSlicer → <strong>Process → Others → Special parameters → Post-processing scripts</strong>:
+            </p>
+            <div className="rounded-md bg-muted p-2.5 font-mono text-xs text-foreground select-all break-all">
+              python &quot;C:\path\to\orcaslicer_postprocess.py&quot; --url &quot;{typeof window !== "undefined" ? window.location.origin : "http://localhost:8080"}&quot; --token &quot;&lt;API_TOKEN&gt;&quot;
+            </div>
+            <p className="text-xs text-muted-foreground">
+              OrcaSlicer passes the generated file (.gcode or .gcode.3mf) as the final argument. The script uploads it directly to 3D Model Manager.
+            </p>
+            <div className="flex flex-wrap gap-4 pt-1">
+              <a
+                href={`/orcaslicer_postprocess.py?v=${Date.now()}`}
+                download="orcaslicer_postprocess.py"
+                className="inline-flex items-center gap-1.5 text-xs font-medium text-foreground underline underline-offset-4 hover:no-underline"
+              >
+                <DownloadIcon className="size-3.5" /> Download orcaslicer_postprocess.py
+              </a>
+              <a
+                href={`/orcaslicer_upload.bat?v=${Date.now()}`}
+                download="orcaslicer_upload.bat"
+                className="inline-flex items-center gap-1.5 text-xs font-medium text-foreground underline underline-offset-4 hover:no-underline"
+              >
+                <DownloadIcon className="size-3.5" /> Download orcaslicer_upload.bat (Windows)
+              </a>
+            </div>
+          </div>
+
+          <div className="space-y-1 border-t border-border pt-3">
             <h3 className="font-medium text-foreground">1. Auto-upload every slice (metadata)</h3>
             <p className="text-muted-foreground">
               Bambu Studio → <strong>Process → Others → Post-processing scripts</strong>:{" "}
@@ -83,6 +112,7 @@ export function SlicerIntegrationCard() {
             <p className="text-xs text-muted-foreground">
               This path uploads plain .gcode — rich history and metadata, but not printable from this app.
             </p>
+            <ScriptDownloadLink />
           </div>
           <div className="space-y-1">
             <h3 className="font-medium text-foreground">2. Printable file (watched folder)</h3>
@@ -91,7 +121,6 @@ export function SlicerIntegrationCard() {
               way, and the resulting .gcode.3mf gets the Send-to-printer button (Queue + Files tab).
             </p>
           </div>
-          <ScriptDownloadLink />
           <WatchedFolderStatus />
         </div>
       </CardContent>

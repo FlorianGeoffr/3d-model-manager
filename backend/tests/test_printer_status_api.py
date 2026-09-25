@@ -115,8 +115,54 @@ async def test_stop_publishes_command(authenticated_client, printer_enabled, red
     c.close()
 
 
+async def test_light_publishes_command(authenticated_client, printer_enabled, redis_url):
+    pid = await _make_printer(authenticated_client)
+    c = redis_lib.Redis.from_url(redis_url)
+    ps = c.pubsub()
+    ps.subscribe(command_channel(pid))
+    while ps.get_message(timeout=0.1):
+        pass
+
+    # Toggle without body
+    r = await authenticated_client.post(f"/api/printers/{pid}/light")
+    assert r.status_code == 202
+    deadline = time.monotonic() + 5
+    got = None
+    while time.monotonic() < deadline and got is None:
+        msg = ps.get_message(ignore_subscribe_messages=True, timeout=0.5)
+        if msg and msg["type"] == "message":
+            got = json.loads(msg["data"])
+    assert got == {"command": "toggle_light"}
+
+    # Explicit on
+    r = await authenticated_client.post(f"/api/printers/{pid}/light", json={"on": True})
+    assert r.status_code == 202
+    got = None
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and got is None:
+        msg = ps.get_message(ignore_subscribe_messages=True, timeout=0.5)
+        if msg and msg["type"] == "message":
+            got = json.loads(msg["data"])
+    assert got == {"command": "light_on"}
+
+    # Explicit off
+    r = await authenticated_client.post(f"/api/printers/{pid}/light", json={"on": False})
+    assert r.status_code == 202
+    got = None
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and got is None:
+        msg = ps.get_message(ignore_subscribe_messages=True, timeout=0.5)
+        if msg and msg["type"] == "message":
+            got = json.loads(msg["data"])
+    assert got == {"command": "light_off"}
+
+    ps.close()
+    c.close()
+
+
 async def test_command_404_when_printer_missing(authenticated_client, printer_enabled):
     assert (await authenticated_client.post("/api/printers/999999/pause")).status_code == 404
+    assert (await authenticated_client.post("/api/printers/999999/light")).status_code == 404
 
 
 async def test_command_409_when_printer_disabled(authenticated_client, printer_enabled):
@@ -125,3 +171,4 @@ async def test_command_409_when_printer_disabled(authenticated_client, printer_e
     assert (await authenticated_client.post(f"/api/printers/{pid}/pause")).status_code == 409
     assert (await authenticated_client.post(f"/api/printers/{pid}/resume")).status_code == 409
     assert (await authenticated_client.post(f"/api/printers/{pid}/stop")).status_code == 409
+    assert (await authenticated_client.post(f"/api/printers/{pid}/light")).status_code == 409

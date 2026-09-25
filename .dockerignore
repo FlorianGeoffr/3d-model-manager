@@ -17,7 +17,8 @@ backend/tests_e2e/
 
 # Node
 web/node_modules/
-web/dist/
+!web/dist/
+
 
 # App runtime (host-side bind mounts / volumes, never baked into the image)
 data/

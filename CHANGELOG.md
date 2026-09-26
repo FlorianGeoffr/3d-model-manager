@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.5.0](https://github.com/FlorianGeoffr/3d-model-manager/compare/v0.4.0...v0.5.0) (2026-09-26)
+
+
+### Features
+
+* add project organization and manufacturing print tracking ([e6deecf](https://github.com/FlorianGeoffr/3d-model-manager/commit/e6deecf887d53e70d9d5b7dbcf5b92ef407cde5c))
+* folder improvements, sub-projects, custom icons, zip export and multiplate explode ([668196a](https://github.com/FlorianGeoffr/3d-model-manager/commit/668196afc80de0c239c34450318bd1d2d9e797a8))
+* **gallery:** streamline card content layout and integrate file format filter popover ([415cecd](https://github.com/FlorianGeoffr/3d-model-manager/commit/415cecdfe1e574778a1f1117133ab652fd5f4ef2))
+* improve printer status, plate navigation, markdown description and studio surface ([d25acb3](https://github.com/FlorianGeoffr/3d-model-manager/commit/d25acb35f46a85b5b586708e5676c50f1e02bddd))
+* **library:** fix explode-plates, add drag-drop merge, multi-selection and folder drop ([37ffe3e](https://github.com/FlorianGeoffr/3d-model-manager/commit/37ffe3ed6fc09a79a9f1dc540d904c110f0203a4))
+* **library:** handle duplicate uploads gracefully and enable 1-click selection mode ([919a4da](https://github.com/FlorianGeoffr/3d-model-manager/commit/919a4dae560149ac13f7c49d34a20c9f8dbc202c))
+* **library:** visual folder view and drag-and-drop organization into projects ([664755a](https://github.com/FlorianGeoffr/3d-model-manager/commit/664755a4c3d9fba08f7ef1d96a8b0488dc4910dd))
+* **slicer:** enable Open in Slicer (OrcaSlicer/BambuStudio) for gcode.3mf files ([532fc15](https://github.com/FlorianGeoffr/3d-model-manager/commit/532fc15ecf4e59f29b452fd1a39accfb28f8e826))
+
+
+### Bug Fixes
+
+* **docker:** ensure entrypoint has LF line endings and strip CRLF in Dockerfile ([25756ec](https://github.com/FlorianGeoffr/3d-model-manager/commit/25756ec0a5e05d60fa5e885d363b946be15be5b3))
+* **library:** enable page-wide drag-and-drop for files and models ([7dc871a](https://github.com/FlorianGeoffr/3d-model-manager/commit/7dc871a42b29744da3076be179c95e35aa7355f9))
+* preserve linebreaks in markdown and project descriptions ([6d8df20](https://github.com/FlorianGeoffr/3d-model-manager/commit/6d8df20c635644652e13c0c2d62e085a6ba8cdfe))
+* selection bug, folder upload, explode-plates folder + plate navigation ([c5106be](https://github.com/FlorianGeoffr/3d-model-manager/commit/c5106be2981731c08f573314075e5a49a1fbb4dc))
+* sidebar pinning, root model filtering, and folder/model card responsive design ([86e7a43](https://github.com/FlorianGeoffr/3d-model-manager/commit/86e7a436689d6eb936661a8eb4eb9bc4449f8ea2))
+* subfolder creation parent_id, markdown linebreaks, camera presets, and print jobs persistence ([d840611](https://github.com/FlorianGeoffr/3d-model-manager/commit/d8406119d9e81d99e9efa0aa291a1a857bfe2b4a))
+
 ## [0.4.0] (2026-09-20)
 
 ### Features

@@ -139,6 +139,8 @@ _GLB_FORMATS = (
 
 
 def _derivative_ok(blob: Blob, kind: DerivativeKind) -> bool:
+    if kind == DerivativeKind.THUMB_256 and (blob.kind == BlobKind.IMAGE or blob.format in (BlobFormat.PNG, BlobFormat.JPG, BlobFormat.WEBP)):
+        return True
     return any(d.kind == kind and d.status == DerivativeStatus.OK for d in blob.derivatives)
 
 
@@ -1100,8 +1102,9 @@ async def _gallery_aggregates(
         # fix) must never win the "first ok thumb by rel_path" gallery
         # fallback below -- `_snapshots/` sorts first, which would make a
         # user-set cover eclipse every uploaded model file's own thumb.
+        is_image = kind == BlobKind.IMAGE or fmt in (BlobFormat.PNG, BlobFormat.JPG, BlobFormat.WEBP)
         if not layout.is_snapshot_path(rel_path):
-            bucket["thumb_files"].append((rel_path, blob_hash, thumb_ok_id is not None))
+            bucket["thumb_files"].append((rel_path, blob_hash, (thumb_ok_id is not None) or is_image))
 
         file_row = {
             "id": file_id,
@@ -1137,7 +1140,7 @@ async def _gallery_aggregates(
     cover_hashes = {m.cover_blob_hash for m in page_models if m.cover_blob_hash is not None}
     cover_ok_hashes: set[str] = set()
     if cover_hashes:
-        cover_ok_hashes = set(
+        deriv_hashes = set(
             (
                 await db.execute(
                     select(Derivative.blob_hash).where(
@@ -1148,6 +1151,20 @@ async def _gallery_aggregates(
                 )
             ).scalars()
         )
+        image_blob_hashes = set(
+            (
+                await db.execute(
+                    select(Blob.hash).where(
+                        Blob.hash.in_(cover_hashes),
+                        or_(
+                            Blob.kind == BlobKind.IMAGE,
+                            Blob.format.in_((BlobFormat.PNG, BlobFormat.JPG, BlobFormat.WEBP)),
+                        ),
+                    )
+                )
+            ).scalars()
+        )
+        cover_ok_hashes = deriv_hashes | image_blob_hashes
 
     # Resolve each bucket's file picks first so the DISTINCT blob_hash set
     # across the whole page can be enriched with ONE extra query, rather

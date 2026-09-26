@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { PlusIcon } from "lucide-react";
+import { EyeIcon, PlusIcon } from "lucide-react";
 
 import { modelQueryOptions } from "@/api/library";
 import { CopyableHash } from "@/components/model-detail/CopyableHash";
 import { FileActionsMenu } from "@/components/model-detail/FileActionsMenu";
+import { ImageViewerModal, isImageFile } from "@/components/model-detail/ImageViewerModal";
 import { OpenInSlicerButton } from "@/components/model-detail/OpenInSlicerButton";
 import { SendToPrinterButton } from "@/components/model-detail/SendToPrinterButton";
 import { UploadDropzone, type UploadTarget } from "@/components/upload/UploadDropzone";
@@ -43,24 +44,49 @@ function fileMetaLine(file: FileOut): string | null {
   return null;
 }
 
-function FileThumb({ file }: { file: FileOut }) {
+function FileThumb({
+  file,
+  onClick,
+}: {
+  file: FileOut;
+  onClick?: () => void;
+}) {
   const [errored, setErrored] = useState(false);
   const Icon = formatIcon(file.format);
+  const isImage = isImageFile(file);
 
-  if (file.thumb_ready && !errored) {
+  // If thumb_ready is true and no error, use standard derivative thumb URL.
+  // If it's an image file and the derivative errored or isn't ready yet,
+  // fall back directly to the inline download stream!
+  const thumbSrc = !errored
+    ? file.thumb_ready
+      ? `/api/blobs/${file.blob_hash}/thumb?size=256`
+      : isImage
+      ? `/api/files/${file.id}/download?inline=1`
+      : null
+    : isImage
+    ? `/api/files/${file.id}/download?inline=1`
+    : null;
+
+  if (thumbSrc) {
     return (
       <img
-        src={`/api/blobs/${file.blob_hash}/thumb?size=256`}
+        src={thumbSrc}
         alt={file.rel_path}
         loading="lazy"
-        className="size-10 rounded object-cover"
+        className={`size-10 rounded object-cover ${isImage ? "cursor-pointer transition hover:opacity-80 hover:ring-2 hover:ring-primary" : ""}`}
         onError={() => setErrored(true)}
+        onClick={isImage ? onClick : undefined}
+        title={isImage ? "Click to view photo" : undefined}
       />
     );
   }
 
   return (
-    <div className="flex size-10 items-center justify-center rounded bg-muted text-muted-foreground">
+    <div
+      className={`flex size-10 items-center justify-center rounded bg-muted text-muted-foreground ${isImage ? "cursor-pointer hover:bg-muted/80" : ""}`}
+      onClick={isImage ? onClick : undefined}
+    >
       <Icon className="size-5" />
     </div>
   );
@@ -81,10 +107,18 @@ export function FilesTab({
 }) {
   const queryClient = useQueryClient();
   const [showAddFiles, setShowAddFiles] = useState(false);
+  const [viewingFile, setViewingFile] = useState<FileOut | null>(null);
+  const [viewerOpen, setViewerOpen] = useState(false);
+
   // Doc-kind files (README, license, etc.) surface only in the Docs tab --
   // exclude them here so they don't also clutter the Files table.
   const files = (model.current_revision?.files ?? []).filter((file) => file.kind !== "doc");
   const currentRevision = model.current_revision;
+
+  function handleOpenImageViewer(file: FileOut) {
+    setViewingFile(file);
+    setViewerOpen(true);
+  }
 
   // Uploads (Task 10, correctness map §B4) always target the model's
   // CURRENT revision through the existing `PUT /api/uploads` seam -- never
@@ -138,13 +172,18 @@ export function FilesTab({
           <TableBody>
             {files.map((file) => {
               const metaLine = fileMetaLine(file);
+              const isImage = isImageFile(file);
               return (
                 <TableRow key={file.id}>
                   <TableCell>
-                    <FileThumb file={file} />
+                    <FileThumb file={file} onClick={() => handleOpenImageViewer(file)} />
                   </TableCell>
                   <TableCell className="max-w-[28rem] font-mono text-xs 2xl:max-w-none">
-                    <div className="truncate" title={file.rel_path}>
+                    <div
+                      className={`truncate ${isImage ? "cursor-pointer hover:underline hover:text-primary" : ""}`}
+                      title={file.rel_path}
+                      onClick={isImage ? () => handleOpenImageViewer(file) : undefined}
+                    >
                       {file.rel_path}
                     </div>
                     {metaLine ? (
@@ -168,9 +207,26 @@ export function FilesTab({
                   </TableCell>
                   <TableCell>
                     <div className="flex justify-end gap-1">
+                      {isImage ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={`View photo ${file.rel_path}`}
+                          title="View photo"
+                          onClick={() => handleOpenImageViewer(file)}
+                        >
+                          <EyeIcon className="size-4" />
+                        </Button>
+                      ) : null}
                       <SendToPrinterButton file={file} />
                       {file.verified_at && isSlicerEligible(file) ? <OpenInSlicerButton file={file} /> : null}
-                      <FileActionsMenu file={file} model={model} onViewIn3D={onViewIn3D} />
+                      <FileActionsMenu
+                        file={file}
+                        model={model}
+                        onViewIn3D={onViewIn3D}
+                        onOpenImageViewer={handleOpenImageViewer}
+                      />
                     </div>
                   </TableCell>
                 </TableRow>
@@ -179,6 +235,13 @@ export function FilesTab({
           </TableBody>
         </Table>
       )}
+
+      <ImageViewerModal
+        files={files}
+        initialFile={viewingFile}
+        open={viewerOpen}
+        onOpenChange={setViewerOpen}
+      />
     </div>
   );
 }

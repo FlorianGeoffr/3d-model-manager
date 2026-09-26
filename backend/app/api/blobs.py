@@ -10,15 +10,18 @@ from enum import IntEnum
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import iterate_in_threadpool
 
 from app.config import Settings, get_settings
 from app.db import get_db
-from app.models import Blob, Derivative
-from app.models.enums import DerivativeKind, DerivativeStatus
+from app.models import Blob, Derivative, File
+from app.models.enums import BlobFormat, BlobKind, DerivativeKind, DerivativeStatus
 from app.services import derivatives
+from app.services.storage_backends import resolve_backend_for_file
+from app.storage.errors import StorageKeyNotFound
 
 router = APIRouter(prefix="/blobs", tags=["blobs"])
 
@@ -105,20 +108,55 @@ async def get_blob_thumb(
     db: AsyncSession = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> Response:
-    await _get_blob_or_404(db, blob_hash)
+    blob = await _get_blob_or_404(db, blob_hash)
     kind = DerivativeKind.THUMB_256 if size == ThumbSize.SMALL else DerivativeKind.THUMB_1024
     deriv = await _get_derivative(db, blob_hash, kind)
-    if deriv is None or deriv.status != DerivativeStatus.OK:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, _not_ready_detail(deriv))
+    if deriv is not None and deriv.status == DerivativeStatus.OK:
+        path = derivatives.derivative_path(settings, blob_hash, kind)
+        return await _conditional_file_response(
+            request,
+            path,
+            f"{blob_hash}:{kind.value}",
+            "image/png",
+            cache_control=_IMMUTABLE_CACHE_CONTROL,
+        )
 
-    path = derivatives.derivative_path(settings, blob_hash, kind)
-    return await _conditional_file_response(
-        request,
-        path,
-        f"{blob_hash}:{kind.value}",
-        "image/png",
-        cache_control=_IMMUTABLE_CACHE_CONTROL,
+    # Fallback for image blobs (PNG, JPG, WEBP): serve the raw image directly
+    # from storage so thumbnails never 404 even before the Celery render_thumb runs.
+    is_image = blob.kind == BlobKind.IMAGE or blob.format in (
+        BlobFormat.PNG,
+        BlobFormat.JPG,
+        BlobFormat.WEBP,
     )
+    if is_image:
+        file = (
+            await db.execute(
+                select(File).where(File.blob_hash == blob_hash).order_by(File.id)
+            )
+        ).scalars().first()
+        if file is not None:
+            backend = await resolve_backend_for_file(db, settings, file)
+            quoted_etag = f'"{blob_hash}:raw"'
+            headers = {"Cache-Control": _IMMUTABLE_CACHE_CONTROL, "ETag": quoted_etag}
+            if _if_none_match_matches(request, quoted_etag):
+                return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
+            try:
+                iterator = await anyio.to_thread.run_sync(backend.read, file.storage_path)
+            except StorageKeyNotFound:
+                pass
+            else:
+                media_type = "image/png"
+                if blob.format == BlobFormat.JPG:
+                    media_type = "image/jpeg"
+                elif blob.format == BlobFormat.WEBP:
+                    media_type = "image/webp"
+                return StreamingResponse(
+                    iterate_in_threadpool(iterator),
+                    media_type=media_type,
+                    headers={**headers, "Content-Length": str(blob.size)},
+                )
+
+    raise HTTPException(status.HTTP_404_NOT_FOUND, _not_ready_detail(deriv))
 
 
 @router.get("/{blob_hash}/plates/{index}/thumb")

@@ -67,12 +67,17 @@ _MEDIA_TYPES_BY_SUFFIX: dict[str, str] = {
     ".md": "text/markdown",
     ".txt": "text/plain",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    # Images
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
 }
 
 # R13c: doc formats a browser can render inline (``?inline=1``) rather than
 # download -- ``.docx`` has no reliable in-browser renderer, so it's
-# excluded and always downloads.
-_INLINE_PREVIEWABLE_SUFFIXES = {".pdf", ".txt", ".md"}
+# excluded and always downloads. Images can also be rendered inline.
+_INLINE_PREVIEWABLE_SUFFIXES = {".pdf", ".txt", ".md", ".png", ".jpg", ".jpeg", ".webp"}
 
 
 def _media_type_for_filename(filename: str) -> str:

@@ -31,6 +31,7 @@ export function FileActionsMenu({
   file,
   model,
   onViewIn3D,
+  onOpenImageViewer,
   isDoc = false,
 }: {
   file: FileOut;
@@ -38,6 +39,8 @@ export function FileActionsMenu({
   /** R13c "View in 3D" hand-off -- see `FilesTab.tsx`. Never applicable for
    * doc files (`isDoc`), which are never studio-viewable. */
   onViewIn3D?: (file: FileOut) => void;
+  /** Image viewer hand-off: opens lightweight photo viewer modal */
+  onOpenImageViewer?: (file: FileOut) => void;
   /** Docs never offer "View in 3D" -- their own row already has an inline
    * preview toggle (`DocsTab.tsx`) instead of a menu-driven one. */
   isDoc?: boolean;
@@ -78,6 +81,12 @@ export function FileActionsMenu({
             <DropdownMenuItem aria-label={`View ${file.rel_path} in 3D`} onSelect={() => onViewIn3D?.(file)}>
               <EyeIcon className="size-4" />
               View in 3D
+            </DropdownMenuItem>
+          ) : null}
+          {onOpenImageViewer && (file.kind === "image" || ["jpg", "jpeg", "png", "webp"].includes(file.format?.toLowerCase())) ? (
+            <DropdownMenuItem aria-label={`View image ${file.rel_path}`} onSelect={() => onOpenImageViewer(file)}>
+              <EyeIcon className="size-4" />
+              View image
             </DropdownMenuItem>
           ) : null}
           {file.verified_at ? (

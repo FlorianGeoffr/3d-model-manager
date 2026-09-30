@@ -129,32 +129,34 @@ async def get_blob_thumb(
         BlobFormat.WEBP,
     )
     if is_image:
-        file = (
-            (await db.execute(select(File).where(File.blob_hash == blob_hash).order_by(File.id)))
-            .scalars()
-            .first()
-        )
-        if file is not None:
-            backend = await resolve_backend_for_file(db, settings, file)
-            quoted_etag = f'"{blob_hash}:raw"'
-            headers = {"Cache-Control": _IMMUTABLE_CACHE_CONTROL, "ETag": quoted_etag}
-            if _if_none_match_matches(request, quoted_etag):
-                return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
-            try:
-                iterator = await anyio.to_thread.run_sync(backend.read, file.storage_path)
-            except StorageKeyNotFound:
-                pass
-            else:
-                media_type = "image/png"
-                if blob.format == BlobFormat.JPG:
-                    media_type = "image/jpeg"
-                elif blob.format == BlobFormat.WEBP:
-                    media_type = "image/webp"
-                return StreamingResponse(
-                    iterate_in_threadpool(iterator),
-                    media_type=media_type,
-                    headers={**headers, "Content-Length": str(blob.size)},
-                )
+        try:
+            file = (
+                (await db.execute(select(File).where(File.blob_hash == blob_hash).order_by(File.id)))
+                .scalars()
+                .first()
+            )
+            if file is not None:
+                backend = await resolve_backend_for_file(db, settings, file)
+                quoted_etag = f'"{blob_hash}:raw"'
+                headers = {"Cache-Control": _IMMUTABLE_CACHE_CONTROL, "ETag": quoted_etag}
+                if _if_none_match_matches(request, quoted_etag):
+                    return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
+                try:
+                    iterator = await anyio.to_thread.run_sync(backend.read, file.storage_path)
+                    media_type = "image/png"
+                    if blob.format == BlobFormat.JPG:
+                        media_type = "image/jpeg"
+                    elif blob.format == BlobFormat.WEBP:
+                        media_type = "image/webp"
+                    return StreamingResponse(
+                        iterate_in_threadpool(iterator),
+                        media_type=media_type,
+                        headers={**headers, "Content-Length": str(blob.size)},
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     raise HTTPException(status.HTTP_404_NOT_FOUND, _not_ready_detail(deriv))
 

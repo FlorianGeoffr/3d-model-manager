@@ -51,31 +51,45 @@ function FileThumb({
   file: FileOut;
   onClick?: () => void;
 }) {
-  const [errored, setErrored] = useState(false);
+  const [useFallback, setUseFallback] = useState(false);
+  const [failed, setFailed] = useState(false);
   const Icon = formatIcon(file.format);
   const isImage = isImageFile(file);
 
-  // If thumb_ready is true and no error, use standard derivative thumb URL.
-  // If it's an image file and the derivative errored or isn't ready yet,
-  // fall back directly to the inline download stream!
-  const thumbSrc = !errored
-    ? file.thumb_ready
-      ? `/api/blobs/${file.blob_hash}/thumb?size=256`
-      : isImage
-      ? `/api/files/${file.id}/download?inline=1`
-      : null
-    : isImage
-    ? `/api/files/${file.id}/download?inline=1`
-    : null;
+  // Determine image source:
+  // For images, we try the derivative thumbnail first if thumb_ready or if not failed yet.
+  // If thumb fails (or if not ready), we fall back directly to inline file download.
+  // If that also fails, we show the format icon.
+  let src: string | null = null;
+  if (!failed) {
+    if (isImage) {
+      if (!useFallback && file.thumb_ready) {
+        src = `/api/blobs/${file.blob_hash}/thumb?size=256`;
+      } else {
+        src = `/api/files/${file.id}/download?inline=1`;
+      }
+    } else if (file.thumb_ready) {
+      src = `/api/blobs/${file.blob_hash}/thumb?size=256`;
+    }
+  }
 
-  if (thumbSrc) {
+  const handleError = () => {
+    if (isImage && !useFallback) {
+      // Try inline download next
+      setUseFallback(true);
+    } else {
+      setFailed(true);
+    }
+  };
+
+  if (src) {
     return (
       <img
-        src={thumbSrc}
+        src={src}
         alt={file.rel_path}
         loading="lazy"
         className={`size-10 rounded object-cover ${isImage ? "cursor-pointer transition hover:opacity-80 hover:ring-2 hover:ring-primary" : ""}`}
-        onError={() => setErrored(true)}
+        onError={handleError}
         onClick={isImage ? onClick : undefined}
         title={isImage ? "Click to view photo" : undefined}
       />

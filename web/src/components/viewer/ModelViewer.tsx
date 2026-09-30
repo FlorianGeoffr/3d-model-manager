@@ -427,73 +427,85 @@ function BoundsRefitter({
 // exactly like a `GizmoViewcube` face click. Y-up (see `PlateGrid.tsx` /
 // `Center top`'s grounding convention), Z the "front" axis -- matching
 // `GizmoViewcube`'s own box-geometry face order (+x Right, +y Top, +z
-// Front). `iso` normalizes to the same evenly-weighted corner direction the
-// default `OrthographicCamera` position (`[1.2, 1.2, 1.2]`) already sits on,
-// so picking it lands on the familiar default three-quarter framing.
 // World-space direction FROM the model TOWARD the camera for each preset.
-// Y-up, Z-front. For top, a tiny Z epsilon avoids collinearity with up=(0,1,0).
-const CAMERA_PRESET_DIRECTIONS: Record<Exclude<CameraPreset, null>, THREE.Vector3> = {
-  iso: new THREE.Vector3(1, 1, 1).normalize(),
-  top: new THREE.Vector3(0, 1, 0.0001).normalize(),
-  front: new THREE.Vector3(0, 0, 1),
-  side: new THREE.Vector3(1, 0, 0),
+// Y-up, Z-front. For top, looking along -Y with up along -Z (0, 0, -1).
+const CAMERA_PRESET_CONFIG: Record<
+  Exclude<CameraPreset, null>,
+  { dir: THREE.Vector3; up: THREE.Vector3 }
+> = {
+  iso: {
+    dir: new THREE.Vector3(1, 1, 1).normalize(),
+    up: new THREE.Vector3(0, 1, 0),
+  },
+  top: {
+    dir: new THREE.Vector3(0, 1, 0),
+    up: new THREE.Vector3(0, 0, -1),
+  },
+  front: {
+    dir: new THREE.Vector3(0, 0, 1),
+    up: new THREE.Vector3(0, 1, 0),
+  },
+  side: {
+    dir: new THREE.Vector3(1, 0, 0),
+    up: new THREE.Vector3(0, 1, 0),
+  },
 };
 
 /**
  * Smooth camera preset transition for Iso, Top, Front, and Side views.
- * Works seamlessly with OrbitControls without gimbal locks or Bounds collisions.
+ * Handles proper up vector for top view (preventing gimbal lock / singularity)
+ * and keeps demand-mode rendering invalidated throughout the animation.
  */
 function CameraPresetController({ preset }: { preset: CameraPreset }) {
   const { camera, controls, invalidate } = useThree();
   const animating = useRef(false);
   const startPos = useRef(new THREE.Vector3());
   const goalPos = useRef(new THREE.Vector3());
+  const startUp = useRef(new THREE.Vector3());
+  const goalUp = useRef(new THREE.Vector3());
   const target = useRef(new THREE.Vector3());
   const progress = useRef(0);
-  const lastPreset = useRef<CameraPreset>(null);
 
   useEffect(() => {
-    if (!preset) {
-      lastPreset.current = null;
-      return;
-    }
+    if (!preset) return;
     const ctrl = controls as any;
     const t = ctrl?.target ? ctrl.target.clone() : new THREE.Vector3(0, 0, 0);
     target.current.copy(t);
     const dist = Math.max(camera.position.distanceTo(t), 0.5);
-    const dir = CAMERA_PRESET_DIRECTIONS[preset];
-    goalPos.current.copy(t).addScaledVector(dir, dist);
+    const config = CAMERA_PRESET_CONFIG[preset];
+    goalPos.current.copy(t).addScaledVector(config.dir, dist);
+    goalUp.current.copy(config.up);
     startPos.current.copy(camera.position);
+    startUp.current.copy(camera.up);
     progress.current = 0;
     animating.current = true;
-    lastPreset.current = preset;
     invalidate();
   }, [preset, camera, controls, invalidate]);
 
   useFrame((_, delta) => {
     if (!animating.current) return;
-    progress.current += delta * 4; // ~250ms smooth transition
+    progress.current = Math.min(1, progress.current + delta * 4); // ~250ms smooth transition
     const ctrl = controls as any;
+    // Cubic ease-out
+    const t = 1 - Math.pow(1 - progress.current, 3);
+    camera.position.lerpVectors(startPos.current, goalPos.current, t);
+    camera.up.lerpVectors(startUp.current, goalUp.current, t).normalize();
+    camera.lookAt(target.current);
+    if (ctrl) {
+      ctrl.target.copy(target.current);
+      ctrl.update();
+    }
+    invalidate();
+
     if (progress.current >= 1) {
       camera.position.copy(goalPos.current);
-      camera.up.set(0, 1, 0);
+      camera.up.copy(goalUp.current);
       camera.lookAt(target.current);
       if (ctrl) {
         ctrl.target.copy(target.current);
         ctrl.update();
       }
       animating.current = false;
-      invalidate();
-    } else {
-      // Cubic ease-out
-      const t = 1 - Math.pow(1 - progress.current, 3);
-      camera.position.lerpVectors(startPos.current, goalPos.current, t);
-      camera.up.set(0, 1, 0);
-      camera.lookAt(target.current);
-      if (ctrl) {
-        ctrl.target.copy(target.current);
-        ctrl.update();
-      }
       invalidate();
     }
   });

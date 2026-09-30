@@ -130,10 +130,10 @@ async def get_blob_thumb(
     )
     if is_image:
         file = (
-            await db.execute(
-                select(File).where(File.blob_hash == blob_hash).order_by(File.id)
-            )
-        ).scalars().first()
+            (await db.execute(select(File).where(File.blob_hash == blob_hash).order_by(File.id)))
+            .scalars()
+            .first()
+        )
         if file is not None:
             backend = await resolve_backend_for_file(db, settings, file)
             quoted_etag = f'"{blob_hash}:raw"'

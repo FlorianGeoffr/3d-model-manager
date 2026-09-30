@@ -67,10 +67,11 @@ def capture_and_save_finish_snapshot(
             size=len(img_bytes),
             rel_path=rel_name,
             kind=BlobKind.IMAGE,
-            format_=BlobFormat.JPEG,
+            format_=BlobFormat.JPG,
         )
 
         library.store_imported_file_sync(session, model=model, revision=revision, staged=staged)
+        job.raw_status = {**(job.raw_status or {}), "snapshot_blob_hash": h}
         log.info("Captured finish snapshot for job %s: saved as %s", job.id, rel_name)
     except Exception as exc:
         log.warning("Could not capture finish snapshot for job %s: %s", job.id, exc)

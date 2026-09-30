@@ -754,6 +754,18 @@ export interface PrintJobOut {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+  file_rel_path?: string | null;
+  blob_hash?: string | null;
+  model_id?: number | null;
+  model_name?: string | null;
+  model_slug?: string | null;
+  thumbnail_url?: string | null;
+  snapshot_url?: string | null;
+  print_time_s?: number | null;
+  duration_s?: number | null;
+  filament_g?: number | null;
+  filament_m?: number | null;
+  filament_types?: string[] | null;
 }
 
 export interface PrintRequest {

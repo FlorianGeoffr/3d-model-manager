@@ -9,7 +9,7 @@ happens ONLY inside the test-probe path via
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Self
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from app.models.enums import PrinterKind
 
 if TYPE_CHECKING:
-    from app.models import Printer, PrintJob
+    from app.models import BlobMeta, File, Model, Printer, PrintJob
 
 
 def _clean_serial(value: str) -> str:
@@ -250,9 +250,43 @@ class PrintJobOut(BaseModel):
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    file_rel_path: str | None = None
+    blob_hash: str | None = None
+    model_id: int | None = None
+    model_name: str | None = None
+    model_slug: str | None = None
+    thumbnail_url: str | None = None
+    snapshot_url: str | None = None
+    print_time_s: int | None = None
+    duration_s: int | None = None
+    filament_g: float | None = None
+    filament_m: float | None = None
+    filament_types: list[str] | None = None
 
     @classmethod
-    def from_model(cls, j: PrintJob) -> PrintJobOut:
+    def from_model(
+        cls,
+        j: PrintJob,
+        file: File | None = None,
+        model: Model | None = None,
+        meta: BlobMeta | None = None,
+    ) -> PrintJobOut:
+        duration_s = None
+        if j.started_at and j.finished_at:
+            duration_s = int((j.finished_at - j.started_at).total_seconds())
+        elif j.started_at and j.state in ("printing", "paused", "uploading", "starting"):
+            duration_s = int((datetime.now(UTC) - j.started_at).total_seconds())
+
+        raw = j.raw_status or {}
+        snapshot_hash = raw.get("snapshot_blob_hash")
+        snapshot_url = f"/api/blobs/{snapshot_hash}/thumb?size=256" if snapshot_hash else None
+
+        thumb_url = None
+        if file and file.blob_hash:
+            thumb_url = f"/api/blobs/{file.blob_hash}/thumb?size=256"
+        elif model and model.cover_blob_hash:
+            thumb_url = f"/api/blobs/{model.cover_blob_hash}/thumb?size=256"
+
         return cls(
             id=j.id,
             printer_id=j.printer_id,
@@ -267,4 +301,16 @@ class PrintJobOut(BaseModel):
             created_at=j.created_at,
             started_at=j.started_at,
             finished_at=j.finished_at,
+            file_rel_path=file.rel_path if file else None,
+            blob_hash=file.blob_hash if file else None,
+            model_id=model.id if model else None,
+            model_name=model.name if model else None,
+            model_slug=model.slug if model else None,
+            thumbnail_url=thumb_url,
+            snapshot_url=snapshot_url,
+            print_time_s=meta.print_time_s if meta else None,
+            duration_s=duration_s,
+            filament_g=meta.filament_g if meta else None,
+            filament_m=meta.filament_m if meta else None,
+            filament_types=meta.filament_types if meta else None,
         )

@@ -29,9 +29,9 @@ fi
 case "${ROLE:-api}" in
   api)
     echo "[entrypoint] running database migrations..."
-    alembic upgrade head
+    /app/.venv/bin/alembic upgrade head
     echo "[entrypoint] starting API server..."
-    exec uvicorn app.main:app --host 0.0.0.0 --port 8080
+    exec /app/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8080
     ;;
   worker)
     echo "[entrypoint] starting Celery worker (queues: ${QUEUES:-io,cpu})..."

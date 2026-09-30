@@ -139,7 +139,10 @@ _GLB_FORMATS = (
 
 
 def _derivative_ok(blob: Blob, kind: DerivativeKind) -> bool:
-    if kind == DerivativeKind.THUMB_256 and (blob.kind == BlobKind.IMAGE or blob.format in (BlobFormat.PNG, BlobFormat.JPG, BlobFormat.WEBP)):
+    if kind == DerivativeKind.THUMB_256 and (
+        blob.kind == BlobKind.IMAGE
+        or blob.format in (BlobFormat.PNG, BlobFormat.JPG, BlobFormat.WEBP)
+    ):
         return True
     return any(d.kind == kind and d.status == DerivativeStatus.OK for d in blob.derivatives)
 
@@ -1102,9 +1105,15 @@ async def _gallery_aggregates(
         # fix) must never win the "first ok thumb by rel_path" gallery
         # fallback below -- `_snapshots/` sorts first, which would make a
         # user-set cover eclipse every uploaded model file's own thumb.
-        is_image = kind == BlobKind.IMAGE or fmt in (BlobFormat.PNG, BlobFormat.JPG, BlobFormat.WEBP)
+        is_image = kind == BlobKind.IMAGE or fmt in (
+            BlobFormat.PNG,
+            BlobFormat.JPG,
+            BlobFormat.WEBP,
+        )
         if not layout.is_snapshot_path(rel_path):
-            bucket["thumb_files"].append((rel_path, blob_hash, (thumb_ok_id is not None) or is_image))
+            bucket["thumb_files"].append(
+                (rel_path, blob_hash, (thumb_ok_id is not None) or is_image)
+            )
 
         file_row = {
             "id": file_id,

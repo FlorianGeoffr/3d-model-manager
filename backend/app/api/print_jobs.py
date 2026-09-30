@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_printer_enabled
 from app.db import get_db
-from app.models import PrintJob
+from app.models import BlobMeta, File, Model, PrintJob, Revision
 from app.schemas.printers import PrintJobOut
 
 router = APIRouter(
@@ -26,16 +26,36 @@ async def list_print_jobs(
     limit: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
 ) -> list[PrintJobOut]:
-    stmt = select(PrintJob).order_by(PrintJob.id.desc()).limit(limit)
+    stmt = (
+        select(PrintJob, File, Model, BlobMeta)
+        .outerjoin(File, PrintJob.file_id == File.id)
+        .outerjoin(Revision, File.revision_id == Revision.id)
+        .outerjoin(Model, Revision.model_id == Model.id)
+        .outerjoin(BlobMeta, File.blob_hash == BlobMeta.blob_hash)
+        .order_by(PrintJob.id.desc())
+        .limit(limit)
+    )
     if printer_id is not None:
         stmt = stmt.where(PrintJob.printer_id == printer_id)
-    rows = (await db.execute(stmt)).scalars()
-    return [PrintJobOut.from_model(j) for j in rows]
+    rows = (await db.execute(stmt)).all()
+    return [
+        PrintJobOut.from_model(job, file=file, model=model, meta=meta)
+        for job, file, model, meta in rows
+    ]
 
 
 @router.get("/{job_id}", response_model=PrintJobOut)
 async def get_print_job(job_id: int, db: AsyncSession = Depends(get_db)) -> PrintJobOut:
-    job = await db.get(PrintJob, job_id)
-    if job is None:
+    stmt = (
+        select(PrintJob, File, Model, BlobMeta)
+        .outerjoin(File, PrintJob.file_id == File.id)
+        .outerjoin(Revision, File.revision_id == Revision.id)
+        .outerjoin(Model, Revision.model_id == Model.id)
+        .outerjoin(BlobMeta, File.blob_hash == BlobMeta.blob_hash)
+        .where(PrintJob.id == job_id)
+    )
+    row = (await db.execute(stmt)).first()
+    if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "print job not found")
-    return PrintJobOut.from_model(job)
+    job, file, model, meta = row
+    return PrintJobOut.from_model(job, file=file, model=model, meta=meta)

@@ -45,6 +45,27 @@ function FileState({
     );
   }
 
+  const isImage =
+    file.kind === "image" ||
+    ["png", "jpg", "jpeg", "webp", "gif"].includes(file.format.toLowerCase());
+  if (isImage) {
+    const imageUrl = file.thumb_ready
+      ? `/api/blobs/${file.blob_hash}/thumb?size=1024`
+      : `/api/files/${file.id}/download?inline=1`;
+    return (
+      <div className="flex h-full min-h-[420px] w-full flex-col items-center justify-center p-6">
+        <div className="relative max-h-[600px] max-w-full overflow-hidden rounded-xl border border-border/60 bg-muted/30 p-2 shadow-xs">
+          <img
+            src={imageUrl}
+            alt={file.rel_path}
+            className="max-h-[560px] max-w-full rounded-lg object-contain"
+          />
+        </div>
+        <span className="mt-2 text-xs text-muted-foreground">{file.rel_path}</span>
+      </div>
+    );
+  }
+
   switch (file.glb_status) {
     case "pending":
       return (

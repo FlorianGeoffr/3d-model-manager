@@ -427,131 +427,90 @@ function BoundsRefitter({
 // exactly like a `GizmoViewcube` face click. Y-up (see `PlateGrid.tsx` /
 // `Center top`'s grounding convention), Z the "front" axis -- matching
 // `GizmoViewcube`'s own box-geometry face order (+x Right, +y Top, +z
-// World-space direction FROM the model TOWARD the camera for each preset.
-// Y-up, Z-front. For top, looking along -Y with up along -Z (0, 0, -1).
-const CAMERA_PRESET_CONFIG: Record<
+function shortestAngleDiff(target: number, current: number): number {
+  let diff = (target - current) % (2 * Math.PI);
+  if (diff > Math.PI) diff -= 2 * Math.PI;
+  if (diff < -Math.PI) diff += 2 * Math.PI;
+  return diff;
+}
+
+/**
+ * Target polar (phi) and azimuthal (theta) angles for OrbitControls presets.
+ * In OrbitControls spherical coordinates:
+ *  - phi: angle from +Y axis (0 = top pole, PI/2 = equator, PI = bottom pole)
+ *  - theta: angle around Y axis from +Z (0 = front, PI/2 = right side)
+ */
+const PRESET_ANGLES: Record<
   Exclude<CameraPreset, null>,
-  { dir: THREE.Vector3; up: THREE.Vector3 }
+  { phi: number; theta: number }
 > = {
   iso: {
-    dir: new THREE.Vector3(1, 1, 1).normalize(),
-    up: new THREE.Vector3(0, 1, 0),
+    phi: Math.atan(Math.SQRT2), // ~54.74° from +Y pole
+    theta: Math.PI / 4,         // 45° azimuth
   },
   top: {
-    dir: new THREE.Vector3(0, 1, 0),
-    up: new THREE.Vector3(0, 0, -1),
+    phi: 0.001,                 // Just off the pole so azimuth remains well-defined
+    theta: 0,
   },
   front: {
-    dir: new THREE.Vector3(0, 0, 1),
-    up: new THREE.Vector3(0, 1, 0),
+    phi: Math.PI / 2,           // Equator (horizontal)
+    theta: 0,                   // Looking from +Z toward origin
   },
   side: {
-    dir: new THREE.Vector3(1, 0, 0),
-    up: new THREE.Vector3(0, 1, 0),
+    phi: Math.PI / 2,           // Equator (horizontal)
+    theta: Math.PI / 2,         // Looking from +X toward origin
   },
 };
 
 /**
  * Smooth camera preset transition for Iso, Top, Front, and Side views.
  *
- * Uses Quaternion SLERP (not position-lerp + lookAt) to avoid the gimbal-lock
- * singularity that occurred when the camera path passed through straight-up or
- * straight-down look directions (Top/Bottom view). The old approach computed
- * `camera.up.lerp().normalize()` then called `camera.lookAt()`, but THREE's
- * `lookAt` internally does `cross(direction, up)` -- when direction ≈ (0,±1,0)
- * and up ≈ (0,1,0) that cross product approaches zero and the resulting matrix
- * is degenerate.
- *
- * Key design choices:
- *  - `controls` is NOT in the useEffect dep array. It was causing the effect to
- *    re-fire (and restart the tween from the current mid-tween position) every
- *    time OrbitControls attached, which produced a chaotic jump on warm caches.
- *    Instead it is read via a ref inside the frame loop so it's always current.
- *  - `OrbitControls.update()` is only called once on the LAST frame (progress ≥ 1)
- *    so the controls re-sync their internal phi/theta to the final camera state.
- *    Calling it every frame was fighting the tween (controls snap back to their
- *    own stored angles each update).
+ * Driven natively through OrbitControls' spherical angle setters (`setPolarAngle`,
+ * `setAzimuthalAngle`). This keeps OrbitControls' internal state in perfect sync on
+ * every frame -- eliminating quaternion/spherical mismatches, gimbal-lock at the poles,
+ * and post-animation snapbacks when OrbitControls updates.
  */
 function CameraPresetController({ preset }: { preset: CameraPreset }) {
-  const camera = useThree((s) => s.camera);
-  const controls = useThree((s) => s.controls);
+  const controls = useThree((s) => s.controls) as any;
   const invalidate = useThree((s) => s.invalidate);
 
-  // Keep controls in a ref so the frame loop always reads the latest value
-  // without needing it in the effect dep array.
-  const controlsRef = useRef(controls);
-  useEffect(() => {
-    controlsRef.current = controls;
-  });
-
-  // Quaternion SLERP: start/goal orientation represented as quaternions so we
-  // never have to call lookAt mid-tween (which is where the singularity lived).
-  const startQuat = useRef(new THREE.Quaternion());
-  const goalQuat = useRef(new THREE.Quaternion());
-  const startPos = useRef(new THREE.Vector3());
-  const goalPos = useRef(new THREE.Vector3());
-  const target = useRef(new THREE.Vector3());
+  const startPhi = useRef(0);
+  const deltaPhi = useRef(0);
+  const startTheta = useRef(0);
+  const deltaTheta = useRef(0);
   const progress = useRef(0);
   const animating = useRef(false);
 
   useEffect(() => {
-    if (!preset) return;
-    const ctrl = controlsRef.current as any;
-    const t = ctrl?.target ? ctrl.target.clone() : new THREE.Vector3(0, 0, 0);
-    target.current.copy(t);
+    if (!preset || !controls || typeof controls.getPolarAngle !== "function") return;
 
-    const dist = Math.max(camera.position.distanceTo(t), 0.5);
-    const config = CAMERA_PRESET_CONFIG[preset];
+    const target = PRESET_ANGLES[preset];
+    const curPhi = controls.getPolarAngle();
+    const curTheta = controls.getAzimuthalAngle();
 
-    // Goal camera position
-    goalPos.current.copy(t).addScaledVector(config.dir, dist);
-
-    // Compute goal quaternion: build a look-at matrix from the goal position
-    // toward the target with the preset's up vector, then extract its quaternion.
-    // This is done once at tween start (not every frame), so the intermediate
-    // lerp path never needs to call lookAt.
-    const goalMatrix = new THREE.Matrix4().lookAt(goalPos.current, t, config.up);
-    goalQuat.current.setFromRotationMatrix(goalMatrix);
-
-    // Start from the current camera state
-    startPos.current.copy(camera.position);
-    startQuat.current.copy(camera.quaternion);
+    startPhi.current = curPhi;
+    deltaPhi.current = target.phi - curPhi;
+    startTheta.current = curTheta;
+    deltaTheta.current = shortestAngleDiff(target.theta, curTheta);
 
     progress.current = 0;
     animating.current = true;
     invalidate();
-    // Intentionally NOT including `controls` -- see the doc comment above.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [preset, camera, invalidate]);
+  }, [preset, controls, invalidate]);
 
   useFrame((_, delta) => {
-    if (!animating.current) return;
+    if (!animating.current || !controls || typeof controls.setPolarAngle !== "function") return;
 
-    progress.current = Math.min(1, progress.current + delta * 4); // ~250 ms
-    // Cubic ease-out
-    const ease = 1 - Math.pow(1 - progress.current, 3);
+    progress.current = Math.min(1, progress.current + delta * 4); // ~250ms
+    const ease = 1 - Math.pow(1 - progress.current, 3); // Cubic ease-out
 
-    camera.position.lerpVectors(startPos.current, goalPos.current, ease);
-    camera.quaternion.slerpQuaternions(startQuat.current, goalQuat.current, ease);
-
+    controls.setPolarAngle(startPhi.current + deltaPhi.current * ease);
+    controls.setAzimuthalAngle(startTheta.current + deltaTheta.current * ease);
+    controls.update();
     invalidate();
 
     if (progress.current >= 1) {
-      // Snap to exact goal to eliminate floating-point drift
-      camera.position.copy(goalPos.current);
-      camera.quaternion.copy(goalQuat.current);
-
-      // Only sync OrbitControls once the tween is fully done -- calling
-      // update() every frame was fighting the tween by re-applying the
-      // controls' own stored angles on each step.
-      const ctrl = controlsRef.current as any;
-      if (ctrl) {
-        ctrl.target.copy(target.current);
-        ctrl.update();
-      }
-
       animating.current = false;
-      invalidate();
     }
   });
 

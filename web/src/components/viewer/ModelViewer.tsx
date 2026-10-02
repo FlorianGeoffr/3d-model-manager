@@ -421,96 +421,102 @@ function BoundsRefitter({
   return null;
 }
 
-// World-space direction FROM the model TOWARD the camera for each preset --
-// `tweenCamera(direction)` (drei's `GizmoHelper`, see below) reorients the
-// camera to sit along `direction` at its current distance from the target,
-// exactly like a `GizmoViewcube` face click. Y-up (see `PlateGrid.tsx` /
-// `Center top`'s grounding convention), Z the "front" axis -- matching
-// `GizmoViewcube`'s own box-geometry face order (+x Right, +y Top, +z
-function shortestAngleDiff(target: number, current: number): number {
-  let diff = (target - current) % (2 * Math.PI);
-  if (diff > Math.PI) diff -= 2 * Math.PI;
-  if (diff < -Math.PI) diff += 2 * Math.PI;
-  return diff;
-}
-
-/**
- * Target polar (phi) and azimuthal (theta) angles for OrbitControls presets.
- * In OrbitControls spherical coordinates:
- *  - phi: angle from +Y axis (0 = top pole, PI/2 = equator, PI = bottom pole)
- *  - theta: angle around Y axis from +Z (0 = front, PI/2 = right side)
- */
-const PRESET_ANGLES: Record<
-  Exclude<CameraPreset, null>,
-  { phi: number; theta: number }
-> = {
-  iso: {
-    phi: Math.atan(Math.SQRT2), // ~54.74° from +Y pole
-    theta: Math.PI / 4,         // 45° azimuth
-  },
-  top: {
-    phi: 0.001,                 // Just off the pole so azimuth remains well-defined
-    theta: 0,
-  },
-  front: {
-    phi: Math.PI / 2,           // Equator (horizontal)
-    theta: 0,                   // Looking from +Z toward origin
-  },
-  side: {
-    phi: Math.PI / 2,           // Equator (horizontal)
-    theta: Math.PI / 2,         // Looking from +X toward origin
-  },
+// World-space unit direction FROM the target TOWARD the camera for each preset.
+// Y-up, Z-front. For 'top', looking along -Y with a tiny 0.0001 offset in Z so looking
+// direction and camera.up=(0,1,0) are not antiparallel, avoiding lookAt collinear singularities
+// while preserving standard engineering CAD top-view alignment (North = -Z, East = +X).
+const PRESET_DIRECTIONS: Record<Exclude<CameraPreset, null>, THREE.Vector3> = {
+  iso: new THREE.Vector3(1, 1, 1).normalize(),
+  top: new THREE.Vector3(0, 1, 0.0001).normalize(),
+  front: new THREE.Vector3(0, 0, 1),
+  side: new THREE.Vector3(1, 0, 0),
 };
 
 /**
  * Smooth camera preset transition for Iso, Top, Front, and Side views.
  *
- * Driven natively through OrbitControls' spherical angle setters (`setPolarAngle`,
- * `setAzimuthalAngle`). This keeps OrbitControls' internal state in perfect sync on
- * every frame -- eliminating quaternion/spherical mismatches, gimbal-lock at the poles,
- * and post-animation snapbacks when OrbitControls updates.
+ * Drives camera orientation smoothly on the sphere around OrbitControls' target.
+ * Disables OrbitControls during the transition so OrbitControls' useFrame update loop
+ * and damping do not fight or revert the camera. On transition completion, snaps to the
+ * exact target direction and calls controls.update() to synchronize OrbitControls'
+ * internal spherical coordinates with 100% accuracy.
  */
 function CameraPresetController({ preset }: { preset: CameraPreset }) {
+  const camera = useThree((s) => s.camera);
   const controls = useThree((s) => s.controls) as any;
   const invalidate = useThree((s) => s.invalidate);
 
-  const startPhi = useRef(0);
-  const deltaPhi = useRef(0);
-  const startTheta = useRef(0);
-  const deltaTheta = useRef(0);
-  const progress = useRef(0);
+  const startDir = useRef(new THREE.Vector3());
+  const targetDir = useRef(new THREE.Vector3());
+  const target = useRef(new THREE.Vector3());
+  const dist = useRef(1);
+  const qGoal = useRef(new THREE.Quaternion());
+  const startTime = useRef(0);
   const animating = useRef(false);
 
   useEffect(() => {
-    if (!preset || !controls || typeof controls.getPolarAngle !== "function") return;
+    if (!preset || !controls) return;
 
-    const target = PRESET_ANGLES[preset];
-    const curPhi = controls.getPolarAngle();
-    const curTheta = controls.getAzimuthalAngle();
+    const t = controls.target ? controls.target.clone() : new THREE.Vector3(0, 0, 0);
+    target.current.copy(t);
 
-    startPhi.current = curPhi;
-    deltaPhi.current = target.phi - curPhi;
-    startTheta.current = curTheta;
-    deltaTheta.current = shortestAngleDiff(target.theta, curTheta);
+    const offset = camera.position.clone().sub(t);
+    const d = offset.length();
+    dist.current = d > 0.001 ? d : 2;
 
-    progress.current = 0;
+    const sDir = offset.normalize();
+    startDir.current.copy(sDir);
+
+    const tDir = PRESET_DIRECTIONS[preset];
+    targetDir.current.copy(tDir);
+
+    // If already aligned to the target direction, just snap and update
+    if (sDir.distanceTo(tDir) < 0.0001) {
+      camera.position.copy(t).addScaledVector(tDir, dist.current);
+      camera.lookAt(t);
+      camera.updateMatrixWorld();
+      controls.update();
+      invalidate();
+      return;
+    }
+
+    qGoal.current.setFromUnitVectors(sDir, tDir);
+    controls.enabled = false;
+    startTime.current = performance.now();
     animating.current = true;
     invalidate();
-  }, [preset, controls, invalidate]);
 
-  useFrame((_, delta) => {
-    if (!animating.current || !controls || typeof controls.setPolarAngle !== "function") return;
+    return () => {
+      if (animating.current && controls) {
+        animating.current = false;
+        controls.enabled = true;
+      }
+    };
+  }, [preset, camera, controls, invalidate]);
 
-    progress.current = Math.min(1, progress.current + delta * 4); // ~250ms
-    const ease = 1 - Math.pow(1 - progress.current, 3); // Cubic ease-out
+  useFrame(() => {
+    if (!animating.current || !controls) return;
 
-    controls.setPolarAngle(startPhi.current + deltaPhi.current * ease);
-    controls.setAzimuthalAngle(startTheta.current + deltaTheta.current * ease);
-    controls.update();
-    invalidate();
+    const elapsed = (performance.now() - startTime.current) / 1000;
+    const duration = 0.25; // 250ms smooth transition
+    const p = Math.min(1, elapsed / duration);
+    const ease = 1 - Math.pow(1 - p, 3); // Cubic ease-out
 
-    if (progress.current >= 1) {
+    if (p >= 1) {
       animating.current = false;
+      camera.position.copy(target.current).addScaledVector(targetDir.current, dist.current);
+      camera.lookAt(target.current);
+      camera.updateMatrixWorld();
+      controls.enabled = true;
+      controls.update();
+      invalidate();
+    } else {
+      const qCurrent = new THREE.Quaternion().slerp(qGoal.current, ease);
+      const curDir = startDir.current.clone().applyQuaternion(qCurrent).normalize();
+      camera.position.copy(target.current).addScaledVector(curDir, dist.current);
+      camera.lookAt(target.current);
+      camera.updateMatrixWorld();
+      invalidate();
     }
   });
 
@@ -890,7 +896,7 @@ export default function ModelViewer({
           `PartErrorBoundary` (inside the per-part wrapper) instead of one
           shared boundary around the whole map -- see the file header for
           why. */}
-      <Bounds margin={1.2}>
+      <Bounds margin={1.2} maxDuration={0.001}>
         <Resize box3={allBox ?? UNIT_BOX}>
           <Center top cacheKey={loadedCount} disable={loadedCount === 0}>
             {parts.map((part) => (

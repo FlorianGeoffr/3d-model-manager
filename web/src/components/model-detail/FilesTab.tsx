@@ -57,13 +57,13 @@ function FileThumb({
   const isImage = isImageFile(file);
 
   // Determine image source:
-  // For images, we try the derivative thumbnail first if thumb_ready or if not failed yet.
-  // If thumb fails (or if not ready), we fall back directly to inline file download.
+  // For images, we try the derivative thumbnail first (supported by backend on-demand thumb generator).
+  // If thumb fails, we fall back to inline file download.
   // If that also fails, we show the format icon.
   let src: string | null = null;
   if (!failed) {
     if (isImage) {
-      if (!useFallback && file.thumb_ready) {
+      if (!useFallback) {
         src = `/api/blobs/${file.blob_hash}/thumb?size=256`;
       } else {
         src = `/api/files/${file.id}/download?inline=1`;

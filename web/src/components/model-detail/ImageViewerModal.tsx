@@ -2,13 +2,16 @@ import { useEffect, useState, useCallback } from "react";
 import { ChevronLeftIcon, ChevronRightIcon, DownloadIcon, XIcon, ZoomInIcon, ZoomOutIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogOverlay, DialogPortal } from "@/components/ui/dialog";
+import { cn } from "@/lib/utils";
 import { humanizeBytes } from "@/lib/format";
 import type { FileOut } from "@/api/types";
 
 export function isImageFile(file: FileOut): boolean {
   if (file.kind === "image") return true;
   const fmt = file.format?.toLowerCase();
-  return ["jpg", "jpeg", "png", "webp"].includes(fmt);
+  if (["jpg", "jpeg", "png", "webp", "gif"].includes(fmt)) return true;
+  const lower = file.rel_path?.toLowerCase() ?? "";
+  return [".jpg", ".jpeg", ".png", ".webp", ".gif"].some((ext) => lower.endsWith(ext));
 }
 
 interface ImageViewerModalProps {
@@ -158,8 +161,15 @@ export function ImageViewerModal({
               <img
                 src={imageUrl}
                 alt={filename}
-                className={`max-h-[calc(100vh-6rem)] max-w-[calc(100vw-6rem)] object-contain select-none cursor-${zoomLevel === 1 ? "zoom-in" : "zoom-out"}`}
+                className={`max-h-[calc(100vh-10rem)] max-w-[calc(100vw-6rem)] object-contain select-none cursor-${zoomLevel === 1 ? "zoom-in" : "zoom-out"}`}
                 draggable={false}
+                onError={(e) => {
+                  const target = e.target as HTMLImageElement;
+                  const thumbFallback = `/api/blobs/${currentFile.blob_hash}/thumb?size=1024`;
+                  if (target.src !== thumbFallback) {
+                    target.src = thumbFallback;
+                  }
+                }}
               />
             </div>
 
@@ -175,6 +185,44 @@ export function ImageViewerModal({
               </Button>
             )}
           </div>
+
+          {/* Bottom thumbnail miniature strip */}
+          {imageFiles.length > 1 && (
+            <div className="flex h-20 shrink-0 items-center justify-center gap-2 overflow-x-auto bg-black/70 px-4 py-2 backdrop-blur-md">
+              {imageFiles.map((file, idx) => {
+                const isActive = idx === currentIndex;
+                const thumbSrc = `/api/blobs/${file.blob_hash}/thumb?size=256`;
+                const inlineSrc = `/api/files/${file.id}/download?inline=1`;
+                return (
+                  <button
+                    key={file.id}
+                    type="button"
+                    onClick={() => {
+                      setCurrentIndex(idx);
+                      setZoomLevel(1);
+                    }}
+                    className={cn(
+                      "relative size-14 shrink-0 overflow-hidden rounded-md border-2 transition-all hover:opacity-100",
+                      isActive
+                        ? "border-primary ring-2 ring-primary/50 opacity-100 scale-105"
+                        : "border-transparent opacity-60 hover:border-white/40",
+                    )}
+                    title={file.rel_path}
+                  >
+                    <img
+                      src={thumbSrc}
+                      alt={file.rel_path}
+                      loading="lazy"
+                      className="h-full w-full object-cover"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).src = inlineSrc;
+                      }}
+                    />
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </DialogContent>
       </DialogPortal>
     </Dialog>

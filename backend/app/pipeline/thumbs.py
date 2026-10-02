@@ -13,7 +13,7 @@ from __future__ import annotations
 import io
 from pathlib import Path
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from app.config import Settings
 from app.models.enums import DerivativeKind
@@ -37,6 +37,7 @@ def _load_image(src: Path | bytes) -> Image.Image:
     source = io.BytesIO(src) if isinstance(src, bytes) else src
     try:
         with Image.open(source) as image:
+            image = ImageOps.exif_transpose(image)
             image.load()
             return image.copy()
     except (UnidentifiedImageError, OSError) as exc:

@@ -59,6 +59,13 @@ function FileState({
             src={imageUrl}
             alt={file.rel_path}
             className="max-h-[560px] max-w-full rounded-lg object-contain"
+            onError={(e) => {
+              const target = e.target as HTMLImageElement;
+              const inlineFallback = `/api/files/${file.id}/download?inline=1`;
+              if (target.src !== inlineFallback) {
+                target.src = inlineFallback;
+              }
+            }}
           />
         </div>
         <span className="mt-2 text-xs text-muted-foreground">{file.rel_path}</span>

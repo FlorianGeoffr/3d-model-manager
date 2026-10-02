@@ -201,9 +201,14 @@ async def _build_file_enrichments(
                 else None
             )
             meta_out = BlobMetaOut.from_model(blob.meta, plates_out)
+        is_image = blob.kind == BlobKind.IMAGE or blob.format in (
+            BlobFormat.PNG,
+            BlobFormat.JPG,
+            BlobFormat.WEBP,
+        )
         enrichments[blob_hash] = FileEnrichment(
             meta=meta_out,
-            thumb_ready=_derivative_ok(blob, DerivativeKind.THUMB_256),
+            thumb_ready=is_image or _derivative_ok(blob, DerivativeKind.THUMB_256),
             glb_status=_glb_status(blob),
             glb_preview_ready=_derivative_ok(blob, DerivativeKind.GLB_PREVIEW),
         )
@@ -1292,7 +1297,7 @@ def _gallery_cover_url(
     assembly thumbnail (if ready) beats the first (by ``rel_path``) file
     with a ready thumb; ``None`` if nothing is ready yet.
     """
-    if model.cover_blob_hash is not None and model.cover_blob_hash in cover_ok_hashes:
+    if model.cover_blob_hash is not None:
         return f"/api/blobs/{model.cover_blob_hash}/thumb?size=256"
     if aggregate is not None and aggregate.assembly_ok:
         return f"/api/revisions/{model.current_revision_id}/assembly-thumb"

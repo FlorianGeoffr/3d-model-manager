@@ -25,6 +25,8 @@
 * sidebar pinning, root model filtering, and folder/model card responsive design ([86e7a43](https://github.com/FlorianGeoffr/3d-model-manager/commit/86e7a436689d6eb936661a8eb4eb9bc4449f8ea2))
 * subfolder creation parent_id, markdown linebreaks, camera presets, and print jobs persistence ([d840611](https://github.com/FlorianGeoffr/3d-model-manager/commit/d8406119d9e81d99e9efa0aa291a1a857bfe2b4a))
 * **viewer,files:** fix camera preset singularities and image miniature thumbnails ([9b35690](https://github.com/FlorianGeoffr/3d-model-manager/commit/9b356907cfcf5229949ee3b4ca09e3ece9dfc242))
+* **viewer:** fix camera preset Iso/Top/Front/Side via quaternion SLERP — eliminates gimbal-lock singularity, stale `controls` dep causing mid-tween restart, and `OrbitControls.update()` fighting the animation every frame ([89c75b6](https://github.com/FlorianGeoffr/3d-model-manager/commit/89c75b6cd1f7436b69154486ae42eab3b088ec06))
+* **backend:** remove unused `StorageKeyNotFound` import and fix line-length in `blobs.py`; skip `fcntl`/reflink tests on Windows to unblock the test suite ([89c75b6](https://github.com/FlorianGeoffr/3d-model-manager/commit/89c75b6cd1f7436b69154486ae42eab3b088ec06))
 
 ## [0.4.0] (2026-09-20)
 

@@ -5,8 +5,8 @@ move/delete/exists/stat, recursive walk, and key-safety rejection (absolute
 paths, ``..`` traversal, backslashes, empty keys, symlink escape).
 """
 
-import fcntl
 import os
+import sys
 from datetime import timedelta
 from pathlib import Path
 
@@ -15,6 +15,12 @@ import pytest
 
 from app.storage.errors import StorageError, StorageKeyNotFound
 from app.storage.local import LocalStorageBackend
+
+# fcntl is Linux-only; skip this entire module on Windows.
+if sys.platform == "win32":
+    pytest.skip("fcntl / reflink tests are Linux-only", allow_module_level=True)
+
+import fcntl  # noqa: E402
 
 
 @pytest.fixture

@@ -453,58 +453,103 @@ const CAMERA_PRESET_CONFIG: Record<
 
 /**
  * Smooth camera preset transition for Iso, Top, Front, and Side views.
- * Handles proper up vector for top view (preventing gimbal lock / singularity)
- * and keeps demand-mode rendering invalidated throughout the animation.
+ *
+ * Uses Quaternion SLERP (not position-lerp + lookAt) to avoid the gimbal-lock
+ * singularity that occurred when the camera path passed through straight-up or
+ * straight-down look directions (Top/Bottom view). The old approach computed
+ * `camera.up.lerp().normalize()` then called `camera.lookAt()`, but THREE's
+ * `lookAt` internally does `cross(direction, up)` -- when direction ≈ (0,±1,0)
+ * and up ≈ (0,1,0) that cross product approaches zero and the resulting matrix
+ * is degenerate.
+ *
+ * Key design choices:
+ *  - `controls` is NOT in the useEffect dep array. It was causing the effect to
+ *    re-fire (and restart the tween from the current mid-tween position) every
+ *    time OrbitControls attached, which produced a chaotic jump on warm caches.
+ *    Instead it is read via a ref inside the frame loop so it's always current.
+ *  - `OrbitControls.update()` is only called once on the LAST frame (progress ≥ 1)
+ *    so the controls re-sync their internal phi/theta to the final camera state.
+ *    Calling it every frame was fighting the tween (controls snap back to their
+ *    own stored angles each update).
  */
 function CameraPresetController({ preset }: { preset: CameraPreset }) {
-  const { camera, controls, invalidate } = useThree();
-  const animating = useRef(false);
+  const camera = useThree((s) => s.camera);
+  const controls = useThree((s) => s.controls);
+  const invalidate = useThree((s) => s.invalidate);
+
+  // Keep controls in a ref so the frame loop always reads the latest value
+  // without needing it in the effect dep array.
+  const controlsRef = useRef(controls);
+  useEffect(() => {
+    controlsRef.current = controls;
+  });
+
+  // Quaternion SLERP: start/goal orientation represented as quaternions so we
+  // never have to call lookAt mid-tween (which is where the singularity lived).
+  const startQuat = useRef(new THREE.Quaternion());
+  const goalQuat = useRef(new THREE.Quaternion());
   const startPos = useRef(new THREE.Vector3());
   const goalPos = useRef(new THREE.Vector3());
-  const startUp = useRef(new THREE.Vector3());
-  const goalUp = useRef(new THREE.Vector3());
   const target = useRef(new THREE.Vector3());
   const progress = useRef(0);
+  const animating = useRef(false);
 
   useEffect(() => {
     if (!preset) return;
-    const ctrl = controls as any;
+    const ctrl = controlsRef.current as any;
     const t = ctrl?.target ? ctrl.target.clone() : new THREE.Vector3(0, 0, 0);
     target.current.copy(t);
+
     const dist = Math.max(camera.position.distanceTo(t), 0.5);
     const config = CAMERA_PRESET_CONFIG[preset];
+
+    // Goal camera position
     goalPos.current.copy(t).addScaledVector(config.dir, dist);
-    goalUp.current.copy(config.up);
+
+    // Compute goal quaternion: build a look-at matrix from the goal position
+    // toward the target with the preset's up vector, then extract its quaternion.
+    // This is done once at tween start (not every frame), so the intermediate
+    // lerp path never needs to call lookAt.
+    const goalMatrix = new THREE.Matrix4().lookAt(goalPos.current, t, config.up);
+    goalQuat.current.setFromRotationMatrix(goalMatrix);
+
+    // Start from the current camera state
     startPos.current.copy(camera.position);
-    startUp.current.copy(camera.up);
+    startQuat.current.copy(camera.quaternion);
+
     progress.current = 0;
     animating.current = true;
     invalidate();
-  }, [preset, camera, controls, invalidate]);
+    // Intentionally NOT including `controls` -- see the doc comment above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preset, camera, invalidate]);
 
   useFrame((_, delta) => {
     if (!animating.current) return;
-    progress.current = Math.min(1, progress.current + delta * 4); // ~250ms smooth transition
-    const ctrl = controls as any;
+
+    progress.current = Math.min(1, progress.current + delta * 4); // ~250 ms
     // Cubic ease-out
-    const t = 1 - Math.pow(1 - progress.current, 3);
-    camera.position.lerpVectors(startPos.current, goalPos.current, t);
-    camera.up.lerpVectors(startUp.current, goalUp.current, t).normalize();
-    camera.lookAt(target.current);
-    if (ctrl) {
-      ctrl.target.copy(target.current);
-      ctrl.update();
-    }
+    const ease = 1 - Math.pow(1 - progress.current, 3);
+
+    camera.position.lerpVectors(startPos.current, goalPos.current, ease);
+    camera.quaternion.slerpQuaternions(startQuat.current, goalQuat.current, ease);
+
     invalidate();
 
     if (progress.current >= 1) {
+      // Snap to exact goal to eliminate floating-point drift
       camera.position.copy(goalPos.current);
-      camera.up.copy(goalUp.current);
-      camera.lookAt(target.current);
+      camera.quaternion.copy(goalQuat.current);
+
+      // Only sync OrbitControls once the tween is fully done -- calling
+      // update() every frame was fighting the tween by re-applying the
+      // controls' own stored angles on each step.
+      const ctrl = controlsRef.current as any;
       if (ctrl) {
         ctrl.target.copy(target.current);
         ctrl.update();
       }
+
       animating.current = false;
       invalidate();
     }

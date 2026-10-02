@@ -21,7 +21,6 @@ from app.models import Blob, Derivative, File
 from app.models.enums import BlobFormat, BlobKind, DerivativeKind, DerivativeStatus
 from app.services import derivatives
 from app.services.storage_backends import resolve_backend_for_file
-from app.storage.errors import StorageKeyNotFound
 
 router = APIRouter(prefix="/blobs", tags=["blobs"])
 
@@ -131,7 +130,11 @@ async def get_blob_thumb(
     if is_image:
         try:
             file = (
-                (await db.execute(select(File).where(File.blob_hash == blob_hash).order_by(File.id)))
+                (
+                    await db.execute(
+                        select(File).where(File.blob_hash == blob_hash).order_by(File.id)
+                    )
+                )
                 .scalars()
                 .first()
             )

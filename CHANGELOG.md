@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.6.0](https://github.com/FlorianGeoffr/3d-model-manager/compare/v0.5.0...v0.6.0) (2026-10-03)
+
+
+### Features
+
+* **pipeline:** add OpenSCAD (.scad) support with 3D preview and thumbnail caching ([76b5cb8](https://github.com/FlorianGeoffr/3d-model-manager/commit/76b5cb896e835036412360f1615e4fd582f71ee5))
+
+
+### Bug Fixes
+
+* **docker:** guard chmod in entrypoint to prevent restart loop on privilege drop ([5c5fdbb](https://github.com/FlorianGeoffr/3d-model-manager/commit/5c5fdbb2331796809adf119871f1f69c6e3255ec))
+* **pipeline:** enable headless OpenSCAD execution with xvfb-run and auto-heal SCAD previews ([ab9b902](https://github.com/FlorianGeoffr/3d-model-manager/commit/ab9b902e21ace6bb3a3248069580bd8e43940be5))
+* **pipeline:** execute OpenSCAD with offscreen QPA platform, fallback to xvfb, and auto-heal SCAD previews ([2d3ee7a](https://github.com/FlorianGeoffr/3d-model-manager/commit/2d3ee7aa86e76a6b244914137e0991774a69d542))
+* **printerd:** prevent assigning arbitrary files to out-of-band print jobs and make file_id nullable ([bc04d13](https://github.com/FlorianGeoffr/3d-model-manager/commit/bc04d13853908b792d3aa96ee84a478e235cb016))
+* **thumbnails:** overhaul photo thumbnails, on-demand generation, EXIF rotation and viewer strip ([d0f9d49](https://github.com/FlorianGeoffr/3d-model-manager/commit/d0f9d498573a44d305882e3f8e302355d176c309))
+* **viewer:** drive camera presets natively via OrbitControls spherical angles ([6351d79](https://github.com/FlorianGeoffr/3d-model-manager/commit/6351d79a964b30d490ffd9f3775367cdee6701aa))
+* **viewer:** rewrite camera presets with spherical slerp, controls lock, and zero-duration bounds ([cd7d302](https://github.com/FlorianGeoffr/3d-model-manager/commit/cd7d302fe8d258f3881ab92ab0fa48f59e6ad96a))
+
 ## [0.5.0](https://github.com/FlorianGeoffr/3d-model-manager/compare/v0.4.0...v0.5.0) (2026-09-30)
 
 

@@ -178,21 +178,18 @@ def scad_to_glb(
         env = os.environ.copy()
 
         # In headless Linux environments (Docker containers, CI, headless servers),
-        # OpenSCAD (which links to Qt) requires an X server or offscreen platform.
-        # When no DISPLAY is set:
-        # 1. Prefer xvfb-run if installed (runs virtual X11 framebuffer with software GL).
-        # 2. Otherwise fall back to QT_QPA_PLATFORM=offscreen.
-        if sys.platform.startswith("linux") and not env.get("DISPLAY"):
-            xvfb_run = shutil.which("xvfb-run")
-            if xvfb_run:
-                cmd = [xvfb_run, "-a", "-s", "-screen 0 1024x768x24", *cmd]
-            else:
-                env["QT_QPA_PLATFORM"] = "offscreen"
+        # OpenSCAD (which links to Qt) requires an offscreen platform or X server.
+        # Direct execution with QT_QPA_PLATFORM=offscreen evaluates CSG via CGAL and
+        # exports STL in pure user space without requiring Xvfb or X11 socket permissions.
+        env["QT_QPA_PLATFORM"] = "offscreen"
+        if not env.get("OPENSCADPATH"):
+            env["OPENSCADPATH"] = "/usr/share/openscad/libraries"
 
+        # 1. Primary attempt: direct execution with offscreen QPA platform
         try:
             res = subprocess.run(
                 cmd,
-                cwd=src.parent,
+                cwd=src.resolve().parent,
                 env=env,
                 capture_output=True,
                 text=True,
@@ -202,6 +199,29 @@ def scad_to_glb(
             raise TimeoutError(
                 f"OpenSCAD compilation timed out after {timeout_s}s: {src.name}"
             ) from exc
+
+        # 2. Fallback attempt: if direct offscreen failed on Linux and xvfb-run is available, try it
+        if (
+            (res.returncode != 0 or not tmp_stl.exists() or tmp_stl.stat().st_size == 0)
+            and sys.platform.startswith("linux")
+            and not env.get("DISPLAY")
+        ):
+            xvfb_run = shutil.which("xvfb-run")
+            if xvfb_run:
+                xvfb_cmd = [xvfb_run, "-a", "-s", "-screen 0 1024x768x24", *cmd]
+                try:
+                    res_xvfb = subprocess.run(
+                        xvfb_cmd,
+                        cwd=src.resolve().parent,
+                        env=env,
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout_s,
+                    )
+                    if res_xvfb.returncode == 0 and tmp_stl.exists() and tmp_stl.stat().st_size > 0:
+                        res = res_xvfb
+                except subprocess.TimeoutExpired:
+                    pass
 
         if res.returncode != 0:
             error_output = (res.stderr or res.stdout or "").strip()

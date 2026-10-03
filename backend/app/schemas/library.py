@@ -330,6 +330,7 @@ class FileEnrichment:
     thumb_ready: bool
     glb_status: GlbStatus | None
     glb_preview_ready: bool
+    glb_error: str | None = None
 
 
 # -- files / notes --------------------------------------------------------
@@ -350,6 +351,7 @@ class FileOut(BaseModel):
     thumb_ready: bool = False
     glb_status: GlbStatus | None = None
     glb_preview_ready: bool = False
+    glb_error: str | None = None
 
     @classmethod
     def from_model(cls, file: File, enrichment: FileEnrichment | None = None) -> FileOut:
@@ -368,6 +370,7 @@ class FileOut(BaseModel):
             thumb_ready=enrichment.thumb_ready if enrichment else False,
             glb_status=enrichment.glb_status if enrichment else None,
             glb_preview_ready=enrichment.glb_preview_ready if enrichment else False,
+            glb_error=enrichment.glb_error if enrichment else None,
         )
 
 

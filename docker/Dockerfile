@@ -68,8 +68,8 @@ RUN apt-get update \
 # when PUID/PGID are set. Root stays the default (see the ENTRYPOINT note
 # below) when neither is set.
 RUN groupadd -g 1000 tdmm && useradd -u 1000 -g tdmm -m -d /home/tdmm -s /usr/sbin/nologin tdmm \
-    && mkdir -p /home/tdmm/.cache /tmp/.cache \
-    && chmod 1777 /tmp/.cache \
+    && mkdir -p /home/tdmm/.cache /tmp/.cache /tmp/.X11-unix \
+    && chmod 1777 /tmp/.cache /tmp/.X11-unix \
     && chown -R tdmm:tdmm /home/tdmm
 
 COPY --from=gltfpack-build /build/gltfpack /usr/local/bin/gltfpack

@@ -148,16 +148,19 @@ def _derivative_ok(blob: Blob, kind: DerivativeKind) -> bool:
     return any(d.kind == kind and d.status == DerivativeStatus.OK for d in blob.derivatives)
 
 
-def _glb_status(blob: Blob) -> Literal["ok", "pending", "failed", "unsupported"] | None:
-    """``None`` when ``blob.format`` never produces a GLB at all; a missing
+def _glb_info(
+    blob: Blob,
+) -> tuple[Literal["ok", "pending", "failed", "unsupported"] | None, str | None]:
+    """Return ``(glb_status, glb_error)`` for the blob.
+    ``None`` when ``blob.format`` never produces a GLB at all; a missing
     row on a GLB-format blob is ``"pending"`` (Task 7 interface decision).
     """
     if blob.format not in _GLB_FORMATS:
-        return None
+        return None, None
     deriv = next((d for d in blob.derivatives if d.kind == DerivativeKind.GLB), None)
     if deriv is None:
-        return "pending"
-    return deriv.status.value
+        return "pending", None
+    return deriv.status.value, deriv.error
 
 
 async def _build_file_enrichments(
@@ -207,11 +210,13 @@ async def _build_file_enrichments(
             BlobFormat.JPG,
             BlobFormat.WEBP,
         )
+        glb_stat, glb_err = _glb_info(blob)
         enrichments[blob_hash] = FileEnrichment(
             meta=meta_out,
             thumb_ready=is_image or _derivative_ok(blob, DerivativeKind.THUMB_256),
-            glb_status=_glb_status(blob),
+            glb_status=glb_stat,
             glb_preview_ready=_derivative_ok(blob, DerivativeKind.GLB_PREVIEW),
+            glb_error=glb_err,
         )
     return enrichments
 

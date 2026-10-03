@@ -4,7 +4,7 @@ import { toast } from "sonner";
 
 import { useReprocessFile } from "@/api/library";
 import { Button } from "@/components/ui/button";
-import { Card, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { PlatePanel } from "@/components/model-detail/PlatePanel";
 import { PlaceholderCard, ViewerStage, type ViewerStageProps } from "@/components/viewer/ViewerStage";
 import type { StudioSelection } from "@/components/model-detail/studioSelection";
@@ -85,10 +85,28 @@ function FileState({
           <CardHeader className="items-center text-center">
             <LoaderCircleIcon className="mx-auto mb-2 size-6 animate-spin text-muted-foreground" />
             <CardTitle>Preparing preview…</CardTitle>
-            {/* The app-wide SSE connection (`EventsProvider`) invalidates the
-                `["models"]` query when the conversion job finishes, which
-                refetches this model with the new `glb_status` — no polling
-                needed here. */}
+            <CardDescription>
+              Generating 3D preview in the background.
+            </CardDescription>
+            <div className="mt-4">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-xs text-muted-foreground"
+                onClick={() =>
+                  reprocess.mutate(file.id, {
+                    onSuccess: () => toast.success("Reprocessing restarted"),
+                    onError: () => toast.error("Failed to start reprocessing"),
+                  })
+                }
+                disabled={reprocess.isPending}
+              >
+                <RefreshCwIcon
+                  className={`mr-1.5 size-3.5 ${reprocess.isPending ? "animate-spin" : ""}`}
+                />
+                Force reprocess
+              </Button>
+            </div>
           </CardHeader>
         </Card>
       );
@@ -97,7 +115,18 @@ function FileState({
         <PlaceholderCard
           destructive
           title="Preview failed"
-          description="Couldn't generate a 3D preview for this file."
+          description={
+            file.glb_error ? (
+              <div className="space-y-2">
+                <p>Couldn't generate a 3D preview for this file.</p>
+                <div className="max-h-36 overflow-y-auto rounded bg-destructive/10 p-2 text-left font-mono text-xs text-destructive break-words">
+                  {file.glb_error}
+                </div>
+              </div>
+            ) : (
+              "Couldn't generate a 3D preview for this file."
+            )
+          }
           action={
             <Button
               variant="outline"

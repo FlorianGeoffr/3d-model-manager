@@ -71,32 +71,35 @@ async def heal_failed_scad_derivatives(session: AsyncSession) -> None:
     from app.services import jobs as jobs_service
     from app.tasks.pipeline import STEP_TASKS
 
-    stmt = (
-        select(Derivative)
-        .join(Blob, Blob.hash == Derivative.blob_hash)
-        .where(
-            Blob.format == BlobFormat.SCAD,
-            Derivative.kind == DerivativeKind.GLB,
-            Derivative.status == DerivativeStatus.FAILED,
-        )
-    )
-    failed_scads = list((await session.execute(stmt)).scalars().all())
-    if not failed_scads:
+    # Find all SCAD blobs in the library
+    stmt = select(Blob).where(Blob.format == BlobFormat.SCAD)
+    scad_blobs = list((await session.execute(stmt)).scalars().all())
+    if not scad_blobs:
         return
 
-    logger.info("Auto-healing %d failed SCAD GLB derivative(s)", len(failed_scads))
     task = STEP_TASKS.get("convert_to_glb")
+    healed_count = 0
 
-    for deriv in failed_scads:
-        blob_hash = deriv.blob_hash
-        # Delete failed derivative rows for this blob so it can be cleanly rebuilt
-        all_failed_stmt = select(Derivative).where(
+    for blob in scad_blobs:
+        blob_hash = blob.hash
+        # Check if an OK GLB derivative already exists
+        ok_stmt = select(Derivative).where(
             Derivative.blob_hash == blob_hash,
-            Derivative.status == DerivativeStatus.FAILED,
+            Derivative.kind == DerivativeKind.GLB,
+            Derivative.status == DerivativeStatus.OK,
         )
-        all_failed = list((await session.execute(all_failed_stmt)).scalars().all())
-        for f_deriv in all_failed:
-            await session.delete(f_deriv)
+        has_ok = (await session.execute(ok_stmt)).scalars().first() is not None
+        if has_ok:
+            continue
+
+        # Delete any failed or pending derivatives so it can be cleanly rebuilt
+        stale_derivs_stmt = select(Derivative).where(
+            Derivative.blob_hash == blob_hash,
+            Derivative.status != DerivativeStatus.OK,
+        )
+        stale_derivs = list((await session.execute(stale_derivs_stmt)).scalars().all())
+        for d in stale_derivs:
+            await session.delete(d)
 
         # Find file referencing this blob
         file_stmt = select(File).where(File.blob_hash == blob_hash)
@@ -112,10 +115,11 @@ async def heal_failed_scad_derivatives(session: AsyncSession) -> None:
                     subject_id=file_row.id,
                 )
                 task.apply_async(args=[str(job_id), blob_hash], task_id=str(job_id))
-                logger.info(
-                    "Enqueued convert_to_glb job %s for healed SCAD blob %s", job_id, blob_hash
-                )
+                healed_count += 1
+                logger.info("Enqueued convert_to_glb job %s for SCAD blob %s", job_id, blob_hash)
             except Exception as exc:
                 logger.warning("Could not dispatch heal job for blob %s: %s", blob_hash, exc)
 
-    await session.commit()
+    if healed_count > 0:
+        logger.info("Auto-healed %d SCAD blob(s) needing GLB generation", healed_count)
+        await session.commit()

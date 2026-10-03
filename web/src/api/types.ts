@@ -225,6 +225,7 @@ export interface FileOut {
   thumb_ready: boolean;
   glb_status: GlbStatus | null;
   glb_preview_ready: boolean;
+  glb_error?: string | null;
 }
 
 export interface NoteCreate {

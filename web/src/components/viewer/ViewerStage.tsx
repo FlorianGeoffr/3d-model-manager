@@ -48,9 +48,9 @@ export function PlaceholderCard({
   action,
 }: {
   title: string;
-  description: string;
+  description: ReactNode;
   destructive?: boolean;
-  action?: React.ReactNode;
+  action?: ReactNode;
 }) {
   return (
     <Card className="mx-auto mt-8 max-w-md">

@@ -680,7 +680,7 @@ async def test_extract_metadata_cad_branch_reads_glb_derivative(
     assert meta.raw == {"tool": "glb-derived"}
 
 
-@pytest.mark.parametrize("blob_format", [BlobFormat.STEP, BlobFormat.IGES])
+@pytest.mark.parametrize("blob_format", [BlobFormat.STEP, BlobFormat.IGES, BlobFormat.SCAD])
 async def test_extract_metadata_cad_branch_missing_glb_raises_order_broken(
     db_session: AsyncSession,
     backend: LocalStorageBackend,

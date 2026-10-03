@@ -132,6 +132,7 @@ _GLB_FORMATS = (
     BlobFormat.THREEMF,
     BlobFormat.STEP,
     BlobFormat.IGES,
+    BlobFormat.SCAD,
 )
 
 

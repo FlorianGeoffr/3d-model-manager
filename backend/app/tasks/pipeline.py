@@ -79,6 +79,7 @@ PIPELINE_STEPS: dict[BlobFormat, tuple[str, ...]] = {
     BlobFormat.GCODE: ("extract_metadata",),
     BlobFormat.STEP: ("convert_to_glb", "extract_metadata", "optimize_glb", "render_thumb"),
     BlobFormat.IGES: ("convert_to_glb", "extract_metadata", "optimize_glb", "render_thumb"),
+    BlobFormat.SCAD: ("convert_to_glb", "extract_metadata", "optimize_glb", "render_thumb"),
     BlobFormat.PNG: ("render_thumb",),
     BlobFormat.JPG: ("render_thumb",),
     BlobFormat.WEBP: ("render_thumb",),
@@ -104,7 +105,7 @@ TRANSIENT_RETRY_DELAYS: tuple[float, ...] = (1.0, 4.0, 16.0)
 # shape" table): shared by `extract_metadata`'s CAD-vs-native-mesh branch
 # below and `maybe_enqueue_assembly_sync`'s readiness check.
 _MESH_FORMATS = (BlobFormat.STL, BlobFormat.OBJ, BlobFormat.THREEMF)
-_CAD_FORMATS = (BlobFormat.STEP, BlobFormat.IGES)
+_CAD_FORMATS = (BlobFormat.STEP, BlobFormat.IGES, BlobFormat.SCAD)
 
 
 class UnsupportedBlobError(Exception):

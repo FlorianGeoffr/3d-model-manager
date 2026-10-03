@@ -60,6 +60,15 @@ class Settings(BaseSettings):
     # `gltfpack` resolves to on PATH (see tests/conftest.py, which prepends
     # the npm-installed WASM shim's bin dir for local dev/CI).
     gltfpack_path: str = "gltfpack"
+    # Path/name of the OpenSCAD executable (for .scad -> mesh conversion).
+    # Defaults to whatever `openscad` resolves to on PATH, with auto-detection
+    # for standard OS paths (see app/pipeline/cad.py). Env: `OPENSCAD_PATH`.
+    openscad_path: str = Field(default="openscad", validation_alias=AliasChoices("OPENSCAD_PATH"))
+    # Timeout in seconds for OpenSCAD compilation (default: 120s).
+    # Env: `OPENSCAD_TIMEOUT` (seconds).
+    openscad_timeout_s: float = Field(
+        default=120.0, validation_alias=AliasChoices("OPENSCAD_TIMEOUT")
+    )
     # Opt-in scheduled scan (SPEC "optional scheduled scan"; Task 5 brief):
     # seconds between automatic `scan_library` runs via Celery beat. `0`
     # (the default) means OFF -- see `app.tasks.celery_app`'s conditional

@@ -12,6 +12,7 @@ export const BLOB_FORMATS = [
   "obj",
   "step",
   "iges",
+  "scad",
   "gcode_3mf",
   "gcode",
   "png",

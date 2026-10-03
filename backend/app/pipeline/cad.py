@@ -18,6 +18,10 @@ untouched, with no correction needed.
 
 from __future__ import annotations
 
+import shutil
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -30,6 +34,8 @@ from OCP.TopAbs import TopAbs_FACE, TopAbs_REVERSED
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopLoc import TopLoc_Location
 from OCP.TopoDS import TopoDS
+
+from app.pipeline import meshload
 
 # BRepMesh_IncrementalMesh(shape, linear_deflection, is_relative,
 # angular_deflection, is_parallel) -- SPEC's tessellation tolerance for the
@@ -91,3 +97,91 @@ def iges_to_glb(src: Path, dst: Path) -> None:
         vertices=np.array(vertices, dtype=np.float64), faces=np.array(faces, dtype=np.int64)
     )
     mesh.export(dst, file_type="glb")
+
+
+def find_openscad_binary(configured_path: str = "openscad") -> str | None:
+    """Resolve the OpenSCAD executable path.
+
+    Checks:
+    1. PATH via `shutil.which`
+    2. Direct file path if `configured_path` points to a file
+    3. Standard installation directories on Windows / macOS
+    """
+    if shutil.which(configured_path):
+        return configured_path
+
+    candidate = Path(configured_path)
+    if candidate.is_file():
+        return str(candidate)
+
+    if sys.platform == "win32":
+        standard_windows_paths = [
+            r"C:\Program Files\OpenSCAD (Nightly)\openscad.com",
+            r"C:\Program Files\OpenSCAD\openscad.com",
+            r"C:\Program Files\OpenSCAD (Nightly)\openscad.exe",
+            r"C:\Program Files\OpenSCAD\openscad.exe",
+            r"C:\Program Files (x86)\OpenSCAD\openscad.com",
+            r"C:\Program Files (x86)\OpenSCAD\openscad.exe",
+        ]
+        for p in standard_windows_paths:
+            if Path(p).is_file():
+                return p
+
+    if sys.platform == "darwin":
+        mac_path = Path("/Applications/OpenSCAD.app/Contents/MacOS/OpenSCAD")
+        if mac_path.is_file():
+            return str(mac_path)
+
+    return None
+
+
+def scad_to_glb(
+    src: Path,
+    dst: Path,
+    *,
+    openscad_path: str = "openscad",
+    timeout_s: float = 120.0,
+) -> None:
+    """Compile an OpenSCAD script at ``src`` to STL via OpenSCAD CLI, then
+    export it as a GLB to ``dst``.
+
+    Raises ``RuntimeError`` if the OpenSCAD executable cannot be found.
+    Raises ``TimeoutError`` if compilation exceeds ``timeout_s``.
+    Raises ``ValueError`` if compilation fails or produces no geometry.
+    """
+    bin_path = find_openscad_binary(openscad_path)
+    if not bin_path:
+        raise RuntimeError(
+            f"OpenSCAD executable not found (configured: '{openscad_path}'). "
+            "Please install OpenSCAD and ensure it is available on PATH."
+        )
+
+    with tempfile.TemporaryDirectory(prefix="tdmm-scad-") as tmp_dir:
+        tmp_stl = Path(tmp_dir) / "output.stl"
+        cmd = [bin_path, "-o", str(tmp_stl), str(src.resolve())]
+        try:
+            res = subprocess.run(
+                cmd,
+                cwd=src.parent,
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise TimeoutError(
+                f"OpenSCAD compilation timed out after {timeout_s}s: {src.name}"
+            ) from exc
+
+        if res.returncode != 0 or not tmp_stl.exists():
+            error_output = (res.stderr or res.stdout or "").strip()
+            raise ValueError(
+                f"OpenSCAD compilation failed (exit code {res.returncode}): {error_output}"
+            )
+
+        loaded = trimesh.load(tmp_stl, file_type="stl")
+        mesh = meshload.to_single_mesh(loaded)
+
+        if len(mesh.faces) == 0:
+            raise ValueError(f"OpenSCAD produced empty mesh (no faces): {src.name}")
+
+        mesh.export(dst, file_type="glb")

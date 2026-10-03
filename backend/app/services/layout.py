@@ -104,6 +104,8 @@ def infer_blob_kind_format(rel_path: str) -> tuple[BlobKind, BlobFormat]:
         return BlobKind.CAD, BlobFormat.STEP
     if lower.endswith((".iges", ".igs")):
         return BlobKind.CAD, BlobFormat.IGES
+    if lower.endswith(".scad"):
+        return BlobKind.CAD, BlobFormat.SCAD
     if lower.endswith(".gcode"):
         return BlobKind.GCODE, BlobFormat.GCODE
     if lower.endswith(".png"):

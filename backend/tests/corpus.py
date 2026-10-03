@@ -545,6 +545,11 @@ def box_iges(path: Path) -> None:
     writer.Write(str(path))
 
 
+def box_scad(path: Path) -> None:
+    """Write the same 20x10x5 mm box to ``path`` as SCAD."""
+    path.write_text("cube([20.0, 10.0, 5.0], center=true);\n", encoding="utf-8")
+
+
 # -- images -----------------------------------------------------------------
 
 
@@ -585,5 +590,6 @@ class CorpusPaths:
     bambu_gcode: Path
     box_step: Path
     box_iges: Path
+    box_scad: Path
     red_png: Path
     red_webp: Path

@@ -309,6 +309,8 @@ def corpus(tmp_path_factory: pytest.TempPathFactory) -> CorpusPaths:
     corpus_module.box_step(box_step)
     box_iges = root / "box.iges"
     corpus_module.box_iges(box_iges)
+    box_scad = root / "box.scad"
+    corpus_module.box_scad(box_scad)
     red_png = root / "red.png"
     red_png.write_bytes(corpus_module.red_png())
     red_webp = root / "red.webp"
@@ -326,6 +328,7 @@ def corpus(tmp_path_factory: pytest.TempPathFactory) -> CorpusPaths:
         bambu_gcode=bambu_gcode,
         box_step=box_step,
         box_iges=box_iges,
+        box_scad=box_scad,
         red_png=red_png,
         red_webp=red_webp,
     )

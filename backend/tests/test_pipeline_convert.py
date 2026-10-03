@@ -55,6 +55,7 @@ def _round_trip(path: Path) -> trimesh.Trimesh:
         ("box_3mf_bambu", BlobFormat.THREEMF, "lib3mf"),
         ("box_step", BlobFormat.STEP, "cascadio"),
         ("box_iges", BlobFormat.IGES, "cadquery-ocp"),
+        ("box_scad", BlobFormat.SCAD, "openscad"),
     ],
 )
 def test_convert_to_glb_file_every_format_branch(
@@ -110,6 +111,19 @@ def test_iges_to_glb_direct(tmp_path: Path, corpus: CorpusPaths) -> None:
     assert mesh.extents == pytest.approx(EXPECTED_EXTENTS_MM, abs=1e-3)
     assert mesh.is_watertight
     assert mesh.volume == pytest.approx(1000.0, abs=1e-2)
+
+
+def test_scad_to_glb_direct(tmp_path: Path, corpus: CorpusPaths) -> None:
+    dst = tmp_path / "out.glb"
+
+    cad.scad_to_glb(corpus.box_scad, dst)
+
+    assert dst.read_bytes()[:4] == _GLB_MAGIC
+    mesh = _round_trip(dst)
+    assert mesh.is_watertight
+    assert len(mesh.faces) == 12
+    for actual, expected in zip(sorted(mesh.extents), sorted(EXPECTED_EXTENTS_MM), strict=True):
+        assert actual == pytest.approx(expected, abs=0.5)
 
 
 def test_iges_to_glb_raises_clearly_on_garbage_content(tmp_path: Path) -> None:
@@ -186,6 +200,7 @@ async def _run_convert_to_glb(
         ("box_3mf_bambu", BlobFormat.THREEMF, BlobKind.MESH, "lib3mf"),
         ("box_step", BlobFormat.STEP, BlobKind.CAD, "cascadio"),
         ("box_iges", BlobFormat.IGES, BlobKind.CAD, "cadquery-ocp"),
+        ("box_scad", BlobFormat.SCAD, BlobKind.CAD, "openscad"),
     ],
 )
 async def test_convert_to_glb_step_every_format_branch(

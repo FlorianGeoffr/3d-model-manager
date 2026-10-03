@@ -51,8 +51,9 @@ COPY --from=ghcr.io/astral-sh/uv:0.11.29 /uv /usr/local/bin/uv
 # - gosu: the entrypoint's optional PUID/PGID privilege drop (Task 9) execs
 #   into it instead of `su`/`sudo` -- no PAM/tty baggage, correct signal
 #   forwarding as PID 1.
+# - openscad: compiles .scad files to STL for CAD pipeline processing.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libosmesa6 libgl1-mesa-dri libgl1 gosu \
+    && apt-get install -y --no-install-recommends libosmesa6 libgl1-mesa-dri libgl1 gosu openscad \
     && rm -rf /var/lib/apt/lists/* \
     && ln -s "/usr/lib/$(uname -m)-linux-gnu/libOSMesa.so.8" \
         "/usr/lib/$(uname -m)-linux-gnu/libOSMesa.so" \

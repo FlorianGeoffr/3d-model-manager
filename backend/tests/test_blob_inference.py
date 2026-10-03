@@ -24,6 +24,8 @@ from app.services.layout import infer_blob_kind_format
         ("housing.stp", BlobKind.CAD, BlobFormat.STEP),
         ("part.iges", BlobKind.CAD, BlobFormat.IGES),
         ("part.igs", BlobKind.CAD, BlobFormat.IGES),
+        ("part.scad", BlobKind.CAD, BlobFormat.SCAD),
+        ("PART.SCAD", BlobKind.CAD, BlobFormat.SCAD),
         ("cover.png", BlobKind.IMAGE, BlobFormat.PNG),
         ("cover.jpg", BlobKind.IMAGE, BlobFormat.JPG),
         ("cover.jpeg", BlobKind.IMAGE, BlobFormat.JPG),

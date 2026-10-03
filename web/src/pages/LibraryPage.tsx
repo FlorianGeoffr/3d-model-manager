@@ -577,7 +577,7 @@ export function LibraryPage() {
                   : "Déposer pour importer dans la bibliothèque"}
               </h3>
               <p className="text-sm text-muted-foreground">
-                Fichiers .stl, .3mf, .obj, .step déposés n'importe où dans la page seront importés automatiquement.
+                Fichiers .stl, .3mf, .obj, .step, .scad déposés n'importe où dans la page seront importés automatiquement.
               </p>
             </div>
           </div>

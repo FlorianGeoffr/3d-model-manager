@@ -56,6 +56,17 @@ def convert_to_glb_file(src: Path, fmt: BlobFormat, dst: Path) -> str:
     if fmt is BlobFormat.IGES:
         cad.iges_to_glb(src, dst)
         return "cadquery-ocp"
+    if fmt is BlobFormat.SCAD:
+        from app.config import get_settings
+
+        settings = get_settings()
+        cad.scad_to_glb(
+            src,
+            dst,
+            openscad_path=settings.openscad_path,
+            timeout_s=settings.openscad_timeout_s,
+        )
+        return "openscad"
     raise ValueError(f"convert_to_glb_file: unsupported format {fmt}")
 
 

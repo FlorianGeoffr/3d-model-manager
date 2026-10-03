@@ -33,6 +33,7 @@ class BlobFormat(StrEnum):
     OBJ = "obj"
     STEP = "step"
     IGES = "iges"
+    SCAD = "scad"
     GCODE_3MF = "gcode_3mf"
     GCODE = "gcode"
     PNG = "png"

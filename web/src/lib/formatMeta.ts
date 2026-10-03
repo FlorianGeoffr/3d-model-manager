@@ -16,6 +16,7 @@ export const FORMAT_LABELS: Record<BlobFormat, string> = {
   obj: "OBJ",
   step: "STEP",
   iges: "IGES",
+  scad: "SCAD",
   gcode_3mf: "G/3MF",
   gcode: "G-code",
   png: "PNG",
@@ -36,6 +37,7 @@ export function formatIcon(format: BlobFormat | undefined): LucideIcon {
     case "obj":
     case "step":
     case "iges":
+    case "scad":
     case "3mf":
       return Box;
     case "gcode":

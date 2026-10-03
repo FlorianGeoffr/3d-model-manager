@@ -45,16 +45,19 @@ export function PlaceholderCard({
   title,
   description,
   destructive = false,
+  action,
 }: {
   title: string;
   description: string;
   destructive?: boolean;
+  action?: React.ReactNode;
 }) {
   return (
     <Card className="mx-auto mt-8 max-w-md">
       <CardHeader className="items-center text-center">
         <CardTitle className={destructive ? "text-destructive" : undefined}>{title}</CardTitle>
         <CardDescription>{description}</CardDescription>
+        {action ? <div className="mt-4">{action}</div> : null}
       </CardHeader>
     </Card>
   );

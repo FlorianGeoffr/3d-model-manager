@@ -5,14 +5,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FileActionsMenu } from "@/components/model-detail/FileActionsMenu";
 import type { FileOut, ModelDetail } from "@/api/types";
 
-const { deleteMock, patchMock } = vi.hoisted(() => ({
+const { deleteMock, patchMock, postMock } = vi.hoisted(() => ({
   deleteMock: vi.fn().mockResolvedValue(undefined),
   patchMock: vi.fn().mockResolvedValue({}),
+  postMock: vi.fn().mockResolvedValue({}),
 }));
 
 vi.mock("@/api/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/client")>();
-  return { ...actual, api: { ...actual.api, delete: deleteMock, patch: patchMock } };
+  return {
+    ...actual,
+    api: { ...actual.api, delete: deleteMock, patch: patchMock, post: postMock },
+  };
 });
 
 vi.mock("sonner", () => ({ toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }) }));
@@ -81,6 +85,7 @@ describe("FileActionsMenu", () => {
   beforeEach(() => {
     deleteMock.mockReset().mockResolvedValue(undefined);
     patchMock.mockReset().mockResolvedValue({});
+    postMock.mockReset().mockResolvedValue({});
   });
 
   it("shows a working Download link for a verified file", async () => {
@@ -164,5 +169,14 @@ describe("FileActionsMenu", () => {
 
     await screen.findByRole("menuitem", { name: `Download ${file.rel_path}` });
     expect(screen.queryByRole("menuitem", { name: `View ${file.rel_path} in 3D` })).not.toBeInTheDocument();
+  });
+
+  it("reprocesses the file when 'Reprocess file' is chosen", async () => {
+    const file = buildFile({ id: 99 });
+    renderMenu(file);
+    openMenu(file);
+
+    fireEvent.click(await screen.findByRole("menuitem", { name: `Reprocess ${file.rel_path}` }));
+    await waitFor(() => expect(postMock).toHaveBeenCalledWith(`/files/${file.id}/reprocess`, {}));
   });
 });

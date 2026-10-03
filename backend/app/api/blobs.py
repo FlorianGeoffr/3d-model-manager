@@ -150,9 +150,7 @@ def _extract_and_save_3mf_thumb(
     return None
 
 
-async def _get_blob_raw_bytes(
-    db: AsyncSession, settings: Settings, blob_hash: str
-) -> bytes | None:
+async def _get_blob_raw_bytes(db: AsyncSession, settings: Settings, blob_hash: str) -> bytes | None:
     files = (
         (
             await db.execute(
@@ -301,9 +299,7 @@ async def get_blob_thumb(
 
     # 4. If alternate size is available on disk, serve it.
     alt_kind = (
-        DerivativeKind.THUMB_1024
-        if kind == DerivativeKind.THUMB_256
-        else DerivativeKind.THUMB_256
+        DerivativeKind.THUMB_1024 if kind == DerivativeKind.THUMB_256 else DerivativeKind.THUMB_256
     )
     alt_path = derivatives.derivative_path(settings, blob_hash, alt_kind)
     if await anyio.to_thread.run_sync(alt_path.is_file):

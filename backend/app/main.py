@@ -13,7 +13,7 @@ from app.db import get_sessionmaker
 from app.logging_config import configure_logging
 from app.services import spool
 from app.services.app_config import get_app_config, seed_app_config, warn_ignored_env
-from app.services.bootstrap import ensure_admin_user
+from app.services.bootstrap import ensure_admin_user, heal_failed_scad_derivatives
 from app.services.secrets_at_rest import reencrypt_secrets_at_rest
 from app.static import mount_spa
 
@@ -45,6 +45,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
         warn_ignored_env(logger)
         await reencrypt_secrets_at_rest(session, settings)
+        await heal_failed_scad_derivatives(session)
     yield
 
 

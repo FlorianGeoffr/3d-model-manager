@@ -18,6 +18,7 @@ untouched, with no correction needed.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -105,7 +106,7 @@ def find_openscad_binary(configured_path: str = "openscad") -> str | None:
     Checks:
     1. PATH via `shutil.which`
     2. Direct file path if `configured_path` points to a file
-    3. Standard installation directories on Windows / macOS
+    3. Standard installation directories on Windows / macOS / Linux
     """
     if shutil.which(configured_path):
         return configured_path
@@ -128,9 +129,24 @@ def find_openscad_binary(configured_path: str = "openscad") -> str | None:
                 return p
 
     if sys.platform == "darwin":
-        mac_path = Path("/Applications/OpenSCAD.app/Contents/MacOS/OpenSCAD")
-        if mac_path.is_file():
-            return str(mac_path)
+        mac_paths = [
+            "/Applications/OpenSCAD.app/Contents/MacOS/OpenSCAD",
+            str(Path.home() / "Applications/OpenSCAD.app/Contents/MacOS/OpenSCAD"),
+        ]
+        for p in mac_paths:
+            if Path(p).is_file():
+                return str(p)
+
+    if sys.platform.startswith("linux"):
+        standard_linux_paths = [
+            "/usr/bin/openscad",
+            "/usr/local/bin/openscad",
+            "/snap/bin/openscad",
+            "/var/lib/flatpak/exports/bin/org.openscad.OpenSCAD",
+        ]
+        for p in standard_linux_paths:
+            if Path(p).is_file():
+                return p
 
     return None
 
@@ -159,10 +175,25 @@ def scad_to_glb(
     with tempfile.TemporaryDirectory(prefix="tdmm-scad-") as tmp_dir:
         tmp_stl = Path(tmp_dir) / "output.stl"
         cmd = [bin_path, "-o", str(tmp_stl), str(src.resolve())]
+        env = os.environ.copy()
+
+        # In headless Linux environments (Docker containers, CI, headless servers),
+        # OpenSCAD (which links to Qt) requires an X server or offscreen platform.
+        # When no DISPLAY is set:
+        # 1. Prefer xvfb-run if installed (runs virtual X11 framebuffer with software GL).
+        # 2. Otherwise fall back to QT_QPA_PLATFORM=offscreen.
+        if sys.platform.startswith("linux") and not env.get("DISPLAY"):
+            xvfb_run = shutil.which("xvfb-run")
+            if xvfb_run:
+                cmd = [xvfb_run, "-a", "-s", "-screen 0 1024x768x24", *cmd]
+            else:
+                env["QT_QPA_PLATFORM"] = "offscreen"
+
         try:
             res = subprocess.run(
                 cmd,
                 cwd=src.parent,
+                env=env,
                 capture_output=True,
                 text=True,
                 timeout=timeout_s,
@@ -172,11 +203,15 @@ def scad_to_glb(
                 f"OpenSCAD compilation timed out after {timeout_s}s: {src.name}"
             ) from exc
 
-        if res.returncode != 0 or not tmp_stl.exists():
+        if res.returncode != 0:
             error_output = (res.stderr or res.stdout or "").strip()
             raise ValueError(
                 f"OpenSCAD compilation failed (exit code {res.returncode}): {error_output}"
             )
+
+        if not tmp_stl.exists() or tmp_stl.stat().st_size == 0:
+            error_output = (res.stderr or res.stdout or "").strip()
+            raise ValueError(f"OpenSCAD produced no output STL: {error_output or 'empty file'}")
 
         loaded = trimesh.load(tmp_stl, file_type="stl")
         mesh = meshload.to_single_mesh(loaded)

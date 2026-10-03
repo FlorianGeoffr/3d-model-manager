@@ -649,3 +649,18 @@ export function useExplodePlates() {
   });
 }
 
+export function useReprocessFile(slug?: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (fileId: number) =>
+      api.post<{ status: string; blob_hash: string }>(`/files/${fileId}/reprocess`, {}),
+    onSuccess: () => {
+      if (slug) {
+        void queryClient.invalidateQueries({ queryKey: modelQueryOptions(slug).queryKey });
+      }
+      void queryClient.invalidateQueries({ queryKey: ["models"] });
+    },
+  });
+}
+
+

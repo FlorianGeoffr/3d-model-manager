@@ -102,7 +102,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libosmesa6 libgl1-mesa-dri libgl1 openscad
+            libosmesa6 libgl1-mesa-dri libgl1 openscad xvfb xauth openscad-mcad
           so="$(ldconfig -p | awk '/libOSMesa\.so\./ {print $NF; exit}')"
           if [ -z "$so" ]; then
             echo "::error::libosmesa6 installed but ldconfig reports no libOSMesa.so.* -- f3d will segfault in the EGL fallback"

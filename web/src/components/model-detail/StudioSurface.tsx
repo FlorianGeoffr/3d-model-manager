@@ -1,6 +1,9 @@
 import { lazy, Suspense } from "react";
-import { ArrowLeftIcon, LayersIcon, LoaderCircleIcon } from "lucide-react";
+import { ArrowLeftIcon, LayersIcon, LoaderCircleIcon, RefreshCwIcon } from "lucide-react";
+import { toast } from "sonner";
 
+import { useReprocessFile } from "@/api/library";
+import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { PlatePanel } from "@/components/model-detail/PlatePanel";
 import { PlaceholderCard, ViewerStage, type ViewerStageProps } from "@/components/viewer/ViewerStage";
@@ -73,6 +76,8 @@ function FileState({
     );
   }
 
+  const reprocess = useReprocessFile(modelSlug);
+
   switch (file.glb_status) {
     case "pending":
       return (
@@ -93,6 +98,24 @@ function FileState({
           destructive
           title="Preview failed"
           description="Couldn't generate a 3D preview for this file."
+          action={
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                reprocess.mutate(file.id, {
+                  onSuccess: () => toast.success("Reprocessing started"),
+                  onError: () => toast.error("Failed to start reprocessing"),
+                })
+              }
+              disabled={reprocess.isPending}
+            >
+              <RefreshCwIcon
+                className={`mr-2 size-4 ${reprocess.isPending ? "animate-spin" : ""}`}
+              />
+              Retry processing
+            </Button>
+          }
         />
       );
     case "unsupported":

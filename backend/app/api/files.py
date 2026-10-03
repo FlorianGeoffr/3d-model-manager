@@ -52,6 +52,41 @@ async def delete_file(
     await library.delete_file(db, settings, file_id)
 
 
+@router.post("/{file_id}/reprocess", status_code=status.HTTP_202_ACCEPTED)
+async def reprocess_file(
+    file_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str]:
+    """Re-enqueues the processing pipeline for a file's blob, clearing any
+    failed derivatives so the pipeline steps run fresh.
+    """
+    file = await db.get(File, file_id)
+    if file is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"file {file_id} not found")
+
+    blob_hash = file.blob_hash
+    from sqlalchemy import delete
+
+    from app.db import sync_session
+    from app.models.derivative import Derivative
+    from app.models.enums import DerivativeStatus
+    from app.tasks.pipeline import start_pipeline_sync
+
+    stmt = delete(Derivative).where(
+        Derivative.blob_hash == blob_hash,
+        Derivative.status == DerivativeStatus.FAILED,
+    )
+    await db.execute(stmt)
+    await db.commit()
+
+    def _start():
+        with sync_session() as s:
+            start_pipeline_sync(s, blob_hash=blob_hash, file_id=file_id)
+
+    await anyio.to_thread.run_sync(_start)
+    return {"status": "enqueued", "blob_hash": blob_hash}
+
+
 # Extension -> media type (review finding 4): a desktop slicer opening a
 # deep-linked download decides whether to accept the file partly off
 # Content-Type -- a blanket application/octet-stream got silently refused.

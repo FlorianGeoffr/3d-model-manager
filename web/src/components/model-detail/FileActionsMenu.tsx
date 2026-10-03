@@ -11,10 +11,10 @@
  * down the dialog with it) for no real benefit here.
  */
 import { useState } from "react";
-import { DownloadIcon, EyeIcon, ImageIcon, MoreVerticalIcon, StarIcon, Trash2Icon } from "lucide-react";
+import { DownloadIcon, EyeIcon, ImageIcon, MoreVerticalIcon, RefreshCwIcon, StarIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 
-import { useDeleteFile, usePatchModel } from "@/api/library";
+import { useDeleteFile, usePatchModel, useReprocessFile } from "@/api/library";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -47,6 +47,7 @@ export function FileActionsMenu({
 }) {
   const deleteFile = useDeleteFile(model.slug);
   const patchModel = usePatchModel(model.slug);
+  const reprocessFile = useReprocessFile(model.slug);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
 
   const showViewIn3D = !isDoc && !!onViewIn3D && isStudioViewable(file);
@@ -119,6 +120,18 @@ export function FileActionsMenu({
               Set as preview
             </DropdownMenuItem>
           ) : null}
+          <DropdownMenuItem
+            aria-label={`Reprocess ${file.rel_path}`}
+            onSelect={() => {
+              reprocessFile.mutate(file.id, {
+                onSuccess: () => toast.success("Reprocessing started"),
+                onError: () => toast.error("Could not reprocess file"),
+              });
+            }}
+          >
+            <RefreshCwIcon className="size-4" />
+            Reprocess file
+          </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem
             variant="destructive"

@@ -3,9 +3,6 @@
 # shared image, two entrypoints in M1; `printerd` is M4).
 set -euo pipefail
 
-mkdir -p /tmp/.cache /tmp/.X11-unix
-chmod 1777 /tmp/.cache /tmp/.X11-unix
-
 # Optional privilege drop (linuxserver.io convention). Root is still the
 # default: set PUID/PGID to run the api/worker as a specific host uid/gid
 # so bind-mounted ./library files aren't root-owned. Re-exec guard avoids
@@ -14,8 +11,8 @@ if [[ -z "${PRIVDROP_DONE:-}" && ( -n "${PUID:-}" || -n "${PGID:-}" ) ]]; then
   PUID="${PUID:-1000}"; PGID="${PGID:-1000}"
   groupmod -o -g "$PGID" tdmm 2>/dev/null || groupadd -o -g "$PGID" tdmm
   usermod  -o -u "$PUID" -g "$PGID" tdmm 2>/dev/null || useradd -o -u "$PUID" -g "$PGID" -m -d /home/tdmm -s /usr/sbin/nologin tdmm
-  mkdir -p /home/tdmm/.cache /tmp/.cache /tmp/.X11-unix
-  chmod 1777 /tmp/.cache /tmp/.X11-unix
+  mkdir -p /home/tdmm/.cache /tmp/.cache /tmp/.X11-unix 2>/dev/null || true
+  chmod 1777 /tmp/.cache /tmp/.X11-unix 2>/dev/null || true
   chown -R tdmm:tdmm /home/tdmm /data /library 2>/dev/null || true
   export PRIVDROP_DONE=1
   exec gosu tdmm:tdmm "$0" "$@"

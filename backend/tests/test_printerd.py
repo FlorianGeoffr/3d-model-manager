@@ -5,6 +5,7 @@ import time
 
 import pytest
 import redis as redis_lib
+from sqlalchemy import select
 
 from app import printerd as printerd_module
 from app.config import get_settings
@@ -129,6 +130,121 @@ def test_command_dispatch(worker):
     w.handle_command("resume")
     w.handle_command("stop")
     assert adapter.paused == 1 and adapter.resumed == 1 and adapter.stopped == 1
+
+
+def test_out_of_band_print_without_match_leaves_file_id_none(worker):
+    w, _adapter, pid, _client = worker
+    with base.sync_session() as s:
+        blob = Blob(hash="9" * 64, size=10, kind=BlobKind.SLICED, format=BlobFormat.GCODE_3MF)
+        model = Model(
+            slug="unrelated", name="Unrelated Model", quantity_printed=0, quantity_target=1
+        )
+        s.add_all([blob, model])
+        s.flush()
+        rev = Revision(model_id=model.id, number=1, dir_name="rev-001")
+        s.add(rev)
+        s.flush()
+        f = File(
+            revision_id=rev.id,
+            blob_hash=blob.hash,
+            rel_path="unrelated.gcode.3mf",
+            storage_path="unrelated/rev-001/unrelated.gcode.3mf",
+        )
+        s.add(f)
+        s.commit()
+        model_id = model.id
+
+    w.handle_report(
+        {
+            "gcode_state": "RUNNING",
+            "mc_percent": 10,
+            "layer_num": 1,
+            "total_layer_num": 50,
+            "mc_remaining_time": 60,
+            "print_error": 0,
+            "subtask_name": "UnknownPart_plate_1.gcode.3mf",
+        }
+    )
+
+    with base.sync_session() as s:
+        job = s.execute(select(PrintJob).where(PrintJob.printer_id == pid)).scalars().first()
+        assert job is not None
+        assert job.state == PrintJobState.PRINTING.value
+        assert job.file_id is None
+        assert job.subtask_name == "UnknownPart_plate_1.gcode.3mf"
+
+    w.handle_report(
+        {
+            "gcode_state": "FINISH",
+            "mc_percent": 100,
+            "mc_remaining_time": 0,
+            "print_error": 0,
+            "subtask_name": "UnknownPart_plate_1.gcode.3mf",
+        }
+    )
+
+    with base.sync_session() as s:
+        job = s.execute(select(PrintJob).where(PrintJob.printer_id == pid)).scalars().first()
+        assert job.state == PrintJobState.FINISHED.value
+        assert job.file_id is None
+        unrelated = s.get(Model, model_id)
+        assert unrelated.quantity_printed == 0
+
+
+def test_out_of_band_print_with_filename_match_associates_file(worker):
+    w, _adapter, pid, _client = worker
+    with base.sync_session() as s:
+        blob = Blob(hash="8" * 64, size=10, kind=BlobKind.SLICED, format=BlobFormat.GCODE_3MF)
+        model = Model(
+            slug="matched-model", name="Matched Model", quantity_printed=0, quantity_target=1
+        )
+        s.add_all([blob, model])
+        s.flush()
+        rev = Revision(model_id=model.id, number=1, dir_name="rev-001")
+        s.add(rev)
+        s.flush()
+        f = File(
+            revision_id=rev.id,
+            blob_hash=blob.hash,
+            rel_path="bracket.gcode.3mf",
+            storage_path="matched-model/rev-001/bracket.gcode.3mf",
+        )
+        s.add(f)
+        s.commit()
+        file_id = f.id
+        model_id = model.id
+
+    w.handle_report(
+        {
+            "gcode_state": "RUNNING",
+            "mc_percent": 25,
+            "layer_num": 5,
+            "total_layer_num": 50,
+            "mc_remaining_time": 45,
+            "print_error": 0,
+            "subtask_name": "/cache/bracket.gcode.3mf",
+        }
+    )
+
+    with base.sync_session() as s:
+        job = s.execute(select(PrintJob).where(PrintJob.printer_id == pid)).scalars().first()
+        assert job is not None
+        assert job.file_id == file_id
+
+    w.handle_report(
+        {
+            "gcode_state": "FINISH",
+            "mc_percent": 100,
+            "mc_remaining_time": 0,
+            "print_error": 0,
+            "subtask_name": "/cache/bracket.gcode.3mf",
+        }
+    )
+
+    with base.sync_session() as s:
+        m = s.get(Model, model_id)
+        assert m.quantity_printed == 1
+        assert m.print_status == "printed"
 
 
 def test_run_logs_start_failure_type_only(caplog, monkeypatch, redis_url):

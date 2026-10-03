@@ -145,9 +145,19 @@ function PrintJobRow({
           </div>
         )}
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <span className="truncate font-mono" title={job.file_rel_path ?? job.subtask_name ?? undefined}>
-            {job.file_rel_path ?? job.subtask_name ?? `File #${job.file_id}`}
-          </span>
+          {job.file_rel_path ? (
+            <span className="truncate font-mono" title={job.file_rel_path}>
+              {job.file_rel_path}
+            </span>
+          ) : job.file_id ? (
+            <span className="truncate font-mono">File #{job.file_id}</span>
+          ) : job.model_slug ? (
+            <span className="truncate font-mono" title={job.subtask_name ?? undefined}>
+              {job.subtask_name ?? "—"}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground/80">External print</span>
+          )}
         </div>
       </TableCell>
       <TableCell>

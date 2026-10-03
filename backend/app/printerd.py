@@ -22,21 +22,24 @@ import contextlib
 import dataclasses
 import json
 import logging
+import re
 import signal
 import threading
 from datetime import UTC, datetime
 
 import redis
-from sqlalchemy import select
+from slugify import slugify
+from sqlalchemy import case, func, select
 
 from app.config import Settings, get_settings
-from app.models import File, Model, Printer, PrintJob, Revision
-from app.models.enums import PrintJobState
+from app.models import Blob, File, Model, Printer, PrintJob, Revision
+from app.models.enums import BlobKind, PrintJobState
 from app.printers.base import PrinterAdapter, PrinterPublicState, command_channel, state_key
 from app.printers.connection import connection_from_printer
 from app.printers.registry import build_adapter
 from app.services.app_config import get_app_config_sync
 from app.services.events import publish_print_job_event_sync
+from app.services.slicer_naming import _safe_basename, model_name_from_filename
 from app.tasks import base
 
 log = logging.getLogger("printerd")
@@ -56,6 +59,107 @@ def _signature(printer: Printer) -> tuple[str, str, str]:
     decide whether a restart is warranted -- a rename or model-label edit
     must NOT bounce an otherwise-healthy MQTT connection."""
     return (printer.host, printer.serial, printer.access_code_enc)
+
+
+def _find_matching_file(session, subtask_name: str | None) -> File | None:
+    if not subtask_name:
+        return None
+
+    clean = subtask_name.strip()
+    if not clean:
+        return None
+
+    # Strip /cache/ prefix from Bambu MQTT reports
+    if clean.startswith(("/cache/", "cache/", "\\cache\\", "cache\\")):
+        clean = clean.split("cache", 1)[-1].lstrip("/\\")
+
+    try:
+        base_name = _safe_basename(clean)
+    except ValueError:
+        return None
+
+    # 1. Exact match on rel_path (case-insensitive)
+    matched = (
+        session.execute(
+            select(File)
+            .where(func.lower(File.rel_path) == base_name.lower())
+            .order_by(File.id.desc())
+        )
+        .scalars()
+        .first()
+    )
+    if matched is not None:
+        return matched
+
+    # 2. Suffix match on rel_path or storage_path (e.g. models/foo/bar.gcode.3mf)
+    matched = (
+        session.execute(
+            select(File)
+            .where(
+                File.rel_path.ilike(f"%/{base_name}") | File.storage_path.ilike(f"%/{base_name}")
+            )
+            .order_by(File.id.desc())
+        )
+        .scalars()
+        .first()
+    )
+    if matched is not None:
+        return matched
+
+    # 3. Model name match via Bambu Studio naming conventions
+    extracted_model_name = model_name_from_filename(base_name)
+    generic_names = {
+        "plate",
+        "plate 1",
+        "plate 2",
+        "plate 3",
+        "plate 4",
+        "plate 5",
+        "plate_1",
+        "plate_2",
+        "plate_3",
+        "plate_4",
+        "plate_5",
+        "untitled",
+        "cache",
+        "print",
+        "model",
+    }
+    if extracted_model_name.lower() in generic_names:
+        return None
+
+    if len(extracted_model_name) >= 3:
+        slug = slugify(extracted_model_name)
+        model = (
+            session.execute(
+                select(Model)
+                .where(
+                    (func.lower(Model.name) == extracted_model_name.lower()) | (Model.slug == slug)
+                )
+                .order_by(Model.id.desc())
+            )
+            .scalars()
+            .first()
+        )
+        if model is not None:
+            file = (
+                session.execute(
+                    select(File)
+                    .join(Revision, File.revision_id == Revision.id)
+                    .join(Blob, File.blob_hash == Blob.hash)
+                    .where(Revision.model_id == model.id)
+                    .order_by(
+                        case((Blob.kind == BlobKind.SLICED, 1), else_=2),
+                        File.id.desc(),
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if file is not None:
+                return file
+
+    return None
 
 
 class PrinterWorker:
@@ -78,7 +182,13 @@ class PrinterWorker:
         self.redis.set(state_key(self.printer_id), json.dumps(dataclasses.asdict(public)))
         self._transition_active_job(public)
 
-    def _active_job(self, session) -> PrintJob | None:
+    def _active_job(self, session, subtask_name: str | None = None) -> PrintJob | None:
+        if subtask_name:
+            m = re.search(r"tdmm-(\d+)", subtask_name)
+            if m:
+                target = session.get(PrintJob, int(m.group(1)))
+                if target and target.printer_id == self.printer_id:
+                    return target
         return (
             session.execute(
                 select(PrintJob)
@@ -97,7 +207,7 @@ class PrinterWorker:
         if new_state is None:
             return
         with base.sync_session() as session:
-            job = self._active_job(session)
+            job = self._active_job(session, public.subtask_name)
             created = False
             if job is None:
                 active_states = (
@@ -106,36 +216,20 @@ class PrinterWorker:
                     PrintJobState.PAUSED,
                 )
                 if new_state in active_states:
-                    matched_file = None
-                    if public.subtask_name:
-                        matched_file = (
-                            session.execute(
-                                select(File)
-                                .where(
-                                    (File.rel_path == public.subtask_name)
-                                    | File.storage_path.like(f"%{public.subtask_name}")
-                                )
-                                .order_by(File.id.desc())
-                            )
-                            .scalars()
-                            .first()
-                        )
-                    if matched_file is None:
-                        matched_file = (
-                            session.execute(select(File).order_by(File.id.desc())).scalars().first()
-                        )
-
-                    if matched_file is not None:
-                        job = PrintJob(
-                            printer_id=self.printer_id,
-                            file_id=matched_file.id,
-                            subtask_name=public.subtask_name or matched_file.rel_path,
-                            state=new_state.value,
-                            started_at=datetime.now(UTC),
-                        )
-                        session.add(job)
-                        session.flush()
-                        created = True
+                    matched_file = _find_matching_file(session, public.subtask_name)
+                    subtask = public.subtask_name or (
+                        matched_file.rel_path if matched_file else None
+                    )
+                    job = PrintJob(
+                        printer_id=self.printer_id,
+                        file_id=matched_file.id if matched_file else None,
+                        subtask_name=subtask,
+                        state=new_state.value,
+                        started_at=datetime.now(UTC),
+                    )
+                    session.add(job)
+                    session.flush()
+                    created = True
                 else:
                     return
 
@@ -171,13 +265,15 @@ class PrinterWorker:
             now = datetime.now(UTC)
             if new_state == PrintJobState.PRINTING and job.started_at is None:
                 job.started_at = now
-                file = session.get(File, job.file_id)
-                if file and file.revision_id:
-                    rev = session.get(Revision, file.revision_id)
-                    if rev and rev.model_id:
-                        m = session.get(Model, rev.model_id)
-                        if m and (m.print_status is None or m.print_status in ("idle", "to_print")):
-                            m.print_status = "printing"
+                if job.file_id:
+                    file = session.get(File, job.file_id)
+                    if file and file.revision_id:
+                        rev = session.get(Revision, file.revision_id)
+                        if rev and rev.model_id:
+                            m = session.get(Model, rev.model_id)
+                            idle_states = (None, "idle", "to_print")
+                            if m and m.print_status in idle_states:
+                                m.print_status = "printing"
             if new_state in _TERMINAL:
                 job.finished_at = now
             if new_state == PrintJobState.FINISHED:
@@ -185,23 +281,25 @@ class PrinterWorker:
 
                 capture_and_save_finish_snapshot(self.settings, session, job, self.adapter)
 
-                file = session.get(File, job.file_id)
-                if file and file.revision_id:
-                    rev = session.get(Revision, file.revision_id)
-                    if rev and rev.model_id:
-                        m = session.get(Model, rev.model_id)
-                        if m:
-                            m.quantity_printed += 1
-                            if m.quantity_printed >= m.quantity_target:
-                                m.print_status = "printed"
+                if job.file_id:
+                    file = session.get(File, job.file_id)
+                    if file and file.revision_id:
+                        rev = session.get(Revision, file.revision_id)
+                        if rev and rev.model_id:
+                            m = session.get(Model, rev.model_id)
+                            if m:
+                                m.quantity_printed += 1
+                                if m.quantity_printed >= m.quantity_target:
+                                    m.print_status = "printed"
             elif new_state in (PrintJobState.FAILED, PrintJobState.CANCELED):
-                file = session.get(File, job.file_id)
-                if file and file.revision_id:
-                    rev = session.get(Revision, file.revision_id)
-                    if rev and rev.model_id:
-                        m = session.get(Model, rev.model_id)
-                        if m and m.print_status == "printing":
-                            m.print_status = "failed"
+                if job.file_id:
+                    file = session.get(File, job.file_id)
+                    if file and file.revision_id:
+                        rev = session.get(Revision, file.revision_id)
+                        if rev and rev.model_id:
+                            m = session.get(Model, rev.model_id)
+                            if m and m.print_status == "printing":
+                                m.print_status = "failed"
             job_id = job.id
             session.commit()
         publish_print_job_event_sync(

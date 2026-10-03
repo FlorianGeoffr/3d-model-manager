@@ -58,7 +58,7 @@ class PrintJob(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
     printer_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("printers.id"), nullable=False)
-    file_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("files.id"), nullable=False)
+    file_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("files.id"), nullable=True)
     subtask_name: Mapped[str | None] = mapped_column(String)
     state: Mapped[PrintJobState] = mapped_column(
         str_enum(PrintJobState, "print_job_state"), nullable=False, index=True

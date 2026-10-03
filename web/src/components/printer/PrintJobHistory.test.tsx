@@ -69,4 +69,37 @@ describe("PrintJobHistory", () => {
     expect(screen.getByText("PLA")).toBeInTheDocument();
     expect(screen.getByText("Silk PLA")).toBeInTheDocument();
   });
+
+  it("renders external print jobs without associated file or model cleanly", () => {
+    const job: PrintJobOut = {
+      id: 99,
+      printer_id: 1,
+      file_id: null,
+      subtask_name: "External_Case_plate_1.gcode.3mf",
+      state: "printing",
+      progress_pct: 42,
+      remaining_min: 30,
+      layer: 50,
+      total_layers: 120,
+      printer_error: null,
+      created_at: "2026-10-03T12:00:00Z",
+      started_at: "2026-10-03T12:05:00Z",
+      finished_at: null,
+      model_slug: null,
+      model_name: null,
+    };
+
+    mockUsePrintJobs.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      data: [job],
+    });
+
+    render(<PrintJobHistory />);
+
+    expect(screen.getByText("External_Case_plate_1.gcode.3mf")).toBeInTheDocument();
+    expect(screen.getByText("External print")).toBeInTheDocument();
+    expect(screen.getByText("printing")).toBeInTheDocument();
+    expect(screen.getByText("42%")).toBeInTheDocument();
+  });
 });

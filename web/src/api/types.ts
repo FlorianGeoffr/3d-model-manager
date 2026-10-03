@@ -744,7 +744,7 @@ export type PrintJobState =
 export interface PrintJobOut {
   id: number;
   printer_id: number;
-  file_id: number;
+  file_id?: number | null;
   subtask_name: string | null;
   state: PrintJobState;
   progress_pct: number | null;

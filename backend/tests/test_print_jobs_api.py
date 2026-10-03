@@ -67,3 +67,35 @@ async def test_list_limit(authenticated_client, printer_enabled, db_session):
     _pid, [j1, j2] = await _seed_two_jobs(db_session)
     rows = (await authenticated_client.get("/api/print-jobs?limit=1")).json()
     assert [r["id"] for r in rows] == [j2]
+
+
+async def test_print_job_with_null_file_id(authenticated_client, printer_enabled, db_session):
+    printer = Printer(
+        name="p2",
+        kind=PrinterKind.BAMBU_LAN,
+        host="h2",
+        serial="S2",
+        access_code_enc="x",
+        enabled=True,
+    )
+    db_session.add(printer)
+    await db_session.flush()
+
+    job = PrintJob(
+        printer_id=printer.id,
+        file_id=None,
+        state=PrintJobState.PRINTING,
+        subtask_name="external_plate_1.gcode.3mf",
+    )
+    db_session.add(job)
+    await db_session.commit()
+    await db_session.refresh(job)
+
+    res = (await authenticated_client.get(f"/api/print-jobs/{job.id}")).json()
+    assert res["id"] == job.id
+    assert res["file_id"] is None
+    assert res["subtask_name"] == "external_plate_1.gcode.3mf"
+    assert res["file_rel_path"] is None
+    assert res["model_id"] is None
+    assert res["model_name"] is None
+    assert res["model_slug"] is None

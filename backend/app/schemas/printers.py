@@ -239,7 +239,7 @@ class PrintRequest(BaseModel):
 class PrintJobOut(BaseModel):
     id: int
     printer_id: int
-    file_id: int
+    file_id: int | None = None
     subtask_name: str | None
     state: str
     progress_pct: float | None

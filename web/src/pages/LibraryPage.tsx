@@ -217,84 +217,6 @@ export function LibraryPage() {
     });
   }
 
-  // Selection state: can be triggered via explicit "Sélectionner" button or
-  // by modifier clicks / checkbox clicks.
-  const [selectMode, setSelectMode] = useState(false);
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
-  // R9-A item 6: the anchor for shift+click range selection -- the index of
-  // the most recently (modified-)clicked card, cleared whenever selection is
-  // exited so a later range doesn't reach back into a previous selection.
-  const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null);
-  // R9-C item 5: lifted here (rather than local to `SelectionActionBar`) so
-  // the `Delete` hotkey -- fired from anywhere on the page, not just while
-  // focus is inside the selection bar -- can open it.
-  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
-
-  // Model merge dialog state
-  const mergeModels = useMergeModels();
-  const [mergeConfirmState, setMergeConfirmState] = useState<{
-    target: ModelSummary;
-    sources: ModelSummary[];
-  } | null>(null);
-
-  const handleMergeModels = useCallback((target: ModelSummary, sourceIds: number[]) => {
-    const sources = items.filter((m) => sourceIds.includes(m.id) && m.id !== target.id);
-    if (sources.length === 0) return;
-    setMergeConfirmState({ target, sources });
-  }, [items]);
-
-  async function confirmMerge() {
-    if (!mergeConfirmState) return;
-    const { target, sources } = mergeConfirmState;
-    try {
-      await mergeModels.mutateAsync({
-        targetSlug: target.slug,
-        sourceSlugs: sources.map((s) => s.slug),
-      });
-      toast.success(`Fichiers fusionnés dans "${target.name}" avec succès !`);
-      clearSelection();
-    } catch {
-      toast.error("Impossible de fusionner les modèles");
-    } finally {
-      setMergeConfirmState(null);
-    }
-  }
-
-  function clearSelection() {
-    setSelectedIds(new Set());
-    setLastSelectedIndex(null);
-    setSelectMode(false);
-  }
-
-  const toggleSelected = useCallback((id: number, next: boolean) => {
-    setSelectedIds((prev) => {
-      const updated = new Set(prev);
-      if (next) updated.add(id);
-      else updated.delete(id);
-      if (updated.size === 0) {
-        setSelectMode(false);
-        setLastSelectedIndex(null);
-      }
-      return updated;
-    });
-  }, []);
-
-  /** Ctrl/Cmd toggles just this card; Shift selects the inclusive range from
-   * `lastSelectedIndex` (or this index, if there isn't one yet) through this
-   * index, adding to the existing selection rather than replacing it. */
-  const handleModifiedClick = useCallback((event: React.MouseEvent, index: number) => {
-    if (event.shiftKey) {
-      const anchor = lastSelectedIndex !== null ? lastSelectedIndex : index;
-      const [lo, hi] = anchor <= index ? [anchor, index] : [index, anchor];
-      const rangeIds = items.slice(lo, hi + 1).map((model) => model.id);
-      setSelectedIds((prev) => new Set([...prev, ...rangeIds]));
-    } else {
-      const model = items[index];
-      if (model) toggleSelected(model.id, !selectedIds.has(model.id));
-    }
-    setLastSelectedIndex(index);
-  }, [items, lastSelectedIndex, selectedIds, toggleSelected]);
-
   const tagsQuery = useTags();
   const collectionsQuery = useFollowedCollections();
   const collections = collectionsQuery.data ?? (EMPTY_ARRAY as any[]);
@@ -302,7 +224,6 @@ export function LibraryPage() {
   const categoriesQuery = useCategories();
   const categories = categoriesQuery.data ?? (EMPTY_ARRAY as any[]);
   const projectsQuery = useProjects();
-  const projects = projectsQuery.data ?? (EMPTY_ARRAY as any[]);
   const projects = projectsQuery.data ?? (EMPTY_ARRAY as any[]);
 
   const isSearching = Boolean(debouncedSearch.trim());
@@ -345,6 +266,85 @@ export function LibraryPage() {
     () => modelsQuery.data?.pages.flatMap((page) => page.items) ?? [],
     [modelsQuery.data],
   );
+
+  // Selection state: can be triggered via explicit "Sélectionner" button or
+  // by modifier clicks / checkbox clicks.
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  // R9-A item 6: the anchor for shift+click range selection -- the index of
+  // the most recently (modified-)clicked card, cleared whenever selection is
+  // exited so a later range doesn't reach back into a previous selection.
+  const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null);
+  // R9-C item 5: lifted here (rather than local to `SelectionActionBar`) so
+  // the `Delete` hotkey -- fired from anywhere on the page, not just while
+  // focus is inside the selection bar -- can open it.
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+
+  // Model merge dialog state
+  const mergeModels = useMergeModels();
+  const [mergeConfirmState, setMergeConfirmState] = useState<{
+    target: ModelSummary;
+    sources: ModelSummary[];
+  } | null>(null);
+
+  const handleMergeModels = useCallback((target: ModelSummary, sourceIds: number[]) => {
+    const sources = items.filter((m) => sourceIds.includes(m.id) && m.id !== target.id);
+    if (sources.length === 0) return;
+    setMergeConfirmState({ target, sources });
+  }, [items]);
+
+  function clearSelection() {
+    setSelectedIds(new Set());
+    setLastSelectedIndex(null);
+    setSelectMode(false);
+  }
+
+  async function confirmMerge() {
+    if (!mergeConfirmState) return;
+    const { target, sources } = mergeConfirmState;
+    try {
+      await mergeModels.mutateAsync({
+        targetSlug: target.slug,
+        sourceSlugs: sources.map((s) => s.slug),
+      });
+      toast.success(`Fichiers fusionnés dans "${target.name}" avec succès !`);
+      clearSelection();
+    } catch {
+      toast.error("Impossible de fusionner les modèles");
+    } finally {
+      setMergeConfirmState(null);
+    }
+  }
+
+  const toggleSelected = useCallback((id: number, next: boolean) => {
+    setSelectedIds((prev) => {
+      const updated = new Set(prev);
+      if (next) updated.add(id);
+      else updated.delete(id);
+      if (updated.size === 0) {
+        setSelectMode(false);
+        setLastSelectedIndex(null);
+      }
+      return updated;
+    });
+  }, []);
+
+  /** Ctrl/Cmd toggles just this card; Shift selects the inclusive range from
+   * `lastSelectedIndex` (or this index, if there isn't one yet) through this
+   * index, adding to the existing selection rather than replacing it. */
+  const handleModifiedClick = useCallback((event: React.MouseEvent, index: number) => {
+    if (event.shiftKey) {
+      const anchor = lastSelectedIndex !== null ? lastSelectedIndex : index;
+      const [lo, hi] = anchor <= index ? [anchor, index] : [index, anchor];
+      const rangeIds = items.slice(lo, hi + 1).map((model) => model.id);
+      setSelectedIds((prev) => new Set([...prev, ...rangeIds]));
+    } else {
+      const model = items[index];
+      if (model) toggleSelected(model.id, !selectedIds.has(model.id));
+    }
+    setLastSelectedIndex(index);
+  }, [items, lastSelectedIndex, selectedIds, toggleSelected]);
+
   const selectedItems = items.filter((model) => selectedIds.has(model.id));
 
   function selectAll() {

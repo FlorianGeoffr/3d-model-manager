@@ -144,6 +144,14 @@ export function ProjectDialog({
   const [icon, setIcon] = useState<string>(project?.icon ?? DEFAULT_ICON);
   const [parentId, setParentId] = useState<number | null>(project?.parent_id ?? defaultParentId ?? null);
 
+  const projectsQuery = useProjects();
+  const allProjects = projectsQuery.data ?? [];
+  const availableParents = allProjects.filter((p) => !isEdit || p.id !== project.id);
+
+  const createProject = useCreateProject();
+  const updateProject = useUpdateProject();
+  const mutation = isEdit ? updateProject : createProject;
+
   useEffect(() => {
     if (open) {
       setName(project?.name ?? "");
@@ -155,14 +163,6 @@ export function ProjectDialog({
       updateProject.reset();
     }
   }, [open, project, defaultParentId, createProject, updateProject]);
-
-  const projectsQuery = useProjects();
-  const allProjects = projectsQuery.data ?? [];
-  const availableParents = allProjects.filter((p) => !isEdit || p.id !== project.id);
-
-  const createProject = useCreateProject();
-  const updateProject = useUpdateProject();
-  const mutation = isEdit ? updateProject : createProject;
 
   function reset() {
     setName(project?.name ?? "");

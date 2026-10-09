@@ -34,7 +34,10 @@ from app.models.library import Model
 from app.models.system import Import, Job
 from app.services import collections as collections_svc
 from app.services import jobs
-from app.services.import_dedup import find_active_import_sync, find_live_import_sync
+from app.services.import_dedup import (
+    find_active_imports_batch_sync,
+    find_live_imports_batch_sync,
+)
 from app.tasks import base
 from app.tasks.celery_app import celery_app
 from app.tasks.importing import import_from_url
@@ -46,12 +49,11 @@ logger = logging.getLogger(__name__)
 MAX_PAGES = 20
 
 
-def _walk_list_items(importer, list_id: str):
-    """Yield every item of a remote list, page by page, stopping on the first
-    short (or empty) page."""
+def _walk_list_pages(importer, list_id: str):
+    """Yield pages of items of a remote list, stopping on the first short (or empty) page."""
     for page in range(1, MAX_PAGES + 1):
         items = importer.list_list_items(list_id, page)
-        yield from items
+        yield items
         if len(items) < SEARCH_PAGE_SIZE:
             return
 
@@ -92,41 +94,51 @@ def _sync_one(session, collection: FollowedCollection) -> None:
         )
         return
 
-    for item in _walk_list_items(importer, collection.list_id):
-        live_import = find_live_import_sync(session, item.site, item.external_id)
-        # ...or still in flight: under real (non-eager) Celery the import this
-        # run just dispatched is only `pending`, so a model that appears in two
-        # followed lists would otherwise be imported twice.
-        in_flight = find_active_import_sync(session, item.site, item.external_id) is not None
-        if live_import is not None or in_flight:
-            # Landing (or landed) in the library: make sure it isn't still
-            # sitting in the review queue from an earlier run.
-            collections_svc.drop_pending_sync(session, collection, item.external_id)
-            if live_import is not None:
-                _backfill_provenance_sync(session, live_import, collection)
+    for items_page in _walk_list_pages(importer, collection.list_id):
+        if not items_page:
             continue
+            
+        external_ids = [item.external_id for item in items_page if item.external_id]
+        live_imports = find_live_imports_batch_sync(session, collection.site, external_ids)
+        active_import_ids = find_active_imports_batch_sync(session, collection.site, external_ids)
 
-        if collection.mode == CollectionSyncMode.AUTO:
-            imp = Import(
-                url=item.url,
-                site=item.site,
-                external_id=item.external_id,
-                state=ImportState.PENDING,
-                collection_id=collection.id,
-            )
-            session.add(imp)
-            session.commit()
-            session.refresh(imp)
-            import_from_url.apply_async(args=[imp.id], task_id=f"import-{imp.id}")
-        else:
-            collections_svc.add_pending_sync(
-                session,
-                collection,
-                external_id=item.external_id,
-                title=item.title,
-                url=item.url,
-                thumbnail_url=item.thumbnail_url,
-            )
+        for item in items_page:
+            live_import = live_imports.get(item.external_id)
+            # ...or still in flight: under real (non-eager) Celery the import this
+            # run just dispatched is only `pending`, so a model that appears in two
+            # followed lists would otherwise be imported twice.
+            in_flight = item.external_id in active_import_ids
+            if live_import is not None or in_flight:
+                # Landing (or landed) in the library: make sure it isn't still
+                # sitting in the review queue from an earlier run.
+                collections_svc.drop_pending_sync(session, collection, item.external_id)
+                if live_import is not None:
+                    _backfill_provenance_sync(session, live_import, collection)
+                continue
+
+            if collection.mode == CollectionSyncMode.AUTO:
+                imp = Import(
+                    url=item.url,
+                    site=item.site,
+                    external_id=item.external_id,
+                    state=ImportState.PENDING,
+                    collection_id=collection.id,
+                )
+                session.add(imp)
+                session.commit()
+                session.refresh(imp)
+                import_from_url.apply_async(args=[imp.id], task_id=f"import-{imp.id}")
+                # Add to active_import_ids so a duplicate in the same page doesn't get imported again
+                active_import_ids.add(item.external_id)
+            else:
+                collections_svc.add_pending_sync(
+                    session,
+                    collection,
+                    external_id=item.external_id,
+                    title=item.title,
+                    url=item.url,
+                    thumbnail_url=item.thumbnail_url,
+                )
 
     collections_svc.mark_synced_sync(session, collection, error=None)
 

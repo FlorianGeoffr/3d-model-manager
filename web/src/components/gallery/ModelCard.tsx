@@ -29,35 +29,33 @@ function formatDims(dims: number[] | null): string | null {
   return `${w.toFixed(1)} × ${d.toFixed(1)} × ${h.toFixed(1)} mm`;
 }
 
+import { useGallerySelection } from "@/components/gallery/GallerySelectionContext";
+
 export function ModelCard({
   model,
   index,
-  selected = false,
-  selectedIds,
-  selectMode = false,
-  onSelectChange,
-  onModifiedClick,
-  onMergeModels,
 }: {
   model: ModelSummary;
   /** This card's position in the gallery's flat item list -- used only for
    * ctrl/cmd/shift+click range selection; optional so the card still works
    * standalone (e.g. in tests) without select support. */
   index?: number;
-  /** Selection is implicit (no separate select-mode toggle): the checkbox
-   * always exists, shown on hover or once `selected`. */
-  selected?: boolean;
-  /** All currently selected IDs for dragging multi-selection */
-  selectedIds?: Set<number>;
-  /** Explicit selection mode active */
-  selectMode?: boolean;
-  onSelectChange?: (id: number, next: boolean) => void;
-  /** Ctrl/Cmd/Shift+click range/toggle select (R9-A item 6): fired instead
-   * of navigating when the card's `<Link>` is clicked with a modifier held. */
-  onModifiedClick?: (event: React.MouseEvent, index: number) => void;
-  /** Callback fired when other model cards are dropped on this card to merge */
-  onMergeModels?: (target: ModelSummary, sourceIds: number[]) => void;
 }) {
+  let ctx;
+  try {
+    ctx = useGallerySelection();
+  } catch {
+    // Allows ModelCard to be used outside the provider (e.g. in related models or tests)
+    ctx = {
+      selectedIds: new Set<number>(),
+      selectMode: false,
+      toggleSelected: () => {},
+      handleModifiedClick: () => {},
+      handleMergeModels: () => {},
+    };
+  }
+  const { selectedIds, selectMode, toggleSelected: onSelectChange, handleModifiedClick: onModifiedClick, handleMergeModels: onMergeModels } = ctx;
+  const selected = selectedIds.has(model.id);
   const [coverErrored, setCoverErrored] = useState(false);
   const [renderErrored, setRenderErrored] = useState(false);
   const [isDragging, setIsDragging] = useState(false);

@@ -283,6 +283,40 @@ async def _download_file(
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST, "member=gcode needs a gcode or gcode_3mf file"
             )
+
+        from app.models import BlobMeta
+        from app.services import derivatives
+
+        target_plate = plate
+        if target_plate is None:
+            meta = await db.get(BlobMeta, blob.hash)
+            if meta and meta.raw and "plates" in meta.raw:
+                try:
+                    plates = meta.raw["plates"]
+                    target_plate = min(p["index"] for p in plates if "index" in p)
+                except Exception:
+                    target_plate = 1
+            else:
+                target_plate = 1
+
+        gcode_path = derivatives.plate_gcode_path(settings, blob.hash, target_plate)
+        if await anyio.to_thread.run_sync(gcode_path.exists):
+            file_size = await anyio.to_thread.run_sync(lambda: gcode_path.stat().st_size)
+
+            def _stream_local_file(p: Path) -> Iterator[bytes]:
+                with p.open("rb") as fh:
+                    while True:
+                        chunk = fh.read(_GCODE_STREAM_CHUNK_BYTES)
+                        if not chunk:
+                            break
+                        yield chunk
+
+            return StreamingResponse(
+                iterate_in_threadpool(_stream_local_file(gcode_path)),
+                media_type=_media_type_for_filename("plate.gcode"),
+                headers={"Content-Length": str(file_size)},
+            )
+
         try:
             tmp_path = await anyio.to_thread.run_sync(
                 _spool_to_temp_file, backend, file.storage_path

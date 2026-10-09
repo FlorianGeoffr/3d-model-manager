@@ -23,6 +23,8 @@ function FileState({
   modelSlug?: string;
   projectId?: number | null;
 }) {
+  const reprocess = useReprocessFile(modelSlug);
+
   if (file.kind === "sliced") {
     return <PlatePanel file={file} modelSlug={modelSlug} projectId={projectId} />;
   }
@@ -76,7 +78,6 @@ function FileState({
     );
   }
 
-  const reprocess = useReprocessFile(modelSlug);
 
   switch (file.glb_status) {
     case "pending":

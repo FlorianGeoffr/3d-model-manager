@@ -101,6 +101,39 @@ def find_active_import_sync(
     return session.execute(stmt).scalars().first()
 
 
+def find_live_imports_batch_sync(
+    session: SyncSession, site: ImportSite, external_ids: list[str]
+) -> dict[str, Import]:
+    if not external_ids:
+        return {}
+    stmt = (
+        select(Import)
+        .where(
+            Import.site == site,
+            Import.external_id.in_(external_ids),
+            Import.state == ImportState.DONE,
+            Import.model_id.is_not(None),
+        )
+    )
+    return {imp.external_id: imp for imp in session.execute(stmt).scalars().all()}
+
+
+def find_active_imports_batch_sync(
+    session: SyncSession, site: ImportSite, external_ids: list[str]
+) -> set[str]:
+    if not external_ids:
+        return set()
+    stmt = (
+        select(Import.external_id)
+        .where(
+            Import.site == site,
+            Import.external_id.in_(external_ids),
+            Import.state.in_(_ACTIVE_STATES),
+        )
+    )
+    return set(session.execute(stmt).scalars().all())
+
+
 # ---------------------------------------------------------------------------
 # R11-C item 18: PUT /uploads' content-identity dedup guard. Different
 # identity than the import guards above (content hash, not (site,

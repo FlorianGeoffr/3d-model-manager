@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { ChevronLeftIcon, ChevronRightIcon, DownloadIcon, XIcon, ZoomInIcon, ZoomOutIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogOverlay, DialogPortal } from "@/components/ui/dialog";
@@ -27,7 +27,7 @@ export function ImageViewerModal({
   open,
   onOpenChange,
 }: ImageViewerModalProps) {
-  const imageFiles = files.filter(isImageFile);
+  const imageFiles = useMemo(() => files.filter(isImageFile), [files]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [zoomLevel, setZoomLevel] = useState(1);
 
@@ -40,7 +40,7 @@ export function ImageViewerModal({
       }
     }
     setZoomLevel(1);
-  }, [initialFile, open]);
+  }, [initialFile, open, imageFiles]);
 
   const currentFile = imageFiles[currentIndex] ?? null;
 

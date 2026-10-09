@@ -191,6 +191,28 @@ def _safe_path_segment(name: str, *, fallback: str) -> str:
     return cleaned
 
 
+async def _current_revision_files_batch(db: AsyncSession, models: Sequence[Model]) -> dict[int, list[tuple[File, Blob]]]:
+    revision_ids = [m.current_revision_id for m in models if m.current_revision_id is not None]
+    if not revision_ids:
+        return {}
+    
+    stmt = (
+        select(Model.id, File, Blob)
+        .join(Model, Model.current_revision_id == File.revision_id)
+        .join(Blob, Blob.hash == File.blob_hash)
+        .where(File.revision_id.in_(revision_ids))
+        .order_by(File.rel_path)
+    )
+    results = (await db.execute(stmt)).all()
+    
+    files_by_model: dict[int, list[tuple[File, Blob]]] = {}
+    for model_id, f, b in results:
+        if not layout.is_snapshot_path(f.rel_path):
+            files_by_model.setdefault(model_id, []).append((f, b))
+    
+    return files_by_model
+
+
 async def _collection_models(db: AsyncSession, collection: FollowedCollection) -> Sequence[Model]:
     stmt = (
         select(Model)
@@ -209,11 +231,12 @@ async def iter_collection_zip(
     silently skipped rather than failing the whole export.
     """
     models = await _collection_models(db, collection)
+    files_by_model = await _current_revision_files_batch(db, models)
     collection_prefix = _safe_path_segment(collection.title, fallback=f"collection-{collection.id}")
 
     zs = ZipStream()
     for model in models:
-        files = await _current_revision_files(db, model)
+        files = files_by_model.get(model.id, [])
         if not files:
             continue
         used_names: set[str] = set()
@@ -232,18 +255,46 @@ async def iter_collection_zip(
 
 
 async def _get_project_tree(db: AsyncSession, root_project: Project) -> list[tuple[Project, str]]:
-    all_projects = (await db.execute(select(Project))).scalars().all()
+    from sqlalchemy.orm import aliased
+    
+    # Recursive CTE to get only the subtree
+    project_cte = select(
+        Project.id, 
+        Project.parent_id, 
+        Project.name,
+        _safe_path_segment(root_project.name, fallback=f"project-{root_project.id}").label("path_prefix")
+    ).where(Project.id == root_project.id).cte(name="project_tree", recursive=True)
+
+    parent = aliased(project_cte, name="p")
+    child = aliased(Project, name="c")
+
+    # The recursive step
+    project_cte = project_cte.union_all(
+        select(
+            child.id,
+            child.parent_id,
+            child.name,
+            # We can't easily concatenate string in dialect-agnostic way for all DBs in CTE,
+            # so we'll just build the paths in Python after fetching the flat subtree.
+            parent.c.path_prefix
+        ).join(parent, child.parent_id == parent.c.id)
+    )
+
+    # Fetch the flat subtree (id, parent_id, name)
+    stmt = select(Project).join(project_cte, Project.id == project_cte.c.id)
+    subtree_projects = (await db.execute(stmt)).scalars().all()
+
     by_parent: dict[int | None, list[Project]] = {}
-    for p in all_projects:
+    for p in subtree_projects:
         by_parent.setdefault(p.parent_id, []).append(p)
 
     results: list[tuple[Project, str]] = []
 
     def _traverse(proj: Project, current_prefix: str) -> None:
         results.append((proj, current_prefix))
-        for child in by_parent.get(proj.id, []):
-            child_seg = _safe_path_segment(child.name, fallback=f"project-{child.id}")
-            _traverse(child, f"{current_prefix}/{child_seg}")
+        for c in by_parent.get(proj.id, []):
+            child_seg = _safe_path_segment(c.name, fallback=f"project-{c.id}")
+            _traverse(c, f"{current_prefix}/{child_seg}")
 
     root_seg = _safe_path_segment(root_project.name, fallback=f"project-{root_project.id}")
     _traverse(root_project, root_seg)
@@ -260,12 +311,30 @@ async def iter_project_zip(
     """
     tree = await _get_project_tree(db, project)
     zs = ZipStream()
+    
+    project_ids = [p.id for p, _ in tree]
+    if not project_ids:
+        for chunk in zs.footer():
+            yield chunk
+        return
+
+    # Fetch all models for the entire subtree at once
+    stmt = select(Model).where(Model.project_id.in_(project_ids)).order_by(Model.name, Model.id)
+    all_models = (await db.execute(stmt)).scalars().all()
+    
+    # Pre-fetch files for all models
+    files_by_model = await _current_revision_files_batch(db, all_models)
+    
+    # Group models by project
+    models_by_project: dict[int, list[Model]] = {}
+    for model in all_models:
+        if model.project_id is not None:
+            models_by_project.setdefault(model.project_id, []).append(model)
 
     for proj, prefix in tree:
-        stmt = select(Model).where(Model.project_id == proj.id).order_by(Model.name, Model.id)
-        models = (await db.execute(stmt)).scalars().all()
+        models = models_by_project.get(proj.id, [])
         for model in models:
-            files = await _current_revision_files(db, model)
+            files = files_by_model.get(model.id, [])
             if not files:
                 continue
             used_names: set[str] = set()

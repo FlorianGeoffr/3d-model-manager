@@ -420,6 +420,31 @@ async def explode_plates(
         )
         project_id = proj.id
 
+    # Pre-process cover images and their hashes
+    plate_covers: dict[int, tuple[str, bytes]] = {}
+    cover_hashes: set[str] = set()
+    for plate in plates:
+        idx = plate.get("index", 1)
+        plate_thumb_path = derivatives.plate_thumb_path(settings, target_blob.hash, idx)
+        if plate_thumb_path.is_file():
+            png_bytes = plate_thumb_path.read_bytes()
+            c_hash = hashlib.sha256(png_bytes).hexdigest()
+            plate_covers[idx] = (c_hash, png_bytes)
+            cover_hashes.add(c_hash)
+
+    # Batch fetch existing blobs and derivatives
+    existing_blobs: set[str] = set()
+    existing_derivs: set[str] = set()
+    if cover_hashes:
+        blob_stmt = select(Blob.hash).where(Blob.hash.in_(cover_hashes))
+        existing_blobs = set((await db.execute(blob_stmt)).scalars().all())
+
+        deriv_stmt = select(Derivative.blob_hash).where(
+            Derivative.blob_hash.in_(cover_hashes),
+            Derivative.kind == DerivativeKind.THUMB_256,
+        )
+        existing_derivs = set((await db.execute(deriv_stmt)).scalars().all())
+
     created_models: list[Model] = []
     for plate in plates:
         idx = plate.get("index", 1)
@@ -448,14 +473,11 @@ async def explode_plates(
 
         # Check plate thumbnail
         cover_hash = None
-        plate_thumb_path = derivatives.plate_thumb_path(settings, target_blob.hash, idx)
-        if plate_thumb_path.is_file():
-            png_bytes = plate_thumb_path.read_bytes()
-            cover_hash = hashlib.sha256(png_bytes).hexdigest()
+        if idx in plate_covers:
+            cover_hash, png_bytes = plate_covers[idx]
 
             # Ensure Blob exists
-            thumb_blob = await db.get(Blob, cover_hash)
-            if thumb_blob is None:
+            if cover_hash not in existing_blobs:
                 thumb_blob = Blob(
                     hash=cover_hash,
                     size=len(png_bytes),
@@ -463,26 +485,24 @@ async def explode_plates(
                     format=BlobFormat.PNG,
                 )
                 db.add(thumb_blob)
+                existing_blobs.add(cover_hash)
+                # Flush to make blob available for derivative FK
                 await db.flush()
 
             # Ensure Derivative THUMB_256 exists
-            stmt = select(Derivative).where(
-                Derivative.blob_hash == cover_hash,
-                Derivative.kind == DerivativeKind.THUMB_256,
-            )
-            deriv = (await db.execute(stmt)).scalar_one_or_none()
             deriv_path = derivatives.derivative_path(settings, cover_hash, DerivativeKind.THUMB_256)
             deriv_path.parent.mkdir(parents=True, exist_ok=True)
             if not deriv_path.is_file():
                 deriv_path.write_bytes(png_bytes)
 
-            if deriv is None:
+            if cover_hash not in existing_derivs:
                 deriv = Derivative(
                     blob_hash=cover_hash,
                     kind=DerivativeKind.THUMB_256,
                     status=DerivativeStatus.OK,
                 )
                 db.add(deriv)
+                existing_derivs.add(cover_hash)
 
         child = await library.create_model(
             db,

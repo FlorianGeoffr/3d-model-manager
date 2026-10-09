@@ -24,6 +24,10 @@ const routeApi = getRouteApi("/authenticated/models/$slug");
 
 export function ModelDetailPage() {
   const { slug } = routeApi.useParams();
+  return <ModelDetailView key={slug} slug={slug} />;
+}
+
+function ModelDetailView({ slug }: { slug: string }) {
   const modelQuery = useModel(slug);
   // Per-visit UI state only -- not persisted. Gates metadata editing
   // (name/description/tags/archive) behind an explicit toggle so a stray
@@ -35,18 +39,9 @@ export function ModelDetailPage() {
   // `open` state.
   const [relocateOpen, setRelocateOpen] = useState(false);
   // The route component stays mounted when only `$slug` changes (e.g. the
-  // upcoming related-models strip links detail -> detail), so drop the gate
-  // when navigating to a different model: landing on it already in edit
-  // mode -- possibly with a stale open InlineEdit draft, which deliberately
-  // never resets while editing -- would defeat the whole gate. Render-time
-  // state adjustment (per React's "adjusting state when a prop changes")
-  // instead of an effect, so the new model never paints editable.
-  const [gateSlug, setGateSlug] = useState(slug);
-  if (slug !== gateSlug) {
-    setGateSlug(slug);
-    setEditMode(false);
-    setRelocateOpen(false);
-  }
+  // upcoming related-models strip links detail -> detail). The `key={slug}`
+  // in routes.tsx ensures this component completely unmounts and remounts
+  // when navigating to a different model, cleanly resetting `editMode`.
   // Called unconditionally (rules of hooks) ahead of the loading/error early
   // returns below -- guards `model` being absent internally instead. Owns
   // the studio surface's selection here (not inside `StudioWorkspace`) so

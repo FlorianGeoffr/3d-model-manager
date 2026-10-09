@@ -23,32 +23,31 @@ const VISIBLE_TAGS = 2;
  * affordances, laid out as a single line instead of a card. Meant to be
  * virtualized one-per-row (unlike the grid's `chunkIntoRows` fan-out), so its
  * own height must always match `LIST_ROW_HEIGHT_PX` exactly. */
+import { useGallerySelection } from "@/components/gallery/GallerySelectionContext";
+
 export function ModelRow({
   model,
   index,
-  selected = false,
-  selectedIds,
-  selectMode = false,
-  onSelectChange,
-  onModifiedClick,
-  onMergeModels,
 }: {
   model: ModelSummary;
   /** Position in the gallery's flat item list -- ctrl/cmd/shift+click range
    * selection, same contract as `ModelCard`. */
   index?: number;
-  selected?: boolean;
-  /** All currently selected IDs for dragging multi-selection */
-  selectedIds?: Set<number>;
-  /** Explicit selection mode active */
-  selectMode?: boolean;
-  onSelectChange?: (id: number, next: boolean) => void;
-  /** Ctrl/Cmd/Shift+click range/toggle select (R9-A item 6): fired instead
-   * of navigating when the card's `<Link>` is clicked with a modifier held. */
-  onModifiedClick?: (event: React.MouseEvent, index: number) => void;
-  /** Callback fired when other model cards/rows are dropped on this row to merge */
-  onMergeModels?: (target: ModelSummary, sourceIds: number[]) => void;
 }) {
+  let ctx;
+  try {
+    ctx = useGallerySelection();
+  } catch {
+    ctx = {
+      selectedIds: new Set<number>(),
+      selectMode: false,
+      toggleSelected: () => {},
+      handleModifiedClick: () => {},
+      handleMergeModels: () => {},
+    };
+  }
+  const { selectedIds, selectMode, toggleSelected: onSelectChange, handleModifiedClick: onModifiedClick, handleMergeModels: onMergeModels } = ctx;
+  const selected = selectedIds.has(model.id);
   const [coverErrored, setCoverErrored] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [isDragOverRow, setIsDragOverRow] = useState(false);

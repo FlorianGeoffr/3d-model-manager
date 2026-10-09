@@ -97,6 +97,7 @@ class ChangePasswordRequest(BaseModel):
 @protected_router.post("/password", status_code=status.HTTP_204_NO_CONTENT)
 async def change_password(
     payload: ChangePasswordRequest,
+    response: Response,
     ctx: AuthContext = Depends(require_session),
     db: AsyncSession = Depends(get_db),
 ) -> None:
@@ -107,11 +108,9 @@ async def change_password(
     this particular action is denied), not a 401 -- the session itself is
     still valid.
 
-    On success, every OTHER session for this user is deleted so a stolen or
-    shared session cookie doesn't survive the password change. The CURRENT
-    session (``ctx.session``, backing the cookie this request came in on) is
-    deliberately kept so the caller isn't logged out by their own password
-    change.
+    On success, EVERY session for this user is deleted so a stolen or
+    shared session cookie doesn't survive the password change, even the
+    current one. The user will be logged out and forced to re-authenticate.
     """
     if not verify_password(payload.current_password, ctx.user.password_hash):
         raise HTTPException(
@@ -123,10 +122,18 @@ async def change_password(
     await db.execute(
         delete(SessionModel).where(
             SessionModel.user_id == ctx.user.id,
-            SessionModel.id != ctx.session.id,
         )
     )
     await db.commit()
+
+    settings = get_settings()
+    response.delete_cookie(
+        key=SESSION_COOKIE_NAME,
+        path="/",
+        httponly=True,
+        samesite="lax",
+        secure=settings.cookie_secure,
+    )
 
 
 @protected_router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)

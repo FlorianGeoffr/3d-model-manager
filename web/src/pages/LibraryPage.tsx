@@ -41,6 +41,7 @@ import { uploadFilesWithDuplicateHandling } from "@/lib/uploadHelper";
 import { ApiError } from "@/api/client";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { FolderBrowser } from "@/components/gallery/FolderBrowser";
+import { GallerySelectionProvider } from "@/components/gallery/GallerySelectionContext";
 import { ModelCard } from "@/components/gallery/ModelCard";
 import { ModelRow } from "@/components/gallery/ModelRow";
 import { NewModelDialog } from "@/components/gallery/NewModelDialog";
@@ -146,6 +147,8 @@ function FilterChip({
   );
 }
 
+const EMPTY_ARRAY: never[] = [];
+
 export function LibraryPage() {
   // One-way seed only: a provenance badge or a related-models card can deep
   // link here with `?collection=<id>` (see `librarySearch.ts`), but the
@@ -234,11 +237,11 @@ export function LibraryPage() {
     sources: ModelSummary[];
   } | null>(null);
 
-  function handleMergeModels(target: ModelSummary, sourceIds: number[]) {
+  const handleMergeModels = useCallback((target: ModelSummary, sourceIds: number[]) => {
     const sources = items.filter((m) => sourceIds.includes(m.id) && m.id !== target.id);
     if (sources.length === 0) return;
     setMergeConfirmState({ target, sources });
-  }
+  }, [items]);
 
   async function confirmMerge() {
     if (!mergeConfirmState) return;
@@ -263,7 +266,7 @@ export function LibraryPage() {
     setSelectMode(false);
   }
 
-  function toggleSelected(id: number, next: boolean) {
+  const toggleSelected = useCallback((id: number, next: boolean) => {
     setSelectedIds((prev) => {
       const updated = new Set(prev);
       if (next) updated.add(id);
@@ -274,12 +277,12 @@ export function LibraryPage() {
       }
       return updated;
     });
-  }
+  }, []);
 
   /** Ctrl/Cmd toggles just this card; Shift selects the inclusive range from
    * `lastSelectedIndex` (or this index, if there isn't one yet) through this
    * index, adding to the existing selection rather than replacing it. */
-  function handleModifiedClick(event: React.MouseEvent, index: number) {
+  const handleModifiedClick = useCallback((event: React.MouseEvent, index: number) => {
     if (event.shiftKey) {
       const anchor = lastSelectedIndex !== null ? lastSelectedIndex : index;
       const [lo, hi] = anchor <= index ? [anchor, index] : [index, anchor];
@@ -290,16 +293,17 @@ export function LibraryPage() {
       if (model) toggleSelected(model.id, !selectedIds.has(model.id));
     }
     setLastSelectedIndex(index);
-  }
+  }, [items, lastSelectedIndex, selectedIds, toggleSelected]);
 
   const tagsQuery = useTags();
   const collectionsQuery = useFollowedCollections();
-  const collections = collectionsQuery.data ?? [];
+  const collections = collectionsQuery.data ?? (EMPTY_ARRAY as any[]);
   const activeCollectionTitle = collections.find((collection) => collection.id === activeCollection)?.title;
   const categoriesQuery = useCategories();
-  const categories = categoriesQuery.data ?? [];
+  const categories = categoriesQuery.data ?? (EMPTY_ARRAY as any[]);
   const projectsQuery = useProjects();
-  const projects = projectsQuery.data ?? [];
+  const projects = projectsQuery.data ?? (EMPTY_ARRAY as any[]);
+  const projects = projectsQuery.data ?? (EMPTY_ARRAY as any[]);
 
   const isSearching = Boolean(debouncedSearch.trim());
   // When not searching and no project folder is open, only show root models (project: 0).
@@ -477,8 +481,9 @@ export function LibraryPage() {
   const createModel = useCreateModel();
   const queryClient = useQueryClient();
 
+
   const currentProject = useMemo(() => {
-    return projects.find((p) => p.id === activeProject);
+    return (projects ?? []).find((p) => p.id === activeProject);
   }, [projects, activeProject]);
 
   useEffect(() => {
@@ -556,7 +561,19 @@ export function LibraryPage() {
     }
   }
 
+  const selectionContextValue = useMemo(
+    () => ({
+      selectedIds,
+      selectMode: selectMode || selectedIds.size > 0,
+      toggleSelected,
+      handleModifiedClick,
+      handleMergeModels,
+    }),
+    [selectedIds, selectMode, toggleSelected, handleModifiedClick, handleMergeModels],
+  );
+
   return (
+    <GallerySelectionProvider value={selectionContextValue}>
     <div
       className="relative space-y-5 min-h-[calc(100vh-8rem)]"
       onDragEnter={handlePageDragEnter}
@@ -898,12 +915,6 @@ export function LibraryPage() {
                     <ModelRow
                       model={model}
                       index={virtualRow.index}
-                      selected={selectedIds.has(model.id)}
-                      selectedIds={selectedIds}
-                      selectMode={selectMode || selectedIds.size > 0}
-                      onSelectChange={toggleSelected}
-                      onModifiedClick={handleModifiedClick}
-                      onMergeModels={handleMergeModels}
                     />
                   </div>
                 );
@@ -931,12 +942,6 @@ export function LibraryPage() {
                       key={model.id}
                       model={model}
                       index={virtualRow.index * columns + columnIndex}
-                      selected={selectedIds.has(model.id)}
-                      selectedIds={selectedIds}
-                      selectMode={selectMode || selectedIds.size > 0}
-                      onSelectChange={toggleSelected}
-                      onModifiedClick={handleModifiedClick}
-                      onMergeModels={handleMergeModels}
                     />
                   ))}
                 </div>
@@ -973,6 +978,7 @@ export function LibraryPage() {
         />
       )}
     </div>
+    </GallerySelectionProvider>
   );
 }
 

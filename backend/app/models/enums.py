@@ -54,6 +54,7 @@ class DerivativeKind(StrEnum):
     THUMB_1024 = "thumb_1024"
     GLB = "glb"
     GLB_PREVIEW = "glb_preview"
+    GCODE = "gcode"
 
 
 class DerivativeStatus(StrEnum):

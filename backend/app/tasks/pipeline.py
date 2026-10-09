@@ -75,7 +75,7 @@ PIPELINE_STEPS: dict[BlobFormat, tuple[str, ...]] = {
         "optimize_glb",
         "render_thumb",
     ),
-    BlobFormat.GCODE_3MF: ("extract_metadata", "extract_embedded_thumbs"),
+    BlobFormat.GCODE_3MF: ("extract_metadata", "extract_gcode", "extract_embedded_thumbs"),
     BlobFormat.GCODE: ("extract_metadata",),
     BlobFormat.STEP: ("convert_to_glb", "extract_metadata", "optimize_glb", "render_thumb"),
     BlobFormat.IGES: ("convert_to_glb", "extract_metadata", "optimize_glb", "render_thumb"),
@@ -775,6 +775,76 @@ def _extract_embedded_thumbs_step(
 @pipeline_step("extract_embedded_thumbs")
 def extract_embedded_thumbs(job_id: str, blob_hash: str) -> None:
     run_step(job_id, blob_hash, "extract_embedded_thumbs", _extract_embedded_thumbs_step)
+
+
+# ---------------------------------------------------------------------------
+# extract_gcode (Task C2): permanently extract .gcode from .gcode.3mf zips
+# ---------------------------------------------------------------------------
+
+def _resolve_plate_gcodes(zf: zipfile.ZipFile) -> list[tuple[int, str]]:
+    names = set(zf.namelist())
+    model_settings = slicedmeta.read_zip_member(zf, slicedmeta.MODEL_SETTINGS_PATH)
+    plate_files = slicedmeta.parse_model_settings(model_settings)
+
+    return sorted(
+        (index, gcode)
+        for index, info in plate_files.items()
+        if (gcode := info.get("gcode_file")) and gcode in names
+    )
+
+
+def _gcode_already_ok(session: SyncSession, blob_hash: str) -> bool:
+    deriv = session.execute(
+        select(Derivative).where(
+            Derivative.blob_hash == blob_hash, Derivative.kind == DerivativeKind.GCODE
+        )
+    ).scalar_one_or_none()
+    return deriv is not None and deriv.status == DerivativeStatus.OK
+
+
+def _publish_plate_gcode(zf: zipfile.ZipFile, member: str, settings: Settings, blob_hash: str, index: int) -> None:
+    dest = derivatives.plate_gcode_path(settings, blob_hash, index)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=dest.parent, prefix=".tdmm-gcode-", suffix=".gcode")
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as fh, zf.open(member) as stream:
+            import shutil
+            shutil.copyfileobj(stream, fh, length=256*1024)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    derivatives.publish_file(tmp_path, dest)
+
+
+def _extract_gcode_step(
+    session: SyncSession, settings: Settings, backend: StorageBackend, blob: Blob
+) -> StepOutcome:
+    if blob.format is not BlobFormat.GCODE_3MF:
+        raise UnsupportedBlobError(f"extract_gcode: unsupported format {blob.format}")
+
+    if _gcode_already_ok(session, blob.hash):
+        return "skipped"
+
+    deriv = derivatives.upsert_derivative(session, blob.hash, DerivativeKind.GCODE)
+    try:
+        with tempfile.TemporaryDirectory(prefix="tdmm-pipe-") as tmp:
+            path = derivatives.fetch_blob_to_temp(session, settings, blob.hash, Path(tmp), ".3mf")
+            with zipfile.ZipFile(path) as zf:
+                plates = _resolve_plate_gcodes(zf)
+                for index, member in plates:
+                    _publish_plate_gcode(zf, member, settings, blob.hash, index)
+    except Exception as exc:
+        derivatives.mark_derivative(session, deriv, status=DerivativeStatus.FAILED, error=str(exc))
+        raise
+
+    derivatives.mark_derivative(session, deriv, status=DerivativeStatus.OK, tool="zipfile")
+    return "done"
+
+
+@pipeline_step("extract_gcode")
+def extract_gcode(job_id: str, blob_hash: str) -> None:
+    run_step(job_id, blob_hash, "extract_gcode", _extract_gcode_step)
 
 
 # ---------------------------------------------------------------------------

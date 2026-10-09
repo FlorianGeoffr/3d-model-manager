@@ -154,7 +154,7 @@ export function ProjectDialog({
       createProject.reset();
       updateProject.reset();
     }
-  }, [open, project, defaultParentId]);
+  }, [open, project, defaultParentId, createProject, updateProject]);
 
   const projectsQuery = useProjects();
   const allProjects = projectsQuery.data ?? [];
